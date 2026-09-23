@@ -110,7 +110,7 @@ jobs:
           .github/scripts/install_go_tool.sh controller-gen
       - name: Install checksummed envtest runtime
         uses: ./.github/actions/setup-ci-tool
-        with: {name: envtest, version: 1.36.2}
+        with: {name: envtest, version: 1.37.0}
       - name: Install Dashboard dependencies
         run: make ui-deps
         working-directory: control-plane

@@ -612,17 +612,17 @@
     },
     {
       "name": "envtest",
-      "version": "1.36.2",
+      "version": "1.37.0",
       "platform": "linux-amd64",
-      "url": "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.36.2/envtest-v1.36.2-linux-amd64.tar.gz",
-      "sha256": "5e99f4eef3d6f9d4dd063730299f708c98da8801f2f14d8fc762cb354f30c332"
+      "url": "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.37.0/envtest-v1.37.0-linux-amd64.tar.gz",
+      "sha256": "f03faedfc68d2a78cee5cb02618bb44e7f67044f4c5fc957f72d3307fda61a9c"
     },
     {
       "name": "envtest",
-      "version": "1.36.2",
+      "version": "1.37.0",
       "platform": "linux-arm64",
-      "url": "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.36.2/envtest-v1.36.2-linux-arm64.tar.gz",
-      "sha256": "d5eebb129f149a68f8b7bbd7b4c8e51a19f280b3bda1743c94de27f82da78d2e"
+      "url": "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.37.0/envtest-v1.37.0-linux-arm64.tar.gz",
+      "sha256": "ff2a0cdcadd0a6b3181faa4758e28fc63b774d2e40f29f62645dd7fa0b881a2c"
     },
     {
       "name": "buildx",
@@ -735,7 +735,7 @@
       "ecosystem": "go",
       "package": "sigs.k8s.io/controller-runtime/tools/setup-envtest",
       "module": "sigs.k8s.io/controller-runtime/tools/setup-envtest",
-      "version": "v0.24.1",
+      "version": "v0.25.1",
       "lock": ".github/tools/control-plane/go.sum"
     },
     {
