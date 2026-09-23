@@ -355,10 +355,10 @@ KUSTOMIZE_VERSION ?= v5.8.1
 CONTROLLER_TOOLS_VERSION ?= v0.21.0
 
 # setup-envtest is its own module; keep CI/local generation reproducible.
-ENVTEST_VERSION ?= v0.24.1
+ENVTEST_VERSION ?= v0.25.1
 
 # Exact envtest runtime archive version governed by remote-content.json.
-ENVTEST_K8S_VERSION ?= 1.36.2
+ENVTEST_K8S_VERSION ?= 1.37.0
 
 GOLANGCI_LINT_VERSION ?= v2.12.2
 

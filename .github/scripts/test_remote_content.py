@@ -116,7 +116,7 @@ class RemoteContentTests(unittest.TestCase):
         manifest = remote_content.load_manifest()
         identities = {(item["name"], item["version"], item["platform"]) for item in manifest["ci_tools"]}
         for platform in ("linux-amd64", "linux-arm64"):
-            for name, version in (("go", "1.26.5"), ("go", "1.25.12"), ("node", "24.19.0"), ("node", "22.23.2"), ("envtest", "1.36.2"), ("buildx", "0.36.1"), ("goreleaser", "2.12.7"), ("syft", "1.51.0")):
+            for name, version in (("go", "1.26.5"), ("go", "1.25.12"), ("node", "24.19.0"), ("node", "22.23.2"), ("envtest", "1.37.0"), ("buildx", "0.36.1"), ("goreleaser", "2.12.7"), ("syft", "1.51.0")):
                 self.assertIn((name, version, platform), identities)
         self.assertEqual(1, len(manifest["ci_images"]))
         self.assertIn("@sha256:", manifest["ci_images"][0]["reference"] + "@" + manifest["ci_images"][0]["digest"])

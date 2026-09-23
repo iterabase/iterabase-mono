@@ -203,7 +203,7 @@ jobs:
           .github/scripts/install_node_tool.sh protoc-gen-es
       - name: Install checksummed envtest runtime
         uses: ./.github/actions/setup-ci-tool
-        with: {name: envtest, version: 1.36.2}
+        with: {name: envtest, version: 1.37.0}
       - run: make ui-deps harness-deps tool-runner-deps
         working-directory: control-plane
       - run: >-
