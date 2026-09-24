@@ -112,15 +112,24 @@ func (s *Store) Start(ctx context.Context, in StartInput) (WorkItem, bool, error
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO work.work_items
 			(id, workflow_key, scope_identity_id, title, source, source_presentation, start_identity_id,
-			 start_idempotency_key, start_payload_hash)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			 start_idempotency_key, start_payload_hash,
+			 initiating_human_identity_id, request_actor_identity_id,
+			 authorization_source, authorization_api_key_id, authorization_session_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		itemID, in.WorkflowKey, resolved.Definition.ScopeIdentityID, in.Title, jsonOrObject(in.Source),
-		sourcePresentation, in.ActorIdentityID, in.IdempotencyKey, payloadHash); err != nil {
+		sourcePresentation, in.ActorIdentityID, in.IdempotencyKey, payloadHash,
+		textOrNil(in.InitiatingHumanIdentityID), in.ActorIdentityID,
+		textOrNil(in.AuthorizationSource),
+		textOrNil(in.AuthorizationAPIKeyID), textOrNil(in.AuthorizationSessionID)); err != nil {
 		return WorkItem{}, false, fmt.Errorf("insert work item: %w", err)
 	}
 	if err := s.createAttemptTx(ctx, tx, createAttemptInput{
 		ID: attemptID, WorkItemID: itemID, Number: 1, ActorIdentityID: in.ActorIdentityID,
-		Resolved: resolved, Source: in.Source, SourceArtifacts: in.ArtifactRefs,
+		InitiatingHumanIdentityID: in.InitiatingHumanIdentityID,
+		AuthorizationSource:       in.AuthorizationSource,
+		AuthorizationAPIKeyID:     in.AuthorizationAPIKeyID,
+		AuthorizationSessionID:    in.AuthorizationSessionID,
+		Resolved:                  resolved, Source: in.Source, SourceArtifacts: in.ArtifactRefs,
 	}); err != nil {
 		return WorkItem{}, false, err
 	}
@@ -139,17 +148,21 @@ func (s *Store) Start(ctx context.Context, in StartInput) (WorkItem, bool, error
 }
 
 type createAttemptInput struct {
-	ID                      string
-	WorkItemID              string
-	Number                  int
-	ActorIdentityID         string
-	Resolved                workflow.ResolvedDefinition
-	Source                  json.RawMessage
-	SourceArtifacts         []ArtifactRef
-	RevisedFromAttemptID    string
-	RevisionFeedbackID      string
-	ActionableGuidance      string
-	ConsequenceConfirmation []string
+	ID                        string
+	WorkItemID                string
+	Number                    int
+	ActorIdentityID           string
+	InitiatingHumanIdentityID string
+	AuthorizationSource       string
+	AuthorizationAPIKeyID     string
+	AuthorizationSessionID    string
+	Resolved                  workflow.ResolvedDefinition
+	Source                    json.RawMessage
+	SourceArtifacts           []ArtifactRef
+	RevisedFromAttemptID      string
+	RevisionFeedbackID        string
+	ActionableGuidance        string
+	ConsequenceConfirmation   []string
 }
 
 //nolint:gocyclo // Attempt/run/node/config/tool creation is intentionally one atomic initialization path.
@@ -187,9 +200,14 @@ func (s *Store) createAttemptTx(ctx context.Context, tx pgx.Tx, in createAttempt
 	// independently and turns bind to exact node-execution visits.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO runtime.workflow_runs
-			(id, kind, definition_key, scope_identity_id, session_id, session_dir, trigger)
-		VALUES ($1::uuid, 'workflow', $2, $3, $4, $4, $5)`,
-		in.ID, workflow.DefinitionKey(def.Key, def.Version), def.ScopeIdentityID, in.ID, jsonOrObject(in.Source)); err != nil {
+			(id, kind, definition_key, scope_identity_id, session_id, session_dir, trigger,
+			 initiating_human_identity_id, request_actor_identity_id,
+			 authorization_source, authorization_api_key_id, authorization_session_id)
+		VALUES ($1::uuid, 'workflow', $2, $3, $4, $4, $5, $6, $7, $8, $9, $10)`,
+		in.ID, workflow.DefinitionKey(def.Key, def.Version), def.ScopeIdentityID, in.ID, jsonOrObject(in.Source),
+		textOrNil(in.InitiatingHumanIdentityID), textOrNil(in.ActorIdentityID),
+		textOrNil(in.AuthorizationSource),
+		textOrNil(in.AuthorizationAPIKeyID), textOrNil(in.AuthorizationSessionID)); err != nil {
 		return fmt.Errorf("insert runtime run: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -780,6 +798,15 @@ func jsonValue(raw json.RawMessage) any {
 		return map[string]any{}
 	}
 	return v
+}
+
+// textOrNil maps a trusted principal/authorization string to a nullable column
+// value so a caller that supplies nothing never writes an empty uuid/text.
+func textOrNil(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 func nullable(v string) any {
 	if v == "" {

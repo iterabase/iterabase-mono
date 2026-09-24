@@ -108,6 +108,7 @@ func New(svc Services) http.Handler {
 	}
 
 	h.registerAuthRoutes(r)
+	h.registerPeopleRoutes(r)
 
 	r.Get("/.well-known/jwks.json", h.jwks)
 
