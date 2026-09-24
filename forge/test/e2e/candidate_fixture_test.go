@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -83,8 +84,8 @@ func assertCandidateImageDigests(t *testing.T, cluster *remotecluster.Cluster, n
 		expectedReference := repository + ":" + tag
 		found := false
 		for _, pod := range pods.Items {
-			specs := append(pod.Spec.Containers, pod.Spec.InitContainers...)
-			statuses := append(pod.Status.ContainerStatuses, pod.Status.InitContainerStatuses...)
+			specs := slices.Concat(pod.Spec.Containers, pod.Spec.InitContainers)
+			statuses := slices.Concat(pod.Status.ContainerStatuses, pod.Status.InitContainerStatuses)
 			for _, spec := range specs {
 				if spec.Image != expectedReference {
 					continue
@@ -135,7 +136,7 @@ func waitForCandidateControlPlaneReady(t *testing.T, cluster *remotecluster.Clus
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	last := "no control-plane Deployment observed"
+	var last string
 	for {
 		deployments, listErr := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{
 			LabelSelector: "app.kubernetes.io/name=control-plane",
