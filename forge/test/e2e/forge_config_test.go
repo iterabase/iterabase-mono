@@ -67,6 +67,7 @@ func writeForgeConfigSpec(t *testing.T, spec forgeConfigSpec) string {
 	if spec.SSHHostKey == "" {
 		spec.SSHHostKey = strings.TrimSpace(os.Getenv(permanentFixtureHostKeyEnv))
 	}
+	trustFile := writeForgeTrustFile(t, spec.Address, spec.SSHHostKey)
 	var cfg strings.Builder
 	fmt.Fprintf(&cfg, `apiVersion: forge.horizonshift.io/v1alpha1
 kind: Cluster
@@ -89,10 +90,8 @@ spec:
     - address: %s
       sshUser: %s
       sshKeyPath: %s
-`, spec.Address, spec.SSHUser, spec.SSHKeyPath)
-	if spec.SSHHostKey != "" {
-		fmt.Fprintf(&cfg, "      sshHostKey: %q\n", spec.SSHHostKey)
-	}
+      sshTrustFile: %q
+`, spec.Address, spec.SSHUser, spec.SSHKeyPath, trustFile)
 	cfg.WriteString("      role: control-plane+worker\n")
 	if spec.RunLabel {
 		fmt.Fprintf(&cfg, `      labels:
@@ -155,6 +154,24 @@ spec:
 	path := filepath.Join(t.TempDir(), "forge.yaml")
 	if err := os.WriteFile(path, []byte(cfg.String()), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+// writeForgeTrustFile materializes the non-Git host trust file consumed by
+// spec.hosts[].sshTrustFile. The founder-verified key comes from the fixture
+// environment and never enters Git, command arguments, or logs; an empty pin
+// leaves a comments-only file so the built Forge binary fails closed instead of
+// falling back to insecure verification.
+func writeForgeTrustFile(t *testing.T, address, pin string) string {
+	t.Helper()
+	content := "# founder-verified host key is supplied by the fixture environment\n"
+	if strings.TrimSpace(pin) != "" {
+		content += address + " " + strings.TrimSpace(pin) + "\n"
+	}
+	path := filepath.Join(t.TempDir(), "forge-host-trust")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write host trust file: %v", err)
 	}
 	return path
 }

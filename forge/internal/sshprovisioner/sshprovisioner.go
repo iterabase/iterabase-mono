@@ -55,21 +55,28 @@ func WithSSHConfig(c *ssh.ClientConfig) Option {
 
 // New builds an SSHProvisioner for host using key-based auth (key file, or the
 // SSH agent as fallback). Encrypted keys must be agent-loaded (no passphrase
-// prompt).
+// prompt). Host identity is verified during key exchange against the explicit
+// non-Git trust file (spec.hosts[].sshTrustFile); missing or invalid trust
+// fails closed before any connection attempt.
 func New(host config.Host, opts ...Option) (*SSHProvisioner, error) {
-	hostKeyCallback, hostKeyAlgorithms, err := configuredHostKey(host.SSHHostKey)
-	if err != nil {
-		return nil, err
-	}
 	cfg := &ssh.ClientConfig{
-		User:              host.SSHUser,
-		HostKeyCallback:   hostKeyCallback,
-		HostKeyAlgorithms: hostKeyAlgorithms,
-		Timeout:           10 * time.Second,
+		User:    host.SSHUser,
+		Timeout: 10 * time.Second,
 	}
 	p := &SSHProvisioner{host: host, cfg: cfg, dial: defaultDial}
 	for _, opt := range opts {
 		opt(p)
+	}
+	// If no host-key callback was injected (e.g. by tests via WithSSHConfig),
+	// load the host's explicit trust material. The callback runs during key
+	// exchange, before user authentication, sessions, commands, or stdin.
+	if p.cfg.HostKeyCallback == nil {
+		hostKeyCallback, hostKeyAlgorithms, err := loadHostTrust(host.Address, host.SSHTrustFile)
+		if err != nil {
+			return nil, err
+		}
+		p.cfg.HostKeyCallback = hostKeyCallback
+		p.cfg.HostKeyAlgorithms = hostKeyAlgorithms
 	}
 	// If no auth was injected (e.g. by tests via WithSSHConfig), derive it from
 	// the key file or the SSH agent.
@@ -79,21 +86,6 @@ func New(host config.Host, opts ...Option) (*SSHProvisioner, error) {
 		}
 	}
 	return p, nil
-}
-
-func configuredHostKey(value string) (ssh.HostKeyCallback, []string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ssh.InsecureIgnoreHostKey(), nil, nil //nolint:gosec // backward-compatible interactive config
-	}
-	publicKey, _, _, rest, err := ssh.ParseAuthorizedKey([]byte(value + "\n"))
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse pinned SSH host key: %w", err)
-	}
-	if len(bytes.TrimSpace(rest)) != 0 {
-		return nil, nil, fmt.Errorf("parse pinned SSH host key: unexpected trailing data")
-	}
-	return ssh.FixedHostKey(publicKey), []string{publicKey.Type()}, nil
 }
 
 // Close releases the underlying SSH connection.

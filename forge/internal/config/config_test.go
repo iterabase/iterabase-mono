@@ -21,12 +21,13 @@ func validCluster() *Cluster {
 			Mode:        ModeSingleNode,
 			DataStorage: DataStorage{Devices: []string{"/dev/disk/by-id/scsi-data-a", "/dev/disk/by-id/scsi-data-b"}},
 			Hosts: []Host{{
-				Address:    "10.20.0.10",
-				SSHUser:    "forge",
-				SSHKeyPath: "~/.ssh/forge_ed25519",
-				Role:       RoleControlPlaneWorker,
-				Labels:     map[string]string{"forge.horizonshift.io/env": "test"},
-				Taints:     []Taint{{Key: "nvidia.com/gpu", Value: "true", Effect: "NoSchedule"}},
+				Address:      "10.20.0.10",
+				SSHUser:      "forge",
+				SSHKeyPath:   "~/.ssh/forge_ed25519",
+				SSHTrustFile: "~/.forge/trust/opo1/10.20.0.10",
+				Role:         RoleControlPlaneWorker,
+				Labels:       map[string]string{"forge.horizonshift.io/env": "test"},
+				Taints:       []Taint{{Key: "nvidia.com/gpu", Value: "true", Effect: "NoSchedule"}},
 			}},
 			K3s: K3s{
 				Version:       "v1.31.5",
@@ -62,7 +63,7 @@ func TestParse_Valid(t *testing.T) {
 	h := c.Spec.Hosts[0]
 	assert.Equal(t, "10.20.0.10", h.Address)
 	assert.Equal(t, "forge", h.SSHUser)
-	assert.Equal(t, "", h.SSHHostKey)
+	assert.Equal(t, "~/.forge/trust/opo1/10.20.0.10", h.SSHTrustFile)
 	assert.Equal(t, "test", h.Labels["forge.horizonshift.io/env"])
 	require.Len(t, h.Taints, 1)
 	assert.Equal(t, "NoSchedule", h.Taints[0].Effect)
@@ -178,14 +179,43 @@ func TestParse_MissingSSHUser(t *testing.T) {
 	assert.Contains(t, err.Error(), "sshUser")
 }
 
-func TestParse_PinnedSSHHostKey(t *testing.T) {
-	const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixturePinnedHostIdentity HOR-540"
-	cluster, err := Parse(yamlFor(t, func(c *Cluster) { c.Spec.Hosts[0].SSHHostKey = key }))
-	require.NoError(t, err)
-	assert.Equal(t, key, cluster.Spec.Hosts[0].SSHHostKey)
+func TestParse_SSHTrustFileIsRequired(t *testing.T) {
+	_, err := Parse(yamlFor(t, func(c *Cluster) { c.Spec.Hosts[0].SSHTrustFile = "" }))
+	require.ErrorContains(t, err, "sshTrustFile is required")
 
-	_, err = Parse(yamlFor(t, func(c *Cluster) { c.Spec.Hosts[0].SSHHostKey = key + "\nsecond-key" }))
-	require.ErrorContains(t, err, "one OpenSSH public host key line")
+	cluster, err := Parse(yamlFor(t, func(c *Cluster) {
+		c.Spec.Hosts[0].SSHTrustFile = "~/.forge/trust/opo1/10.20.0.10"
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "~/.forge/trust/opo1/10.20.0.10", cluster.Spec.Hosts[0].SSHTrustFile)
+}
+
+func TestParse_RejectsLegacyInlineSSHHostKey(t *testing.T) {
+	// The removed inline pin is detected by raw YAML so the migration error
+	// never echoes the legacy material.
+	legacy := []byte(`apiVersion: forge.horizonshift.io/v1alpha1
+kind: Cluster
+metadata:
+  name: opo1
+spec:
+  mode: single-node
+  dataStorage:
+    devices: [/dev/disk/by-id/scsi-data-a]
+  hosts:
+    - address: 10.20.0.10
+      sshUser: forge
+      sshKeyPath: ~/.ssh/forge_ed25519
+      sshHostKey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureLegacySecretMaterial
+      sshTrustFile: ~/.forge/trust/opo1/10.20.0.10
+      role: control-plane+worker
+  k3s:
+    version: v1.31.5
+    clusterCIDR: 10.42.0.0/16
+    serviceCIDR: 10.43.0.0/16
+`)
+	_, err := Parse(legacy)
+	require.ErrorContains(t, err, "sshHostKey is removed")
+	require.NotContains(t, err.Error(), "AAAAIFixtureLegacySecretMaterial")
 }
 
 func TestParse_BadRole(t *testing.T) {
