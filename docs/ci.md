@@ -38,12 +38,18 @@ owned by `.github/scripts/e2e.py` and the compiled owner catalogue.
 ## Go module lint ownership
 
 `make lint` is the canonical local Go lint matrix: the root Makefile
-`GO_MODULES` variable lists every module, and every module is linted with the
-repository-pinned `golangci-lint` (version-locked by `.github/tools/go.mod` and
-installed by `.github/scripts/install_go_tool.sh`). Compiling a module or running
-its tests is not lint enforcement, so each module has one explicit pull-request
-owner and one explicit release-candidate owner, recorded in
-`.github/ci/go-lint-owners.json`:
+`GO_MODULES` variable lists every module, and each module is linted by running
+`golangci-lint run ./...` inside that module's directory (the component
+`make lint` targets do the same for `control-plane`, `inference-gateway`, and
+`forge`). CI installs the repository-pinned linter — version-locked by
+`.github/tools/go.mod` and installed by `.github/scripts/install_go_tool.sh` —
+and runs those same commands, so the required aggregate resolves the same
+linter policy as the local matrix. A local run uses the `golangci-lint` found on
+`PATH`; `control-plane/Makefile` documents the expected pin in
+`GOLANGCI_LINT_VERSION`, which `.github/scripts/test_lint_parity.py` keeps equal
+to the tool module. Compiling a module or running its tests is not lint
+enforcement, so each module has one explicit pull-request owner and one explicit
+release-candidate owner, recorded in `.github/ci/go-lint-owners.json`:
 
 | Module | Pull request (`CI / required`) | Release candidate (`Candidate validation / required`) |
 | -- | -- | -- |
@@ -58,11 +64,29 @@ owner and one explicit release-candidate owner, recorded in
 The four nested Go modules are linted by the dedicated `nested-go-lint` job,
 which installs the pinned linter once and runs `golangci-lint run ./...` inside
 each module directory. A change confined to one of those modules selects it, and
-shared `testkit/e2e`, root `Makefile`/`go.work`, selector, or `ci.yml` contract
-changes fan out to it, so `CI / required` cannot pass while a nested-module lint
-invocation fails. The same job is always selected for a release candidate and
-runs against the exact requested `master_sha`, so candidate validation cannot
-promote past a nested lint failure.
+a linter-configuration edit, shared `testkit/e2e`, root `Makefile`/`go.work`,
+selector, or `ci.yml` contract change fans out to it, so `CI / required` cannot
+pass while a nested-module lint invocation fails. The same job is always selected
+for a release candidate and runs against the exact requested `master_sha`, so
+candidate validation cannot promote past a nested lint failure.
+
+Because golangci-lint resolves the nearest parent configuration, the governing
+component configuration decides what each nested module actually analyzes:
+
+| Nested module | Resolved configuration | Sources analyzed |
+| -- | -- | -- |
+| `charts/test/e2e` | none (built-in default policy) | all files |
+| `testkit/e2e` | none (built-in default policy) | all files |
+| `forge/test/e2e` | `forge/.golangci.yml` | excluded by `linters.exclusions.paths: ["test/e2e", "_test\.go"]` — HOR-587 |
+| `control-plane/test/e2e` | `control-plane/.golangci.yml` | `_test\.go` excluded (14 of 15 files) — HOR-587 |
+
+`.github/scripts/test_lint_parity.py` verifies the recorded resolution against the
+real config search and requires an explicit `analysis_waiver` naming the approved
+follow-up whenever a module's sources are excluded, so a silently vacuous gate or
+an unreviewed change of analysis scope fails the contract test. Until HOR-587
+removes those exclusions, `forge/test/e2e` and `control-plane/test/e2e` are
+parity-true — a failing local matrix cannot pass the required aggregate — but they
+are not independently analyzed.
 
 `.github/scripts/test_lint_parity.py` fails when a module is added to the root
 `GO_MODULES` matrix without a named pull-request and release-candidate lint
