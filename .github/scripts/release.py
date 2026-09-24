@@ -565,6 +565,10 @@ def candidate_job_selection(plan: dict[str, Any]) -> dict[str, bool]:
         "inference-gateway-source": "inference-gateway" in source_suites,
         "forge-source": "forge" in source_suites,
         "charts-source": "charts" in source_suites,
+        # Nested Go E2E modules and the shared testkit back every owner's
+        # compiled scenarios, so this lint owner is selected for every
+        # candidate and is never skippable.
+        "nested-go-lint": True,
         "image-candidates": bool(plan["image_matrix"]),
         "runtime-artifacts": bool(execution["artifact_build_matrix"]),
         "chart-candidate": bool(plan["chart_matrix"]),
@@ -1131,6 +1135,7 @@ def write_github_outputs(path: Path, plan: dict[str, Any]) -> None:
         "run_inference_gateway": str("inference-gateway" in plan["source_suites"]).lower(),
         "run_forge": str("forge" in plan["source_suites"]).lower(),
         "run_charts": str("charts" in plan["source_suites"]).lower(),
+        "run_nested_go_lint": "true",
         "run_chart_runtime": str(plan["chart_runtime"]).lower(),
         "run_kind": str(bool(plan["kind_matrix"])).lower(),
         "run_real_machine": str(bool(plan["real_machine"])).lower(),

@@ -62,7 +62,7 @@
   {
     "name": "root workspace contract fans out to every owner",
     "paths": ["go.work.sum"],
-    "true": ["control_plane", "ui", "harness", "tool_runner", "proto", "inference_gateway", "forge", "forge_e2e", "forge_real_e2e", "charts", "images"],
+    "true": ["control_plane", "ui", "harness", "tool_runner", "proto", "inference_gateway", "forge", "forge_e2e", "forge_real_e2e", "charts", "nested_go_lint", "images"],
     "images": ["control-plane", "control-plane-harness", "control-plane-harness-isolation", "control-plane-tool-runner", "inference-gateway"]
   },
   {
@@ -80,7 +80,7 @@
   {
     "name": "affected-target selector changes fan out to every owner",
     "paths": [".github/scripts/select_ci.py"],
-    "true": ["control_plane", "ui", "harness", "tool_runner", "proto", "inference_gateway", "forge", "forge_e2e", "forge_real_e2e", "charts", "images"],
+    "true": ["control_plane", "ui", "harness", "tool_runner", "proto", "inference_gateway", "forge", "forge_e2e", "forge_real_e2e", "charts", "nested_go_lint", "images"],
     "images": ["control-plane", "control-plane-harness", "control-plane-harness-isolation", "control-plane-tool-runner", "inference-gateway"]
   },
   {
@@ -92,7 +92,25 @@
   {
     "name": "shared E2E testkit fans out to every owner and suite",
     "paths": ["testkit/e2e/suite.go"],
-    "true": ["control_plane", "ui", "harness", "tool_runner", "proto", "inference_gateway", "forge", "forge_e2e", "forge_real_e2e", "charts", "images"],
+    "true": ["control_plane", "ui", "harness", "tool_runner", "proto", "inference_gateway", "forge", "forge_e2e", "forge_real_e2e", "charts", "nested_go_lint", "images"],
     "images": ["control-plane", "control-plane-harness", "control-plane-harness-isolation", "control-plane-tool-runner", "inference-gateway"]
+  },
+  {
+    "name": "charts E2E module selects its dedicated Go lint owner",
+    "paths": ["charts/test/e2e/metallb_transition_test.go"],
+    "true": ["charts", "forge_e2e", "nested_go_lint"],
+    "images": []
+  },
+  {
+    "name": "control-plane E2E module selects its dedicated Go lint owner",
+    "paths": ["control-plane/test/e2e/e2e_test.go"],
+    "true": ["control_plane", "nested_go_lint", "images"],
+    "images": ["control-plane"]
+  },
+  {
+    "name": "Forge E2E module selects its dedicated Go lint owner",
+    "paths": ["forge/test/e2e/e2e_test.go"],
+    "true": ["forge", "forge_e2e", "forge_real_e2e", "nested_go_lint"],
+    "images": []
   }
 ]

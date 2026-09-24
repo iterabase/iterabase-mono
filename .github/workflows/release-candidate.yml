@@ -67,6 +67,7 @@ jobs:
       run_inference_gateway: ${{ steps.resolved.outputs.run_inference_gateway }}
       run_forge: ${{ steps.resolved.outputs.run_forge }}
       run_charts: ${{ steps.resolved.outputs.run_charts }}
+      run_nested_go_lint: ${{ steps.resolved.outputs.run_nested_go_lint }}
       run_kind: ${{ steps.resolved.outputs.run_kind }}
       run_real_machine: ${{ steps.resolved.outputs.run_real_machine }}
     steps:
@@ -128,6 +129,7 @@ jobs:
         run: |
           python3 .github/scripts/test_e2e.py
           python3 .github/scripts/test_release.py
+          python3 .github/scripts/test_lint_parity.py
           python3 .github/scripts/test_remote_content.py
           python3 .github/scripts/release.py validate
           python3 .github/scripts/remote_content.py validate
@@ -262,6 +264,42 @@ jobs:
       - run: .github/scripts/add_helm_repositories.sh
       - run: make check check-tls test-e2e-unit
         working-directory: charts
+
+  # Shared Go E2E modules have no product target of their own, and the shared
+  # testkit participates in every candidate's compiled E2E execution. This job
+  # is always selected: it installs the repository-pinned golangci-lint and
+  # lints every nested module against the exact requested master SHA before the
+  # candidate can be promoted. `.github/ci/go-lint-owners.json` records it as
+  # the candidate lint owner for all four modules.
+  nested-go-lint:
+    name: Nested Go module lint
+    needs: preflight
+    if: needs.preflight.outputs.run_nested_go_lint == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {ref: "${{ inputs.master_sha }}"}
+      - name: Verify exact nested-module source
+        run: test "$(git rev-parse HEAD)" = '${{ inputs.master_sha }}'
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: 1.26.5
+          cache-dependency-path: ${{ env.GO_CACHE_DEPENDENCIES }}
+          cache-scope: candidate-nested-go-lint
+      - name: Install pinned golangci-lint
+        run: .github/scripts/install_go_tool.sh golangci-lint
+      - name: Lint charts/test/e2e
+        working-directory: charts/test/e2e
+        run: golangci-lint run ./...
+      - name: Lint control-plane/test/e2e
+        working-directory: control-plane/test/e2e
+        run: golangci-lint run ./...
+      - name: Lint forge/test/e2e
+        working-directory: forge/test/e2e
+        run: golangci-lint run ./...
+      - name: Lint testkit/e2e
+        working-directory: testkit/e2e
+        run: golangci-lint run ./...
 
   image-candidates:
     name: Build image — ${{ matrix.name }}
@@ -686,6 +724,7 @@ jobs:
       - inference-gateway-source
       - forge-source
       - charts-source
+      - nested-go-lint
       - image-candidates
       - runtime-artifacts
       - chart-candidate
@@ -713,6 +752,7 @@ jobs:
             --arg inference_gateway_source '${{ needs.inference-gateway-source.result }}' \
             --arg forge_source '${{ needs.forge-source.result }}' \
             --arg charts_source '${{ needs.charts-source.result }}' \
+            --arg nested_go_lint '${{ needs.nested-go-lint.result }}' \
             --arg image_candidates '${{ needs.image-candidates.result }}' \
             --arg runtime_artifacts '${{ needs.runtime-artifacts.result }}' \
             --arg chart_candidate '${{ needs.chart-candidate.result }}' \
@@ -725,6 +765,7 @@ jobs:
               "inference-gateway-source":{"result":$inference_gateway_source},
               "forge-source":{"result":$forge_source},
               "charts-source":{"result":$charts_source},
+              "nested-go-lint":{"result":$nested_go_lint},
               "image-candidates":{"result":$image_candidates},
               "runtime-artifacts":{"result":$runtime_artifacts},
               "chart-candidate":{"result":$chart_candidate},

@@ -42,6 +42,7 @@ jobs:
       forge_e2e: ${{ steps.select.outputs.forge_e2e }}
       forge_real_e2e: ${{ steps.select.outputs.forge_real_e2e }}
       charts: ${{ steps.select.outputs.charts }}
+      nested_go_lint: ${{ steps.select.outputs.nested_go_lint }}
       images: ${{ steps.select.outputs.images }}
       image_matrix: ${{ steps.select.outputs.image_matrix }}
       classification: ${{ steps.select.outputs.classification }}
@@ -58,8 +59,10 @@ jobs:
           cache-scope: shared-testkit
       - name: Test shared E2E mechanics and compiled catalogue
         run: make testkit-test
-      - name: Test path-selection fixture matrix
-        run: python3 .github/scripts/test_select_ci.py
+      - name: Test path-selection and Go lint-owner contracts
+        run: |
+          python3 .github/scripts/test_select_ci.py
+          python3 .github/scripts/test_lint_parity.py
       - name: Test protected release and remote-content contracts
         run: |
           python3 .github/scripts/test_release.py
@@ -349,6 +352,46 @@ jobs:
         run: make check-tls
         working-directory: charts
 
+  # Shared Go E2E modules are compiled and tested by several owners but are not
+  # linted by any of their product jobs. This dedicated job installs the
+  # repository-pinned golangci-lint and runs it in every nested module, so a
+  # required aggregate cannot pass while the canonical local lint matrix fails.
+  # `.github/ci/go-lint-owners.json` names this job as the PR and candidate lint
+  # owner for all four modules; `.github/scripts/test_lint_parity.py` fails when
+  # that ownership or this wiring drifts.
+  nested-go-lint:
+    name: nested-go-lint
+    needs: changes
+    if: needs.changes.outputs.nested_go_lint == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact lint source
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: 1.26.5
+          cache-dependency-path: ${{ env.GO_CACHE_DEPENDENCIES }}
+          cache-scope: nested-go-lint
+      - name: Install pinned golangci-lint
+        run: .github/scripts/install_go_tool.sh golangci-lint
+      - name: Lint charts/test/e2e
+        working-directory: charts/test/e2e
+        run: golangci-lint run ./...
+      - name: Lint control-plane/test/e2e
+        working-directory: control-plane/test/e2e
+        run: golangci-lint run ./...
+      - name: Lint forge/test/e2e
+        working-directory: forge/test/e2e
+        run: golangci-lint run ./...
+      - name: Lint testkit/e2e
+        working-directory: testkit/e2e
+        run: golangci-lint run ./...
+
   images:
     name: image-${{ matrix.name }}
     needs: changes
@@ -395,6 +438,7 @@ jobs:
       - forge
       - forge-fault-matrix
       - charts
+      - nested-go-lint
       - images
     runs-on: ubuntu-latest
     steps:

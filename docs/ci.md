@@ -35,6 +35,40 @@ enforces scenario identity through the plan-hash-bound per-scenario result set;
 missing or malformed output fails closed there too. E2E scenario routing remains
 owned by `.github/scripts/e2e.py` and the compiled owner catalogue.
 
+## Go module lint ownership
+
+`make lint` is the canonical local Go lint matrix: the root Makefile
+`GO_MODULES` variable lists every module, and every module is linted with the
+repository-pinned `golangci-lint` (version-locked by `.github/tools/go.mod` and
+installed by `.github/scripts/install_go_tool.sh`). Compiling a module or running
+its tests is not lint enforcement, so each module has one explicit pull-request
+owner and one explicit release-candidate owner, recorded in
+`.github/ci/go-lint-owners.json`:
+
+| Module | Pull request (`CI / required`) | Release candidate (`Candidate validation / required`) |
+| -- | -- | -- |
+| `control-plane` | `control-plane` | `control-plane-source` |
+| `inference-gateway` | `inference-gateway` | `inference-gateway-source` |
+| `forge` | `forge` | `forge-source` |
+| `forge/test/e2e` | `nested-go-lint` | `nested-go-lint` |
+| `testkit/e2e` | `nested-go-lint` | `nested-go-lint` |
+| `control-plane/test/e2e` | `nested-go-lint` | `nested-go-lint` |
+| `charts/test/e2e` | `nested-go-lint` | `nested-go-lint` |
+
+The four nested Go modules are linted by the dedicated `nested-go-lint` job,
+which installs the pinned linter once and runs `golangci-lint run ./...` inside
+each module directory. A change confined to one of those modules selects it, and
+shared `testkit/e2e`, root `Makefile`/`go.work`, selector, or `ci.yml` contract
+changes fan out to it, so `CI / required` cannot pass while a nested-module lint
+invocation fails. The same job is always selected for a release candidate and
+runs against the exact requested `master_sha`, so candidate validation cannot
+promote past a nested lint failure.
+
+`.github/scripts/test_lint_parity.py` fails when a module is added to the root
+`GO_MODULES` matrix without a named pull-request and release-candidate lint
+owner, when an owner job stops installing the pinned linter or linting its
+module, or when a required aggregate stops consuming the owner.
+
 ## One compiled execution plan
 
 Every runnable owner registration declares, in compiled Go metadata:
@@ -252,6 +286,7 @@ automatic scenario retries, pass-on-retry semantics, or accepted flakes.
 
 ```bash
 python3 .github/scripts/test_select_ci.py
+python3 .github/scripts/test_lint_parity.py
 python3 .github/scripts/test_e2e.py
 python3 .github/scripts/test_fixture_image_cache.py
 python3 .github/scripts/test_release.py
@@ -263,9 +298,9 @@ make release-check
 ```
 
 Infrastructure scenarios still require Docker/Kind or the founder-configured
-permanent CPU/GPU fixtures. The commands above validate selection, recipes,
-composition contracts, strict result reconciliation, and compiled owner
-entrypoints without contacting a fixture.
+permanent CPU/GPU fixtures. The commands above validate selection, Go lint
+ownership, recipes, composition contracts, strict result reconciliation, and
+compiled owner entrypoints without contacting a fixture.
 
 ## Branch-protection audit
 
