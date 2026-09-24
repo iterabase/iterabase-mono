@@ -355,7 +355,7 @@ func runPlaywrightJourneysStage(t *testing.T, state *deployedState) {
 	}
 }
 
-var errPlaywrightCompleted = errors.New("Playwright completed")
+var errPlaywrightCompleted = errors.New("playwright completed")
 
 func collectBrowserEvidence(state *deployedState, artifactRoot string) error {
 	marker := filepath.Join(artifactRoot, "sanitized.marker")

@@ -552,12 +552,12 @@ YAML`
 	var events string
 	for time.Now().Before(deadline) {
 		events = mustSSHOutput(t, client, `sudo k3s kubectl get events -n iterabase-system --field-selector involvedObject.name=forge-resize-exhaustion -o jsonpath='{range .items[*]}{.reason}|{.message}{"\n"}{end}'`)
-		if strings.Contains(events, "VolumeResizeFailed") || strings.Contains(events, "ExternalExpanding") && strings.Contains(strings.ToLower(events), "capacity") {
+		if resizeFailureActionable(events) {
 			break
 		}
 		time.Sleep(2 * time.Second)
 	}
-	if !strings.Contains(events, "VolumeResizeFailed") && !(strings.Contains(events, "ExternalExpanding") && strings.Contains(strings.ToLower(events), "capacity")) {
+	if !resizeFailureActionable(events) {
 		t.Fatalf("insufficient-VG resize did not emit an actionable failure: %s", events)
 	}
 	observed := strings.TrimSpace(mustSSHOutput(t, client, `sudo k3s kubectl get pvc forge-resize-exhaustion -n iterabase-system -o jsonpath='{.metadata.uid}|{.spec.volumeName}|{.status.capacity.storage}'`))
@@ -579,6 +579,15 @@ YAML`
 	if output, err := sshOutput(client, cleanup); err != nil {
 		t.Fatalf("failed-resize claim cleanup leaked storage identity: %v\n%s", err, output)
 	}
+}
+
+// resizeFailureActionable reports whether the resize events carry the actionable
+// failure signal the insufficient-VG stage requires: an explicit
+// VolumeResizeFailed event, or an ExternalExpanding event that names capacity.
+// The wait loop and the assertion share this one definition.
+func resizeFailureActionable(events string) bool {
+	return strings.Contains(events, "VolumeResizeFailed") ||
+		(strings.Contains(events, "ExternalExpanding") && strings.Contains(strings.ToLower(events), "capacity"))
 }
 
 func exerciseHumanGateWorkspaceReplacementStage(t *testing.T, state *permanentCPUFixtureState) {

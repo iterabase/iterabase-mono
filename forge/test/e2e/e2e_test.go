@@ -529,60 +529,6 @@ func waitForLVMSharedAgentPoolReady(t *testing.T, client *ssh.Client, timeout ti
 	t.Fatalf("OpenEBS shared-LVM AgentPool did not become Ready within %s: %v\n%s\n%s", timeout, err, output, diagnostics)
 }
 
-func exerciseWorkspaceCapacityGateStage(t *testing.T, state *permanentCPUFixtureState) {
-	t.Helper()
-	if os.Getenv("HARNESS_IMAGE_REPO") == "" {
-		t.Fatal("workspace capacity stage requires the composed harness image")
-	}
-	sc, err := sshDial(state.ip, state.privKeyPath)
-	if err != nil {
-		t.Fatalf("ssh dial %s: %v", state.ip, err)
-	}
-	defer sc.Close()
-	const filler = "/data/sandboxes/.forge-e2e-capacity-fill"
-	pod := strings.Fields(mustSSHOutput(t, sc, `sudo k3s kubectl get pods -n iterabase-system -l platform.iterabase.com/agentpool=forge-storage-pool -o name`))[0]
-	fill := fmt.Sprintf(`sudo k3s kubectl exec -n iterabase-system %s -- bash -ceu '
-mount=/data/sandboxes
-read -r size avail < <(df -B1 --output=size,avail "$mount" | tail -1)
-target=$((size * 19 / 100))
-allocate=$((avail - target))
-test "$allocate" -gt 0
-fallocate -l "$allocate" %s
-sync -f %s
-'`, pod, filler, filler)
-	mustSSHOutput(t, sc, fill)
-	t.Cleanup(func() {
-		if cleanup, dialErr := sshDial(state.ip, state.privKeyPath); dialErr == nil {
-			_, _ = sshOutput(cleanup, fmt.Sprintf("sudo k3s kubectl exec -n iterabase-system %s -- rm -f %s", pod, filler))
-			cleanup.Close()
-		}
-	})
-	waitMetrics := func(want string) {
-		t.Helper()
-		command := fmt.Sprintf(`for i in $(seq 1 60); do
-  ok=0; total=0
-  for pod in $(sudo k3s kubectl get pods -n iterabase-system -l platform.iterabase.com/agentpool=forge-storage-pool -o name | cut -d/ -f2); do
-    total=$((total+1))
-    metrics=$(sudo k3s kubectl get --raw "/api/v1/namespaces/iterabase-system/pods/$pod:8081/proxy/metrics" 2>/dev/null || true)
-    if printf '%%s\n' "$metrics" | grep -Eq '^control_plane_harness_workspace_credit_gated %s(\\.0+)?$'; then ok=$((ok+1)); fi
-  done
-  test "$total" -ge 2 && test "$ok" = "$total" && exit 0
-  sleep 2
-done
-exit 1`, want)
-		if output, commandErr := sshOutput(sc, command); commandErr != nil {
-			t.Fatalf("workspace capacity gate did not reach %s on every worker: %v\n%s", want, commandErr, output)
-		}
-	}
-	waitMetrics("1")
-	metrics := mustSSHOutput(t, sc, `pod=$(sudo k3s kubectl get pods -n iterabase-system -l platform.iterabase.com/agentpool=forge-storage-pool -o jsonpath='{.items[0].metadata.name}'); sudo k3s kubectl get --raw "/api/v1/namespaces/iterabase-system/pods/$pod:8081/proxy/metrics"`)
-	if !strings.Contains(metrics, "control_plane_harness_workspace_capacity_warning 1") {
-		t.Fatalf("controlled fill gated credit without the 25%% warning metric:\n%s", metrics)
-	}
-	mustSSHOutput(t, sc, fmt.Sprintf("sudo k3s kubectl exec -n iterabase-system %s -- bash -ceu 'rm -f %s && sync'", pod, filler))
-	waitMetrics("0")
-}
-
 func replaceWorkspaceWorkerStage(t *testing.T, state *permanentCPUFixtureState) {
 	t.Helper()
 	if os.Getenv("HARNESS_IMAGE_REPO") == "" {
@@ -845,13 +791,6 @@ func buildForge(t *testing.T) string {
 	return bin
 }
 
-func writeForgeConfig(t *testing.T, name, ip, keyPath, chartVersion string) string {
-	return writeForgeConfigSpec(t, forgeConfigSpec{
-		Name: name, Address: ip, SSHKeyPath: keyPath, RunLabel: true, DualStack: true,
-		ChartVersion: chartVersion, OverlayRepo: "file:///tmp/edge-overlay", OverlayRef: "master",
-	})
-}
-
 // runForgeE runs forge and returns its combined output and error (no t.Fatalf).
 func runForgeE(bin, forgeHome string, args ...string) (string, error) {
 	cmd := exec.Command(bin, args...)
@@ -960,12 +899,6 @@ func checkGatewayRunning(t *testing.T, kcPath string) {
 	t.Fatalf("inference-gateway pod not Running in iterabase-system")
 }
 
-func checkGatewayHealth(t *testing.T, ip string) {
-	t.Helper()
-	// The migration source proves the real MetalLB edge on 443.
-	checkGatewayHealthOnPort(t, ip, 443)
-}
-
 func checkGatewayNodePortHealth(t *testing.T, kcPath, ip string) {
 	t.Helper()
 	restCfg, err := clientcmd.BuildConfigFromFlags("", kcPath)
@@ -1018,51 +951,4 @@ func checkGatewayHealthOnPort(t *testing.T, ip string, port int) {
 		time.Sleep(3 * time.Second)
 	}
 	t.Fatalf("gateway /health not 200 via %s (ip %s port %d)", url, ip, port)
-}
-
-// writeEdgeOverlayOnHost creates a file:// overlay git repo on the fixture host
-// with the MetalLB L2 edge values (IPAddressPool = the fixture's public IP). Forge
-// apply clones it (file://, tokenless) and feeds values.yaml to the platform
-// chart. git is pre-installed by cloud-init. The scaffold matches what forge
-// validates: values.yaml + values.client.yaml + crds/client/kustomization.yaml.
-func writeEdgeOverlayOnHost(t *testing.T, ip, keyPath string) {
-	t.Helper()
-	sc, err := sshDial(ip, keyPath)
-	if err != nil {
-		t.Fatalf("ssh dial %s: %v", ip, err)
-	}
-	defer sc.Close()
-	script := fmt.Sprintf(`set -e
-# git is needed to init the overlay repo; install it if absent (mirrors forge's
-# EnsureGit). cloud-init only installs curl, so git may not be present yet.
-if ! command -v git >/dev/null 2>&1; then
-  sudo apt-get update -qq && sudo apt-get install -y git
-fi
-d=/tmp/edge-overlay
-rm -rf "$d"
-mkdir -p "$d/crds/client"
-cat > "$d/values.yaml" <<'YAML'
-metallb:
-  enabled: true
-metallb-config:
-  enabled: true
-  addresses:
-    - %s-%s
-YAML
-cat > "$d/values.client.yaml" <<'YAML'
-# client-specific overrides (none for e2e)
-YAML
-cat > "$d/crds/client/kustomization.yaml" <<'YAML'
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources: []
-YAML
-cd "$d"
-git init -q -b master
-git add .
-git -c user.email=forge@e2e -c user.name=forge commit -qm init
-`, ip, ip)
-	if out, err := sshOutput(sc, script); err != nil {
-		t.Fatalf("write edge overlay on host: %v\n%s", err, out)
-	}
 }
