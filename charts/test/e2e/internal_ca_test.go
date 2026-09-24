@@ -238,15 +238,13 @@ func assertInternalCARootStable(t *testing.T, state *chartState, uidBefore, fing
 // authority the platform issued (byte identity, not a same-named replacement).
 func assertMountedInternalCA(t *testing.T, state *chartState, pod, path string) {
 	t.Helper()
-	root := decodeSecretValue(t, state, internalCARootSecretName(), "ca.crt")
-	expected := sha256.Sum256(bytes.TrimSpace(root))
-	observed := state.kubectl(t, 30*time.Second, "exec", "-n", testNamespace, pod, "--", "sha256sum", path)
-	fields := strings.Fields(observed)
-	if len(fields) == 0 {
-		t.Fatalf("could not hash mounted internal CA %s in %s: %q", path, pod, observed)
+	root := bytes.TrimSpace(decodeSecretValue(t, state, internalCARootSecretName(), "ca.crt"))
+	observed := bytes.TrimSpace([]byte(state.kubectl(t, 30*time.Second, "exec", "-n", testNamespace, pod, "--", "cat", path)))
+	if len(observed) == 0 {
+		t.Fatalf("could not read the mounted internal CA %s in %s", path, pod)
 	}
-	if fields[0] != hex.EncodeToString(expected[:]) {
-		t.Fatalf("mounted internal CA %s in %s does not match the issued %s", path, pod, internalCARootSecretName())
+	if !bytes.Equal(observed, root) {
+		t.Fatalf("mounted internal CA %s in %s does not match the issued %s (%d vs %d bytes)", path, pod, internalCARootSecretName(), len(observed), len(root))
 	}
 }
 
