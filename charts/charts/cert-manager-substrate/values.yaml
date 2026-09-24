@@ -4,11 +4,21 @@
 # workloads start. platformRelease is set explicitly by
 # Forge and otherwise derives from the conventional <platform>-cert-manager
 # release name used by direct operators.
+#
+# HOR-528: global.internalTLS.ca is the single internal-CA identity contract.
+# This companion creates the root/issuers only when they do not exist and then
+# verifies them; the platform chart reads the same values and is the only writer
+# of an existing root. A per-chart override would make cert-manager re-issue
+# (rotate) the authority while workloads still hold leaves signed by the
+# previous key.
 global:
   internalTLS:
     enabled: false
     platformRelease: ""
     issuerName: internal-ca
+    ca:
+      commonName: iterabase-internal-ca
+      duration: 87600h
 
 internalCABootstrap:
   image:

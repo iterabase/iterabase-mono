@@ -19,9 +19,9 @@ func observabilityTLSScenario() sharede2e.Definition {
 	return sharede2e.Define(sharede2e.Scenario[*chartState]{
 		Metadata: chartScenarioMetadata(
 			"observability-tls",
-			"Proves the observability stack, exporters, self-monitors, Grafana datasources/sidecars, Loki gateway, Promtail, and Alertmanager use verified internal-CA HTTPS identities.",
+			"Proves the observability stack, exporters, self-monitors, Grafana datasources/sidecars, Loki gateway, Promtail, and Alertmanager use verified internal-CA HTTPS identities, and that every issued stack/control-plane leaf chains to the single mounted internal CA root.",
 			"test-e2e-observability-tls", 45,
-			[]string{"HOR-408", "HOR-414", "HOR-418", "HOR-420", "HOR-416", "HOR-545", "DES-HOR-545-01"},
+			[]string{"HOR-408", "HOR-414", "HOR-418", "HOR-420", "HOR-416", "HOR-528", "HOR-545", "DES-HOR-545-01"},
 			[]string{"control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"},
 		),
 		NewState: newChartState,
@@ -67,6 +67,11 @@ func assertObservabilityIdentitiesStage(t *testing.T, state *chartState) {
 	} {
 		state.kubectl(t, 4*time.Minute, "wait", "--for=condition=Ready", "certificate/"+certificate, "-n", testNamespace, "--timeout=3m")
 	}
+	// HOR-528: the same internal CA root signs the stack and the datastore/
+	// control-plane leaves, and it is still the first and only authority.
+	assertSingleInternalCARootAuthority(t, state)
+	leaves := append(coreInternalCALeafSecrets(), observabilityInternalCALeafSecrets()...)
+	assertIssuedChainsMatchMountedRoot(t, state, leaves...)
 }
 
 func assertVerifiedStackHTTPSStage(t *testing.T, state *chartState) {

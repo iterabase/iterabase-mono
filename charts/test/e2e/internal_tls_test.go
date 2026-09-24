@@ -16,9 +16,9 @@ func internalTLSScenario() sharede2e.Definition {
 	return sharede2e.Define(sharede2e.Scenario[*chartState]{
 		Metadata: chartScenarioMetadata(
 			"internal-tls",
-			"Installs the minimal internal-TLS platform and proves issued identities, distinct verified control-plane edge/backend TLS, gateway dependency readiness, and real Redis/PostgreSQL transport enforcement.",
+			"Installs the minimal internal-TLS platform and proves a single internal CA root authority, issued identities chaining to that mounted root, distinct verified control-plane edge/backend TLS, gateway dependency readiness, real Redis/PostgreSQL transport enforcement, and root-key stability across a reconcile.",
 			"test-e2e-internal-tls", 30,
-			[]string{"HOR-371", "HOR-416", "HOR-475", "HOR-507", "HOR-545", "DES-HOR-545-01"},
+			[]string{"HOR-371", "HOR-416", "HOR-475", "HOR-507", "HOR-528", "HOR-545", "DES-HOR-545-01"},
 			[]string{"control-plane", "inference-gateway", "control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"},
 		),
 		NewState: newChartState,
@@ -35,6 +35,7 @@ func internalTLSScenario() sharede2e.Definition {
 			{Name: "assert-rendered-client-config", DependsOn: []string{"assert-gateway-dependencies"}, Run: assertRenderedTLSClientConfigStage},
 			{Name: "assert-redis-transport", DependsOn: []string{"assert-internal-identities"}, Run: assertRedisTransportStage},
 			{Name: "assert-postgresql-transport", DependsOn: []string{"assert-internal-identities"}, Run: assertPostgreSQLTransportStage},
+			{Name: "reconcile-internal-tls-authority", DependsOn: []string{"assert-postgresql-transport"}, Run: reconcileInternalTLSAuthorityStage},
 		},
 		Diagnostics: diagnostics,
 		Cleanup:     cleanup,
@@ -55,7 +56,7 @@ func installInternalTLSCertificateSubstrateStage(t *testing.T, state *chartState
 	}
 }
 
-func installInternalTLSPlatformStage(t *testing.T, state *chartState) {
+func internalTLSPlatformValues(t *testing.T) map[string]any {
 	t.Helper()
 	values := runtimePlatformValues(t)
 	values["ingress-nginx"] = map[string]any{
@@ -74,9 +75,14 @@ func installInternalTLSPlatformStage(t *testing.T, state *chartState) {
 			"clusterIssuer": "selfsigned",
 		},
 	}
+	return values
+}
+
+func installInternalTLSPlatformStage(t *testing.T, state *chartState) {
+	t.Helper()
 	state.installPlatform(t, 16*time.Minute,
 		filepathFromCharts(state, "values-tls.yaml"),
-		state.writeValues(t, "internal-tls-runtime", values),
+		state.writeValues(t, "internal-tls-runtime", internalTLSPlatformValues(t)),
 	)
 	assertCandidateImages(t, state)
 }
@@ -94,6 +100,31 @@ func assertInternalIdentitiesStage(t *testing.T, state *chartState) {
 	} {
 		state.kubectl(t, 4*time.Minute, "wait", "--for=condition=Ready", "certificate/"+certificate, "-n", testNamespace, "--timeout=3m")
 	}
+	// HOR-528: one root authority, first revision, and every issued workload
+	// leaf chaining to the exact root the clients mount.
+	assertSingleInternalCARootAuthority(t, state)
+	assertIssuedChainsMatchMountedRoot(t, state, coreInternalCALeafSecrets()...)
+}
+
+// reconcileInternalTLSAuthorityStage reapplies both the ordered certificate
+// companion and the platform with unchanged values and proves the internal CA
+// root was adopted, not re-issued: the exercised reconcile runs the bootstrap
+// hook's create-only/verify path against an existing authority.
+func reconcileInternalTLSAuthorityStage(t *testing.T, state *chartState) {
+	t.Helper()
+	uidBefore := state.kubectl(t, 30*time.Second, "get", "certificate/"+internalCARootSecretName(), "-n", testNamespace,
+		"-o", "jsonpath={.metadata.uid}")
+	fingerprintBefore := internalCARootFingerprint(t, state)
+
+	state.installSubstrate(t, filepathFromCharts(state, "values-tls.yaml"))
+	state.installPlatform(t, 16*time.Minute,
+		filepathFromCharts(state, "values-tls.yaml"),
+		state.writeValues(t, "internal-tls-runtime", internalTLSPlatformValues(t)),
+	)
+	state.kubectl(t, 4*time.Minute, "wait", "--for=condition=Ready", "certificate/"+internalCARootSecretName(), "-n", testNamespace, "--timeout=3m")
+
+	assertInternalCARootStable(t, state, uidBefore, fingerprintBefore)
+	assertIssuedChainsMatchMountedRoot(t, state, coreInternalCALeafSecrets()...)
 }
 
 func assertGatewayDependenciesStage(t *testing.T, state *chartState) {
@@ -172,6 +203,7 @@ func assertRenderedTLSClientConfigStage(t *testing.T, state *chartState) {
 	if !strings.Contains(out, "rediss://") || !strings.Contains(out, "/etc/iterabase/internal-ca/ca.crt") {
 		t.Fatalf("gateway Redis configuration does not require CA-backed rediss: %s", out)
 	}
+	assertMountedInternalCA(t, state, pod, "/etc/iterabase/internal-ca/ca.crt")
 }
 
 func assertRedisTransportStage(t *testing.T, state *chartState) {

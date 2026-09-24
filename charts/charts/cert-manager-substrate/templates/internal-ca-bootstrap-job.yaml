@@ -5,6 +5,8 @@
 {{- $root := printf "%s-internal-ca-root" $platformRelease }}
 {{- $bootstrap := printf "%s-internal-ca-bootstrap" $platformRelease }}
 {{- $issuer := include "cert-manager-substrate.internalTLSIssuer" . }}
+{{- $caCommonName := include "cert-manager-substrate.caCommonName" . }}
+{{- $caDuration := include "cert-manager-substrate.caDuration" . }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -42,6 +44,8 @@ spec:
             - |
               owner_release={{ $platformRelease | quote }}
               owner_namespace={{ .Release.Namespace | quote }}
+              ca_common_name={{ $caCommonName | quote }}
+              ca_duration={{ $caDuration | quote }}
 
               check_owner() {
                 kind="$1"
@@ -63,12 +67,71 @@ spec:
                 fi
               }
 
+              refuse_rewrite() {
+                printf 'refusing to rewrite the platform-owned internal CA %s/%s: %s=%q, required %q\n' \
+                  "$1" "$2" "$3" "$4" "$5" >&2
+                printf 'the internal CA root is immutable after its first creation because intentional rotation is not implemented (HOR-528); rotate deliberately instead of editing global.internalTLS.ca\n' >&2
+                exit 1
+              }
+
+              # create_only creates the platform-owned object when it is absent and
+              # leaves an existing one untouched: re-applying the platform's
+              # rendered intent is enough, and any spec rewrite here would make
+              # cert-manager re-issue (rotate) the authority while workloads still
+              # hold leaves signed by the previous key (HOR-528).
+              create_only() {
+                file="$1"
+                for attempt in $(seq 1 120); do
+                  if kubectl create -f "$file" >/dev/null 2>&1; then
+                    return
+                  fi
+                  if kubectl get -f "$file" >/dev/null 2>&1; then
+                    return
+                  fi
+                  if [[ "$attempt" -eq 120 ]]; then
+                    echo "cert-manager webhook did not accept $file" >&2
+                    exit 1
+                  fi
+                  sleep 2
+                done
+              }
+
+              verify_spec_keys() {
+                kind="$1"
+                name="$2"
+                namespace="$3"
+                expected="$4"
+                get_args=("$kind/$name")
+                if [[ -n "$namespace" ]]; then
+                  get_args+=(--namespace "$namespace")
+                fi
+                observed="$(kubectl get "${get_args[@]}" -o json | jq -r '.spec | keys | join(",")')"
+                if [[ "$observed" != "$expected" ]]; then
+                  refuse_rewrite "$kind" "$name" "spec fields" "$observed" "$expected"
+                fi
+              }
+
+              verify_spec_value() {
+                kind="$1"
+                name="$2"
+                namespace="$3"
+                filter="$4"
+                expected="$5"
+                get_args=("$kind/$name")
+                if [[ -n "$namespace" ]]; then
+                  get_args+=(--namespace "$namespace")
+                fi
+                observed="$(kubectl get "${get_args[@]}" -o json | jq -r "$filter")"
+                if [[ "$observed" != "$expected" ]]; then
+                  refuse_rewrite "$kind" "$name" "$filter" "$observed" "$expected"
+                fi
+              }
+
               check_owner clusterissuer {{ $bootstrap | quote }} ""
               check_owner certificate {{ $root | quote }} {{ .Release.Namespace | quote }}
               check_owner clusterissuer {{ $issuer | quote }} ""
 
-              manifest=/tmp/internal-ca.yaml
-              cat >"$manifest" <<'YAML'
+              cat >/tmp/internal-ca-bootstrap.yaml <<'YAML'
               apiVersion: cert-manager.io/v1
               kind: ClusterIssuer
               metadata:
@@ -82,7 +145,9 @@ spec:
                   meta.helm.sh/release-namespace: {{ .Release.Namespace }}
               spec:
                 selfSigned: {}
-              ---
+              YAML
+
+              cat >/tmp/internal-ca-root.yaml <<'YAML'
               apiVersion: cert-manager.io/v1
               kind: Certificate
               metadata:
@@ -97,13 +162,15 @@ spec:
                   meta.helm.sh/release-namespace: {{ .Release.Namespace }}
               spec:
                 isCA: true
-                duration: 87600h
+                duration: {{ $caDuration }}
                 secretName: {{ $root }}
-                commonName: iterabase-internal-ca
+                commonName: {{ $caCommonName }}
                 issuerRef:
                   name: {{ $bootstrap }}
                   kind: ClusterIssuer
-              ---
+              YAML
+
+              cat >/tmp/internal-ca-issuer.yaml <<'YAML'
               apiVersion: cert-manager.io/v1
               kind: ClusterIssuer
               metadata:
@@ -120,16 +187,28 @@ spec:
                   secretName: {{ $root }}
               YAML
 
-              for attempt in $(seq 1 120); do
-                if kubectl apply -f "$manifest"; then
-                  break
-                fi
-                if [[ "$attempt" -eq 120 ]]; then
-                  echo "cert-manager webhook did not accept the internal CA resources" >&2
-                  exit 1
-                fi
-                sleep 2
-              done
+              create_only /tmp/internal-ca-bootstrap.yaml
+              create_only /tmp/internal-ca-root.yaml
+              create_only /tmp/internal-ca-issuer.yaml
+
+              # The platform release owns the definition; this ordered companion
+              # only asserts that what exists is exactly what the platform
+              # renders, and fails closed instead of rewriting it.
+              check_owner clusterissuer {{ $bootstrap | quote }} ""
+              check_owner certificate {{ $root | quote }} {{ .Release.Namespace | quote }}
+              check_owner clusterissuer {{ $issuer | quote }} ""
+
+              verify_spec_keys clusterissuer {{ $bootstrap | quote }} "" "selfSigned"
+              verify_spec_keys certificate {{ $root | quote }} {{ .Release.Namespace | quote }} "commonName,duration,isCA,issuerRef,secretName"
+              verify_spec_keys clusterissuer {{ $issuer | quote }} "" "ca"
+              verify_spec_value certificate {{ $root | quote }} {{ .Release.Namespace | quote }} '.spec.isCA' "true"
+              verify_spec_value certificate {{ $root | quote }} {{ .Release.Namespace | quote }} '.spec.duration' {{ $caDuration | quote }}
+              verify_spec_value certificate {{ $root | quote }} {{ .Release.Namespace | quote }} '.spec.commonName' {{ $caCommonName | quote }}
+              verify_spec_value certificate {{ $root | quote }} {{ .Release.Namespace | quote }} '.spec.secretName' {{ $root | quote }}
+              verify_spec_value certificate {{ $root | quote }} {{ .Release.Namespace | quote }} '.spec.issuerRef.name' {{ $bootstrap | quote }}
+              verify_spec_value certificate {{ $root | quote }} {{ .Release.Namespace | quote }} '.spec.issuerRef.kind' "ClusterIssuer"
+              verify_spec_value clusterissuer {{ $issuer | quote }} "" '.spec.ca.secretName' {{ $root | quote }}
+
               kubectl wait --for=condition=Ready clusterissuer/{{ $bootstrap }} --timeout=5m
               kubectl wait --for=condition=Ready --namespace {{ .Release.Namespace }} certificate/{{ $root }} --timeout=5m
               kubectl wait --for=condition=Ready clusterissuer/{{ $issuer }} --timeout=5m
@@ -137,7 +216,7 @@ spec:
                 value="$(kubectl get secret/{{ $root }} --namespace {{ .Release.Namespace }} -o "jsonpath={.data.${key//./\\.}}")"
                 [[ -n "$value" ]] || { echo "internal CA Secret is missing $key" >&2; exit 1; }
               done
-              echo "internal-ca-bootstrap=pass owner=${owner_release}/${owner_namespace} issuer={{ $issuer }}"
+              echo "internal-ca-bootstrap=pass owner=${owner_release}/${owner_namespace} issuer={{ $issuer }} common-name=${ca_common_name} duration=${ca_duration}"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
