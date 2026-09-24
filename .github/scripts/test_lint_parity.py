@@ -39,6 +39,7 @@ EXCLUSION_PATHS = re.compile(
     r"^  exclusions:\n(?:    [^\n]*\n)*?    paths:\n((?:      - [^\n]*\n)+)", re.MULTILINE
 )
 REPOSITORY_TICKET = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
+ENABLED_LINTERS = re.compile(r"^  enable:\n((?:    - [^\n]*\n)+)", re.MULTILINE)
 SEPARATOR = chr(92)
 
 
@@ -84,6 +85,24 @@ def resolved_lint_config(module: str) -> str | None:
     """The repository-relative configuration golangci-lint resolves for a module."""
     path = ROOT / module
     for parent in [path, *path.parents]:
+        for name in CONFIG_NAMES:
+            candidate = parent / name
+            if candidate.is_file():
+                return str(candidate.relative_to(ROOT))
+        if parent == ROOT:
+            break
+    return None
+
+
+def enabled_linters(config: str) -> set[str]:
+    """The linters a configuration enables under `linters.enable`."""
+    match = ENABLED_LINTERS.search((ROOT / config).read_text(encoding="utf-8"))
+    return {yaml_scalar(line.strip()[2:]) for line in match.group(1).splitlines()} if match else set()
+
+
+def governing_component_config(module: str) -> str | None:
+    """The nearest ancestor configuration outside the module's own directory."""
+    for parent in (ROOT / module).parents:
         for name in CONFIG_NAMES:
             candidate = parent / name
             if candidate.is_file():
@@ -241,7 +260,10 @@ class GoLintOwnerContractTests(unittest.TestCase):
                 self.assertTrue(selection([config])["nested_go_lint"])
 
     def test_nested_module_analysis_scope_is_explicit_and_truthful(self) -> None:
-        """A gate that analyzes nothing must be recorded as a tracked waiver."""
+        """Every nested gate must analyze something or carry a tracked waiver, its
+        recorded resolution must match the real configuration search, the resolution
+        must be documented, and the test-module policy may not add or drop linters
+        relative to the component configuration it replaces."""
         documentation = (ROOT / "docs/ci.md").read_text(encoding="utf-8")
         nested = [entry for entry in self.entries if entry["pr_job"] == "nested-go-lint"]
         self.assertTrue(nested, "the nested Go lint owner must cover at least one module")
@@ -257,8 +279,21 @@ class GoLintOwnerContractTests(unittest.TestCase):
                         waiver in documentation,
                         f"{entry['module']} analysis waiver {waiver} must be disclosed in docs/ci.md",
                     )
-                else:
-                    self.assertIsNone(waiver)
+                    continue
+                self.assertIsNone(waiver)
+                if resolved is None:
+                    continue
+                self.assertTrue(
+                    resolved in documentation,
+                    f"{entry['module']} resolution {resolved} must be disclosed in docs/ci.md",
+                )
+                component = governing_component_config(entry["module"])
+                if component is not None:
+                    self.assertEqual(
+                        enabled_linters(component),
+                        enabled_linters(resolved),
+                        f"{entry['module']} may not add or drop linters relative to {component}",
+                    )
 
     def test_shared_contract_changes_keep_every_nested_lint_owner_selected(self) -> None:
         """The reviewed contract set: ownership and toolchain authority, plus the

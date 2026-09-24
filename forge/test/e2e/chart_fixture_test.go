@@ -12,6 +12,13 @@ const (
 	// file, not an unrelated release silently changing another PR's test matrix.
 	pinnedPlatformChartVersion     = "0.3.11"
 	pinnedControlPlaneChartVersion = "0.4.9" // release fixture authority; Forge no longer installs this chart directly
+
+	// Release-fixture authority for the chart owner's preserved certificate
+	// ownership history. Current Forge scenarios do not install this baseline:
+	// `.github/scripts/release.py` resolves it from this source file and compares
+	// it to the pinned snapshot, so it is deliberately unreferenced from this
+	// module's Go code.
+	certificateMigrationSourceVersion = "0.2.2" //nolint:unused // source-scraped release fixture authority
 )
 
 func platformChartVersion(t *testing.T, localChart string) string {

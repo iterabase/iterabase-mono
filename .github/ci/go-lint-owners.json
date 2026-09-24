@@ -45,8 +45,8 @@
       "pr_selection": "nested_go_lint",
       "candidate_job": "nested-go-lint",
       "candidate_suite": null,
-      "lint_config": "forge/.golangci.yml",
-      "analysis_waiver": "HOR-587"
+      "lint_config": "forge/test/e2e/.golangci.yml",
+      "analysis_waiver": null
     },
     {
       "module": "testkit/e2e",
@@ -63,8 +63,8 @@
       "pr_selection": "nested_go_lint",
       "candidate_job": "nested-go-lint",
       "candidate_suite": null,
-      "lint_config": "control-plane/.golangci.yml",
-      "analysis_waiver": "HOR-587"
+      "lint_config": "control-plane/test/e2e/.golangci.yml",
+      "analysis_waiver": null
     },
     {
       "module": "charts/test/e2e",

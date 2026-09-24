@@ -277,53 +277,101 @@ func growManagedModelBackendClaims(
 	gatewayBase, gatewayAdminKey, gatewayKey, alias string,
 ) {
 	t.Helper()
-	pod := cluster.FirstPodName(t, namespace, "platform.iterabase.com/modelbackend="+mbName)
-	podUID := strings.TrimSpace(cluster.Kubectl(t, "get", "pod/"+pod, "-n", namespace, "-o", "jsonpath={.metadata.uid}"))
-	beforeHF := strings.TrimSpace(cluster.Kubectl(t, "exec", "-n", namespace, pod, "--", "df", "-B1", "--output=size", "/data/hf-cache"))
-	beforeCache := strings.TrimSpace(cluster.Kubectl(t, "exec", "-n", namespace, pod, "--", "df", "-B1", "--output=size", "/cache"))
+	pod, podUID, beforeHF, beforeCache, identities := captureManagedResizeBaseline(t, cluster, namespace, mbName)
+	patchManagedModelBackendGrowth(t, cluster, namespace, mbName)
+	waitForManagedResizeClosedState(t, cluster, namespace, mbName)
+	assertServingPodIdentity(t, cluster, namespace, pod, podUID, "safe online ModelBackend resize replaced the serving pod")
+	waitForManagedModelUnavailable(t, gatewayClient, gatewayBase, gatewayAdminKey, gatewayKey, alias)
+	convergeGrownManagedClaims(t, cluster, namespace, mbName, identities)
+	cluster.Kubectl(t, "wait", "modelbackend/"+mbName, "-n", namespace, "--for=jsonpath={.status.healthy}=true", "--timeout=15m")
+	assertServingPodIdentity(t, cluster, namespace, pod, podUID, "converged online ModelBackend resize replaced the serving pod")
+	assertManagedFilesystemsGrew(t, cluster, namespace, pod, beforeHF, beforeCache, authority)
+	replacement := replaceManagedServingPod(t, cluster, namespace, mbName, pod, podUID)
+	cluster.Kubectl(t, "wait", "pod/"+replacement, "-n", namespace, "--for=condition=Ready", "--timeout=15m")
+	assertManagedCachePreserved(t, cluster, namespace, replacement, authority)
+	if _, ok := waitForModelAvailable(t, cluster.Kubeconfig, namespace, mbName, gatewayClient, gatewayBase, gatewayAdminKey, alias, 3*time.Minute); !ok {
+		t.Fatal("managed ModelBackend catalogue did not reopen after pod replacement")
+	}
+	status, body := chatCompletionsStatus(t, gatewayClient, gatewayBase, gatewayKey, alias)
+	if status != http.StatusOK || extractCompletion(body) == "" {
+		t.Fatalf("managed ModelBackend did not reopen after growth and pod replacement: status=%d body=%s", status, body)
+	}
+}
+
+// captureManagedResizeBaseline records the serving pod, its mounted filesystem
+// sizes, the growth marker, and both managed claim identities before the resize.
+func captureManagedResizeBaseline(t *testing.T, cluster *remotecluster.Cluster, namespace, mbName string) (pod, podUID, beforeHF, beforeCache string, identities map[string]string) {
+	t.Helper()
+	pod = cluster.FirstPodName(t, namespace, "platform.iterabase.com/modelbackend="+mbName)
+	podUID = strings.TrimSpace(cluster.Kubectl(t, "get", "pod/"+pod, "-n", namespace, "-o", "jsonpath={.metadata.uid}"))
+	beforeHF = strings.TrimSpace(cluster.Kubectl(t, "exec", "-n", namespace, pod, "--", "df", "-B1", "--output=size", "/data/hf-cache"))
+	beforeCache = strings.TrimSpace(cluster.Kubectl(t, "exec", "-n", namespace, pod, "--", "df", "-B1", "--output=size", "/cache"))
 	cluster.Kubectl(t, "exec", "-n", namespace, pod, "--", "sh", "-ceu", "printf HOR-557-managed-cache > /cache/growth-marker; sync")
-	identities := map[string]string{}
+	identities = map[string]string{}
 	for _, claim := range []string{mbName + "-hf-cache", mbName + "-generic-cache"} {
 		identities[claim] = strings.TrimSpace(cluster.Kubectl(t, "get", "pvc/"+claim, "-n", namespace, "-o", `jsonpath={.metadata.uid}|{.spec.volumeName}`))
 	}
+	return pod, podUID, beforeHF, beforeCache, identities
+}
 
+// patchManagedModelBackendGrowth requests the in-place growth the stage proves.
+func patchManagedModelBackendGrowth(t *testing.T, cluster *remotecluster.Cluster, namespace, mbName string) {
+	t.Helper()
 	patch := `{"spec":{"persistentVolumes":[{"name":"hf-cache","mountPath":"/data/hf-cache","storageClassName":"iterabase-lvm-xfs","size":"6Gi"},{"name":"generic-cache","mountPath":"/cache","storageClassName":"iterabase-lvm-xfs","size":"2Gi"}]}}`
 	cluster.Kubectl(t, "patch", "modelbackend/"+mbName, "-n", namespace, "--type=merge", "-p", patch)
+}
 
+// waitForManagedResizeClosedState waits until the ModelBackend reports the
+// non-routable managed resize state instead of serving silently.
+func waitForManagedResizeClosedState(t *testing.T, cluster *remotecluster.Cluster, namespace, mbName string) {
+	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
-	observedClosed := false
 	for time.Now().Before(deadline) {
 		out, err := kubectlAllowFail(t, cluster.Kubeconfig, "get", "modelbackend/"+mbName, "-n", namespace, "-o", `jsonpath={.status.healthy}|{.status.message}`)
 		if err == nil && !strings.HasPrefix(strings.TrimSpace(out), "true|") && strings.Contains(out, "managed PVC") {
-			observedClosed = true
-			break
+			return
 		}
 		time.Sleep(2 * time.Second)
 	}
-	if !observedClosed {
-		t.Fatal("ModelBackend never exposed the non-routable managed resize state")
-	}
+	t.Fatal("ModelBackend never exposed the non-routable managed resize state")
+}
+
+// assertServingPodIdentity fails when the resize replaced the serving pod.
+func assertServingPodIdentity(t *testing.T, cluster *remotecluster.Cluster, namespace, pod, podUID, action string) {
+	t.Helper()
 	if current := strings.TrimSpace(cluster.Kubectl(t, "get", "pod/"+pod, "-n", namespace, "-o", "jsonpath={.metadata.uid}")); current != podUID {
-		t.Fatalf("safe online ModelBackend resize replaced the serving pod: before=%s after=%s", podUID, current)
+		t.Fatalf("%s: before=%s after=%s", action, podUID, current)
 	}
-	for deadline := time.Now().Add(2 * time.Minute); time.Now().Before(deadline); {
+}
+
+// waitForManagedModelUnavailable waits until the gateway catalogue reports the
+// alias unavailable, and fails if the gateway still serves it, because a resize
+// must not keep routing traffic to a non-converged backend.
+func waitForManagedModelUnavailable(t *testing.T, gatewayClient *http.Client, gatewayBase, gatewayAdminKey, gatewayKey, alias string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
 		catalog, status, err := snapshotCatalog(gatewayClient, gatewayBase, gatewayAdminKey)
 		if err == nil && status == http.StatusOK {
 			for _, entry := range catalog {
-				if entry.ModelID == alias && !entry.Available {
-					status, _ := chatCompletionsStatus(t, gatewayClient, gatewayBase, gatewayKey, alias)
-					if status == http.StatusOK {
-						t.Fatal("gateway routed new traffic while managed storage resize was not converged")
-					}
-					goto unavailableObserved
+				if entry.ModelID != alias || entry.Available {
+					continue
 				}
+				if status, _ := chatCompletionsStatus(t, gatewayClient, gatewayBase, gatewayKey, alias); status == http.StatusOK {
+					t.Fatal("gateway routed new traffic while managed storage resize was not converged")
+				}
+				return
 			}
 		}
 		time.Sleep(2 * time.Second)
 	}
 	t.Fatal("gateway catalogue did not close while managed storage was resizing")
+}
 
-unavailableObserved:
+// convergeGrownManagedClaims waits for both claims to reach their new capacity
+// and proves their identity and LVM volume capacity survived the growth.
+func convergeGrownManagedClaims(t *testing.T, cluster *remotecluster.Cluster, namespace, mbName string, identities map[string]string) {
+	t.Helper()
 	for claim, wanted := range map[string]string{mbName + "-hf-cache": "6Gi", mbName + "-generic-cache": "2Gi"} {
 		cluster.Kubectl(t, "wait", "pvc/"+claim, "-n", namespace, "--for=jsonpath={.status.capacity.storage}="+wanted, "--timeout=15m")
 		if after := strings.TrimSpace(cluster.Kubectl(t, "get", "pvc/"+claim, "-n", namespace, "-o", `jsonpath={.metadata.uid}|{.spec.volumeName}`)); after != identities[claim] {
@@ -334,17 +382,31 @@ unavailableObserved:
 		capacity := strings.TrimSpace(cluster.Kubectl(t, "get", "lvmvolume.local.openebs.io/"+handle, "-n", namespace, "-o", "jsonpath={.spec.capacity}|{.status.state}"))
 		assertLVMVolumeCapacity(t, capacity, wanted)
 	}
-	cluster.Kubectl(t, "wait", "modelbackend/"+mbName, "-n", namespace, "--for=jsonpath={.status.healthy}=true", "--timeout=15m")
-	if current := strings.TrimSpace(cluster.Kubectl(t, "get", "pod/"+pod, "-n", namespace, "-o", "jsonpath={.metadata.uid}")); current != podUID {
-		t.Fatalf("converged online ModelBackend resize replaced the serving pod: before=%s after=%s", podUID, current)
-	}
+}
+
+// assertManagedFilesystemsGrew proves the mounted filesystems report growth and
+// the cached model content survived it.
+func assertManagedFilesystemsGrew(t *testing.T, cluster *remotecluster.Cluster, namespace, pod, beforeHF, beforeCache string, authority modelCacheAuthority) {
+	t.Helper()
 	afterHF := strings.TrimSpace(cluster.Kubectl(t, "exec", "-n", namespace, pod, "--", "df", "-B1", "--output=size", "/data/hf-cache"))
 	afterCache := strings.TrimSpace(cluster.Kubectl(t, "exec", "-n", namespace, pod, "--", "df", "-B1", "--output=size", "/cache"))
 	if beforeHF == afterHF || beforeCache == afterCache {
 		t.Fatalf("mounted filesystems did not report growth: hf=%q->%q cache=%q->%q", beforeHF, afterHF, beforeCache, afterCache)
 	}
-	cluster.Kubectl(t, "exec", "-n", namespace, pod, "--", "sh", "-ceu", fmt.Sprintf("test \"$(sha256sum /data/hf-cache/%s | awk '{print $1}')\" = %s; test \"$(cat /cache/growth-marker)\" = HOR-557-managed-cache", authority.WeightPath, authority.SHA256))
+	assertManagedCachePreserved(t, cluster, namespace, pod, authority)
+}
 
+// assertManagedCachePreserved verifies the cached weight hash and the growth
+// marker are intact in a serving pod's mounted storage.
+func assertManagedCachePreserved(t *testing.T, cluster *remotecluster.Cluster, namespace, pod string, authority modelCacheAuthority) {
+	t.Helper()
+	cluster.Kubectl(t, "exec", "-n", namespace, pod, "--", "sh", "-ceu", fmt.Sprintf("test \"$(sha256sum /data/hf-cache/%s | awk '{print $1}')\" = %s; test \"$(cat /cache/growth-marker)\" = HOR-557-managed-cache", authority.WeightPath, authority.SHA256))
+}
+
+// replaceManagedServingPod recreates the serving pod and returns the replacement
+// name once it reports a new UID, proving the growth did not pin the workload.
+func replaceManagedServingPod(t *testing.T, cluster *remotecluster.Cluster, namespace, mbName, pod, podUID string) string {
+	t.Helper()
 	cluster.Kubectl(t, "delete", "pod/"+pod, "-n", namespace, "--wait=true", "--timeout=5m")
 	var replacement string
 	for deadline := time.Now().Add(10 * time.Minute); time.Now().Before(deadline); {
@@ -359,15 +421,7 @@ unavailableObserved:
 	if replacement == "" {
 		t.Fatal("serving pod replacement did not appear")
 	}
-	cluster.Kubectl(t, "wait", "pod/"+replacement, "-n", namespace, "--for=condition=Ready", "--timeout=15m")
-	cluster.Kubectl(t, "exec", "-n", namespace, replacement, "--", "sh", "-ceu", fmt.Sprintf("test \"$(sha256sum /data/hf-cache/%s | awk '{print $1}')\" = %s; test \"$(cat /cache/growth-marker)\" = HOR-557-managed-cache", authority.WeightPath, authority.SHA256))
-	if _, ok := waitForModelAvailable(t, cluster.Kubeconfig, namespace, mbName, gatewayClient, gatewayBase, gatewayAdminKey, alias, 3*time.Minute); !ok {
-		t.Fatal("managed ModelBackend catalogue did not reopen after pod replacement")
-	}
-	status, body := chatCompletionsStatus(t, gatewayClient, gatewayBase, gatewayKey, alias)
-	if status != http.StatusOK || extractCompletion(body) == "" {
-		t.Fatalf("managed ModelBackend did not reopen after growth and pod replacement: status=%d body=%s", status, body)
-	}
+	return replacement
 }
 
 func reapplyManagedModelBackendEvidence(t *testing.T, state *permanentGPUFixtureState, cluster *remotecluster.Cluster, namespace, mbName string, authority modelCacheAuthority) {

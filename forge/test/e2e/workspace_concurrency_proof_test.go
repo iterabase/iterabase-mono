@@ -86,74 +86,126 @@ func validateWorkspaceConcurrencyProof(expected []workspaceExpectedParticipant, 
 	if len(rows) != 2 {
 		return fmt.Errorf("concurrency proof requires two correlated rows (got %d)", len(rows))
 	}
+	if err := validateWorkspaceBarrierReadiness(barrier); err != nil {
+		return err
+	}
+	expectedByWork, expectedByParticipant, err := indexExpectedParticipants(expected)
+	if err != nil {
+		return err
+	}
+	participantUIDs, seenParticipants, err := validateConcurrencyRows(rows, expectedByWork)
+	if err != nil {
+		return err
+	}
+	return validateWorkspaceBarrierCorrelation(expectedByParticipant, participantUIDs, seenParticipants, barrier)
+}
+
+// validateWorkspaceBarrierReadiness requires a ready barrier that describes
+// exactly the two participant arrivals the proof correlates.
+func validateWorkspaceBarrierReadiness(barrier workspaceBarrierStatus) error {
 	if barrier.State != "ready" || !barrier.Ready || barrier.Failure != "" {
 		return fmt.Errorf("workspace barrier is not ready: state=%s failure=%q", barrier.State, barrier.Failure)
 	}
 	if len(barrier.Expected) != 2 || len(barrier.Arrivals) != 2 {
 		return fmt.Errorf("workspace barrier does not contain exactly two expected arrivals")
 	}
+	return nil
+}
 
-	expectedByWork := map[string]workspaceExpectedParticipant{}
-	expectedByParticipant := map[string]workspaceExpectedParticipant{}
+// indexExpectedParticipants rejects incomplete or duplicated expected
+// participants and returns their work-item and participant lookups.
+func indexExpectedParticipants(expected []workspaceExpectedParticipant) (map[string]workspaceExpectedParticipant, map[string]workspaceExpectedParticipant, error) {
+	byWork := map[string]workspaceExpectedParticipant{}
+	byParticipant := map[string]workspaceExpectedParticipant{}
 	for _, participant := range expected {
 		if participant.Participant == "" || participant.WorkItemID == "" || participant.AttemptID == "" || participant.SessionID == "" || participant.MarkerSHA256 == "" {
-			return fmt.Errorf("expected participant identity is incomplete")
+			return nil, nil, fmt.Errorf("expected participant identity is incomplete")
 		}
-		if _, duplicate := expectedByWork[participant.WorkItemID]; duplicate {
-			return fmt.Errorf("duplicate expected work item %s", participant.WorkItemID)
+		if _, duplicate := byWork[participant.WorkItemID]; duplicate {
+			return nil, nil, fmt.Errorf("duplicate expected work item %s", participant.WorkItemID)
 		}
-		if _, duplicate := expectedByParticipant[participant.Participant]; duplicate {
-			return fmt.Errorf("duplicate expected participant %s", participant.Participant)
+		if _, duplicate := byParticipant[participant.Participant]; duplicate {
+			return nil, nil, fmt.Errorf("duplicate expected participant %s", participant.Participant)
 		}
-		expectedByWork[participant.WorkItemID] = participant
-		expectedByParticipant[participant.Participant] = participant
+		byWork[participant.WorkItemID] = participant
+		byParticipant[participant.Participant] = participant
 	}
+	return byWork, byParticipant, nil
+}
 
-	seenTurns := map[string]bool{}
-	seenWorkers := map[string]bool{}
-	seenUIDs := map[uint32]bool{}
-	seenParticipants := map[string]bool{}
+// concurrencyRowSeen tracks the execution identities already attributed while
+// validating correlated rows, so a collapsed or reused identity fails closed.
+type concurrencyRowSeen struct {
+	turns   map[string]bool
+	workers map[string]bool
+	uids    map[uint32]bool
+}
+
+func newConcurrencyRowSeen() *concurrencyRowSeen {
+	return &concurrencyRowSeen{turns: map[string]bool{}, workers: map[string]bool{}, uids: map[uint32]bool{}}
+}
+
+// observe validates one row against its expected participant and records the
+// turn, worker, and UID it claims so a later row cannot reuse them.
+func (seen *concurrencyRowSeen) observe(participant workspaceExpectedParticipant, row workspaceConcurrencyRow) error {
+	if row.AttemptID != participant.AttemptID || row.SessionID != participant.SessionID {
+		return fmt.Errorf("durable work/attempt/session identity mismatch for %s", participant.Participant)
+	}
+	if row.AssignmentState != "active" || row.TurnID == "" || row.WorkerID == "" {
+		return fmt.Errorf("participant %s has no active assigned worker", participant.Participant)
+	}
+	if seen.turns[row.TurnID] {
+		return fmt.Errorf("concurrent participants collapsed onto turn %s", row.TurnID)
+	}
+	seen.turns[row.TurnID] = true
+	if seen.workers[row.WorkerID] {
+		return fmt.Errorf("concurrent participants collapsed onto worker %s", row.WorkerID)
+	}
+	seen.workers[row.WorkerID] = true
+	if row.AllocationState != "in_use" || row.AllocationUID < 10000 || row.AllocationUID >= 60000 {
+		return fmt.Errorf("participant %s has no in-use in-range UID allocation", participant.Participant)
+	}
+	if seen.uids[row.AllocationUID] {
+		return fmt.Errorf("concurrent participants collided on UID %d", row.AllocationUID)
+	}
+	seen.uids[row.AllocationUID] = true
+	if row.AssignedSession != row.SessionID || row.AssignedUID != row.AllocationUID || row.AssignedGID != row.AllocationUID {
+		return fmt.Errorf("assigned sandbox identity disagrees for participant %s", participant.Participant)
+	}
+	child, err := parseWorkspaceChildProof(row.ChildResult)
+	if err != nil {
+		return fmt.Errorf("participant %s: %w", participant.Participant, err)
+	}
+	if child.Participant != participant.Participant || child.SessionID != row.SessionID || child.UID != row.AllocationUID || child.GID != row.AllocationUID || child.MarkerSHA256 != participant.MarkerSHA256 {
+		return fmt.Errorf("child-emitted identity disagrees for participant %s", participant.Participant)
+	}
+	return nil
+}
+
+// validateConcurrencyRows attributes every correlated row to its expected
+// participant and returns the participant UID map plus the participants that
+// were actually observed.
+func validateConcurrencyRows(rows []workspaceConcurrencyRow, expectedByWork map[string]workspaceExpectedParticipant) (map[string]uint32, map[string]bool, error) {
+	seen := newConcurrencyRowSeen()
 	participantUIDs := map[string]uint32{}
+	seenParticipants := map[string]bool{}
 	for _, row := range rows {
 		participant, ok := expectedByWork[row.WorkItemID]
 		if !ok {
-			return fmt.Errorf("unattributed work item %s", row.WorkItemID)
+			return nil, nil, fmt.Errorf("unattributed work item %s", row.WorkItemID)
 		}
-		if row.AttemptID != participant.AttemptID || row.SessionID != participant.SessionID {
-			return fmt.Errorf("durable work/attempt/session identity mismatch for %s", participant.Participant)
+		if err := seen.observe(participant, row); err != nil {
+			return nil, nil, err
 		}
-		if row.AssignmentState != "active" || row.TurnID == "" || row.WorkerID == "" {
-			return fmt.Errorf("participant %s has no active assigned worker", participant.Participant)
-		}
-		if seenTurns[row.TurnID] {
-			return fmt.Errorf("concurrent participants collapsed onto turn %s", row.TurnID)
-		}
-		seenTurns[row.TurnID] = true
-		if seenWorkers[row.WorkerID] {
-			return fmt.Errorf("concurrent participants collapsed onto worker %s", row.WorkerID)
-		}
-		seenWorkers[row.WorkerID] = true
-		if row.AllocationState != "in_use" || row.AllocationUID < 10000 || row.AllocationUID >= 60000 {
-			return fmt.Errorf("participant %s has no in-use in-range UID allocation", participant.Participant)
-		}
-		if seenUIDs[row.AllocationUID] {
-			return fmt.Errorf("concurrent participants collided on UID %d", row.AllocationUID)
-		}
-		seenUIDs[row.AllocationUID] = true
-		if row.AssignedSession != row.SessionID || row.AssignedUID != row.AllocationUID || row.AssignedGID != row.AllocationUID {
-			return fmt.Errorf("assigned sandbox identity disagrees for participant %s", participant.Participant)
-		}
-		child, err := parseWorkspaceChildProof(row.ChildResult)
-		if err != nil {
-			return fmt.Errorf("participant %s: %w", participant.Participant, err)
-		}
-		if child.Participant != participant.Participant || child.SessionID != row.SessionID || child.UID != row.AllocationUID || child.GID != row.AllocationUID || child.MarkerSHA256 != participant.MarkerSHA256 {
-			return fmt.Errorf("child-emitted identity disagrees for participant %s", participant.Participant)
-		}
-		seenParticipants[participant.Participant] = true
 		participantUIDs[participant.Participant] = row.AllocationUID
+		seenParticipants[participant.Participant] = true
 	}
+	return participantUIDs, seenParticipants, nil
+}
 
+// validateWorkspaceBarrierCorrelation proves the barrier configured and observed
+// exactly the participants whose durable work the rows correlated.
+func validateWorkspaceBarrierCorrelation(expectedByParticipant map[string]workspaceExpectedParticipant, participantUIDs map[string]uint32, seenParticipants map[string]bool, barrier workspaceBarrierStatus) error {
 	configured := map[string]workspaceExpectedParticipant{}
 	for _, participant := range barrier.Expected {
 		if _, duplicate := configured[participant.Participant]; duplicate {
