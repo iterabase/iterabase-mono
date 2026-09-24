@@ -3,16 +3,22 @@ package sshprovisioner
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/binary"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,7 +54,7 @@ func TestConfiguredHostKeyCallbackPinsExactKey(t *testing.T) {
 	require.NoError(t, err)
 	key, err := ssh.NewPublicKey(public)
 	require.NoError(t, err)
-	callback, algorithms, err := configuredHostKey(strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))))
+	callback, algorithms, err := loadHostTrust("fixture", writeHostTrustFile(t, "fixture", []ssh.PublicKey{key}))
 	require.NoError(t, err)
 	require.Equal(t, []string{ssh.KeyAlgoED25519}, algorithms)
 	require.NoError(t, callback("fixture", &net.TCPAddr{}, key))
@@ -57,12 +63,11 @@ func TestConfiguredHostKeyCallbackPinsExactKey(t *testing.T) {
 	require.NoError(t, err)
 	other, err := ssh.NewPublicKey(otherPublic)
 	require.NoError(t, err)
-	require.Error(t, callback("fixture", &net.TCPAddr{}, other))
-}
-
-func TestConfiguredHostKeyCallbackRejectsMalformedPin(t *testing.T) {
-	_, _, err := configuredHostKey("not-an-openssh-key")
-	require.ErrorContains(t, err, "parse pinned SSH host key")
+	err = callback("fixture", &net.TCPAddr{}, other)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not match the trusted key of the same type")
+	require.Contains(t, err.Error(), ssh.FingerprintSHA256(other))
+	require.NotContains(t, err.Error(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(other))))
 }
 
 // startFakeSSH starts an in-process SSH server accepting a single test key.
@@ -78,6 +83,28 @@ func startFakeSSH(t *testing.T, h handler) (string, *ssh.ClientConfig, func()) {
 
 func startFakeSSHWithResult(t *testing.T, h resultHandler) (string, *ssh.ClientConfig, func()) {
 	t.Helper()
+	addr, _, _, cfg, cleanup := startFakeSSHCore(t, h, nil)
+	return addr, cfg, cleanup
+}
+
+// fakeSSHObserver records what the fake server observed, so tests can prove
+// that a failed host-key verification produced no authentication attempt, no
+// exec request, and no stdin bytes.
+type fakeSSHObserver struct {
+	authAttempts atomic.Int64
+	execRequests atomic.Int64
+	stdinBytes   atomic.Int64
+}
+
+type countingWriter struct{ counter *atomic.Int64 }
+
+func (w countingWriter) Write(p []byte) (int, error) {
+	w.counter.Add(int64(len(p)))
+	return len(p), nil
+}
+
+func startFakeSSHCore(t *testing.T, h resultHandler, obs *fakeSSHObserver) (string, ssh.PublicKey, string, *ssh.ClientConfig, func()) {
+	t.Helper()
 	hostPub, hostPriv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	hostSigner, err := ssh.NewSignerFromKey(hostPriv)
@@ -92,8 +119,12 @@ func startFakeSSHWithResult(t *testing.T, h resultHandler) (string, *ssh.ClientC
 	authorized, err := ssh.NewPublicKey(clientPub)
 	require.NoError(t, err)
 	authorizedBytes := authorized.Marshal()
+	clientKeyPath := writeTestPrivateKey(t, clientPriv)
 
 	srvCfg := &ssh.ServerConfig{PublicKeyCallback: func(_ ssh.ConnMetadata, pk ssh.PublicKey) (*ssh.Permissions, error) {
+		if obs != nil {
+			obs.authAttempts.Add(1)
+		}
 		if bytes.Equal(pk.Marshal(), authorizedBytes) {
 			return nil, nil
 		}
@@ -114,7 +145,7 @@ func startFakeSSHWithResult(t *testing.T, h resultHandler) (string, *ssh.ClientC
 			wg.Add(1)
 			go func(c net.Conn) {
 				defer wg.Done()
-				serveConn(c, srvCfg, h)
+				serveConn(c, srvCfg, h, obs)
 			}(conn)
 		}
 	}()
@@ -128,10 +159,19 @@ func startFakeSSHWithResult(t *testing.T, h resultHandler) (string, *ssh.ClientC
 		_ = ln.Close()
 		wg.Wait()
 	}
-	return ln.Addr().String(), clientCfg, cleanup
+	return ln.Addr().String(), hostSSHPub, clientKeyPath, clientCfg, cleanup
 }
 
-func serveConn(conn net.Conn, srvCfg *ssh.ServerConfig, h resultHandler) {
+func writeTestPrivateKey(t *testing.T, key crypto.PrivateKey) string {
+	t.Helper()
+	encoded, err := x509.MarshalPKCS8PrivateKey(key)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "id_ed25519")
+	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded}), 0o600))
+	return path
+}
+
+func serveConn(conn net.Conn, srvCfg *ssh.ServerConfig, h resultHandler, obs *fakeSSHObserver) {
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, srvCfg)
 	if err != nil {
 		return
@@ -143,11 +183,11 @@ func serveConn(conn net.Conn, srvCfg *ssh.ServerConfig, h resultHandler) {
 			_ = ch.Reject(ssh.UnknownChannelType, "session only")
 			continue
 		}
-		go serveSession(ch, h)
+		go serveSession(ch, h, obs)
 	}
 }
 
-func serveSession(ch ssh.NewChannel, h resultHandler) {
+func serveSession(ch ssh.NewChannel, h resultHandler, obs *fakeSSHObserver) {
 	sch, reqs, err := ch.Accept()
 	if err != nil {
 		return
@@ -158,6 +198,9 @@ func serveSession(ch ssh.NewChannel, h resultHandler) {
 			_ = req.Reply(false, nil)
 			continue
 		}
+		if obs != nil {
+			obs.execRequests.Add(1)
+		}
 		cmd := parseExecPayload(req.Payload)
 		result := h(cmd)
 		_ = req.Reply(true, nil)
@@ -165,7 +208,11 @@ func serveSession(ch ssh.NewChannel, h resultHandler) {
 		// so the client's write completes cleanly: "cat > file" (overlay git cred)
 		// and "kubectl apply -f -" (secret-sync; the '-' arg is the stdin marker).
 		if strings.Contains(cmd, "cat >") || strings.Contains(cmd, "'-'") {
-			_, _ = io.Copy(io.Discard, sch)
+			sink := io.Writer(io.Discard)
+			if obs != nil {
+				sink = countingWriter{counter: &obs.stdinBytes}
+			}
+			_, _ = io.Copy(sink, sch)
 		}
 		if result.stdout != "" {
 			_, _ = sch.Write([]byte(result.stdout))
@@ -190,6 +237,27 @@ func parseExecPayload(p []byte) string {
 		return ""
 	}
 	return string(p[4 : 4+n])
+}
+
+// startTrustedFakeSSH starts the fake server with observation counters and
+// returns everything needed to exercise the production trust path: the host
+// public key to enroll and a client private key file for SSHKeyPath.
+func startTrustedFakeSSH(t *testing.T, h resultHandler, obs *fakeSSHObserver) (string, ssh.PublicKey, string, func()) {
+	t.Helper()
+	addr, hostKey, clientKeyPath, _, cleanup := startFakeSSHCore(t, h, obs)
+	return addr, hostKey, clientKeyPath, cleanup
+}
+
+// newTrustProvisioner builds a provisioner through the production trust path
+// (no injected SSH config): trust file, key-file auth, and a dial override that
+// uses the callback New derived.
+func newTrustProvisioner(t *testing.T, host config.Host, addr string) *SSHProvisioner {
+	t.Helper()
+	p, err := New(host, WithDial(func(_ context.Context, _, _ string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+		return ssh.Dial("tcp", addr, cfg)
+	}))
+	require.NoError(t, err)
+	return p
 }
 
 // newProvisioner builds an SSHProvisioner wired to the fake server.

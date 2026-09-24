@@ -88,13 +88,20 @@ func (s DataStorage) validate() error {
 
 // Host describes a single target VM/host.
 type Host struct {
-	Address    string            `yaml:"address"`
-	SSHUser    string            `yaml:"sshUser"`
-	SSHKeyPath string            `yaml:"sshKeyPath"`
-	SSHHostKey string            `yaml:"sshHostKey,omitempty"` // optional OpenSSH public host key; permanent automation pins it
-	Role       string            `yaml:"role"`
-	Labels     map[string]string `yaml:"labels"`
-	Taints     []Taint           `yaml:"taints"`
+	Address    string `yaml:"address"`
+	SSHUser    string `yaml:"sshUser"`
+	SSHKeyPath string `yaml:"sshKeyPath"`
+	// SSHTrustFile is the required path to the non-Git known_hosts-format file
+	// holding the founder-verified host public key(s). See
+	// docs/architecture/forge-ssh-host-trust.md (DES-HOR-521-01).
+	SSHTrustFile string `yaml:"sshTrustFile"`
+	// SSHHostKey was the removed inline Git pin. It is retained only to reject
+	// legacy configs with an actionable migration error; the value is never
+	// used, echoed, or written.
+	SSHHostKeyLegacy string            `yaml:"sshHostKey,omitempty"`
+	Role             string            `yaml:"role"`
+	Labels           map[string]string `yaml:"labels"`
+	Taints           []Taint           `yaml:"taints"`
 }
 
 // Taint is a Kubernetes node taint applied at install time.
@@ -419,8 +426,11 @@ func (h *Host) validate() error {
 	if h.SSHKeyPath == "" {
 		return fmt.Errorf("sshKeyPath is required")
 	}
-	if strings.ContainsAny(h.SSHHostKey, "\r\n") {
-		return fmt.Errorf("sshHostKey must be one OpenSSH public host key line")
+	if h.SSHHostKeyLegacy != "" {
+		return fmt.Errorf("sshHostKey is removed: move the founder-verified host public key out of Git, store it in a non-Git trust file, and set sshTrustFile (see docs/architecture/forge-ssh-host-trust.md)")
+	}
+	if h.SSHTrustFile == "" {
+		return fmt.Errorf("sshTrustFile is required: Forge verifies the host against explicit non-Git trust material or fails closed")
 	}
 	if h.Role != RoleControlPlaneWorker {
 		return fmt.Errorf("role must be %q for v1, got %q", RoleControlPlaneWorker, h.Role)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,7 +43,8 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().String("address", "", "target host address")
 	cmd.Flags().String("ssh-user", "forge", "SSH user (must have passwordless sudo)")
 	cmd.Flags().String("ssh-key", "~/.ssh/forge_ed25519", "SSH private key path")
-	cmd.Flags().String("ssh-host-key", "", "pinned OpenSSH public host key (recommended for automation)")
+	cmd.Flags().String("ssh-trust-file", "", "non-Git known_hosts-format trust file holding the founder-verified host key (default ~/.forge/trust/<name>/<address>)")
+	cmd.Flags().String("ssh-host-key", "", "founder-verified OpenSSH host public key; written to the trust file, never to forge.yaml")
 	cmd.Flags().String("k3s-version", "v1.34.10+k3s1", "K3s version (full tag, e.g. v1.34.10+k3s1)")
 	cmd.Flags().Bool("dual-stack", true, "enable dual-stack IPv4+IPv6")
 	cmd.Flags().String("overlay", "", "overlay repo URL (client fork; https:// or file://; empty => no overlay)")
@@ -68,6 +70,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	sshUser, _ := cmd.Flags().GetString("ssh-user")
 	sshKey, _ := cmd.Flags().GetString("ssh-key")
 	sshHostKey, _ := cmd.Flags().GetString("ssh-host-key")
+	sshTrustFile, _ := cmd.Flags().GetString("ssh-trust-file")
 	k3sVersion, _ := cmd.Flags().GetString("k3s-version")
 	dualStack, _ := cmd.Flags().GetBool("dual-stack")
 	overlay, _ := cmd.Flags().GetString("overlay")
@@ -85,16 +88,21 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		address = prompt(in, "Target host address", address)
 		sshUser = prompt(in, "SSH user", sshUser)
 		sshKey = prompt(in, "SSH key path", sshKey)
-		sshHostKey = prompt(in, "SSH host key (optional OpenSSH public key)", sshHostKey)
+		sshTrustFile = prompt(in, "SSH host trust file (non-Git known_hosts file)", sshTrustFile)
+		sshHostKey = prompt(in, "Founder-verified SSH host key (written to the trust file)", sshHostKey)
 		k3sVersion = prompt(in, "K3s version", k3sVersion)
 		overlay = prompt(in, "Overlay repo URL (optional)", overlay)
 	}
 	if address == "" {
 		return fmt.Errorf("address is required")
 	}
+	sshTrustFile, err = resolveInitHostTrust(name, address, sshTrustFile, sshHostKey)
+	if err != nil {
+		return err
+	}
 
 	host := config.Host{
-		Address: address, SSHUser: sshUser, SSHKeyPath: sshKey, SSHHostKey: strings.TrimSpace(sshHostKey),
+		Address: address, SSHUser: sshUser, SSHKeyPath: sshKey, SSHTrustFile: sshTrustFile,
 		Role: config.RoleControlPlaneWorker, Labels: map[string]string{}, Taints: []config.Taint{},
 	}
 	dataDevices, err = resolveInitDataStorage(in, cmd.ErrOrStderr(), host, nonInteractive, dataDevices)
@@ -138,7 +146,33 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", path)
+	fmt.Fprintf(cmd.OutOrStdout(), "SSH host trust file: %s\n", host.SSHTrustFile)
 	return nil
+}
+
+// resolveInitHostTrust enrolls the founder-verified key or validates the
+// existing non-Git trust file, then returns the path recorded in forge.yaml.
+func resolveInitHostTrust(name, address, sshTrustFile, sshHostKey string) (string, error) {
+	sshTrustFile = strings.TrimSpace(sshTrustFile)
+	if sshTrustFile == "" {
+		sshTrustFile = defaultSSHTrustFile(name, address)
+	}
+	if strings.TrimSpace(sshHostKey) == "" {
+		if err := sshprovisioner.ValidateHostTrust(address, sshTrustFile); err != nil {
+			return "", fmt.Errorf("no SSH host key was supplied and no valid trust file exists: %w", err)
+		}
+		return sshTrustFile, nil
+	}
+	if err := sshprovisioner.EnrollHostTrust(sshTrustFile, address, sshHostKey); err != nil {
+		return "", err
+	}
+	return sshTrustFile, nil
+}
+
+// defaultSSHTrustFile is the non-Git trust-file path forge init uses when the
+// operator does not select one.
+func defaultSSHTrustFile(name, address string) string {
+	return filepath.Join("~", ".forge", "trust", name, address)
 }
 
 func resolveInitDataStorage(in *bufio.Reader, out io.Writer, host config.Host, nonInteractive bool, selected []string) ([]string, error) {

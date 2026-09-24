@@ -274,10 +274,13 @@ recovery. Use this independently verifiable procedure:
    identity, rebuild reason, disk assignments, and approval in the operational
    ticket. Only after explicit founder approval update the matching
    `FORGE_E2E_<CAPACITY>_SSH_HOST_KEY` repository variable.
-6. Build a temporary `known_hosts` entry from that approved exact public key and
-   prove one direct session with `StrictHostKeyChecking=yes`; then run one full
-   required reset/apply/assert/reset lifecycle. Only that green lifecycle ends
-   quarantine.
+6. Prove one direct session with `StrictHostKeyChecking=yes` against that
+   approved exact public key. The fixture runner materializes the same approved
+   key into a per-run non-Git trust file referenced by
+   `spec.hosts[].sshTrustFile` (see [`../architecture/forge-ssh-host-trust.md`](../architecture/forge-ssh-host-trust.md));
+   the key never enters Git, forge.yaml, command arguments, logs, or evidence.
+   Then run one full required reset/apply/assert/reset lifecycle. Only that green
+   lifecycle ends quarantine.
 
 ## Failure, quarantine, and manual provider recovery
 
