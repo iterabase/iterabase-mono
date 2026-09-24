@@ -77,6 +77,7 @@ class StaticCIPathSelectionTests(unittest.TestCase):
             "forge": False,
             "forge-fault-matrix": False,
             "charts": False,
+            "nested-go-lint": False,
             "images": True,
         }
         needs = {"changes": {"result": "success", "outputs": outputs}}

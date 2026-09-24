@@ -25,8 +25,22 @@ OUTPUTS = (
     "forge_e2e",
     "forge_real_e2e",
     "charts",
+    "nested_go_lint",
     "images",
 )
+
+# Shared Go E2E modules have no product owner job of their own and the shared
+# testkit is consumed by every owner suite, so one dedicated job lints all four
+# with the repository-pinned linter. `.github/scripts/test_lint_parity.py` keeps
+# this list, the root Makefile GO_MODULES matrix, and the reviewed owner
+# authority in `.github/ci/go-lint-owners.json` in agreement.
+NESTED_GO_LINT_MODULES = (
+    "charts/test/e2e",
+    "control-plane/test/e2e",
+    "forge/test/e2e",
+    "testkit/e2e",
+)
+NESTED_GO_LINT_MODULE_PREFIXES = tuple(f"{module}/" for module in NESTED_GO_LINT_MODULES)
 
 DOC_NAMES = {
     "AGENTS.md",
@@ -216,6 +230,12 @@ def selection(paths: list[str], select_all: bool = False) -> dict[str, object]:
             if path.startswith("release/"):
                 continue
 
+            # A change confined to a nested Go E2E module must select its lint
+            # owner even when the owning product component is otherwise
+            # untouched, so compilation or tests alone never stand in for lint.
+            if path.startswith(NESTED_GO_LINT_MODULE_PREFIXES):
+                selected["nested_go_lint"] = True
+
             if path.startswith("control-plane/"):
                 relative = path.removeprefix("control-plane/")
                 is_ui = relative.startswith("ui/")
@@ -319,6 +339,7 @@ def validate_needs(result: dict[str, object], needs: dict[str, object]) -> None:
         "forge": bool(result["forge"]),
         "forge-fault-matrix": bool(result["forge"]),
         "charts": bool(result["charts"]),
+        "nested-go-lint": bool(result["nested_go_lint"]),
         "images": bool(result["images"]),
     }
     if set(needs) != {"changes", *expected_jobs}:

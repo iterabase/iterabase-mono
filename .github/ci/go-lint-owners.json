@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "linter": {
+    "tool": "golangci-lint",
+    "install": ".github/scripts/install_go_tool.sh golangci-lint",
+    "module_command": "golangci-lint run ./..."
+  },
+  "aggregates": {
+    "pull_request": {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "required",
+      "context": "CI / required"
+    },
+    "release_candidate": {
+      "workflow": ".github/workflows/release-candidate.yml",
+      "job": "validation",
+      "context": "Candidate validation / required"
+    }
+  },
+  "modules": [
+    {
+      "module": "control-plane",
+      "pr_job": "control-plane",
+      "pr_selection": "control_plane",
+      "candidate_job": "control-plane-source",
+      "candidate_suite": "control-plane"
+    },
+    {
+      "module": "inference-gateway",
+      "pr_job": "inference-gateway",
+      "pr_selection": "inference_gateway",
+      "candidate_job": "inference-gateway-source",
+      "candidate_suite": "inference-gateway"
+    },
+    {
+      "module": "forge",
+      "pr_job": "forge",
+      "pr_selection": "forge",
+      "candidate_job": "forge-source",
+      "candidate_suite": "forge"
+    },
+    {
+      "module": "forge/test/e2e",
+      "pr_job": "nested-go-lint",
+      "pr_selection": "nested_go_lint",
+      "candidate_job": "nested-go-lint",
+      "candidate_suite": null
+    },
+    {
+      "module": "testkit/e2e",
+      "pr_job": "nested-go-lint",
+      "pr_selection": "nested_go_lint",
+      "candidate_job": "nested-go-lint",
+      "candidate_suite": null
+    },
+    {
+      "module": "control-plane/test/e2e",
+      "pr_job": "nested-go-lint",
+      "pr_selection": "nested_go_lint",
+      "candidate_job": "nested-go-lint",
+      "candidate_suite": null
+    },
+    {
+      "module": "charts/test/e2e",
+      "pr_job": "nested-go-lint",
+      "pr_selection": "nested_go_lint",
+      "candidate_job": "nested-go-lint",
+      "candidate_suite": null
+    }
+  ]
+}
