@@ -36,9 +36,16 @@ letsencrypt:
 # internal.enabled. Independent of the edge selfSigned/letsencrypt toggles (a
 # private CA is inherently self-signed). The root is long-lived (10y); leaf
 # certs auto-rotate (90d, cert-manager default). Root rotation is a fast-follow.
+#
+# HOR-528: the root CA identity (commonName/duration) is NOT owned here. The
+# ordered cert-manager-substrate companion bootstraps the same Certificate before
+# this release installs, so both writers read the single shared contract
+# `global.internalTLS.ca.{commonName,duration}`. A value override on this chart
+# alone would make the platform re-apply a different root spec and let
+# cert-manager re-issue (rotate) the authority while workloads still hold leaves
+# signed by the previous key; the template therefore fails the render instead of
+# accepting one.
 internal:
   enabled: false
   ca:
     name: internal-ca               # CA ClusterIssuer name (component leaf certs reference this via tls.issuerName)
-    commonName: iterabase-internal-ca
-    duration: 87600h                # 10y

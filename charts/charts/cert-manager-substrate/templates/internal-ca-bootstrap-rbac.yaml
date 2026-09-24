@@ -24,9 +24,13 @@ metadata:
     helm.sh/hook-weight: "10"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 rules:
+  # HOR-528: the ordered hook creates the platform-owned issuer only when it is
+  # absent. patch/update are deliberately withheld so this companion can never
+  # rewrite an existing internal-CA object and trigger a cert-manager
+  # re-issuance (root rotation) behind running workloads.
   - apiGroups: ["cert-manager.io"]
     resources: ["clusterissuers"]
-    verbs: ["create", "get", "list", "patch", "update", "watch"]
+    verbs: ["create", "get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -59,9 +63,11 @@ metadata:
     helm.sh/hook-weight: "10"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 rules:
+  # HOR-528: create-only for the same reason as the ClusterIssuer rule above;
+  # the hook verifies the existing spec instead of re-applying it.
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]
-    verbs: ["create", "get", "list", "patch", "update", "watch"]
+    verbs: ["create", "get", "list", "watch"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
