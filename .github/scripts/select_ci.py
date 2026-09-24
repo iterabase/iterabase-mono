@@ -42,6 +42,13 @@ NESTED_GO_LINT_MODULES = (
 )
 NESTED_GO_LINT_MODULE_PREFIXES = tuple(f"{module}/" for module in NESTED_GO_LINT_MODULES)
 
+# golangci-lint resolves the nearest parent configuration, so a linter
+# configuration anywhere in the repository can decide what a nested module
+# reports (or whether it is analyzed at all). Editing one must therefore select
+# the nested lint owner even when the product job that owns the component still
+# lints clean.
+LINTER_CONFIG_NAMES = (".golangci.yml", ".golangci.yaml")
+
 DOC_NAMES = {
     "AGENTS.md",
     "CHANGELOG.md",
@@ -234,6 +241,11 @@ def selection(paths: list[str], select_all: bool = False) -> dict[str, object]:
             # owner even when the owning product component is otherwise
             # untouched, so compilation or tests alone never stand in for lint.
             if path.startswith(NESTED_GO_LINT_MODULE_PREFIXES):
+                selected["nested_go_lint"] = True
+
+            # A linter configuration change can change what any nested module
+            # reports, so it re-runs the nested lint owner.
+            if PurePosixPath(path).name in LINTER_CONFIG_NAMES:
                 selected["nested_go_lint"] = True
 
             if path.startswith("control-plane/"):

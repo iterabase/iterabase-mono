@@ -44,28 +44,36 @@
       "pr_job": "nested-go-lint",
       "pr_selection": "nested_go_lint",
       "candidate_job": "nested-go-lint",
-      "candidate_suite": null
+      "candidate_suite": null,
+      "lint_config": "forge/.golangci.yml",
+      "analysis_waiver": "HOR-587"
     },
     {
       "module": "testkit/e2e",
       "pr_job": "nested-go-lint",
       "pr_selection": "nested_go_lint",
       "candidate_job": "nested-go-lint",
-      "candidate_suite": null
+      "candidate_suite": null,
+      "lint_config": null,
+      "analysis_waiver": null
     },
     {
       "module": "control-plane/test/e2e",
       "pr_job": "nested-go-lint",
       "pr_selection": "nested_go_lint",
       "candidate_job": "nested-go-lint",
-      "candidate_suite": null
+      "candidate_suite": null,
+      "lint_config": "control-plane/.golangci.yml",
+      "analysis_waiver": "HOR-587"
     },
     {
       "module": "charts/test/e2e",
       "pr_job": "nested-go-lint",
       "pr_selection": "nested_go_lint",
       "candidate_job": "nested-go-lint",
-      "candidate_suite": null
+      "candidate_suite": null,
+      "lint_config": null,
+      "analysis_waiver": null
     }
   ]
 }

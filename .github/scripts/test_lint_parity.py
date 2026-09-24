@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import subprocess
 import unittest
 
 import release
@@ -29,6 +30,16 @@ MAKE_LINT = re.compile(
     re.MULTILINE,
 )
 CANDIDATE_SUITES = ("control-plane", "inference-gateway", "forge", "charts")
+CONFIG_NAMES = (".golangci.yml", ".golangci.yaml")
+# Git pathspecs with a leading wildcard match the name at any depth.
+CONFIG_PATTERNS = tuple(f"*{name}" for name in CONFIG_NAMES)
+# The exclusion block this repository uses: `linters.exclusions.paths` under a
+# two-space `linters:` mapping with four-space keys.
+EXCLUSION_PATHS = re.compile(
+    r"^  exclusions:\n(?:    [^\n]*\n)*?    paths:\n((?:      - [^\n]*\n)+)", re.MULTILINE
+)
+REPOSITORY_TICKET = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
+SEPARATOR = chr(92)
 
 
 def root_lint_modules() -> list[str]:
@@ -47,6 +58,55 @@ def target_recipe(makefile: Path, target: str) -> str:
         re.MULTILINE,
     )
     return match.group(1) if match else ""
+
+
+def tracked(*patterns: str) -> list[str]:
+    completed = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", *patterns],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    return [line for line in completed.stdout.splitlines() if line]
+
+
+def yaml_scalar(value: str) -> str:
+    """Unescape the YAML scalar forms this repository uses for exclusion patterns."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        return value[1:-1].replace(SEPARATOR * 2, SEPARATOR)
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
+    return value
+
+
+def resolved_lint_config(module: str) -> str | None:
+    """The repository-relative configuration golangci-lint resolves for a module."""
+    path = ROOT / module
+    for parent in [path, *path.parents]:
+        for name in CONFIG_NAMES:
+            candidate = parent / name
+            if candidate.is_file():
+                return str(candidate.relative_to(ROOT))
+        if parent == ROOT:
+            break
+    return None
+
+
+def excluded_sources(module: str, config: str | None) -> list[str]:
+    """Module Go files the resolved configuration's path exclusions discard."""
+    if config is None:
+        return []
+    config_path = ROOT / config
+    match = EXCLUSION_PATHS.search(config_path.read_text(encoding="utf-8"))
+    patterns = (
+        [yaml_scalar(line.strip()[2:]) for line in match.group(1).splitlines()] if match else []
+    )
+    return sorted(
+        str(path.relative_to(ROOT))
+        for path in (ROOT / module).rglob("*.go")
+        if any(re.search(pattern, str(path.relative_to(config_path.parent))) for pattern in patterns)
+    )
 
 
 def workflow_jobs(path: Path) -> dict[str, str]:
@@ -114,10 +174,16 @@ class GoLintOwnerContractTests(unittest.TestCase):
         self.assertEqual(len(modules), len(set(modules)))
         for entry in self.entries:
             with self.subTest(module=entry["module"]):
-                self.assertEqual(
-                    {"module", "pr_job", "pr_selection", "candidate_job", "candidate_suite"},
-                    set(entry),
-                )
+                expected = {
+                    "module",
+                    "pr_job",
+                    "pr_selection",
+                    "candidate_job",
+                    "candidate_suite",
+                }
+                if entry["pr_job"] == "nested-go-lint":
+                    expected |= {"lint_config", "analysis_waiver"}
+                self.assertEqual(expected, set(entry))
                 self.assertIn(entry["pr_job"], self.pr_jobs)
                 self.assertIn(entry["candidate_job"], self.candidate_jobs)
                 self.assertIn(entry["pr_selection"], OUTPUTS)
@@ -166,12 +232,46 @@ class GoLintOwnerContractTests(unittest.TestCase):
                 self.assertIn(entry["pr_job"], needs)
                 self.assertTrue(selection([f"{entry['module']}/lint-probe.go"])[entry["pr_selection"]])
 
+    def test_every_linter_configuration_selects_the_nested_lint_owner(self) -> None:
+        """Config inheritance means any linter configuration can govern a nested module."""
+        configs = tracked(*CONFIG_PATTERNS)
+        self.assertTrue(configs, "the repository must keep reviewed linter configurations")
+        for config in configs:
+            with self.subTest(config=config):
+                self.assertTrue(selection([config])["nested_go_lint"])
+
+    def test_nested_module_analysis_scope_is_explicit_and_truthful(self) -> None:
+        """A gate that analyzes nothing must be recorded as a tracked waiver."""
+        documentation = (ROOT / "docs/ci.md").read_text(encoding="utf-8")
+        nested = [entry for entry in self.entries if entry["pr_job"] == "nested-go-lint"]
+        self.assertTrue(nested, "the nested Go lint owner must cover at least one module")
+        for entry in nested:
+            with self.subTest(module=entry["module"]):
+                resolved = resolved_lint_config(entry["module"])
+                self.assertEqual(resolved, entry["lint_config"])
+                excluded = excluded_sources(entry["module"], resolved)
+                waiver = entry["analysis_waiver"]
+                if excluded:
+                    self.assertRegex(waiver or "", REPOSITORY_TICKET)
+                    self.assertTrue(
+                        waiver in documentation,
+                        f"{entry['module']} analysis waiver {waiver} must be disclosed in docs/ci.md",
+                    )
+                else:
+                    self.assertIsNone(waiver)
+
     def test_shared_contract_changes_keep_every_nested_lint_owner_selected(self) -> None:
+        """The reviewed contract set: ownership and toolchain authority, plus the
+        selector, the PR workflow, root workspace inputs, and the shared testkit.
+        Per-configuration coverage is derived in
+        test_every_linter_configuration_selects_the_nested_lint_owner."""
         for path in (
             ".github/workflows/ci.yml",
             ".github/ci/go-lint-owners.json",
+            ".github/scripts/install_go_tool.sh",
             ".github/scripts/select_ci.py",
             ".github/scripts/test_lint_parity.py",
+            ".github/tools/go.mod",
             "Makefile",
             "go.work",
             "testkit/e2e/suite.go",

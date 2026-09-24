@@ -112,5 +112,17 @@
     "paths": ["forge/test/e2e/e2e_test.go"],
     "true": ["forge", "forge_e2e", "forge_real_e2e", "nested_go_lint"],
     "images": []
+  },
+  {
+    "name": "Forge linter configuration selects the nested Go lint owner it governs",
+    "paths": ["forge/.golangci.yml"],
+    "true": ["forge", "nested_go_lint"],
+    "images": []
+  },
+  {
+    "name": "control-plane linter configuration selects the nested Go lint owner it governs",
+    "paths": ["control-plane/.golangci.yml"],
+    "true": ["control_plane", "nested_go_lint", "images"],
+    "images": ["control-plane"]
   }
 ]
