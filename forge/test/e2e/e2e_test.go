@@ -823,59 +823,6 @@ func applyOnce(t *testing.T, bin, forgeHome, cfgPath string) string {
 	return applyOnceArgs(t, bin, forgeHome, cfgPath)
 }
 
-func checkNodeViaKubeconfig(t *testing.T, kcPath, wantLabelValue string) {
-	t.Helper()
-	restCfg, err := clientcmd.BuildConfigFromFlags("", kcPath)
-	if err != nil {
-		t.Fatalf("build kubeconfig: %v", err)
-	}
-	cs, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		t.Fatalf("new clientset: %v", err)
-	}
-
-	// Poll briefly: the node and its pod CIDR assignment can lag "Ready" slightly.
-	var node corev1.Node
-	deadline := time.Now().Add(45 * time.Second)
-	for time.Now().Before(deadline) {
-		nodes, lerr := cs.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
-		if lerr == nil && len(nodes.Items) == 1 {
-			node = nodes.Items[0]
-			if len(node.Spec.PodCIDRs) > 0 {
-				break
-			}
-		}
-		time.Sleep(2 * time.Second)
-	}
-	if node.Name == "" {
-		t.Fatalf("no node found via kubeconfig")
-	}
-
-	ready := false
-	for _, c := range node.Status.Conditions {
-		if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
-			ready = true
-		}
-	}
-	if !ready {
-		t.Errorf("node %s is not Ready", node.Name)
-	}
-	if got := node.Labels["e2e.horizonshift.io/run"]; got != wantLabelValue {
-		t.Errorf("node label e2e.horizonshift.io/run = %q, want %q", got, wantLabelValue)
-	}
-	// Dual-stack proof: the node must have an IPv6 pod CIDR.
-	hasV6 := false
-	for _, c := range node.Spec.PodCIDRs {
-		ip := net.ParseIP(strings.SplitN(c, "/", 2)[0])
-		if ip != nil && ip.To4() == nil {
-			hasV6 = true
-		}
-	}
-	if !hasV6 {
-		t.Errorf("node has no IPv6 pod CIDR (dual-stack not active): %v", node.Spec.PodCIDRs)
-	}
-}
-
 func checkGatewayRunning(t *testing.T, kcPath string) {
 	t.Helper()
 	restCfg, err := clientcmd.BuildConfigFromFlags("", kcPath)

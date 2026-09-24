@@ -70,23 +70,34 @@ pass while a nested-module lint invocation fails. The same job is always selecte
 for a release candidate and runs against the exact requested `master_sha`, so
 candidate validation cannot promote past a nested lint failure.
 
-Because golangci-lint resolves the nearest parent configuration, the governing
-component configuration decides what each nested module actually analyzes:
+Because golangci-lint resolves the nearest parent configuration, a nested module
+would otherwise inherit the component exclusions that discard test sources. Each
+nested module therefore carries a reviewed resolution:
 
-| Nested module | Resolved configuration | Sources analyzed |
+| Nested module | Resolved configuration | Policy relative to the component |
 | -- | -- | -- |
-| `charts/test/e2e` | none (built-in default policy) | all files |
-| `testkit/e2e` | none (built-in default policy) | all files |
-| `forge/test/e2e` | `forge/.golangci.yml` | excluded by `linters.exclusions.paths: ["test/e2e", "_test\.go"]` — HOR-587 |
-| `control-plane/test/e2e` | `control-plane/.golangci.yml` | `_test\.go` excluded (14 of 15 files) — HOR-587 |
+| `charts/test/e2e` | none (built-in default policy) | none |
+| `testkit/e2e` | none (built-in default policy) | none |
+| `forge/test/e2e` | `forge/test/e2e/.golangci.yml` | same linters; gocyclo ceiling 25; six harness-inapplicable gosec rules excluded |
+| `control-plane/test/e2e` | `control-plane/test/e2e/.golangci.yml` | same linters; gocyclo ceiling 25; six harness-inapplicable gosec rules excluded |
 
-`.github/scripts/test_lint_parity.py` verifies the recorded resolution against the
-real config search and requires an explicit `analysis_waiver` naming the approved
-follow-up whenever a module's sources are excluded, so a silently vacuous gate or
-an unreviewed change of analysis scope fails the contract test. Until HOR-587
-removes those exclusions, `forge/test/e2e` and `control-plane/test/e2e` are
-parity-true — a failing local matrix cannot pass the required aggregate — but they
-are not independently analyzed.
+The two test-module configurations exist because the component configurations
+deliberately exclude test code, which made the nested invocation analyze nothing
+while still reporting success. They enable the component linter set — a nested
+configuration may not add or drop a linter — and change only the settings a test
+harness requires: the complexity ceiling is 25 instead of the product-code
+default of 15, and the gosec rules whose threat model does not exist in a test
+harness are excluded with a recorded reason (`G101` intentional fixture secrets,
+`G204` harness command construction, `G306` executable stubs and fixture bundles,
+`G703` fixture paths, `G705` loopback test servers, `G122` single-writer evidence
+trees).
+
+`.github/scripts/test_lint_parity.py` verifies each recorded resolution against
+the real configuration search, requires a tracked `analysis_waiver` whenever a
+resolved configuration still excludes a module's sources, requires the recorded
+configuration to be disclosed here, and requires the nested linter set to equal
+its component's. A silently vacuous gate, an unreviewed change of analysis scope,
+or a quietly disabled linter therefore fails the contract test.
 
 `.github/scripts/test_lint_parity.py` fails when a module is added to the root
 `GO_MODULES` matrix without a named pull-request and release-candidate lint

@@ -1,0 +1,56 @@
+# Reviewed lint policy for the Forge E2E module.
+#
+# `forge/.golangci.yml` excludes `test/e2e` and `_test\.go` because the component
+# lint targets product code. golangci-lint resolves the nearest parent
+# configuration, so without this file every forge/test/e2e source file would
+# inherit those exclusions and the `nested-go-lint` gate would report "0 issues"
+# without analyzing anything. This file deliberately analyzes every source file
+# in the module with the same linter set as the component, minus the gosec rules
+# whose threat model does not exist in a test harness, and with the test-module
+# complexity ceiling documented in docs/ci.md. `.github/ci/go-lint-owners.json`
+# records this path as the module's resolved configuration and
+# `.github/scripts/test_lint_parity.py` fails if the resolution or the documented
+# scope drifts.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosec
+    - gocyclo
+    - gocritic
+    - misspell
+  settings:
+    gocyclo:
+      # Scenario orchestration and multi-assertion validators are linear by
+      # design; product code keeps the repository default of 15.
+      min-complexity: 25
+    gosec:
+      # Fixture and harness code carries no production threat model: fixtures
+      # hold intentional literal secrets, the harness builds remote commands
+      # from computed arguments, stub executables must be executable, evidence
+      # walkers and loopback servers handle fixture paths and echo request data.
+      excludes:
+        - G101 # hardcoded credentials: intentional fixture secrets
+        - G204 # subprocess with computed arguments: the harness's purpose
+        - G306 # file permissions: executable stubs and fixture bundles
+        - G703 # path traversal: fixture paths are test inputs
+        - G705 # XSS: loopback test servers echo fixture data
+        - G122 # TOCTOU in walk callbacks: staged evidence tree, single writer
+  exclusions:
+    presets:
+      - common-false-positives
+      - legacy
+      - std-error-handling
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
