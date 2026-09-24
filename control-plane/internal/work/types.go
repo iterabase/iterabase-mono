@@ -52,6 +52,16 @@ type StartInput struct {
 	Source             json.RawMessage
 	SourcePresentation SourcePresentation
 	ArtifactRefs       []ArtifactRef
+
+	// Three-principal seam (architecture 7.15). InitiatingHumanIdentityID is the
+	// accountable human the request belongs to; ActorIdentityID is the request
+	// actor (equal to the human for personal credentials, the immutable service
+	// actor for automation). Authorization evidence is supplied by the
+	// authenticated boundary, never by the request body.
+	InitiatingHumanIdentityID string
+	AuthorizationSource       string
+	AuthorizationAPIKeyID     string
+	AuthorizationSessionID    string
 }
 
 // LocalizedText carries approved customer copy. Callers render their requested

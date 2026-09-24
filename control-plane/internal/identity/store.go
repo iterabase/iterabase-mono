@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -73,6 +74,12 @@ type Binding struct {
 // Store reads and writes the identity schema via a pgx connection pool.
 type Store struct {
 	pool *pgxpool.Pool
+
+	// The V2 authority epoch is irreversible (DES-HOR-451-12), so a permanently
+	// observed `v2` is latched in memory and never re-read. A `legacy`
+	// observation is never latched.
+	epochMu sync.RWMutex
+	epochV2 bool
 }
 
 // NewStore wraps a pool for identity operations.

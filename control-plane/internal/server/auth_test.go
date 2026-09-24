@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -23,6 +24,7 @@ type authAPIHarness struct {
 	t      *testing.T
 	router http.Handler
 	store  *identity.Store
+	pool   *pgxpool.Pool
 	now    time.Time
 }
 
@@ -33,6 +35,7 @@ func newAuthAPIHarness(t *testing.T) *authAPIHarness {
 	harness := &authAPIHarness{
 		t:     t,
 		store: store,
+		pool:  pool,
 		now:   time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC),
 	}
 	harness.router = server.New(server.Services{

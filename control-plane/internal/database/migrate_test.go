@@ -107,26 +107,26 @@ func TestMigrations(t *testing.T) {
 
 	// HOR-489: fresh installs grant only the durable workload-authorization
 	// reads. A migration-22 OPO1 database already has this exact ACL, so moving
-	// down migrations 26, 25, 24, and 23 intentionally preserves it and
+	// down migrations 28, 27, 26, 25, 24, and 23 intentionally preserves it and
 	// reapplying them must be an idempotent metadata advance with no manual role
 	// update.
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
-	require.NoError(t, database.MigrateDown(connStr, 4))
+	require.NoError(t, database.MigrateDown(connStr, 6))
 	var migrationVersion int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
 	assert.Equal(t, 22, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 	require.NoError(t, database.MigrateUp(connStr))
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
-	assert.Equal(t, 26, migrationVersion)
+	assert.Equal(t, 28, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 
 	// HOR-254 must migrate an existing gateway ledger without requiring an
-	// unavailable customer-safe summary backfill. Roll back migration 26, 25,
-	// 24, migration 23, the three HOR-396 migrations, plus HOR-425, HOR-397,
-	// HOR-399, and HOR-254; seed a pre-existing write descriptor/invocation; and
-	// apply all eleven again.
-	require.NoError(t, database.MigrateDown(connStr, 11))
+	// unavailable customer-safe summary backfill. Roll back migrations 28 and
+	// 27 (HOR-454), 26, 25, 24, migration 23, the three HOR-396 migrations, plus
+	// HOR-425, HOR-397, HOR-399, and HOR-254; seed a pre-existing write
+	// descriptor/invocation; and apply all thirteen again.
+	require.NoError(t, database.MigrateDown(connStr, 13))
 	_, err = pool.Exec(ctx, `
 		INSERT INTO toolgateway.tool_versions
 		    (name,version,digest,description,input_schema,effect_class,credential_slots,artifact_capabilities,timeout_ms)
@@ -361,7 +361,9 @@ func TestAuthJourneyMigrationPreservesLegacyIdentity(t *testing.T) {
 	ctx := context.Background()
 
 	// Step back to the pre-HOR-453 schema, seed a legacy install, then upgrade.
-	require.NoError(t, database.MigrateDown(connStr, 1))
+	// HOR-454 added migrations 27 (V2 authority expand) and 28 (three-principal
+	// seam), so the pre-HOR-453 baseline is three steps down.
+	require.NoError(t, database.MigrateDown(connStr, 3))
 	version, dirty, err := database.MigrateVersion(connStr)
 	require.NoError(t, err)
 	require.False(t, dirty)
