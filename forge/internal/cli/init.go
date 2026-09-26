@@ -163,7 +163,7 @@ func resolveInitHostTrust(name, address, sshTrustFile, sshHostKey string) (strin
 		}
 		return sshTrustFile, nil
 	}
-	if err := sshprovisioner.EnrollHostTrust(sshTrustFile, address, sshHostKey); err != nil {
+	if err := sshprovisioner.EnrollHostTrust(address, sshTrustFile, sshHostKey); err != nil {
 		return "", err
 	}
 	return sshTrustFile, nil
