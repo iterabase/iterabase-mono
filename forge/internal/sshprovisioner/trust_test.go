@@ -196,7 +196,7 @@ func TestEnrollHostTrustWritesNonGitMaterial(t *testing.T) {
 	key := testPublicKey(t)
 	path := filepath.Join(t.TempDir(), "trust", address)
 
-	require.NoError(t, EnrollHostTrust(path, address, authorizedKeyLine(key)+" operator-verified"))
+	require.NoError(t, EnrollHostTrust(address, path, authorizedKeyLine(key)+" operator-verified"))
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
@@ -208,15 +208,15 @@ func TestEnrollHostTrustWritesNonGitMaterial(t *testing.T) {
 	assert.Equal(t, address+" "+authorizedKeyLine(key)+"\n", string(content))
 
 	// Re-enrolling the same verified key is idempotent.
-	require.NoError(t, EnrollHostTrust(path, address, authorizedKeyLine(key)))
+	require.NoError(t, EnrollHostTrust(address, path, authorizedKeyLine(key)))
 
 	// Trust material is never replaced silently, and only supported exact keys
 	// are accepted.
-	err = EnrollHostTrust(path, address, authorizedKeyLine(testPublicKey(t)))
+	err = EnrollHostTrust(address, path, authorizedKeyLine(testPublicKey(t)))
 	require.ErrorContains(t, err, "different trusted keys")
-	err = EnrollHostTrust(path, address, "not-an-openssh-key")
+	err = EnrollHostTrust(address, path, "not-an-openssh-key")
 	require.ErrorContains(t, err, "parse founder-verified SSH host key")
-	err = EnrollHostTrust(path, address, certificateKeyLine(t))
+	err = EnrollHostTrust(address, path, certificateKeyLine(t))
 	require.ErrorContains(t, err, "unsupported")
 }
 

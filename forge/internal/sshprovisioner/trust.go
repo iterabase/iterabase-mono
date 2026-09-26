@@ -54,8 +54,8 @@ func ValidateHostTrust(address, trustFile string) error {
 // created parent directories 0700). Re-running with a key the file already
 // trusts is a no-op; an existing file that trusts different keys is preserved
 // and reported as an error because Forge never replaces trust material
-// silently.
-func EnrollHostTrust(path, address, keyLine string) error {
+// silently. Argument order matches ValidateHostTrust and loadHostTrust.
+func EnrollHostTrust(address, path, keyLine string) error {
 	address = strings.TrimSpace(address)
 	path = expandPath(strings.TrimSpace(path))
 	if address == "" {
