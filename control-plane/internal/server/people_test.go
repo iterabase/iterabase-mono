@@ -15,13 +15,17 @@ import (
 // operator evidence the preflight requires.
 func (h *authAPIHarness) cutoverAuthority(t *testing.T) {
 	t.Helper()
-	_, err := h.store.CutoverAuthority(context.Background(), identity.CutoverOptions{
-		Operator:          "ops@example.com",
-		Release:           "test-release",
-		BackupEvidence:    "rehearsal-2026-09-24",
-		RehearsalEvidence: "rehearsal-2026-09-24",
-		Manifest:          identity.CutoverManifest{DefaultRPM: 60, DefaultTPM: 60000, DefaultExpiryDays: 30},
-		Now:               h.now,
+	ctx := context.Background()
+	fingerprint, err := h.store.AuthoritySourceFingerprint(ctx)
+	require.NoError(t, err)
+	_, err = h.store.CutoverAuthority(ctx, identity.CutoverOptions{
+		Operator:            "ops@example.com",
+		Release:             "test-release",
+		BackupEvidence:      "rehearsal-2026-09-24",
+		RehearsalEvidence:   "rehearsal-2026-09-24",
+		ExpectedFingerprint: fingerprint,
+		Manifest:            identity.CutoverManifest{DefaultRPM: 60, DefaultTPM: 60000, DefaultExpiryDays: 30},
+		Now:                 h.now,
 	})
 	require.NoError(t, err)
 }

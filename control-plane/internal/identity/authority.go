@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -25,14 +26,18 @@ var (
 const authorityLockKey int64 = 0x484F5234_3534 // "HOR454"
 
 // AuthorityState is the durable singleton epoch record (architecture 7.11).
+// The JSONB evidence columns are read back so the migrated state is observable
+// through the store rather than only with raw SQL.
 type AuthorityState struct {
 	Epoch              string
 	SourceFingerprint  string
 	PreflightAt        *time.Time
+	PreflightResult    map[string]any
 	CutoverID          string
 	CutoverAt          *time.Time
 	CutoverOperator    string
 	CutoverRelease     string
+	CutoverResult      map[string]any
 	VerifiedAt         *time.Time
 	VerificationResult map[string]any
 }
@@ -42,12 +47,13 @@ func (s *Store) AuthorityState(ctx context.Context) (AuthorityState, error) {
 	var st AuthorityState
 	var fingerprint, cutoverID, operator, release *string
 	var preflightAt, cutoverAt, verifiedAt *time.Time
+	var preflightResult, cutoverResult, verificationResult []byte
 	if err := s.pool.QueryRow(ctx, `
-		SELECT epoch, source_fingerprint, preflight_at, cutover_id, cutover_at,
-		       cutover_operator, cutover_release, verified_at
+		SELECT epoch, source_fingerprint, preflight_at, preflight_result, cutover_id, cutover_at,
+		       cutover_operator, cutover_release, cutover_result, verified_at, verification_result
 		FROM identity.authority_state WHERE id`).
-		Scan(&st.Epoch, &fingerprint, &preflightAt, &cutoverID, &cutoverAt,
-			&operator, &release, &verifiedAt); err != nil {
+		Scan(&st.Epoch, &fingerprint, &preflightAt, &preflightResult, &cutoverID, &cutoverAt,
+			&operator, &release, &cutoverResult, &verifiedAt, &verificationResult); err != nil {
 		return AuthorityState{}, fmt.Errorf("read authority state: %w", err)
 	}
 	st.SourceFingerprint = derefString(fingerprint)
@@ -57,7 +63,23 @@ func (s *Store) AuthorityState(ctx context.Context) (AuthorityState, error) {
 	st.PreflightAt = preflightAt
 	st.CutoverAt = cutoverAt
 	st.VerifiedAt = verifiedAt
+	st.PreflightResult = decodeResultJSON(preflightResult)
+	st.CutoverResult = decodeResultJSON(cutoverResult)
+	st.VerificationResult = decodeResultJSON(verificationResult)
 	return st, nil
+}
+
+// decodeResultJSON renders a JSONB evidence column as a map. Malformed or empty
+// evidence stays observable as nil rather than failing the epoch read.
+func decodeResultJSON(raw []byte) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out map[string]any
+	if json.Unmarshal(raw, &out) != nil {
+		return nil
+	}
+	return out
 }
 
 // AuthorityEpoch returns the current epoch and latches a permanently observed
@@ -103,11 +125,15 @@ type PreflightBlocker struct {
 	Count   int64
 }
 
-// PreflightReport is the deterministic cutover preflight outcome.
+// PreflightReport is the deterministic cutover preflight outcome. Fingerprint is
+// the bounded pre-epoch source summary the operator must present back to the
+// cutover, which re-derives it under the advisory lock and refuses drift
+// (architecture 15.2/15.4).
 type PreflightReport struct {
-	Blockers []PreflightBlocker
-	Ready    bool
-	Checked  map[string]int64
+	Blockers    []PreflightBlocker
+	Ready       bool
+	Fingerprint string
+	Checked     map[string]int64
 }
 
 // LegacyCredentialMapping is the operator-supplied disposition for one legacy
@@ -131,15 +157,19 @@ type CutoverManifest struct {
 	Credentials       map[string]LegacyCredentialMapping `json:"credentials"`
 }
 
-// CutoverOptions carries the operator identity, release, and attestations for
-// an epoch transition.
+// CutoverOptions carries the operator identity, release, the reviewed source
+// fingerprint, and attestations for an epoch transition.
 type CutoverOptions struct {
 	Operator          string
 	Release           string
 	Manifest          CutoverManifest
 	BackupEvidence    string
 	RehearsalEvidence string
-	Now               time.Time
+	// ExpectedFingerprint is the source fingerprint the operator reviewed in
+	// preflight. Cutover re-derives it under the advisory lock and refuses to
+	// proceed on drift, so a reviewed plan cannot be applied to changed state.
+	ExpectedFingerprint string
+	Now                 time.Time
 }
 
 // legacyWorkActions is the exact fixed work/start subset a legacy `work` key
@@ -191,12 +221,7 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 	if err != nil {
 		return PreflightReport{}, fmt.Errorf("preflight credentials: %w", err)
 	}
-	type legacyKey struct {
-		prefix string
-		scope  string
-		kind   string
-	}
-	var legacy []legacyKey
+	var legacy []legacyCredential
 	for rows.Next() {
 		var id, prefix, name, scope, kind string
 		var deleted bool
@@ -208,15 +233,27 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 			block("deleted_key_identity", "an active credential is bound to a deleted identity", 1)
 			continue
 		}
-		_ = id
-		legacy = append(legacy, legacyKey{prefix: prefix, scope: scope, kind: kind})
+		legacy = append(legacy, legacyCredential{prefix: prefix, scope: scope, kind: kind, identityID: id})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return PreflightReport{}, err
 	}
 
+	// Expired-but-unrevoked legacy credentials carry no live authority. They are
+	// never mapped (which would resurrect and extend them) and are revoked by the
+	// cutover sweep; count them so the operator sees the disposition.
+	var expiredLegacy int64
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM identity.api_keys
+		WHERE credential_epoch <> 'v2' AND revoked_at IS NULL
+		  AND expires_at IS NOT NULL AND expires_at <= now()`).Scan(&expiredLegacy); err != nil {
+		return PreflightReport{}, fmt.Errorf("preflight expired legacy keys: %w", err)
+	}
+	report.Checked["expired_legacy_credentials"] = expiredLegacy
+
 	var unsupported, unmappedService, missingRates int64
+	usedManifest := make(map[string]struct{}, len(opts.Manifest.Credentials))
 	for _, key := range legacy {
 		switch key.scope {
 		case ScopeAdmin, ScopeToken:
@@ -244,6 +281,53 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 	block("unmapped_service_key", "a legacy service credential needs an operator-supplied human owner and service actor", unmappedService)
 	block("missing_rate_policy", "a mandatory credential rate policy is missing", missingRates)
 
+	// 2b. Every manifest instruction must be valid for the scope it targets.
+	// Architecture 15.2 blocks an automation owner that is not a current active
+	// Admin, fixes the per-scope action subsets, and requires an ambiguous
+	// mapping to block rather than widen.
+	var manifestOwnerIneligible, manifestShapeInvalid, manifestActionsWidened, unusedManifest int64
+	for prefix, mapping := range opts.Manifest.Credentials {
+		target, ok := manifestTarget(legacy, prefix)
+		if !ok {
+			unusedManifest++
+			continue
+		}
+		usedManifest[prefix] = struct{}{}
+
+		scopeActions, ok := legacyScopeActions(target.scope)
+		if !ok {
+			// The key's own scope is unmappable and already counted above.
+			continue
+		}
+		kind := legacyMappingKind(target.scope, target.kind)
+		if len(mapping.Actions) > 0 && !subsetOfActions(mapping.Actions, scopeActions) {
+			manifestActionsWidened++
+		}
+		if kind != CredentialKindAutomation {
+			continue
+		}
+		ownerID := mapping.OwnerIdentityID
+		actorID := firstNonEmpty(mapping.ActorIdentityID, target.identityID)
+		if ownerID == "" || ownerID == actorID {
+			manifestShapeInvalid++
+			continue
+		}
+		var role, status string
+		if err := s.pool.QueryRow(ctx, `
+			SELECT role, status FROM identity.local_users WHERE identity_id = $1`, ownerID).Scan(&role, &status); err != nil {
+			manifestOwnerIneligible++
+			continue
+		}
+		if NormalizeRole(role) != RoleAdmin || status != LocalUserActive {
+			manifestOwnerIneligible++
+		}
+	}
+	block("manifest_owner_not_active_admin", "an automation mapping names an owner that is not a current active Admin", manifestOwnerIneligible)
+	block("manifest_shape_invalid", "an automation mapping needs a distinct human owner and service actor", manifestShapeInvalid)
+	block("manifest_actions_widened", "a mapping override widens a legacy credential beyond its scope's approved subset", manifestActionsWidened)
+	block("unused_manifest_entry", "the manifest names a credential that is not an active legacy key", unusedManifest)
+	report.Checked["manifest_entries"] = int64(len(usedManifest))
+
 	// 3. Wildcard/invalid action rows must not exist on a V2 credential.
 	var wildcard int64
 	if err := s.pool.QueryRow(ctx, `
@@ -267,7 +351,28 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 		block("legacy_role_after_epoch", "the epoch is V2 but legacy local roles remain", legacyRows)
 	}
 
-	// 5. Operator attestations the database cannot prove.
+	// 5. The reviewed source fingerprint. Cutover re-derives it under the lock;
+	// preflight refuses to certify a plan that does not name one (architecture
+	// 15.2 "source fingerprint drift", 15.4 "under one advisory lock and source
+	// fingerprint").
+	fingerprint, err := s.AuthoritySourceFingerprint(ctx)
+	if err != nil {
+		return PreflightReport{}, err
+	}
+	report.Fingerprint = fingerprint
+	if strings.TrimSpace(opts.ExpectedFingerprint) == "" {
+		report.Ready = false
+		report.Blockers = append(report.Blockers, PreflightBlocker{
+			Code: "missing_source_fingerprint", Message: "the reviewed preflight fingerprint is required", Count: 1,
+		})
+	} else if opts.ExpectedFingerprint != fingerprint {
+		report.Ready = false
+		report.Blockers = append(report.Blockers, PreflightBlocker{
+			Code: "source_fingerprint_drift", Message: "pre-epoch authority state changed since it was reviewed", Count: 1,
+		})
+	}
+
+	// 6. Operator attestations the database cannot prove.
 	if strings.TrimSpace(opts.BackupEvidence) == "" {
 		report.Ready = false
 		report.Blockers = append(report.Blockers, PreflightBlocker{
@@ -290,21 +395,64 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 	return report, nil
 }
 
-// RecordPreflight stores the durable preflight evidence.
-func (s *Store) RecordPreflight(ctx context.Context, fingerprint string, report PreflightReport, now time.Time) error {
-	blockers := make([]string, 0, len(report.Blockers))
-	for _, b := range report.Blockers {
-		blockers = append(blockers, fmt.Sprintf("%s:%d", b.Code, b.Count))
+// approvedGatewayReadObjects is the exact DES-HOR-451-14 read union for the
+// dedicated Inference Gateway role (architecture 7.12). Verification treats any
+// other readable relation in these schemas as a surviving legacy grant.
+var approvedGatewayReadObjects = []string{
+	"identity.inference_api_credentials",
+	"catalog.effective_api_catalog",
+	"catalog.effective_catalog",
+	"permissions.effective_capabilities",
+	"permissions.effective_rate_limits",
+	"toolgateway.pools",
+	"runtime.turns",
+	"runtime.workflow_runs",
+	"runtime.run_pool_assignments",
+	"runtime.turn_assignments",
+}
+
+// legacyScopeActions returns the fixed action subset a legacy scope may map to.
+// It is the ceiling for both the automatic mapping and any operator override, so
+// a mapping can narrow but never widen what the scope could exercise before the
+// epoch (architecture 15.2).
+func legacyScopeActions(scope string) ([]string, bool) {
+	switch scope {
+	case ScopeWork:
+		return legacyWorkActions, true
+	case ScopeGateway:
+		return legacyGatewayActions, true
+	default:
+		return nil, false
 	}
-	_, err := s.pool.Exec(ctx, `
-		UPDATE identity.authority_state
-		SET source_fingerprint = $1, preflight_at = $2, preflight_result = $3`,
-		nullString(fingerprint), now.UTC(),
-		map[string]any{"ready": report.Ready, "blockers": blockers, "checked": report.Checked})
-	if err != nil {
-		return fmt.Errorf("record preflight: %w", err)
+}
+
+// legacyMappingKind returns the credential kind a legacy key maps to. A service
+// identity, or a work key with no local human, is automation and needs an
+// operator-supplied active-Admin owner.
+func legacyMappingKind(scope, identityKind string) string {
+	if scope == ScopeWork && identityKind != "service_account" {
+		return CredentialKindPersonal
 	}
-	return nil
+	return CredentialKindAutomation
+}
+
+// legacyCredential is the bounded pre-epoch credential shape preflight and the
+// mapping both classify, so the two cannot disagree about a key's disposition.
+type legacyCredential struct {
+	prefix     string
+	scope      string
+	kind       string // bound identity kind
+	identityID string // the key's bound actor, used by the automatic mapping
+}
+
+// manifestTarget resolves a manifest prefix to a live legacy key.
+func manifestTarget(legacy []legacyCredential, prefix string) (legacyCredential, bool) {
+	for _, key := range legacy {
+		if key.prefix == prefix {
+			return key, true
+		}
+	}
+	return legacyCredential{}, false
 }
 
 // CutoverReport is the durable, operator-visible outcome of an epoch flip.
@@ -327,6 +475,15 @@ type CutoverReport struct {
 //
 //nolint:gocyclo // The locked epoch transaction is deliberately one sequential contract.
 func (s *Store) CutoverAuthority(ctx context.Context, opts CutoverOptions) (CutoverReport, error) {
+	// An already-V2 installation is a strict no-op. This must precede preflight:
+	// preflight describes a pre-epoch transition and would correctly report drift
+	// against the post-cutover state it is being asked to re-apply.
+	if epoch, err := s.AuthorityEpoch(ctx); err != nil {
+		return CutoverReport{}, err
+	} else if epoch == AuthorityEpochV2 {
+		return CutoverReport{AlreadyV2: true}, nil
+	}
+
 	report := CutoverReport{}
 	preflight := PreflightReport{}
 	if err := s.PreflightAuthorityError(ctx, opts, &preflight); err != nil {
@@ -349,6 +506,19 @@ func (s *Store) CutoverAuthority(ctx context.Context, opts CutoverOptions) (Cuto
 	}
 	if epoch == AuthorityEpochV2 {
 		return CutoverReport{AlreadyV2: true}, nil
+	}
+
+	// Re-derive the source fingerprint under the advisory lock. The reviewed plan
+	// in opts was produced from the preflight fingerprint, so any pre-epoch
+	// authority change between review and cutover refuses rather than being
+	// silently absorbed (architecture 15.2/15.4).
+	lockedFingerprint, err := authoritySourceFingerprintTx(ctx, tx)
+	if err != nil {
+		return CutoverReport{}, err
+	}
+	if lockedFingerprint != opts.ExpectedFingerprint {
+		return CutoverReport{}, fmt.Errorf("%w: source_fingerprint_drift (reviewed %q, locked %q)",
+			ErrAuthorityCutoverBlocked, opts.ExpectedFingerprint, lockedFingerprint)
 	}
 
 	cutoverID := fmt.Sprintf("%s-%s", opts.Now.UTC().Format("20060102T150405Z"), AuthorityEpochV2)
@@ -403,13 +573,22 @@ func (s *Store) CutoverAuthority(ctx context.Context, opts CutoverOptions) (Cuto
 		return CutoverReport{}, err
 	}
 
-	// 5. Flip the epoch.
+	// 5. Flip the epoch. `source_fingerprint` carries the reviewed pre-epoch
+	// fingerprint that this transaction just re-verified under the lock; the
+	// post-cutover outcome is separate evidence in `cutover_result`.
 	if _, err := tx.Exec(ctx, `
 		UPDATE identity.authority_state
-		SET epoch = 'v2', source_fingerprint = $1, cutover_id = $2, cutover_at = $3,
-		    cutover_operator = $4, cutover_release = $5,
-		    cutover_result = $6`,
-		nullString(fingerprintValue(report)), cutoverID, opts.Now.UTC(),
+		SET epoch = 'v2', source_fingerprint = $1, preflight_at = $2, preflight_result = $3,
+		    cutover_id = $4, cutover_at = $5,
+		    cutover_operator = $6, cutover_release = $7,
+		    cutover_result = $8`,
+		lockedFingerprint, opts.Now.UTC(),
+		map[string]any{
+			"ready":       preflight.Ready,
+			"fingerprint": preflight.Fingerprint,
+			"checked":     preflight.Checked,
+		},
+		cutoverID, opts.Now.UTC(),
 		nullString(opts.Operator), nullString(opts.Release),
 		map[string]any{
 			"rolesRewritten":     report.RolesRewritten,
@@ -492,6 +671,7 @@ func (s *Store) mapLegacyCredentialsTx(ctx context.Context, tx pgx.Tx, opts Cuto
 		JOIN identity.identities i ON i.id = k.identity_id
 		LEFT JOIN identity.local_users lu ON lu.identity_id = k.identity_id
 		WHERE k.revoked_at IS NULL AND k.credential_epoch <> 'v2'
+		  AND (k.expires_at IS NULL OR k.expires_at > now())
 		FOR UPDATE OF k`)
 	if err != nil {
 		return 0, fmt.Errorf("select legacy credentials: %w", err)
@@ -520,7 +700,11 @@ func (s *Store) mapLegacyCredentialsTx(ctx context.Context, tx pgx.Tx, opts Cuto
 		kind := CredentialKindPersonal
 		ownerID := r.identityID
 		actorID := r.identityID
-		actions := legacyWorkActions
+		scopeActions, ok := legacyScopeActions(r.scope)
+		if !ok {
+			continue
+		}
+		actions := scopeActions
 
 		switch r.scope {
 		case ScopeWork:
@@ -545,9 +729,6 @@ func (s *Store) mapLegacyCredentialsTx(ctx context.Context, tx pgx.Tx, opts Cuto
 			}
 			ownerID = manifest.OwnerIdentityID
 			actorID = firstNonEmpty(manifest.ActorIdentityID, r.identityID)
-			actions = legacyGatewayActions
-		default:
-			continue
 		}
 
 		if ownerID == actorID && kind == CredentialKindAutomation {
@@ -566,7 +747,14 @@ func (s *Store) mapLegacyCredentialsTx(ctx context.Context, tx pgx.Tx, opts Cuto
 			if manifest.TPM > 0 {
 				tpm = manifest.TPM
 			}
+			// An override may narrow the scope's fixed subset but never widen it:
+			// a legacy `work` key cannot gain an Admin/security/inference action
+			// and a legacy `gateway` key cannot gain a work action (15.2).
 			if len(manifest.Actions) > 0 {
+				if !subsetOfActions(manifest.Actions, scopeActions) {
+					return 0, fmt.Errorf("%w: legacy credential %s action override exceeds the %s subset",
+						ErrAuthorityCutoverBlocked, r.prefix, r.scope)
+				}
 				actions = manifest.Actions
 			}
 			if manifest.ExpiresAt != "" {
@@ -585,12 +773,19 @@ func (s *Store) mapLegacyCredentialsTx(ctx context.Context, tx pgx.Tx, opts Cuto
 			ownerRole = NormalizeRole(r.role)
 		}
 		if kind == CredentialKindAutomation {
-			var adminRole string
+			// An automation credential is authorized only while its owner is a
+			// current active Admin (15.2). Lock the owner row so the eligibility
+			// check and the write cannot interleave with an account transition.
+			var role, status string
 			if err := tx.QueryRow(ctx, `
-				SELECT role FROM identity.local_users WHERE identity_id = $1`, ownerID).Scan(&adminRole); err != nil {
+				SELECT role, status FROM identity.local_users
+				WHERE identity_id = $1 FOR UPDATE`, ownerID).Scan(&role, &status); err != nil {
 				return 0, fmt.Errorf("%w: legacy credential %s owner is not an active Admin", ErrAuthorityCutoverBlocked, r.prefix)
 			}
-			ownerRole = NormalizeRole(adminRole)
+			if NormalizeRole(role) != RoleAdmin || status != LocalUserActive {
+				return 0, fmt.Errorf("%w: legacy credential %s owner is not a current active Admin", ErrAuthorityCutoverBlocked, r.prefix)
+			}
+			ownerRole = NormalizeRole(role)
 		}
 		if err := ValidateActions(kind, actions, ownerRole); err != nil {
 			return 0, fmt.Errorf("%w: legacy credential %s: %v", ErrAuthorityCutoverBlocked, r.prefix, err)
@@ -621,6 +816,8 @@ type AuthorityVerification struct {
 }
 
 // VerifyAuthority proves the post-epoch invariants hold (architecture 15.5).
+// A check that cannot be evaluated is a failure, never a pass: an unevaluated
+// invariant must not be recorded as successful verification.
 func (s *Store) VerifyAuthority(ctx context.Context) AuthorityVerification {
 	result := AuthorityVerification{Passed: true, Checked: map[string]int64{}}
 	fail := func(message string, count int64) {
@@ -628,6 +825,15 @@ func (s *Store) VerifyAuthority(ctx context.Context) AuthorityVerification {
 			result.Passed = false
 			result.Failures = append(result.Failures, fmt.Sprintf("%s (%d)", message, count))
 		}
+	}
+	check := func(label string, query string, args ...any) (int64, bool) {
+		var count int64
+		if err := s.pool.QueryRow(ctx, query, args...).Scan(&count); err != nil {
+			result.Passed = false
+			result.Failures = append(result.Failures, fmt.Sprintf("%s: %v", label, err))
+			return 0, false
+		}
+		return count, true
 	}
 
 	var epoch string
@@ -638,34 +844,83 @@ func (s *Store) VerifyAuthority(ctx context.Context) AuthorityVerification {
 	}
 	result.Checked["epoch"] = 1
 
-	var legacyRoles int64
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM identity.local_users WHERE role = 'user'`).Scan(&legacyRoles); err == nil {
-		fail("legacy local roles remain", legacyRoles)
+	if count, ok := check("legacy local roles", `SELECT count(*) FROM identity.local_users WHERE role = 'user'`); ok {
+		fail("legacy local roles remain", count)
 	}
-	var liveLegacyKeys int64
-	if err := s.pool.QueryRow(ctx, `
+	if count, ok := check("live pre-epoch credentials", `
 		SELECT count(*) FROM identity.api_keys
-		WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) AND credential_epoch <> 'v2'`).Scan(&liveLegacyKeys); err == nil {
-		fail("live pre-epoch credentials remain", liveLegacyKeys)
+		WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) AND credential_epoch <> 'v2'`); ok {
+		fail("live pre-epoch credentials remain", count)
 	}
-	var wildcard int64
-	if err := s.pool.QueryRow(ctx, `
-		SELECT count(*) FROM identity.api_keys WHERE actions IS NOT NULL AND '*' = ANY (actions)`).Scan(&wildcard); err == nil {
-		fail("wildcard credential actions remain", wildcard)
+	if count, ok := check("wildcard credential actions", `
+		SELECT count(*) FROM identity.api_keys WHERE actions IS NOT NULL AND '*' = ANY (actions)`); ok {
+		fail("wildcard credential actions remain", count)
 	}
-	var liveScope int64
-	if err := s.pool.QueryRow(ctx, `
+	if count, ok := check("live legacy scope", `
 		SELECT count(*) FROM identity.api_keys
-		WHERE revoked_at IS NULL AND scope IS NOT NULL`).Scan(&liveScope); err == nil {
-		fail("live credentials still carry a legacy scope", liveScope)
+		WHERE revoked_at IS NULL AND scope IS NOT NULL`); ok {
+		fail("live credentials still carry a legacy scope", count)
 	}
-	var legacyView bool
-	if err := s.pool.QueryRow(ctx, `SELECT to_regclass('identity.active_api_keys') IS NOT NULL`).Scan(&legacyView); err == nil {
-		if legacyView {
-			fail("legacy gateway customer lookup remains", 1)
-		}
+	if count, ok := check("legacy gateway customer lookup", `SELECT (to_regclass('identity.active_api_keys') IS NOT NULL)::int`); ok {
+		fail("legacy gateway customer lookup remains", count)
+	}
+	result.Failures = append(result.Failures, s.verifyGatewayGrantUnion(ctx)...)
+	if len(result.Failures) > 0 {
+		result.Passed = false
 	}
 	return result
+}
+
+// verifyGatewayGrantUnion proves the dedicated Inference Gateway role holds the
+// exact DES-HOR-451-14 union and nothing else (architecture 7.12, 15.4.4). A
+// relation outside the union that is still readable is a legacy
+// schema-wide/default read that survived the cutover. A role that does not exist
+// in this installation has nothing to verify.
+func (s *Store) verifyGatewayGrantUnion(ctx context.Context) []string {
+	var failures []string
+	var roleExists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway')`).Scan(&roleExists); err != nil {
+		return []string{fmt.Sprintf("gateway role presence: %v", err)}
+	}
+	if !roleExists {
+		return nil
+	}
+
+	var unapproved int64
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname IN ('identity', 'permissions', 'catalog', 'toolgateway', 'runtime', 'usage')
+		  AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+		  AND has_table_privilege('gateway', c.oid, 'SELECT')
+		  AND format('%I.%I', n.nspname, c.relname) <> ALL ($1::text[])`, approvedGatewayReadObjects).Scan(&unapproved); err != nil {
+		return []string{fmt.Sprintf("gateway read union: %v", err)}
+	}
+	if unapproved > 0 {
+		failures = append(failures, fmt.Sprintf("gateway role retains unapproved customer-authority reads (%d)", unapproved))
+	}
+
+	for _, required := range approvedGatewayReadObjects {
+		var present bool
+		if err := s.pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, required).Scan(&present); err != nil {
+			failures = append(failures, fmt.Sprintf("gateway read of %s: %v", required, err))
+			continue
+		}
+		if !present {
+			// Only a relation the union claims and this installation defines is a
+			// gap; a view an installation has not created yet is not a regression.
+			continue
+		}
+		var readable bool
+		if err := s.pool.QueryRow(ctx, `SELECT has_table_privilege('gateway', $1, 'SELECT')`, required).Scan(&readable); err != nil {
+			failures = append(failures, fmt.Sprintf("gateway read of %s: %v", required, err))
+			continue
+		}
+		if !readable {
+			failures = append(failures, fmt.Sprintf("required gateway read removed: %s", required))
+		}
+	}
+	return failures
 }
 
 // resolveOperatorIdentityTx maps the operator's stated identity (an email of a
@@ -703,8 +958,15 @@ func (s *Store) recordVerification(ctx context.Context, v AuthorityVerification,
 }
 
 // applyGatewayAuthorityGrantsTx replaces the legacy schema-wide/default gateway
-// reads with the exact DES-HOR-451-14 union. It is idempotent and conditional on
-// the dedicated role existing, matching migrations 000008 and 000023.
+// reads with the exact DES-HOR-451-14 union (architecture 7.12, 15.4.4). It is
+// idempotent and conditional on the dedicated role existing, matching migrations
+// 000008 and 000023.
+//
+// Existing objects are revoked explicitly: `ALTER DEFAULT PRIVILEGES ... REVOKE`
+// only stops future objects from inheriting the grant that migration 000008 set
+// up, so every relation created in those schemas since then — including the
+// wider `identity.effective_api_credentials` payload the gateway must never
+// gain — would otherwise keep its SELECT.
 func applyGatewayAuthorityGrantsTx(ctx context.Context, tx pgx.Tx) error {
 	statements := []string{
 		// The legacy gateway customer lookup retires unconditionally: it is the
@@ -719,13 +981,18 @@ func applyGatewayAuthorityGrantsTx(ctx context.Context, tx pgx.Tx) error {
 				RETURN;
 			END IF;
 
-			-- Schema-wide/default reads retire with the legacy customer lookup.
+			-- Stop future objects from inheriting the legacy schema-wide default.
 			EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA identity    REVOKE SELECT ON TABLES FROM gateway', cur_user);
 			EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA permissions REVOKE SELECT ON TABLES FROM gateway', cur_user);
 			EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA catalog     REVOKE SELECT ON TABLES FROM gateway', cur_user);
 
+			-- Revoke every already-materialized table privilege in the schemas the
+			-- legacy default covered, plus the retained routing/workload schemas, so
+			-- the union below is the complete set.
+			REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA identity, permissions, catalog, toolgateway, runtime, usage FROM gateway;
+
 			GRANT USAGE ON SCHEMA identity, catalog, usage, permissions, toolgateway, runtime TO gateway;
-			REVOKE CREATE ON SCHEMA identity, catalog, usage FROM gateway;
+			REVOKE CREATE ON SCHEMA identity, catalog, usage, permissions, toolgateway, runtime FROM gateway;
 
 			-- Customer authority: bounded projection reads plus the payload-free
 			-- usage ledger. Never a mutation or raw-table read.
@@ -752,11 +1019,30 @@ func applyGatewayAuthorityGrantsTx(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
+// authorityQuerier is the read surface shared by the pool and a transaction, so
+// the pre-epoch fingerprint is derived identically in preflight (read-only) and
+// inside the cutover transaction (under the advisory lock).
+type authorityQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // AuthoritySourceFingerprint is a bounded, non-secret summary of the pre-epoch
 // authority inputs, used to detect source drift between preflight and cutover.
 func (s *Store) AuthoritySourceFingerprint(ctx context.Context) (string, error) {
+	return authoritySourceFingerprint(ctx, s.pool)
+}
+
+// authoritySourceFingerprintTx derives the fingerprint under the cutover lock.
+func authoritySourceFingerprintTx(ctx context.Context, tx pgx.Tx) (string, error) {
+	return authoritySourceFingerprint(ctx, tx)
+}
+
+// authoritySourceFingerprint counts the pre-epoch inputs a reviewed plan depends
+// on. It deliberately ignores credential expiry so a naturally expiring key is
+// not reported as reviewed-state drift.
+func authoritySourceFingerprint(ctx context.Context, q authorityQuerier) (string, error) {
 	var users, admins, keys, gateways, wildcard int64
-	if err := s.pool.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		SELECT (SELECT count(*) FROM identity.local_users),
 		       (SELECT count(*) FROM identity.local_users WHERE role = 'admin'),
 		       (SELECT count(*) FROM identity.api_keys WHERE revoked_at IS NULL),
@@ -766,10 +1052,6 @@ func (s *Store) AuthoritySourceFingerprint(ctx context.Context) (string, error) 
 		return "", fmt.Errorf("authority fingerprint: %w", err)
 	}
 	return fmt.Sprintf("users=%d;admins=%d;keys=%d;gateway_keys=%d;wildcard=%d", users, admins, keys, gateways, wildcard), nil
-}
-
-func fingerprintValue(report CutoverReport) string {
-	return fmt.Sprintf("roles=%d;mapped=%d;revoked=%d", report.RolesRewritten, report.CredentialsMapped, report.CredentialsRevoked)
 }
 
 func derefString(v *string) string {

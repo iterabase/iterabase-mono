@@ -42,6 +42,16 @@ func (h *authorityHarness) localUser(t *testing.T, email, role string) LocalUser
 	return user
 }
 
+// reviewerOptions builds cutover options carrying the reviewed source
+// fingerprint, which preflight and the locked cutover both require.
+func (h *authorityHarness) reviewedOptions(t *testing.T, opts CutoverOptions) CutoverOptions {
+	t.Helper()
+	fingerprint, err := h.store.AuthoritySourceFingerprint(context.Background())
+	require.NoError(t, err)
+	opts.ExpectedFingerprint = fingerprint
+	return opts
+}
+
 func (h *authorityHarness) credential(t *testing.T, params CreateCredentialParams) (string, Credential) {
 	t.Helper()
 	params.Now = h.now
@@ -271,7 +281,7 @@ func TestAuthorityCutoverIsAtomicAndVerified(t *testing.T) {
 		VALUES ($1, 'legacy-gateway', 'cp-legacygateway', 'legacy-gateway', 'gateway')
 		RETURNING prefix`, serviceActor.ID).Scan(&gatewayKeyPrefix))
 
-	opts := CutoverOptions{
+	opts := h.reviewedOptions(t, CutoverOptions{
 		Operator:          "operator@example.com",
 		Release:           "test-release",
 		BackupEvidence:    "rehearsal-2026-09-24",
@@ -283,7 +293,7 @@ func TestAuthorityCutoverIsAtomicAndVerified(t *testing.T) {
 			},
 		},
 		Now: h.now,
-	}
+	})
 
 	report, err := h.store.PreflightAuthority(ctx, opts)
 	require.NoError(t, err)
@@ -350,10 +360,10 @@ func TestAuthorityPreflightBlocksAmbiguousMigration(t *testing.T) {
 		VALUES ($1, 'legacy-gateway', 'cp-unmappedgw', 'legacy-gateway', 'gateway')`, serviceActor.ID)
 	require.NoError(t, err)
 
-	opts := CutoverOptions{
+	opts := h.reviewedOptions(t, CutoverOptions{
 		Operator: "operator", BackupEvidence: "b", RehearsalEvidence: "r", Now: h.now,
 		Manifest: CutoverManifest{DefaultRPM: 60, DefaultTPM: 60000},
-	}
+	})
 	report, err := h.store.PreflightAuthority(ctx, opts)
 	require.NoError(t, err)
 	assert.False(t, report.Ready)
@@ -375,3 +385,276 @@ func TestAuthorityPreflightBlocksAmbiguousMigration(t *testing.T) {
 // legacyWorkKeyFull documents that legacy raw values never resolve after the
 // epoch: only their explicitly mapped hash row survives.
 const legacyWorkKeyFull = "cp-legacywork-raw-value"
+
+// TestAuthorityRefusesReviewedSourceDrift proves the cutover re-derives the
+// reviewed source fingerprint under the advisory lock and refuses to apply a
+// plan to changed pre-epoch authority (architecture 15.2/15.4).
+func TestAuthorityRefusesReviewedSourceDrift(t *testing.T) {
+	h := newAuthorityHarness(t)
+	ctx := context.Background()
+	admin := h.localUser(t, "admin@example.com", RoleAdmin)
+
+	opts := h.reviewedOptions(t, CutoverOptions{
+		Operator: "operator@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+		Manifest: CutoverManifest{DefaultRPM: 60, DefaultTPM: 60000}, Now: h.now,
+	})
+
+	// Pre-epoch authority changes after the operator reviewed the plan: a new
+	// human account joins the installation. The service-account identity created
+	// above is not itself counted by the fingerprint (it holds no credential and
+	// no local account), so the drift must be observable.
+	h.localUser(t, "late-arrival@example.com", RoleOperator)
+
+	report, err := h.store.PreflightAuthority(ctx, opts)
+	require.NoError(t, err)
+	require.False(t, report.Ready)
+	assert.Contains(t, blockerCodes(report), "source_fingerprint_drift")
+
+	_, err = h.store.CutoverAuthority(ctx, opts)
+	assert.ErrorIs(t, err, ErrAuthorityCutoverBlocked)
+
+	state, stateErr := h.store.AuthorityState(ctx)
+	require.NoError(t, stateErr)
+	assert.Equal(t, AuthorityEpochLegacy, state.Epoch, "drift must not flip the epoch")
+
+	// A preflight that names the current state succeeds.
+	refreshed := h.reviewedOptions(t, opts)
+	cutover, err := h.store.CutoverAuthority(ctx, refreshed)
+	require.NoError(t, err)
+	assert.True(t, cutover.VerificationPassed, "failures: %v", cutover.VerificationFailures)
+	_ = admin
+}
+
+// TestAuthorityRecordsPreflightEvidence proves the reviewed fingerprint and the
+// preflight/verification evidence are observable through the store rather than
+// only with raw SQL.
+func TestAuthorityRecordsPreflightEvidence(t *testing.T) {
+	h := newAuthorityHarness(t)
+	ctx := context.Background()
+	h.localUser(t, "admin@example.com", RoleAdmin)
+
+	opts := h.reviewedOptions(t, CutoverOptions{
+		Operator: "admin@example.com", Release: "test", BackupEvidence: "b", RehearsalEvidence: "r",
+		Manifest: CutoverManifest{DefaultRPM: 60, DefaultTPM: 60000}, Now: h.now,
+	})
+	_, err := h.store.CutoverAuthority(ctx, opts)
+	require.NoError(t, err)
+
+	state, err := h.store.AuthorityState(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, opts.ExpectedFingerprint, state.SourceFingerprint,
+		"source_fingerprint must carry the reviewed pre-epoch fingerprint, not a result summary")
+	assert.NotNil(t, state.PreflightAt)
+	assert.NotNil(t, state.PreflightResult)
+	assert.NotNil(t, state.CutoverResult)
+	assert.NotNil(t, state.VerificationResult)
+	assert.Equal(t, true, state.VerificationResult["passed"])
+}
+
+// TestAuthorityNeverResurrectsExpiredLegacyKey proves an expired-but-unrevoked
+// legacy credential is never remapped as an active V2 credential with a fresh
+// expiry; it is revoked instead (architecture 15.2, no widening).
+func TestAuthorityNeverResurrectsExpiredLegacyKey(t *testing.T) {
+	h := newAuthorityHarness(t)
+	ctx := context.Background()
+	h.localUser(t, "admin@example.com", RoleAdmin)
+	human := h.localUser(t, "human@example.com", RoleOperator)
+
+	var prefix string
+	require.NoError(t, h.store.pool.QueryRow(ctx, `
+		INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope, expires_at)
+		VALUES ($1, 'legacy-expired', 'cp-expired', 'legacy-expired', 'work', now() - interval '1 hour')
+		RETURNING prefix`, human.ID).Scan(&prefix))
+
+	opts := h.reviewedOptions(t, CutoverOptions{
+		Operator: "operator@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+		Manifest: CutoverManifest{DefaultRPM: 60, DefaultTPM: 60000, DefaultExpiryDays: 30}, Now: h.now,
+	})
+	report, err := h.store.PreflightAuthority(ctx, opts)
+	require.NoError(t, err)
+	require.True(t, report.Ready, "blockers: %v", report.Blockers)
+	assert.EqualValues(t, 1, report.Checked["expired_legacy_credentials"])
+	assert.Contains(t, report.Fingerprint, "keys=1")
+
+	cutover, err := h.store.CutoverAuthority(ctx, opts)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, cutover.CredentialsMapped, "an expired credential must never be remapped")
+	assert.GreaterOrEqual(t, cutover.CredentialsRevoked, int64(1))
+
+	var epoch string
+	var revoked bool
+	require.NoError(t, h.store.pool.QueryRow(ctx, `
+		SELECT credential_epoch, revoked_at IS NOT NULL FROM identity.api_keys WHERE prefix = $1`,
+		prefix).Scan(&epoch, &revoked))
+	assert.Equal(t, "legacy", epoch)
+	assert.True(t, revoked, "the expired legacy credential is revoked, not revived")
+}
+
+// TestAuthorityRejectsWideningActionOverride proves a manifest override may only
+// narrow the scope's approved subset (architecture 15.2: block rather than
+// widen).
+func TestAuthorityRejectsWideningActionOverride(t *testing.T) {
+	h := newAuthorityHarness(t)
+	ctx := context.Background()
+	admin := h.localUser(t, "admin@example.com", RoleAdmin)
+	serviceActor, err := h.store.UpsertServiceAccount(ctx, "gw@example.com", "GW")
+	require.NoError(t, err)
+
+	var gatewayPrefix string
+	require.NoError(t, h.store.pool.QueryRow(ctx, `
+		INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope)
+		VALUES ($1, 'legacy-gw', 'cp-gw', 'legacy-gw', 'gateway')
+		RETURNING prefix`, serviceActor.ID).Scan(&gatewayPrefix))
+
+	// A gateway key must never receive a work action, even from the Admin owner.
+	opts := h.reviewedOptions(t, CutoverOptions{
+		Operator: "operator@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+		Manifest: CutoverManifest{
+			DefaultRPM: 60, DefaultTPM: 60000,
+			Credentials: map[string]LegacyCredentialMapping{
+				gatewayPrefix: {
+					OwnerIdentityID: admin.ID, ActorIdentityID: serviceActor.ID,
+					Actions: []string{ActionInferenceModelsRead, ActionWorkflowsStart},
+					RPM:     10, TPM: 10000,
+				},
+			},
+		},
+		Now: h.now,
+	})
+	report, err := h.store.PreflightAuthority(ctx, opts)
+	require.NoError(t, err)
+	require.False(t, report.Ready)
+	assert.Contains(t, blockerCodes(report), "manifest_actions_widened")
+
+	_, err = h.store.CutoverAuthority(ctx, opts)
+	assert.ErrorIs(t, err, ErrAuthorityCutoverBlocked)
+
+	// Narrowing within the scope subset is allowed.
+	narrowed := opts
+	narrowed.Manifest.Credentials[gatewayPrefix] = LegacyCredentialMapping{
+		OwnerIdentityID: admin.ID, ActorIdentityID: serviceActor.ID,
+		Actions: []string{ActionInferenceChatInvoke}, RPM: 10, TPM: 10000,
+	}
+	narrowed = h.reviewedOptions(t, narrowed)
+	cutover, err := h.store.CutoverAuthority(ctx, narrowed)
+	require.NoError(t, err)
+	require.True(t, cutover.VerificationPassed, "failures: %v", cutover.VerificationFailures)
+}
+
+// TestAuthorityBlocksIneligibleAutomationOwner proves 15.2's automation-owner
+// blocker: a disabled Admin (or a demoted Operator) cannot own a remapped
+// automation credential.
+func TestAuthorityBlocksIneligibleAutomationOwner(t *testing.T) {
+	h := newAuthorityHarness(t)
+	ctx := context.Background()
+	admin := h.localUser(t, "admin@example.com", RoleAdmin)
+	demoted := h.localUser(t, "demoted@example.com", RoleOperator)
+	serviceActor, err := h.store.UpsertServiceAccount(ctx, "gw@example.com", "GW")
+	require.NoError(t, err)
+
+	var prefix string
+	require.NoError(t, h.store.pool.QueryRow(ctx, `
+		INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope)
+		VALUES ($1, 'legacy-gw', 'cp-gw', 'legacy-gw', 'gateway')
+		RETURNING prefix`, serviceActor.ID).Scan(&prefix))
+
+	for name, owner := range map[string]string{"operator owner": demoted.ID, "disabled admin": admin.ID} {
+		if name == "disabled admin" {
+			_, err := h.store.pool.Exec(ctx,
+				`UPDATE identity.local_users SET status = 'disabled' WHERE identity_id = $1`, admin.ID)
+			require.NoError(t, err)
+		}
+		opts := CutoverOptions{
+			Operator: "operator@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+			Manifest: CutoverManifest{
+				DefaultRPM: 60, DefaultTPM: 60000,
+				Credentials: map[string]LegacyCredentialMapping{
+					prefix: {OwnerIdentityID: owner, ActorIdentityID: serviceActor.ID, RPM: 10, TPM: 10000},
+				},
+			},
+			Now: h.now,
+		}
+		opts = h.reviewedOptions(t, opts)
+		report, err := h.store.PreflightAuthority(ctx, opts)
+		require.NoError(t, err)
+		require.False(t, report.Ready, "%s must block", name)
+		assert.Contains(t, blockerCodes(report), "manifest_owner_not_active_admin", "case %s", name)
+	}
+}
+
+// TestAuthorityMaterializesExactGatewayGrantUnion proves the cutover removes the
+// legacy schema-wide/default gateway reads, keeps the wider identity projection
+// out of the gateway's reach, and preserves every required routing/workload
+// read (DES-HOR-451-14, architecture 7.12/15.4.4).
+func TestAuthorityMaterializesExactGatewayGrantUnion(t *testing.T) {
+	pool, _ := testutil.NewPostgresWithRoles(t, "gateway")
+	h := &authorityHarness{store: NewStore(pool), now: time.Now().UTC().Truncate(time.Second)}
+	ctx := context.Background()
+	h.localUser(t, "admin@example.com", RoleAdmin)
+
+	// The migration-8 default privileges really did materialize broad reads.
+	var broadBefore int64
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT count(*) FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'identity' AND c.relkind = 'r'
+		  AND has_table_privilege('gateway', c.oid, 'SELECT')`).Scan(&broadBefore))
+	require.Positive(t, broadBefore, "fixture must reproduce the legacy schema-wide grant")
+
+	opts := h.reviewedOptions(t, CutoverOptions{
+		Operator: "admin@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+		Manifest: CutoverManifest{DefaultRPM: 60, DefaultTPM: 60000}, Now: h.now,
+	})
+	cutover, err := h.store.CutoverAuthority(ctx, opts)
+	require.NoError(t, err)
+	require.True(t, cutover.VerificationPassed, "failures: %v", cutover.VerificationFailures)
+
+	// No relation outside the approved union stays readable.
+	rows, err := pool.Query(ctx, `
+		SELECT format('%I.%I', n.nspname, c.relname)
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname IN ('identity', 'permissions', 'catalog', 'toolgateway', 'runtime', 'usage')
+		  AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+		  AND has_table_privilege('gateway', c.oid, 'SELECT')
+		ORDER BY 1`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var readable []string
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		readable = append(readable, name)
+	}
+	require.NoError(t, rows.Err())
+	assert.ElementsMatch(t, approvedGatewayReadObjects, readable,
+		"the gateway must hold exactly the approved read union")
+
+	// The wider action payload and every identity/security table are unreachable.
+	for _, denied := range []string{
+		"identity.effective_api_credentials",
+		"identity.browser_sessions",
+		"identity.security_events",
+		"identity.authority_state",
+		"identity.api_key_ownership_history",
+	} {
+		var has bool
+		require.NoError(t, pool.QueryRow(ctx, `SELECT has_table_privilege('gateway', $1, 'SELECT')`, denied).Scan(&has))
+		assert.False(t, has, "gateway must not read %s", denied)
+	}
+	// The payload-free usage ledger stays insert-only.
+	var canInsert, canSelect bool
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT has_table_privilege('gateway', 'usage.inference_events', 'INSERT'),
+		        has_table_privilege('gateway', 'usage.inference_events', 'SELECT')`).Scan(&canInsert, &canSelect))
+	assert.True(t, canInsert)
+	assert.False(t, canSelect, "the usage ledger is append-only for the gateway")
+}
+
+func blockerCodes(report PreflightReport) []string {
+	codes := make([]string, 0, len(report.Blockers))
+	for _, blocker := range report.Blockers {
+		codes = append(codes, blocker.Code)
+	}
+	return codes
+}

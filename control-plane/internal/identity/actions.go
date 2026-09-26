@@ -131,12 +131,31 @@ func CatalogueActions(kind string) []string {
 	return out
 }
 
+// subsetOfActions reports whether every action is a member of allowed.
+func subsetOfActions(actions, allowed []string) bool {
+	permitted := make(map[string]struct{}, len(allowed))
+	for _, action := range allowed {
+		permitted[action] = struct{}{}
+	}
+	for _, action := range actions {
+		if _, ok := permitted[action]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // ValidateActions enforces the fixed catalogue, the credential-kind boundary,
 // the Admin-only boundary, and prerequisite membership. ownerRole is the
 // *current* role of the accountable owner; Admin-only actions require it to be
 // `admin` at creation time and are re-checked on every request.
 //
-//nolint:gocyclo // One explicit pass validating catalogue membership, kind boundary, Admin gating, and prerequisites.
+// Membership is validated in one pass and prerequisites in a second pass, so a
+// set is accepted or rejected on its contents alone and never on slice order.
+// ActionsSatisfied (the request-path matcher) is order-independent for the same
+// reason; the two layers must never disagree about an identical set.
+//
+//nolint:gocyclo // One auditable gate: membership, kind boundary, Admin gating, then prerequisites.
 func ValidateActions(kind string, actions []string, ownerRole string) error {
 	if kind != CredentialKindPersonal && kind != CredentialKindAutomation {
 		return fmt.Errorf("identity: invalid credential kind %q", kind)
@@ -144,15 +163,17 @@ func ValidateActions(kind string, actions []string, ownerRole string) error {
 	if len(actions) == 0 {
 		return fmt.Errorf("identity: at least one action is required")
 	}
-	seen := make(map[string]struct{}, len(actions))
+
+	present := make(map[string]struct{}, len(actions))
 	for _, action := range actions {
 		if action == "" || strings.TrimSpace(action) != action {
 			return fmt.Errorf("identity: invalid action %q", action)
 		}
-		if _, dup := seen[action]; dup {
+		if _, dup := present[action]; dup {
 			return fmt.Errorf("identity: duplicate action %q", action)
 		}
-		seen[action] = struct{}{}
+		present[action] = struct{}{}
+
 		spec, ok := ActionFor(action)
 		if !ok {
 			return fmt.Errorf("identity: unknown action %q", action)
@@ -170,15 +191,19 @@ func ValidateActions(kind string, actions []string, ownerRole string) error {
 		if spec.AdminOnly && ownerRole != RoleAdmin {
 			return fmt.Errorf("identity: action %q requires a current Admin owner", action)
 		}
+	}
+
+	for _, action := range actions {
+		spec, _ := ActionFor(action)
 		for _, required := range spec.Requires {
-			if _, ok := seen[required]; !ok {
+			if _, ok := present[required]; !ok {
 				return fmt.Errorf("identity: action %q requires %q", action, required)
 			}
 		}
 		if len(spec.RequiresAny) > 0 {
 			satisfied := false
 			for _, alternative := range spec.RequiresAny {
-				if _, ok := seen[alternative]; ok {
+				if _, ok := present[alternative]; ok {
 					satisfied = true
 					break
 				}
