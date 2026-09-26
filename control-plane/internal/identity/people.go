@@ -156,9 +156,12 @@ func (s *Store) ChangePersonRole(ctx context.Context, actorID, targetID, role st
 	if err != nil {
 		return Person{}, PersonConsequences{}, err
 	}
+	// The mutation is already durable, so a failed re-read is a real error rather
+	// than an empty person: reporting a zero-value success would misstate what
+	// authority the caller now holds.
 	person, err := s.GetPerson(ctx, targetID)
 	if err != nil {
-		return Person{}, cons, nil
+		return Person{}, cons, fmt.Errorf("read person after role change: %w", err)
 	}
 	return person, cons, nil
 }
@@ -200,9 +203,12 @@ func (s *Store) DisablePerson(ctx context.Context, actorID, targetID string, now
 	if err != nil {
 		return Person{}, PersonConsequences{}, err
 	}
+	// The mutation is already durable, so a failed re-read is a real error rather
+	// than an empty person: reporting a zero-value success would misstate what
+	// authority the caller now holds.
 	person, err := s.GetPerson(ctx, targetID)
 	if err != nil {
-		return Person{}, cons, nil
+		return Person{}, cons, fmt.Errorf("read person after disablement: %w", err)
 	}
 	return person, cons, nil
 }

@@ -6,6 +6,7 @@ package testutil
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,20 @@ import (
 // (useful when a subcommand must connect itself, e.g. bootstrap). It skips in
 // -short mode. Requires Docker.
 func NewPostgres(t *testing.T) (*pgxpool.Pool, string) {
+	return newPostgres(t, nil)
+}
+
+// NewPostgresWithRoles starts the same fresh container but creates the given
+// PostgreSQL roles between container startup and migration, reproducing a
+// production installation whose dedicated roles exist before `migrate up` (and
+// therefore before the conditional grant migrations run). It skips in -short
+// mode. Requires Docker.
+func NewPostgresWithRoles(t *testing.T, roles ...string) (*pgxpool.Pool, string) {
+	t.Helper()
+	return newPostgres(t, roles)
+}
+
+func newPostgres(t *testing.T, roles []string) (*pgxpool.Pool, string) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -42,8 +57,19 @@ func NewPostgres(t *testing.T) (*pgxpool.Pool, string) {
 	pool := waitForPool(t, ctx, connStr)
 	t.Cleanup(pool.Close)
 
+	for _, role := range roles {
+		_, err := pool.Exec(ctx, `CREATE ROLE `+quoteIdentifier(role))
+		require.NoError(t, err)
+	}
+
 	require.NoError(t, database.MigrateUp(connStr))
 	return pool, connStr
+}
+
+// quoteIdentifier renders a bare identifier for the test-only CREATE ROLE
+// statements. Callers pass literals, never user input.
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // NewPostgresPool is a convenience wrapper returning only the pool.

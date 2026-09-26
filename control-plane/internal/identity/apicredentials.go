@@ -120,9 +120,9 @@ func (c Credential) AuthorizeAction(required string) error {
 // by role transitions to clip credentials whose owner loses Admin.
 func AdminOnlyActions() []string {
 	var out []string
-	for _, spec := range actionCatalogue {
-		if spec.AdminOnly {
-			out = append(out, spec.Action)
+	for _, action := range CatalogueActions(CredentialKindPersonal) {
+		if ActionAdminOnly(action) {
+			out = append(out, action)
 		}
 	}
 	return out
