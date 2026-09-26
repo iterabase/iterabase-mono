@@ -108,8 +108,9 @@ func assertInternalIdentitiesStage(t *testing.T, state *chartState) {
 
 // reconcileInternalTLSAuthorityStage reapplies both the ordered certificate
 // companion and the platform with unchanged values and proves the internal CA
-// root was adopted, not re-issued: the exercised reconcile runs the bootstrap
-// hook's create-only/verify path against an existing authority.
+// root was adopted, not re-issued: the exercised reconcile re-applies the one
+// shared identity both writers render, so cert-manager has no reason to issue a
+// new root and the leaves stay valid.
 func reconcileInternalTLSAuthorityStage(t *testing.T, state *chartState) {
 	t.Helper()
 	uidBefore := state.kubectl(t, 30*time.Second, "get", "certificate/"+internalCARootSecretName(), "-n", testNamespace,

@@ -1,14 +1,11 @@
 {{- if .Values.enabled }}
 {{- if (or .Values.internal.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) }}
 {{- $legacy := .Values.internal.ca | default (dict) }}
-{{- if or (hasKey $legacy "commonName") (hasKey $legacy "duration") }}
-{{- fail "cert-issuers.internal.ca.commonName/duration are no longer chart values: the internal CA identity is the shared global.internalTLS.ca.{commonName,duration} contract the ordered cert-manager-substrate companion bootstraps from the same values (HOR-528)" }}
-{{- end }}
-{{- $ca := dig "internalTLS" "ca" (dict) (.Values.global | default (dict)) }}
-{{- $commonName := dig "commonName" "iterabase-internal-ca" $ca }}
-{{- $duration := dig "duration" "87600h" $ca }}
+{{- $global := dig "internalTLS" "ca" (dict) (.Values.global | default (dict)) }}
+{{- $commonName := dig "commonName" (dig "commonName" "iterabase-internal-ca" $legacy) $global }}
+{{- $duration := dig "duration" (dig "duration" "87600h" $legacy) $global }}
 {{- if or (eq (toString $commonName) "") (eq (toString $duration) "") }}
-{{- fail "global.internalTLS.ca.commonName and global.internalTLS.ca.duration must be non-empty" }}
+{{- fail "the internal CA identity (global.internalTLS.ca or cert-issuers.internal.ca) must be non-empty" }}
 {{- end }}
 {{- $caSecret := printf "%s-internal-ca-root" .Release.Name }}
 {{- $bootstrap := printf "%s-internal-ca-bootstrap" .Release.Name }}
@@ -28,9 +25,9 @@ spec:
 # The internal root CA certificate (isCA), issued by the bootstrap issuer and
 # stored in the <release>-internal-ca-root Secret. Clients mount this Secret's
 # ca.crt as their trust root; the CA ClusterIssuer below signs leaves with it.
-# The identity is the shared global.internalTLS.ca contract (HOR-528): the
-# cert-manager-substrate bootstrap hook renders this exact spec when it creates
-# the object first, so the platform can adopt it without changing any field.
+# The identity is the shared contract both this chart and the ordered
+# cert-manager-substrate companion resolve from the same values (HOR-528), so the
+# platform can adopt the bootstrapped root without changing a field.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

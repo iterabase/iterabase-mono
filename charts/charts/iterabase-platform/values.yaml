@@ -8,13 +8,14 @@
 # transport. Propagated via `global.internalTLS`; default false keeps dev/kind
 # plaintext.
 # The CA Secret remains <release>-internal-ca-root, so overlays set only enabled.
-# HOR-528: `global.internalTLS.ca` is the single internal-CA identity contract.
-# Both the ordered cert-manager-substrate companion (which creates the root when
-# it is absent) and this chart's cert-issuers subchart (which owns it afterwards)
-# render the root from these two values, so the platform can only adopt the
-# authority it inherits. Changing them after installation rotates the root; a
-# per-chart override (cert-issuers.internal.ca.commonName/duration) fails the
-# render instead of silently diverging.
+# HOR-528: `global.internalTLS.ca` is the shared internal-CA identity contract.
+# The ordered cert-manager-substrate companion and this chart's cert-issuers
+# subchart both render the root from the same resolution (this global value, then
+# a legacy cert-issuers.internal.ca override, then the chart default), so both
+# writers apply one identical authority. Changing these values on a running
+# installation is not a supported rotation path: the root is re-issued and a
+# client keeps the previous CA until it remounts. Rotation remains unimplemented
+# (HOR-528 non-goal) - see charts/README.md.
 global:
   internalTLS:
     enabled: false

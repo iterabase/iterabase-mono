@@ -22,17 +22,24 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- dig "internalTLS" "issuerName" "internal-ca" (.Values.global | default (dict)) -}}
 {{- end -}}
 
-# HOR-528: the internal CA identity is the single shared
-# global.internalTLS.ca.{commonName,duration} contract. The platform chart's
-# cert-issuers subchart resolves the same values, so the bootstrap hook can only
-# ever create the exact object the platform later adopts (no spec rewrite, no
-# cert-manager re-issuance).
+# HOR-528: the internal CA identity is one shared contract, not a per-chart value.
+# The ordered companion and the platform's cert-issuers subchart both render the
+# root Certificate from the same values files, resolved in this order:
+# global.internalTLS.ca.* (the shared contract), then cert-issuers.internal.ca.*
+# (its pre-HOR-528 location, still honored so existing overlays keep working),
+# then the chart default. Because both writers resolve one identity, the platform
+# adopts the bootstrapped root without changing a field, so a reconcile cannot
+# make cert-manager re-issue (rotate) it behind running workloads.
 {{- define "cert-manager-substrate.caCommonName" -}}
-{{- dig "internalTLS" "ca" "commonName" "iterabase-internal-ca" (.Values.global | default (dict)) -}}
+{{- $global := dig "internalTLS" "ca" (dict) (.Values.global | default (dict)) -}}
+{{- $legacy := dig "internal" "ca" (dict) (default (dict) (index .Values "cert-issuers")) -}}
+{{- dig "commonName" (dig "commonName" "iterabase-internal-ca" $legacy) $global -}}
 {{- end -}}
 
 {{- define "cert-manager-substrate.caDuration" -}}
-{{- dig "internalTLS" "ca" "duration" "87600h" (.Values.global | default (dict)) -}}
+{{- $global := dig "internalTLS" "ca" (dict) (.Values.global | default (dict)) -}}
+{{- $legacy := dig "internal" "ca" (dict) (default (dict) (index .Values "cert-issuers")) -}}
+{{- dig "duration" (dig "duration" "87600h" $legacy) $global -}}
 {{- end -}}
 
 {{- define "cert-manager-substrate.validate" -}}
