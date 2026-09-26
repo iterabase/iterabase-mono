@@ -16,9 +16,10 @@ global:
     enabled: false
     platformRelease: ""
     issuerName: internal-ca
-    ca:
-      commonName: iterabase-internal-ca
-      duration: 87600h
+    # ca.{commonName,duration} deliberately have no chart default here: the
+    # templates default them, so a value present under this key is an explicit
+    # override and the legacy cert-issuers.internal.ca.* location stays honored.
+    # See the shared-identity note above.
 
 internalCABootstrap:
   image:

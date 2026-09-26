@@ -37,15 +37,18 @@ letsencrypt:
 # private CA is inherently self-signed). The root is long-lived (10y); leaf
 # certs auto-rotate (90d, cert-manager default). Root rotation is a fast-follow.
 #
-# HOR-528: the root CA identity (commonName/duration) is NOT owned here. The
-# ordered cert-manager-substrate companion bootstraps the same Certificate before
-# this release installs, so both writers read the single shared contract
-# `global.internalTLS.ca.{commonName,duration}`. A value override on this chart
-# alone would make the platform re-apply a different root spec and let
-# cert-manager re-issue (rotate) the authority while workloads still hold leaves
-# signed by the previous key; the template therefore fails the render instead of
-# accepting one.
+# HOR-528: the root CA identity (commonName/duration) is a single shared contract,
+# not a per-chart value. The ordered cert-manager-substrate companion renders the
+# same Certificate from the same values files, resolved in this order:
+# global.internalTLS.ca.* (the shared contract), then cert-issuers.internal.ca.*
+# (its pre-HOR-528 location, still honored so an existing overlay keeps working),
+# then these defaults. The global value wins when both are set. Because both
+# writers resolve one identity, the platform adopts the bootstrapped root without
+# changing a field, so a reconcile cannot make cert-manager re-issue (rotate) the
+# authority while workloads still hold leaves signed by the previous key.
 internal:
   enabled: false
   ca:
     name: internal-ca               # CA ClusterIssuer name (component leaf certs reference this via tls.issuerName)
+    commonName: iterabase-internal-ca
+    duration: 87600h                # 10y; overridden by global.internalTLS.ca when that is set

@@ -53,45 +53,49 @@ if grep -R -q 'helm.sh/hook' \
 fi
 
 # ---------------------------------------------------------------------------
-# HOR-528: exactly one internal-CA definition, and the ordered companion can
-# never rewrite it.
+# HOR-528: one internal-CA identity for every writer.
 #
-# The bootstrap hook and the platform chart both materialize the same three
-# objects. Any spec divergence between them makes cert-manager re-issue the root
-# Certificate on the next platform reconcile (a rotation that invalidates every
-# leaf already signed by the current authority), so the hook must create the
-# platform-owned objects only when absent, verify them instead of re-applying
-# them, and hold no patch/update RBAC. These checks fail the repository check
-# before such a divergence can reach a cluster.
+# The ordered companion's bootstrap hook and the platform chart both materialize
+# the same three objects. Any spec divergence between them would make cert-manager
+# re-issue the root Certificate on the next platform reconcile — a rotation that
+# invalidates every leaf already signed by the current authority. Both therefore
+# resolve one identity (global.internalTLS.ca.*, then the legacy
+# cert-issuers.internal.ca.*, then the chart default), and these checks fail the
+# repository check before a divergence can reach a cluster.
+#
+# The identity also reaches the hook through the container environment rather
+# than being interpolated into its shell source: the hook holds cluster-scoped
+# write access, so a `$`/backtick sequence in a values-provided string must never
+# execute. The hook manifest's identity fields must stay quoted so a value such as
+# `12345` renders as the CRD's string type, not a YAML integer.
 # ---------------------------------------------------------------------------
-assert_shared_ca_definition() {
+assert_shared_ca_identity() {
   local substrate_tls_file=$1
   local platform_tls_file=$2
   local expected_common_name=$3
   local expected_duration=$4
+  local hostile_payload=${5:-}
 
-  python3 - "$substrate_tls_file" "$platform_tls_file" "$expected_common_name" "$expected_duration" release <<'PY'
+  python3 - "$substrate_tls_file" "$platform_tls_file" "$expected_common_name" "$expected_duration" release "$hostile_payload" <<'PY'
+import re
 import sys
 from pathlib import Path
 
 import yaml
 
-substrate_path, platform_path, expected_common_name, expected_duration, expected_owner = sys.argv[1:6]
+substrate_path, platform_path, expected_common_name, expected_duration, expected_owner, hostile = sys.argv[1:7]
 
 
 def objects(path):
     return [document for document in yaml.safe_load_all(Path(path).read_text()) if document]
 
 
-platform_objects = objects(platform_path)
 platform_keyed = {}
-for document in platform_objects:
+for document in objects(platform_path):
     metadata = document.get("metadata", {})
     kind = document.get("kind")
-    if kind == "Certificate":
-        platform_keyed[("Certificate", metadata.get("name"))] = document
-    elif kind == "ClusterIssuer":
-        platform_keyed[("ClusterIssuer", metadata.get("name"))] = document
+    if kind in ("Certificate", "ClusterIssuer"):
+        platform_keyed[(kind, metadata.get("name"))] = document
 
 expected_keys = {
     ("ClusterIssuer", "release-internal-ca-bootstrap"),
@@ -103,9 +107,9 @@ if missing:
     raise SystemExit(f"platform render is missing internal CA objects: {missing}")
 
 certificate = platform_keyed[("Certificate", "release-internal-ca-root")]["spec"]
-if certificate.get("commonName") != expected_common_name or certificate.get("duration") != expected_duration:
+if certificate.get("commonName") != expected_common_name or str(certificate.get("duration")) != expected_duration:
     raise SystemExit(
-        "platform internal CA Certificate does not resolve the shared global.internalTLS.ca contract: "
+        "platform internal CA Certificate does not resolve the shared internal-CA identity: "
         f"commonName={certificate.get('commonName')!r} duration={certificate.get('duration')!r}"
     )
 
@@ -120,24 +124,32 @@ for document in objects(substrate_path):
 if hook is None:
     raise SystemExit("substrate TLS render has no internal-ca-bootstrap Job")
 
-script = hook["spec"]["template"]["spec"]["containers"][0]["args"][0]
+container = hook["spec"]["template"]["spec"]["containers"][0]
+script = container["args"][0]
 
-documents = {}
-for block in script.split("cat >/tmp/internal-ca-"):
-    if "<<" not in block:
-        continue
-    path, _, remainder = block.partition("\n")
-    _, _, body = remainder.partition("\n")
-    body, _, _ = body.rpartition("YAML")
-    document = yaml.safe_load(body)
-    documents[path.strip()] = document
+environment = {entry.get("name"): entry.get("value") for entry in container.get("env", []) or []}
+if environment.get("CA_COMMON_NAME") != expected_common_name or str(environment.get("CA_DURATION")) != expected_duration:
+    raise SystemExit(
+        "the bootstrap hook must receive the shared identity through its container environment: "
+        f"env={environment!r} want commonName={expected_common_name!r} duration={expected_duration!r}"
+    )
+if not re.search(r'ca_common_name="\$\{CA_COMMON_NAME', script) or not re.search(r'ca_duration="\$\{CA_DURATION', script):
+    raise SystemExit("the bootstrap hook script must read the identity from its container environment")
 
-if not documents:
+marker = 'cat >"$manifest" <<\'YAML\'\n'
+if marker not in script:
     raise SystemExit("internal CA bootstrap hook no longer writes its ordered manifests")
+shell_before, _, heredoc = script.partition(marker)
+heredoc_body, _, shell_after = heredoc.partition("\nYAML\n")
+if hostile and (hostile in shell_before or hostile in shell_after):
+    raise SystemExit(f"a values-provided identity reached the hook shell source: {hostile!r}")
+if not re.search(r'(?m)^\s*commonName:\s+"', heredoc_body) or not re.search(r'(?m)^\s*duration:\s+"', heredoc_body):
+    raise SystemExit("the hook manifest must quote the shared identity fields so YAML typing matches the platform render")
 
-keyed = {}
-for path, document in documents.items():
-    keyed[(document["kind"], document["metadata"]["name"])] = document
+hook_documents = [document for document in yaml.safe_load_all(heredoc_body) if document]
+if len(hook_documents) != 3:
+    raise SystemExit(f"bootstrap hook must render three internal CA objects, found {len(hook_documents)}")
+keyed = {(document["kind"], document["metadata"]["name"]): document for document in hook_documents}
 
 for key in sorted(expected_keys):
     hook_document = keyed.get(key)
@@ -152,82 +164,51 @@ for key in sorted(expected_keys):
     hook_owner = hook_document["metadata"].get("annotations", {}).get("meta.helm.sh/release-name")
     if hook_owner != expected_owner:
         raise SystemExit(f"{key} bootstrap manifest must carry the platform release ownership: hook={hook_owner!r}")
-
-required = ["create_only /tmp/internal-ca-bootstrap.yaml", "create_only /tmp/internal-ca-root.yaml",
-            "create_only /tmp/internal-ca-issuer.yaml", "verify_spec_keys", "verify_spec_value"]
-for snippet in required:
-    if snippet not in script:
-        raise SystemExit(f"internal CA bootstrap hook lost its create-only/verify contract: {snippet!r}")
-if "kubectl apply" in script:
-    raise SystemExit("internal CA bootstrap hook must not re-apply (rewrite) the platform-owned internal CA")
 PY
 }
 
-assert_hook_rbac_is_create_only() {
-  python3 - "$1" <<'PY'
-import sys
-from pathlib import Path
-
-import yaml
-
-documents = [document for document in yaml.safe_load_all(Path(sys.argv[1]).read_text()) if document]
-checked = set()
-for document in documents:
-    if document.get("kind") not in ("ClusterRole", "Role"):
-        continue
-    labels = document.get("metadata", {}).get("labels", {}) or {}
-    if labels.get("app.kubernetes.io/name") != "cert-manager-substrate":
-        continue  # cert-manager's own controller RBAC, not the ordered hook
-    for rule in document.get("rules", []) or []:
-        resources = set(rule.get("resources", []) or [])
-        if not resources & {"clusterissuers", "certificates"}:
-            continue
-        for verb in ("patch", "update", "delete"):
-            if verb in rule.get("verbs", []) or []:
-                raise SystemExit(
-                    f"{document['kind']}/{document['metadata']['name']} grants {verb!r} on {sorted(resources)}: "
-                    "the ordered companion must never rewrite the platform-owned internal CA"
-                )
-        checked.add(document["kind"])
-if not checked:
-    raise SystemExit("internal CA bootstrap hook no longer declares CA object RBAC")
-PY
+render_pair() {
+  local suffix=$1
+  shift
+  helm template release-cert-manager "$substrate" -n iterabase-system \
+    --set global.internalTLS.enabled=true \
+    --set global.internalTLS.platformRelease=release "$@" > "$workdir/substrate-$suffix.yaml"
+  helm template release "$platform" -n iterabase-system \
+    --set global.internalTLS.enabled=true "$@" > "$workdir/platform-$suffix.yaml"
 }
 
-# Same values, both writers: identical CA spec (single authority).
-helm template release-cert-manager "$substrate" -n iterabase-system \
-  --set global.internalTLS.enabled=true \
-  --set global.internalTLS.platformRelease=release > "$workdir/substrate-tls.yaml"
-helm template release "$platform" -n iterabase-system \
-  --set global.internalTLS.enabled=true > "$workdir/platform-tls.yaml"
-assert_shared_ca_definition "$workdir/substrate-tls.yaml" "$workdir/platform-tls.yaml" iterabase-internal-ca 87600h
-assert_hook_rbac_is_create_only "$workdir/substrate-tls.yaml"
+# Defaults: one identity for both writers.
+render_pair defaults
+assert_shared_ca_identity "$workdir/substrate-defaults.yaml" "$workdir/platform-defaults.yaml" iterabase-internal-ca 87600h
 
-# A shared override moves both writers together; nothing can diverge silently.
-helm template release-cert-manager "$substrate" -n iterabase-system \
-  --set global.internalTLS.enabled=true \
-  --set global.internalTLS.platformRelease=release \
+# Shared override: both writers move together.
+render_pair global --set global.internalTLS.ca.commonName=shared-internal-ca --set global.internalTLS.ca.duration=43800h
+assert_shared_ca_identity "$workdir/substrate-global.yaml" "$workdir/platform-global.yaml" shared-internal-ca 43800h
+
+# Legacy location still works and still agrees with the companion.
+render_pair legacy --set cert-issuers.internal.ca.commonName=legacy-internal-ca --set cert-issuers.internal.ca.duration=21900h
+assert_shared_ca_identity "$workdir/substrate-legacy.yaml" "$workdir/platform-legacy.yaml" legacy-internal-ca 21900h
+
+# Both set: the shared value wins for both writers (no silent divergence).
+render_pair both \
   --set global.internalTLS.ca.commonName=shared-internal-ca \
-  --set global.internalTLS.ca.duration=43800h > "$workdir/substrate-shared.yaml"
-helm template release "$platform" -n iterabase-system \
-  --set global.internalTLS.enabled=true \
+  --set global.internalTLS.ca.duration=43800h \
+  --set cert-issuers.internal.ca.commonName=legacy-internal-ca \
+  --set cert-issuers.internal.ca.duration=21900h
+assert_shared_ca_identity "$workdir/substrate-both.yaml" "$workdir/platform-both.yaml" shared-internal-ca 43800h
+
+# A partial override resolves per key for both writers (global commonName, legacy duration).
+render_pair mixed \
   --set global.internalTLS.ca.commonName=shared-internal-ca \
-  --set global.internalTLS.ca.duration=43800h > "$workdir/platform-shared.yaml"
-assert_shared_ca_definition "$workdir/substrate-shared.yaml" "$workdir/platform-shared.yaml" shared-internal-ca 43800h
+  --set cert-issuers.internal.ca.duration=21900h
+assert_shared_ca_identity "$workdir/substrate-mixed.yaml" "$workdir/platform-mixed.yaml" shared-internal-ca 21900h
 
-# A per-chart CA identity override fails closed instead of diverging from the
-# authority the ordered companion already bootstrapped.
-if helm template release "$platform" -n iterabase-system \
-  --set global.internalTLS.enabled=true \
-  --set cert-issuers.internal.ca.commonName=divergent-ca >/dev/null 2>&1; then
-  echo "error: cert-issuers.internal.ca.commonName must fail the render (HOR-528)" >&2
-  exit 1
-fi
-if helm template release "$platform" -n iterabase-system \
-  --set global.internalTLS.enabled=true \
-  --set cert-issuers.internal.ca.duration=43800h >/dev/null 2>&1; then
-  echo "error: cert-issuers.internal.ca.duration must fail the render (HOR-528)" >&2
-  exit 1
-fi
+# A numeric-looking identity stays a string in both renders (CRD string field).
+render_pair numeric --set global.internalTLS.ca.commonName=12345
+assert_shared_ca_identity "$workdir/substrate-numeric.yaml" "$workdir/platform-numeric.yaml" 12345 87600h
 
-echo "OK: same-version certificate substrate orders the platform-owned internal CA before dependent platform workloads; platform owns hook-free issuers and leaves; one shared internal-CA definition is created once and never rewritten (HOR-528)"
+# A values-provided shell sequence never reaches the hook's shell source.
+render_pair hostile --set-string global.internalTLS.ca.commonName='$(id)'
+assert_shared_ca_identity "$workdir/substrate-hostile.yaml" "$workdir/platform-hostile.yaml" '$(id)' 87600h '$(id)'
+
+echo "OK: same-version certificate substrate orders the platform-owned internal CA before dependent platform workloads; platform owns hook-free issuers and leaves; both writers render one shared internal-CA identity and the hook receives it outside its shell source (HOR-528)"
