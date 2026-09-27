@@ -788,6 +788,76 @@ func TestAuthorityPreflightResolvesTheMappingItWillApply(t *testing.T) {
 		assert.ErrorIs(t, err, ErrAuthorityCutoverBlocked)
 	})
 
+	t.Run("override inside the scope ceiling but outside the kind catalogue blocks preflight", func(t *testing.T) {
+		h, admin, actor, workPrefix, gatewayPrefix := seed(t)
+		opts := h.reviewedOptions(t, CutoverOptions{
+			Operator: "admin@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+			Manifest: CutoverManifest{
+				DefaultRPM: 60, DefaultTPM: 60000,
+				Credentials: map[string]LegacyCredentialMapping{
+					// `work.feedback.write` is inside the work scope ceiling but is
+					// personal-only, so an automation credential may not hold it.
+					workPrefix: {
+						OwnerIdentityID: admin.ID, ActorIdentityID: actor.ID,
+						Actions: []string{ActionWorkflowsRead, ActionWorkFeedbackWrite},
+					},
+					gatewayPrefix: {OwnerIdentityID: admin.ID, ActorIdentityID: actor.ID},
+				},
+			},
+			Now: h.now,
+		})
+		report, err := h.store.PreflightAuthority(ctx, opts)
+		require.NoError(t, err)
+		require.False(t, report.Ready, "preflight certified a kind-invalid override: %v", report.Blockers)
+		assert.Contains(t, blockerCodes(report), "manifest_actions_invalid")
+
+		_, err = h.store.CutoverAuthority(ctx, opts)
+		assert.ErrorIs(t, err, ErrAuthorityCutoverBlocked)
+
+		state, stateErr := h.store.AuthorityState(ctx)
+		require.NoError(t, stateErr)
+		assert.Equal(t, AuthorityEpochLegacy, state.Epoch, "a blocked preflight leaves no partial epoch")
+	})
+
+	t.Run("narrowing override and personal default still certify and map", func(t *testing.T) {
+		h, admin, actor, workPrefix, gatewayPrefix := seed(t)
+		human := h.localUser(t, "person@example.com", RoleOperator)
+		var personalPrefix string
+		require.NoError(t, h.store.pool.QueryRow(ctx, `
+			INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope)
+			VALUES ($1, 'legacy-personal', 'cp-personal', 'legacy-personal', 'work')
+			RETURNING prefix`, human.ID).Scan(&personalPrefix))
+
+		opts := h.reviewedOptions(t, CutoverOptions{
+			Operator: "admin@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+			Manifest: CutoverManifest{
+				DefaultRPM: 60, DefaultTPM: 60000,
+				Credentials: map[string]LegacyCredentialMapping{
+					// A narrowing override must stay valid.
+					workPrefix:    {OwnerIdentityID: admin.ID, ActorIdentityID: actor.ID, Actions: []string{ActionWorkflowsRead}},
+					gatewayPrefix: {OwnerIdentityID: admin.ID, ActorIdentityID: actor.ID},
+				},
+			},
+			Now: h.now,
+		})
+		report, err := h.store.PreflightAuthority(ctx, opts)
+		require.NoError(t, err)
+		require.True(t, report.Ready, "blockers: %v", report.Blockers)
+
+		cutover, err := h.store.CutoverAuthority(ctx, opts)
+		require.NoError(t, err)
+		require.True(t, cutover.VerificationPassed, "failures: %v", cutover.VerificationFailures)
+
+		var narrowed, personal []string
+		require.NoError(t, h.store.pool.QueryRow(ctx,
+			`SELECT actions FROM identity.api_keys WHERE prefix = $1`, workPrefix).Scan(&narrowed))
+		assert.ElementsMatch(t, []string{ActionWorkflowsRead}, narrowed)
+		require.NoError(t, h.store.pool.QueryRow(ctx,
+			`SELECT actions FROM identity.api_keys WHERE prefix = $1`, personalPrefix).Scan(&personal))
+		assert.ElementsMatch(t, legacyWorkActions, personal,
+			"a personal work key keeps the full work/start subset, including feedback")
+	})
+
 	t.Run("automation work key maps only the actions its kind can hold", func(t *testing.T) {
 		h, admin, actor, workPrefix, gatewayPrefix := seed(t)
 		opts := h.reviewedOptions(t, CutoverOptions{
