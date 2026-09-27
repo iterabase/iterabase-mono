@@ -582,6 +582,65 @@ func TestAuthorityBlocksIneligibleAutomationOwner(t *testing.T) {
 	}
 }
 
+// TestAuthorityPreflightAgreesOnWorkKeyWithoutLocalAccount covers the shape
+// where a `work` key is bound to a non-service identity with no local account
+// (for example a workflow identity). The mapping must treat it as automation and
+// require an operator-supplied active-Admin owner, so preflight must report the
+// same blocker instead of certifying Ready and failing inside the cutover.
+func TestAuthorityPreflightAgreesOnWorkKeyWithoutLocalAccount(t *testing.T) {
+	h := newAuthorityHarness(t)
+	ctx := context.Background()
+	h.localUser(t, "first@example.com", RoleAdmin)
+	second := h.localUser(t, "second@example.com", RoleAdmin)
+	_, err := h.store.pool.Exec(ctx,
+		`UPDATE identity.local_users SET status = 'disabled' WHERE identity_id = $1`, second.ID)
+	require.NoError(t, err)
+
+	var orphanID string
+	require.NoError(t, h.store.pool.QueryRow(ctx, `
+		INSERT INTO identity.identities (key, kind, source, display_name)
+		VALUES ('workflow/orphan', 'workflow', 'local', 'Orphan Workflow') RETURNING id`).Scan(&orphanID))
+	var prefix string
+	require.NoError(t, h.store.pool.QueryRow(ctx, `
+		INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope)
+		VALUES ($1, 'legacy-orphan', 'cp-orphan', 'legacy-orphan', 'work')
+		RETURNING prefix`, orphanID).Scan(&prefix))
+
+	opts := h.reviewedOptions(t, CutoverOptions{
+		Operator: "first@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+		Manifest: CutoverManifest{
+			DefaultRPM: 60, DefaultTPM: 60000,
+			Credentials: map[string]LegacyCredentialMapping{
+				prefix: {OwnerIdentityID: second.ID, ActorIdentityID: orphanID, RPM: 10, TPM: 10000},
+			},
+		},
+		Now: h.now,
+	})
+
+	report, err := h.store.PreflightAuthority(ctx, opts)
+	require.NoError(t, err)
+	require.False(t, report.Ready, "preflight must block, not certify Ready: %v", report.Blockers)
+	assert.Contains(t, blockerCodes(report), "manifest_owner_not_active_admin")
+
+	// The same classification drives the mapping: the cutover must refuse too.
+	_, err = h.store.CutoverAuthority(ctx, opts)
+	assert.ErrorIs(t, err, ErrAuthorityCutoverBlocked)
+
+	// Without a manifest entry the key is an unmapped automation credential, which
+	// preflight reports as a blocker rather than a silent disposition.
+	noManifest := opts
+	noManifest.Manifest.Credentials = map[string]LegacyCredentialMapping{}
+	noManifest = h.reviewedOptions(t, noManifest)
+	report, err = h.store.PreflightAuthority(ctx, noManifest)
+	require.NoError(t, err)
+	require.False(t, report.Ready)
+	assert.Contains(t, blockerCodes(report), "unmapped_service_key")
+
+	state, stateErr := h.store.AuthorityState(ctx)
+	require.NoError(t, stateErr)
+	assert.Equal(t, AuthorityEpochLegacy, state.Epoch, "a blocked preflight leaves no partial epoch")
+}
+
 // TestAuthorityMaterializesExactGatewayGrantUnion proves the cutover removes the
 // legacy schema-wide/default gateway reads, keeps the wider identity projection
 // out of the gateway's reach, and preserves every required routing/workload
