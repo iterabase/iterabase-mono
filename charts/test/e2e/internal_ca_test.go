@@ -17,11 +17,15 @@ import (
 	"time"
 )
 
-// HOR-528: the internal CA root is a single authority that is created once and
-// never rewritten. These helpers read the authority and the leaves a cluster
+// HOR-528: the internal CA root is one shared identity that both the ordered
+// companion and the platform chart resolve from the same values, so a reconcile
+// cannot change a field and make cert-manager re-issue the authority behind
+// running workloads. These helpers read the authority and the leaves a cluster
 // actually issued, and prove the identity relationship directly from the
-// certificate bytes: every workload leaf must chain to the exact root the
-// clients mount, and a reconcile must not replace that root.
+// certificate bytes: exactly one root request exists on its first revision, and
+// every workload leaf must chain to the exact root the clients mount. A reconcile
+// with unchanged values must leave the root object UID and mounted key material
+// unchanged.
 //
 // The chain comparison is asserted on the certificate's raw issuer/subject and
 // on an X.509 signature verification against the mounted root, so a rotated root
