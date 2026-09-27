@@ -213,7 +213,8 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 	// 2. Legacy keys that cannot be safely mapped.
 	rows, err := s.pool.Query(ctx, `
 		SELECT k.id::text, k.prefix, k.name, COALESCE(k.scope, ''), i.kind,
-		       COALESCE(i.deleted_at IS NOT NULL, false), (lu.identity_id IS NOT NULL)
+		       COALESCE(i.deleted_at IS NOT NULL, false), (lu.identity_id IS NOT NULL),
+		       COALESCE(lu.role, ''), COALESCE(lu.status, '')
 		FROM identity.api_keys k
 		JOIN identity.identities i ON i.id = k.identity_id
 		LEFT JOIN identity.local_users lu ON lu.identity_id = k.identity_id
@@ -225,9 +226,9 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 	}
 	var legacy []legacyCredential
 	for rows.Next() {
-		var id, prefix, name, scope, kind string
+		var id, prefix, name, scope, kind, role, status string
 		var deleted, hasLocalUser bool
-		if err := rows.Scan(&id, &prefix, &name, &scope, &kind, &deleted, &hasLocalUser); err != nil {
+		if err := rows.Scan(&id, &prefix, &name, &scope, &kind, &deleted, &hasLocalUser, &role, &status); err != nil {
 			rows.Close()
 			return PreflightReport{}, err
 		}
@@ -236,7 +237,8 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 			continue
 		}
 		legacy = append(legacy, legacyCredential{
-			prefix: prefix, scope: scope, kind: kind, identityID: id, hasLocalUser: hasLocalUser,
+			prefix: prefix, scope: scope, kind: kind, identityID: id,
+			hasLocalUser: hasLocalUser, role: role, status: status,
 		})
 	}
 	rows.Close()
@@ -256,68 +258,72 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 	}
 	report.Checked["expired_legacy_credentials"] = expiredLegacy
 
-	var unsupported, unmappedService, missingRates int64
+	// Every mapped credential is resolved exactly as the cutover will resolve it,
+	// so `Ready` describes the disposition the epoch will actually apply.
+	var unsupported, unmappedService, missingRates, widened, shapeInvalid, ineligibleHuman int64
 	usedManifest := make(map[string]struct{}, len(opts.Manifest.Credentials))
 	for _, key := range legacy {
 		switch key.scope {
 		case ScopeAdmin, ScopeToken:
 			// Revoked by the cutover; never carried forward.
-		case ScopeWork:
-			// A work key with no accountable human is automation and needs an
-			// operator-supplied owner/actor manifest, exactly as the mapping does.
-			if legacyMappingKind(key.scope, key.kind, key.hasLocalUser) == CredentialKindAutomation {
-				if _, ok := opts.Manifest.Credentials[key.prefix]; !ok {
-					unmappedService++
-				}
-			} else if opts.Manifest.DefaultRPM <= 0 || opts.Manifest.DefaultTPM <= 0 {
-				missingRates++
+			continue
+		}
+		spec, err := resolveLegacyMapping(key, opts.Manifest, opts.Now)
+		switch {
+		case err == nil:
+			if spec.kind == CredentialKindPersonal && !humanOwnerIsMappable(key) {
+				// Mirrors the cutover's skip: the bound human is not a current active
+				// account, so the credential is revoked rather than mapped.
+				ineligibleHuman++
 			}
-		case ScopeGateway:
-			if _, ok := opts.Manifest.Credentials[key.prefix]; !ok {
-				unsupported++
-			}
-		default:
+		case errors.Is(err, errMappingSkip):
 			unsupported++
+		case errors.Is(err, errMappingNeedsManifest):
+			if key.scope == ScopeGateway {
+				unsupported++
+			} else {
+				unmappedService++
+			}
+		case errors.Is(err, errMappingMissingRates):
+			missingRates++
+		case errors.Is(err, errMappingWidened):
+			widened++
+		case errors.Is(err, errMappingOwnerShape):
+			shapeInvalid++
+		default:
+			return PreflightReport{}, err
 		}
 	}
 	block("unmapped_legacy_key", "a legacy credential has no approved V2 mapping", unsupported)
 	block("unmapped_service_key", "a legacy service credential needs an operator-supplied human owner and service actor", unmappedService)
 	block("missing_rate_policy", "a mandatory credential rate policy is missing", missingRates)
+	block("manifest_actions_widened", "a mapping override widens a legacy credential beyond its scope's approved subset", widened)
+	block("manifest_shape_invalid", "an automation mapping needs a distinct human owner and service actor", shapeInvalid)
+	report.Checked["revoked_ineligible_human_owner"] = ineligibleHuman
 
-	// 2b. Every manifest instruction must be valid for the scope it targets.
-	// Architecture 15.2 blocks an automation owner that is not a current active
-	// Admin, fixes the per-scope action subsets, and requires an ambiguous
-	// mapping to block rather than widen.
-	var manifestOwnerIneligible, manifestShapeInvalid, manifestActionsWidened, unusedManifest int64
-	for prefix, mapping := range opts.Manifest.Credentials {
+	// 2b. Every manifest instruction must name a live legacy key and, when it
+	// drives an automation mapping, an owner that is a current active Admin
+	// (architecture 15.2 "automation key whose owner is not a current active
+	// Admin, including an owner mapped or demoted to Operator").
+	var manifestOwnerIneligible, unusedManifest int64
+	for prefix := range opts.Manifest.Credentials {
 		target, ok := manifestTarget(legacy, prefix)
 		if !ok {
 			unusedManifest++
 			continue
 		}
 		usedManifest[prefix] = struct{}{}
-
-		scopeActions, ok := legacyScopeActions(target.scope)
-		if !ok {
-			// The key's own scope is unmappable and already counted above.
+		if legacyMappingKind(target.scope, target.kind, target.hasLocalUser) != CredentialKindAutomation {
 			continue
 		}
-		kind := legacyMappingKind(target.scope, target.kind, target.hasLocalUser)
-		if len(mapping.Actions) > 0 && !subsetOfActions(mapping.Actions, scopeActions) {
-			manifestActionsWidened++
-		}
-		if kind != CredentialKindAutomation {
-			continue
-		}
-		ownerID := mapping.OwnerIdentityID
-		actorID := firstNonEmpty(mapping.ActorIdentityID, target.identityID)
-		if ownerID == "" || ownerID == actorID {
-			manifestShapeInvalid++
+		spec, err := resolveLegacyMapping(target, opts.Manifest, opts.Now)
+		if err != nil {
+			// Already reported by the classification above with its own code.
 			continue
 		}
 		var role, status string
 		if err := s.pool.QueryRow(ctx, `
-			SELECT role, status FROM identity.local_users WHERE identity_id = $1`, ownerID).Scan(&role, &status); err != nil {
+			SELECT role, status FROM identity.local_users WHERE identity_id = $1`, spec.ownerID).Scan(&role, &status); err != nil {
 			manifestOwnerIneligible++
 			continue
 		}
@@ -326,8 +332,6 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 		}
 	}
 	block("manifest_owner_not_active_admin", "an automation mapping names an owner that is not a current active Admin", manifestOwnerIneligible)
-	block("manifest_shape_invalid", "an automation mapping needs a distinct human owner and service actor", manifestShapeInvalid)
-	block("manifest_actions_widened", "a mapping override widens a legacy credential beyond its scope's approved subset", manifestActionsWidened)
 	block("unused_manifest_entry", "the manifest names a credential that is not an active legacy key", unusedManifest)
 	report.Checked["manifest_entries"] = int64(len(usedManifest))
 
@@ -452,6 +456,133 @@ type legacyCredential struct {
 	// part of the classification: a work key without one cannot be a personal
 	// human credential and must be mapped as automation.
 	hasLocalUser bool
+	// role and status are the bound human's account state. They decide whether a
+	// personal credential is mappable or revoked, so preflight reads them too.
+	role   string
+	status string
+}
+
+// humanOwnerIsMappable mirrors the cutover's personal-credential skip: a work key
+// is mapped only while its bound human is a current active account.
+func humanOwnerIsMappable(key legacyCredential) bool {
+	return NormalizeRole(key.role) != "" && key.status == LocalUserActive
+}
+
+// Legacy-mapping sentinel outcomes. The resolver returns these; preflight turns
+// them into operator-visible blockers and the cutover treats anything other than
+// errMappingSkip as fail-closed. `errMappingSkip` means the credential has no
+// approved V2 disposition and is revoked by the unresolved sweep.
+var (
+	errMappingSkip          = errors.New("legacy credential has no approved V2 disposition")
+	errMappingNeedsManifest = errors.New("legacy credential needs an operator-supplied owner and distinct service actor")
+	errMappingMissingRates  = errors.New("legacy credential has no mandatory rate policy")
+	errMappingWidened       = errors.New("legacy credential action override exceeds its scope's approved subset")
+	errMappingOwnerShape    = errors.New("legacy credential needs a human owner distinct from its actor")
+)
+
+// legacyMappingSpec is the fully resolved disposition of one legacy credential:
+// the exact values preflight validates and the cutover writes.
+type legacyMappingSpec struct {
+	kind      string
+	ownerID   string
+	actorID   string
+	actions   []string
+	rpm       int
+	tpm       int
+	expiresAt time.Time
+}
+
+// resolveLegacyMapping computes one credential's approved V2 disposition from its
+// scope, bound identity, and the operator manifest. Preflight and the cutover
+// both call it, so a certified `Ready` describes exactly what the cutover will
+// apply. It performs no I/O: owner account state is re-checked live by each
+// caller under its own locking rules.
+//
+//nolint:gocyclo // One explicit disposition table: scope ceiling, kind, owner/actor shape, rates, expiry.
+func resolveLegacyMapping(key legacyCredential, manifest CutoverManifest, now time.Time) (legacyMappingSpec, error) {
+	scopeActions, ok := legacyScopeActions(key.scope)
+	if !ok {
+		return legacyMappingSpec{}, errMappingSkip
+	}
+	kind := legacyMappingKind(key.scope, key.kind, key.hasLocalUser)
+
+	expiryDays := manifest.DefaultExpiryDays
+	if expiryDays <= 0 {
+		expiryDays = 90
+	}
+	spec := legacyMappingSpec{
+		kind: kind,
+		// The automatic mapping keeps only the actions the credential kind may
+		// hold, so a service work key never inherits the personal-only member of
+		// the scope's fixed subset (architecture 9.1/9.2).
+		actions:   intersectActions(scopeActions, CatalogueActions(kind)),
+		rpm:       manifest.DefaultRPM,
+		tpm:       manifest.DefaultTPM,
+		expiresAt: now.UTC().Add(time.Duration(expiryDays) * 24 * time.Hour),
+	}
+
+	mapping, hasManifest := manifest.Credentials[key.prefix]
+	if kind == CredentialKindAutomation {
+		if !hasManifest {
+			return legacyMappingSpec{}, errMappingNeedsManifest
+		}
+		spec.ownerID = mapping.OwnerIdentityID
+		spec.actorID = firstNonEmpty(mapping.ActorIdentityID, key.identityID)
+		if spec.ownerID == "" || spec.ownerID == spec.actorID {
+			return legacyMappingSpec{}, errMappingOwnerShape
+		}
+	} else {
+		// A personal credential is attributable to its own bound human only.
+		spec.ownerID = key.identityID
+		spec.actorID = key.identityID
+	}
+
+	if hasManifest {
+		if mapping.RPM > 0 {
+			spec.rpm = mapping.RPM
+		}
+		if mapping.TPM > 0 {
+			spec.tpm = mapping.TPM
+		}
+		if len(mapping.Actions) > 0 {
+			// An override may narrow the scope's fixed subset but never widen it: a
+			// legacy `work` key cannot gain an Admin/security/inference action and a
+			// legacy `gateway` key cannot gain a work action (15.2).
+			if !subsetOfActions(mapping.Actions, scopeActions) {
+				return legacyMappingSpec{}, errMappingWidened
+			}
+			spec.actions = mapping.Actions
+		}
+		if mapping.ExpiresAt != "" {
+			parsed, err := time.Parse(time.RFC3339, mapping.ExpiresAt)
+			if err != nil {
+				return legacyMappingSpec{}, fmt.Errorf("legacy credential %s expiry: %w", key.prefix, err)
+			}
+			spec.expiresAt = parsed
+		}
+	}
+	// Every mapped credential needs a materialized rate policy, whatever its
+	// scope: absence must never mean unlimited (15.2).
+	if spec.rpm <= 0 || spec.tpm <= 0 {
+		return legacyMappingSpec{}, errMappingMissingRates
+	}
+	return spec, nil
+}
+
+// intersectActions returns the members of actions that are also in allowed,
+// preserving the order of actions.
+func intersectActions(actions, allowed []string) []string {
+	permitted := make(map[string]struct{}, len(allowed))
+	for _, action := range allowed {
+		permitted[action] = struct{}{}
+	}
+	out := make([]string, 0, len(actions))
+	for _, action := range actions {
+		if _, ok := permitted[action]; ok {
+			out = append(out, action)
+		}
+	}
+	return out
 }
 
 // manifestTarget resolves a manifest prefix to a live legacy key.
@@ -668,12 +799,6 @@ func (s *Store) PreflightAuthorityError(ctx context.Context, opts CutoverOptions
 //
 //nolint:gocyclo // The legacy disposition table is one explicit, blocking mapping.
 func (s *Store) mapLegacyCredentialsTx(ctx context.Context, tx pgx.Tx, opts CutoverOptions) (int64, error) {
-	expiryDays := opts.Manifest.DefaultExpiryDays
-	if expiryDays <= 0 {
-		expiryDays = 90
-	}
-	defaultExpiry := opts.Now.UTC().Add(time.Duration(expiryDays) * 24 * time.Hour)
-
 	rows, err := tx.Query(ctx, `
 		SELECT k.id::text, k.prefix, COALESCE(k.scope, ''), k.identity_id::text, i.kind, lu.identity_id::text, lu.role, lu.status
 		FROM identity.api_keys k
@@ -706,90 +831,37 @@ func (s *Store) mapLegacyCredentialsTx(ctx context.Context, tx pgx.Tx, opts Cuto
 
 	var mapped int64
 	for _, r := range selected {
-		scopeActions, ok := legacyScopeActions(r.scope)
-		if !ok {
-			continue
+		key := legacyCredential{
+			prefix: r.prefix, scope: r.scope, kind: r.kind, identityID: r.identityID,
+			hasLocalUser: r.localUserID != "", role: r.role, status: r.status,
 		}
-		// One shared classifier, so preflight's Ready cannot disagree with the
-		// disposition this loop actually applies.
-		kind := legacyMappingKind(r.scope, r.kind, r.localUserID != "")
-		ownerID := r.identityID
-		actorID := r.identityID
-		actions := scopeActions
+		// The same resolver preflight certified: a `Ready` preflight cannot be
+		// contradicted here except by a change the cutover's own locking detects.
+		spec, err := resolveLegacyMapping(key, opts.Manifest, opts.Now)
+		switch {
+		case errors.Is(err, errMappingSkip):
+			// No approved disposition: revoked by the unresolved sweep below.
+			continue
+		case err != nil:
+			return 0, fmt.Errorf("%w: legacy credential %s: %v", ErrAuthorityCutoverBlocked, r.prefix, err)
+		}
 
-		switch r.scope {
-		case ScopeWork:
-			if kind == CredentialKindAutomation {
-				manifest, ok := opts.Manifest.Credentials[r.prefix]
-				if !ok {
-					continue
-				}
-				ownerID = manifest.OwnerIdentityID
-				actorID = firstNonEmpty(manifest.ActorIdentityID, r.identityID)
-			} else if NormalizeRole(r.role) == "" || r.status != LocalUserActive {
+		ownerRole := ""
+		if spec.kind == CredentialKindPersonal {
+			if !humanOwnerIsMappable(key) {
 				// A work key bound to an inactive human is not attributable to an
 				// eligible owner; revoke rather than widen it.
 				continue
 			}
-		case ScopeGateway:
-			kind = CredentialKindAutomation
-			manifest, ok := opts.Manifest.Credentials[r.prefix]
-			if !ok {
-				continue
-			}
-			ownerID = manifest.OwnerIdentityID
-			actorID = firstNonEmpty(manifest.ActorIdentityID, r.identityID)
-		}
-
-		if ownerID == actorID && kind == CredentialKindAutomation {
-			continue
-		}
-		if kind == CredentialKindPersonal && ownerID != actorID {
-			continue
-		}
-
-		rpm, tpm := opts.Manifest.DefaultRPM, opts.Manifest.DefaultTPM
-		expiresAt := defaultExpiry
-		if manifest, ok := opts.Manifest.Credentials[r.prefix]; ok {
-			if manifest.RPM > 0 {
-				rpm = manifest.RPM
-			}
-			if manifest.TPM > 0 {
-				tpm = manifest.TPM
-			}
-			// An override may narrow the scope's fixed subset but never widen it:
-			// a legacy `work` key cannot gain an Admin/security/inference action
-			// and a legacy `gateway` key cannot gain a work action (15.2).
-			if len(manifest.Actions) > 0 {
-				if !subsetOfActions(manifest.Actions, scopeActions) {
-					return 0, fmt.Errorf("%w: legacy credential %s action override exceeds the %s subset",
-						ErrAuthorityCutoverBlocked, r.prefix, r.scope)
-				}
-				actions = manifest.Actions
-			}
-			if manifest.ExpiresAt != "" {
-				parsed, err := time.Parse(time.RFC3339, manifest.ExpiresAt)
-				if err != nil {
-					return 0, fmt.Errorf("legacy credential %s expiry: %w", r.prefix, err)
-				}
-				expiresAt = parsed
-			}
-		}
-		if rpm <= 0 || tpm <= 0 {
-			return 0, fmt.Errorf("%w: missing rate policy for legacy credential %s", ErrAuthorityCutoverBlocked, r.prefix)
-		}
-		ownerRole := ""
-		if kind == CredentialKindPersonal {
-			ownerRole = NormalizeRole(r.role)
-		}
-		if kind == CredentialKindAutomation {
+			ownerRole = NormalizeRole(key.role)
+		} else {
 			// An automation credential is authorized only while its owner is a
 			// current active Admin (15.2). Lock the owner row so the eligibility
 			// check and the write cannot interleave with an account transition.
 			var role, status string
 			if err := tx.QueryRow(ctx, `
 				SELECT role, status FROM identity.local_users
-				WHERE identity_id = $1 FOR UPDATE`, ownerID).Scan(&role, &status); err != nil {
+				WHERE identity_id = $1 FOR UPDATE`, spec.ownerID).Scan(&role, &status); err != nil {
 				return 0, fmt.Errorf("%w: legacy credential %s owner is not an active Admin", ErrAuthorityCutoverBlocked, r.prefix)
 			}
 			if NormalizeRole(role) != RoleAdmin || status != LocalUserActive {
@@ -797,7 +869,7 @@ func (s *Store) mapLegacyCredentialsTx(ctx context.Context, tx pgx.Tx, opts Cuto
 			}
 			ownerRole = NormalizeRole(role)
 		}
-		if err := ValidateActions(kind, actions, ownerRole); err != nil {
+		if err := ValidateActions(spec.kind, spec.actions, ownerRole); err != nil {
 			return 0, fmt.Errorf("%w: legacy credential %s: %v", ErrAuthorityCutoverBlocked, r.prefix, err)
 		}
 
@@ -809,7 +881,7 @@ func (s *Store) mapLegacyCredentialsTx(ctx context.Context, tx pgx.Tx, opts Cuto
 			    credential_epoch = 'v2', status = 'active',
 			    suspension_reason = NULL, scope = NULL
 			WHERE id = $1 AND revoked_at IS NULL`,
-			r.id, kind, ownerID, actorID, actions, rpm, tpm, expiresAt)
+			r.id, spec.kind, spec.ownerID, spec.actorID, spec.actions, spec.rpm, spec.tpm, spec.expiresAt)
 		if err != nil {
 			return 0, fmt.Errorf("map legacy credential: %w", err)
 		}

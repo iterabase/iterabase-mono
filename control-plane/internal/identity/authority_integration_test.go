@@ -717,3 +717,138 @@ func blockerCodes(report PreflightReport) []string {
 	}
 	return codes
 }
+
+// TestAuthorityPreflightResolvesTheMappingItWillApply covers the shapes where
+// preflight certified `Ready` for a mapping the cutover then rejected: an
+// automation credential with no effective rate policy (on a service `work` key
+// and on a `gateway` key), and an automation `work` key whose automatic action
+// set must not inherit the personal-only member of the work subset.
+func TestAuthorityPreflightResolvesTheMappingItWillApply(t *testing.T) {
+	ctx := context.Background()
+
+	seed := func(t *testing.T) (*authorityHarness, LocalUser, Identity, string, string) {
+		t.Helper()
+		h := newAuthorityHarness(t)
+		admin := h.localUser(t, "admin@example.com", RoleAdmin)
+		actor, err := h.store.UpsertServiceAccount(ctx, "svc@example.com", "Svc")
+		require.NoError(t, err)
+		var workPrefix, gatewayPrefix string
+		require.NoError(t, h.store.pool.QueryRow(ctx, `
+			INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope)
+			VALUES ($1, 'legacy-work', 'cp-svcwork', 'legacy-work', 'work')
+			RETURNING prefix`, actor.ID).Scan(&workPrefix))
+		require.NoError(t, h.store.pool.QueryRow(ctx, `
+			INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope)
+			VALUES ($1, 'legacy-gw', 'cp-svcgw', 'legacy-gateway', 'gateway')
+			RETURNING prefix`, actor.ID).Scan(&gatewayPrefix))
+		return h, admin, actor, workPrefix, gatewayPrefix
+	}
+
+	automationActions := []string{ActionWorkflowsRead, ActionWorkflowsStart, ActionWorkRead, ActionArtifactsRead, ActionArtifactsUpload}
+
+	t.Run("service work key with no effective rates blocks preflight", func(t *testing.T) {
+		h, admin, actor, workPrefix, gatewayPrefix := seed(t)
+		opts := h.reviewedOptions(t, CutoverOptions{
+			Operator: "admin@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+			Manifest: CutoverManifest{
+				Credentials: map[string]LegacyCredentialMapping{
+					workPrefix:    {OwnerIdentityID: admin.ID, ActorIdentityID: actor.ID, Actions: automationActions},
+					gatewayPrefix: {OwnerIdentityID: admin.ID, ActorIdentityID: actor.ID, RPM: 10, TPM: 10000},
+				},
+			},
+			Now: h.now,
+		})
+		report, err := h.store.PreflightAuthority(ctx, opts)
+		require.NoError(t, err)
+		require.False(t, report.Ready, "preflight certified a mapping the cutover rejects: %v", report.Blockers)
+		assert.Contains(t, blockerCodes(report), "missing_rate_policy")
+
+		_, err = h.store.CutoverAuthority(ctx, opts)
+		assert.ErrorIs(t, err, ErrAuthorityCutoverBlocked)
+	})
+
+	t.Run("gateway key with no effective rates blocks preflight", func(t *testing.T) {
+		h, admin, actor, workPrefix, gatewayPrefix := seed(t)
+		opts := h.reviewedOptions(t, CutoverOptions{
+			Operator: "admin@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+			Manifest: CutoverManifest{
+				Credentials: map[string]LegacyCredentialMapping{
+					workPrefix:    {OwnerIdentityID: admin.ID, ActorIdentityID: actor.ID, RPM: 10, TPM: 10000},
+					gatewayPrefix: {OwnerIdentityID: admin.ID, ActorIdentityID: actor.ID},
+				},
+			},
+			Now: h.now,
+		})
+		report, err := h.store.PreflightAuthority(ctx, opts)
+		require.NoError(t, err)
+		require.False(t, report.Ready, "preflight certified a mapping the cutover rejects: %v", report.Blockers)
+		assert.Contains(t, blockerCodes(report), "missing_rate_policy")
+
+		_, err = h.store.CutoverAuthority(ctx, opts)
+		assert.ErrorIs(t, err, ErrAuthorityCutoverBlocked)
+	})
+
+	t.Run("automation work key maps only the actions its kind can hold", func(t *testing.T) {
+		h, admin, actor, workPrefix, gatewayPrefix := seed(t)
+		opts := h.reviewedOptions(t, CutoverOptions{
+			Operator: "admin@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+			Manifest: CutoverManifest{
+				DefaultRPM: 60, DefaultTPM: 60000,
+				Credentials: map[string]LegacyCredentialMapping{
+					// No action override: the automatic subset must be kind-safe.
+					workPrefix:    {OwnerIdentityID: admin.ID, ActorIdentityID: actor.ID},
+					gatewayPrefix: {OwnerIdentityID: admin.ID, ActorIdentityID: actor.ID},
+				},
+			},
+			Now: h.now,
+		})
+		report, err := h.store.PreflightAuthority(ctx, opts)
+		require.NoError(t, err)
+		require.True(t, report.Ready, "blockers: %v", report.Blockers)
+
+		cutover, err := h.store.CutoverAuthority(ctx, opts)
+		require.NoError(t, err)
+		require.True(t, cutover.VerificationPassed, "failures: %v", cutover.VerificationFailures)
+
+		var actions []string
+		var kind string
+		require.NoError(t, h.store.pool.QueryRow(ctx, `
+			SELECT key_type, actions FROM identity.api_keys WHERE prefix = $1`, workPrefix).Scan(&kind, &actions))
+		assert.Equal(t, CredentialKindAutomation, kind)
+		assert.ElementsMatch(t, automationActions, actions)
+		assert.NotContains(t, actions, ActionWorkFeedbackWrite,
+			"a service work key must not inherit the personal-only action")
+	})
+}
+
+// TestAuthorityPreflightReportsRevokedDispositions proves preflight surfaces the
+// credentials it will revoke rather than map, so `Ready` is never mistaken for
+// "every credential was carried forward".
+func TestAuthorityPreflightReportsRevokedDispositions(t *testing.T) {
+	h := newAuthorityHarness(t)
+	ctx := context.Background()
+	h.localUser(t, "admin@example.com", RoleAdmin)
+
+	// A human work key whose account is not active is not mappable.
+	human, err := h.store.UpsertLocalUser(ctx, "pending@example.com", "pending@example.com", RoleOperator)
+	require.NoError(t, err)
+	require.Equal(t, LocalUserSetupPending, human.Status)
+	_, err = h.store.pool.Exec(ctx, `
+		INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope)
+		VALUES ($1, 'legacy-pending', 'cp-pending', 'legacy-pending', 'work')`, human.ID)
+	require.NoError(t, err)
+
+	opts := h.reviewedOptions(t, CutoverOptions{
+		Operator: "admin@example.com", BackupEvidence: "b", RehearsalEvidence: "r",
+		Manifest: CutoverManifest{DefaultRPM: 60, DefaultTPM: 60000}, Now: h.now,
+	})
+	report, err := h.store.PreflightAuthority(ctx, opts)
+	require.NoError(t, err)
+	require.True(t, report.Ready, "blockers: %v", report.Blockers)
+	assert.EqualValues(t, 1, report.Checked["revoked_ineligible_human_owner"])
+
+	cutover, err := h.store.CutoverAuthority(ctx, opts)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, cutover.CredentialsMapped)
+	assert.GreaterOrEqual(t, cutover.CredentialsRevoked, int64(1))
+}
