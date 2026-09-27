@@ -212,9 +212,11 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 
 	// 2. Legacy keys that cannot be safely mapped.
 	rows, err := s.pool.Query(ctx, `
-		SELECT k.id::text, k.prefix, k.name, COALESCE(k.scope, ''), i.kind, COALESCE(i.deleted_at IS NOT NULL, false)
+		SELECT k.id::text, k.prefix, k.name, COALESCE(k.scope, ''), i.kind,
+		       COALESCE(i.deleted_at IS NOT NULL, false), (lu.identity_id IS NOT NULL)
 		FROM identity.api_keys k
 		JOIN identity.identities i ON i.id = k.identity_id
+		LEFT JOIN identity.local_users lu ON lu.identity_id = k.identity_id
 		WHERE k.credential_epoch <> 'v2'
 		  AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > now())
 		ORDER BY k.created_at`)
@@ -224,8 +226,8 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 	var legacy []legacyCredential
 	for rows.Next() {
 		var id, prefix, name, scope, kind string
-		var deleted bool
-		if err := rows.Scan(&id, &prefix, &name, &scope, &kind, &deleted); err != nil {
+		var deleted, hasLocalUser bool
+		if err := rows.Scan(&id, &prefix, &name, &scope, &kind, &deleted, &hasLocalUser); err != nil {
 			rows.Close()
 			return PreflightReport{}, err
 		}
@@ -233,7 +235,9 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 			block("deleted_key_identity", "an active credential is bound to a deleted identity", 1)
 			continue
 		}
-		legacy = append(legacy, legacyCredential{prefix: prefix, scope: scope, kind: kind, identityID: id})
+		legacy = append(legacy, legacyCredential{
+			prefix: prefix, scope: scope, kind: kind, identityID: id, hasLocalUser: hasLocalUser,
+		})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -259,12 +263,11 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 		case ScopeAdmin, ScopeToken:
 			// Revoked by the cutover; never carried forward.
 		case ScopeWork:
-			if key.kind == "service_account" {
+			// A work key with no accountable human is automation and needs an
+			// operator-supplied owner/actor manifest, exactly as the mapping does.
+			if legacyMappingKind(key.scope, key.kind, key.hasLocalUser) == CredentialKindAutomation {
 				if _, ok := opts.Manifest.Credentials[key.prefix]; !ok {
 					unmappedService++
-				}
-				if opts.Manifest.DefaultRPM <= 0 || opts.Manifest.DefaultTPM <= 0 {
-					missingRates++
 				}
 			} else if opts.Manifest.DefaultRPM <= 0 || opts.Manifest.DefaultTPM <= 0 {
 				missingRates++
@@ -299,7 +302,7 @@ func (s *Store) PreflightAuthority(ctx context.Context, opts CutoverOptions) (Pr
 			// The key's own scope is unmappable and already counted above.
 			continue
 		}
-		kind := legacyMappingKind(target.scope, target.kind)
+		kind := legacyMappingKind(target.scope, target.kind, target.hasLocalUser)
 		if len(mapping.Actions) > 0 && !subsetOfActions(mapping.Actions, scopeActions) {
 			manifestActionsWidened++
 		}
@@ -426,11 +429,13 @@ func legacyScopeActions(scope string) ([]string, bool) {
 	}
 }
 
-// legacyMappingKind returns the credential kind a legacy key maps to. A service
-// identity, or a work key with no local human, is automation and needs an
-// operator-supplied active-Admin owner.
-func legacyMappingKind(scope, identityKind string) string {
-	if scope == ScopeWork && identityKind != "service_account" {
+// legacyMappingKind returns the credential kind a legacy key maps to. A work key
+// is personal only when it is bound to a human with a local account; a service
+// identity, or a bound identity with no local account at all, is automation and
+// needs an operator-supplied active-Admin owner. Preflight and the mapping call
+// this with the same inputs so they cannot disagree about a key's disposition.
+func legacyMappingKind(scope, identityKind string, hasLocalUser bool) string {
+	if scope == ScopeWork && identityKind != "service_account" && hasLocalUser {
 		return CredentialKindPersonal
 	}
 	return CredentialKindAutomation
@@ -443,6 +448,10 @@ type legacyCredential struct {
 	scope      string
 	kind       string // bound identity kind
 	identityID string // the key's bound actor, used by the automatic mapping
+	// hasLocalUser reports whether the bound identity has a local account. It is
+	// part of the classification: a work key without one cannot be a personal
+	// human credential and must be mapped as automation.
+	hasLocalUser bool
 }
 
 // manifestTarget resolves a manifest prefix to a live legacy key.
@@ -697,19 +706,20 @@ func (s *Store) mapLegacyCredentialsTx(ctx context.Context, tx pgx.Tx, opts Cuto
 
 	var mapped int64
 	for _, r := range selected {
-		kind := CredentialKindPersonal
-		ownerID := r.identityID
-		actorID := r.identityID
 		scopeActions, ok := legacyScopeActions(r.scope)
 		if !ok {
 			continue
 		}
+		// One shared classifier, so preflight's Ready cannot disagree with the
+		// disposition this loop actually applies.
+		kind := legacyMappingKind(r.scope, r.kind, r.localUserID != "")
+		ownerID := r.identityID
+		actorID := r.identityID
 		actions := scopeActions
 
 		switch r.scope {
 		case ScopeWork:
-			if r.kind == "service_account" || r.localUserID == "" {
-				kind = CredentialKindAutomation
+			if kind == CredentialKindAutomation {
 				manifest, ok := opts.Manifest.Credentials[r.prefix]
 				if !ok {
 					continue
