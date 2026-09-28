@@ -69,12 +69,12 @@ your values/overlay:
 ```sh
 helm install iterabase-cert-manager \
   oci://ghcr.io/nunocgoncalves/iterabase-charts/cert-manager-substrate \
-  --version 0.4.5 -n iterabase-system --create-namespace --wait
+  --version 0.4.6 -n iterabase-system --create-namespace --wait
 helm install iterabase-lvm-storage \
   oci://ghcr.io/nunocgoncalves/iterabase-charts/lvm-storage-substrate \
-  --version 0.4.5 -n iterabase-system --wait
+  --version 0.4.6 -n iterabase-system --wait
 helm install iterabase oci://ghcr.io/nunocgoncalves/iterabase-charts/iterabase-platform \
-  --version 0.4.5 -n iterabase-system \
+  --version 0.4.6 -n iterabase-system \
   --set inference-gateway.ingress.host=gateway.opo1.example.com \
   --set inference-gateway.ingress.tls.clusterIssuer=letsencrypt-prod \
   --set ingress-nginx.controller.service.ipFamilyPolicy=SingleStack \
