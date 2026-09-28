@@ -2,8 +2,9 @@
 
 - **Status:** mitigated by non-reachability
 - **Owner:** control-plane
-- **Last reviewed:** 2026-08-18
+- **Last reviewed:** 2026-09-28
 - **Tracking:** HOR-499
+- **Related:** HOR-586 (split `github.com/moby/go-archive` bump)
 
 ## Decision
 
@@ -27,6 +28,19 @@ The directly used testcontainers packages already use the split
 introduce the legacy edge. Updating testcontainers alone cannot remove
 golang-migrate's dependency-test requirement, so HOR-499 does not broaden into
 an unrelated cross-workspace dependency upgrade.
+
+## Split-module go-archive advisory
+
+HOR-586 advanced the directly required split module
+`github.com/moby/go-archive` from v0.2.0 to v0.3.0 in `control-plane/go.mod` and
+`inference-gateway/go.mod`, closing GHSA-hfg8-hc9c-6c3h, where a crafted tar
+archive could create or overwrite files outside the extraction directory through
+`Unpack`, `UnpackLayer`, `Untar`, `UntarUncompressed`, and the `ApplyLayer`
+helpers. The split module is a required indirect dependency reached only through
+the testcontainers Docker client, and repository source invokes no archive
+extraction path of its own. The legacy `github.com/docker/docker` pin, its
+advisory dispositions, and the re-entry triggers below are unchanged by that
+bump.
 
 ## Reachability evidence
 
