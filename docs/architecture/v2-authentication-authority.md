@@ -6,11 +6,8 @@
 - **Product contract:** Obsidian `Platform V2 — Managed Digital Workforce — Product Requirements`, especially `REQ-004`, `REQ-010`–`REQ-014`, `REQ-033`, `REQ-035`–`REQ-037`, `SCN-001`, `SCN-002`, `SCN-009`, `SCN-018`, and `SCN-021`
 - **Design handoff:** Obsidian `Designs/Platform V2 — API Access Designer Brief`
 - **Implementation owners:** HOR-453, HOR-454, HOR-513, HOR-514, plus the endpoint-owning tickets identified below
-- **Foundry API extension:** [`DES-HOR-525-01`](foundry-common-spine.md), approved 2026-08-30
 
 This record is the single repository authority for the V2 local-authentication, browser-session, customer-role, customer API-credential, Inference Gateway authorization, attribution, and legacy-authority migration design. It does not implement the design.
-
-`DES-HOR-525-01` extends this authority model to the private Foundry API without adding a human role, identity store, credential lifecycle, wildcard, or cached authority. Its [exact Foundry action catalogue and private control-plane introspection boundary](foundry-common-spine.md#2-exact-approved-bundle) are approved additions to the fixed V2 action model. Existing credentials never widen automatically, and the control-plane remains authority for canonical humans, service actors, current `operator|admin` eligibility, credential actions, and security audit.
 
 ## 1. Approved decisions
 
