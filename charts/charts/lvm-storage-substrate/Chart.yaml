@@ -2,7 +2,7 @@ apiVersion: v2
 name: lvm-storage-substrate
 description: Iterabase OpenEBS LVM LocalPV volume substrate — pinned volume authority, inert deletion-safety schema, and managed storage classes.
 type: application
-version: 0.4.5
+version: 0.4.6
 appVersion: "1.10.0"
 annotations:
   iterabase.com/architecture-decision: DES-HOR-545-01
