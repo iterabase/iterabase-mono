@@ -53,11 +53,7 @@ func (client Client) Kubectl(ctx context.Context, timeout time.Duration, args ..
 	if err := client.validate(); err != nil {
 		return "", err
 	}
-	full := append([]string{"--kubeconfig", client.Kubeconfig}, args...)
-	result, err := client.Executor.Run(ctx, process.Command{
-		Name: "kubectl", Args: full, Timeout: timeout,
-		OutputName: "kubectl-" + commandFileName(args) + ".log",
-	})
+	result, err := client.kubectlCommand(ctx, timeout, args)
 	return result.Output, err
 }
 
@@ -68,12 +64,18 @@ func (client Client) KubectlSeparated(ctx context.Context, timeout time.Duration
 	if err := client.validate(); err != nil {
 		return "", "", err
 	}
+	result, err := client.kubectlCommand(ctx, timeout, args)
+	return result.Stdout, result.Stderr, err
+}
+
+// kubectlCommand owns the isolated kubeconfig prefix and evidence name shared by
+// both kubectl entry points so the command contract stays in one place.
+func (client Client) kubectlCommand(ctx context.Context, timeout time.Duration, args []string) (process.Result, error) {
 	full := append([]string{"--kubeconfig", client.Kubeconfig}, args...)
-	result, err := client.Executor.Run(ctx, process.Command{
+	return client.Executor.Run(ctx, process.Command{
 		Name: "kubectl", Args: full, Timeout: timeout,
 		OutputName: "kubectl-" + commandFileName(args) + ".log",
 	})
-	return result.Stdout, result.Stderr, err
 }
 
 // HelmUpgrade executes exactly one upgrade --install with sorted values.
