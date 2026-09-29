@@ -303,24 +303,37 @@ func scenarioHooks() ([]sharede2e.Hook[*chartState], []sharede2e.Hook[*chartStat
 
 func (state *chartState) kubectl(t *testing.T, timeout time.Duration, args ...string) string {
 	t.Helper()
-	out, err := state.client.Kubectl(state.ctx, timeout, args...)
+	stdout, stderr, err := state.client.KubectlSeparated(state.ctx, timeout, args...)
 	if err != nil {
-		t.Fatalf("kubectl %s: %v\n%s", strings.Join(args, " "), err, out)
+		t.Fatalf("kubectl %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout, stderr)
 	}
-	return strings.TrimSpace(out)
+	if diagnostics := strings.TrimSpace(stderr); diagnostics != "" {
+		t.Logf("kubectl %s diagnostics: %s", strings.Join(args, " "), diagnostics)
+	}
+	return strings.TrimSpace(stdout)
+}
+
+// kubectlOutput returns exact trimmed stdout for assertions while keeping stderr
+// diagnostics in the error so failures stay actionable.
+func (state *chartState) kubectlOutput(timeout time.Duration, args ...string) (string, error) {
+	stdout, stderr, err := state.client.KubectlSeparated(state.ctx, timeout, args...)
+	if err != nil {
+		return strings.TrimSpace(stdout), fmt.Errorf("kubectl %s: %w\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout, stderr)
+	}
+	return strings.TrimSpace(stdout), nil
 }
 
 func (state *chartState) kubectlResult(timeout time.Duration, args ...string) (string, error) {
-	return state.client.Kubectl(state.ctx, timeout, args...)
+	return state.kubectlOutput(timeout, args...)
 }
 
 func (state *chartState) process(t *testing.T, timeout time.Duration, name string, args ...string) string {
 	t.Helper()
 	result, err := state.runner.Run(state.ctx, process.Command{Name: name, Args: args, Timeout: timeout})
 	if err != nil {
-		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, result.Output)
+		t.Fatalf("%s %s: %v\nstdout:\n%s\nstderr:\n%s", name, strings.Join(args, " "), err, result.Stdout, result.Stderr)
 	}
-	return strings.TrimSpace(result.Output)
+	return strings.TrimSpace(result.Stdout)
 }
 
 func (state *chartState) writeValues(t *testing.T, name string, values map[string]any) string {
@@ -590,18 +603,18 @@ func (state *chartState) releaseInstalled(t *testing.T) (bool, error) {
 	if err != nil {
 		return false, nil // release not found
 	}
-	return strings.Contains(out.Output, "STATUS: deployed"), nil
+	return strings.Contains(out.Stdout, "STATUS: deployed"), nil
 }
 
 // metalLBValidationPolicy reads the failurePolicy of the MetalLB admission webhook
 // configuration ("" when absent, e.g. MetalLB disabled).
 func (state *chartState) metalLBValidationPolicy(t *testing.T) string {
-	out, err := state.client.Kubectl(state.ctx, 30*time.Second, "get", "validatingwebhookconfiguration",
+	out, err := state.kubectlOutput(30*time.Second, "get", "validatingwebhookconfiguration",
 		metalLBWebhookConfigName, "-o", "jsonpath={.webhooks[0].failurePolicy}")
 	if err != nil {
 		return "" // absent => MetalLB disabled
 	}
-	return strings.TrimSpace(out)
+	return out
 }
 
 // waitMetalLBAdmissionBackend polls until the metallb controller deployment is
@@ -610,12 +623,12 @@ func (state *chartState) waitMetalLBAdmissionBackend(t *testing.T, timeout time.
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		replicas, _ := state.client.Kubectl(state.ctx, 30*time.Second, "get", "deployment", "-n", testNamespace,
+		replicas, _ := state.kubectlOutput(30*time.Second, "get", "deployment", "-n", testNamespace,
 			"-l", "app.kubernetes.io/instance="+testRelease+",app.kubernetes.io/name=metallb,app.kubernetes.io/component=controller",
 			"-o", "jsonpath={.items[0].status.readyReplicas}")
-		endpoints, _ := state.client.Kubectl(state.ctx, 30*time.Second, "get", "endpoints", "-n", testNamespace,
+		endpoints, _ := state.kubectlOutput(30*time.Second, "get", "endpoints", "-n", testNamespace,
 			"metallb-webhook-service", "-o", "jsonpath={.subsets[*].addresses[*].ip}")
-		if strings.TrimSpace(replicas) != "" && strings.TrimSpace(replicas) != "0" && strings.TrimSpace(endpoints) != "" {
+		if replicas != "" && replicas != "0" && endpoints != "" {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -721,7 +734,7 @@ func (state *chartState) adoptMetalLBHookObjects(t *testing.T) {
 	t.Helper()
 	sel := "app.kubernetes.io/instance=" + testRelease
 	for _, kind := range []string{"ipaddresspool", "l2advertisement"} {
-		out, err := state.client.Kubectl(state.ctx, 30*time.Second, "get", kind, "-n", testNamespace, "-l", sel, "-o", "name")
+		out, err := state.kubectlOutput(30*time.Second, "get", kind, "-n", testNamespace, "-l", sel, "-o", "name")
 		if err != nil {
 			continue // kind absent (cloud/older chart) => nothing to adopt
 		}
@@ -745,7 +758,7 @@ func (state *chartState) adoptMetalLBHookObjects(t *testing.T) {
 func (state *chartState) waitForPods(t *testing.T, selector string, timeout time.Duration) {
 	t.Helper()
 	err := poll.Until(state.ctx, timeout, 3*time.Second, func(context.Context) (bool, string, error) {
-		out, err := state.client.Kubectl(state.ctx, 30*time.Second, "get", "pods", "-n", testNamespace, "-l", selector, "-o", "name")
+		out, err := state.kubectlOutput(30*time.Second, "get", "pods", "-n", testNamespace, "-l", selector, "-o", "name")
 		if err != nil {
 			return false, "list pods", err
 		}
@@ -761,7 +774,7 @@ func (state *chartState) firstPod(t *testing.T, selector string) string {
 	t.Helper()
 	var pod string
 	err := poll.Until(state.ctx, 2*time.Minute, 2*time.Second, func(context.Context) (bool, string, error) {
-		out, err := state.client.Kubectl(state.ctx, 30*time.Second, "get", "pods", "-n", testNamespace, "-l", selector, "-o", "jsonpath={.items[0].metadata.name}")
+		out, err := state.kubectlOutput(30*time.Second, "get", "pods", "-n", testNamespace, "-l", selector, "-o", "jsonpath={.items[0].metadata.name}")
 		if err != nil {
 			return false, "get first pod", err
 		}

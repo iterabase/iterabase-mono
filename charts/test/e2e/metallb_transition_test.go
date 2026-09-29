@@ -360,7 +360,7 @@ func (state *chartState) observeMetalLBContinuity(svc, expectedVIP string, done 
 // route failure, so a violating sample is never skipped.
 func (state *chartState) sampleMetalLBContinuity(svc, expectedVIP string, client *http.Client) (metalLBContinuitySample, error) {
 	sample := metalLBContinuitySample{At: time.Now()}
-	vip, err := state.client.Kubectl(state.ctx, 30*time.Second, "get", "service", svc, "-n", testNamespace,
+	vip, err := state.kubectlOutput(30*time.Second, "get", "service", svc, "-n", testNamespace,
 		"-o", "jsonpath={.status.loadBalancer.ingress[0].ip}")
 	if err != nil {
 		return sample, fmt.Errorf("kubectl read of %s failed during operation: %v", svc, err)

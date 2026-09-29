@@ -89,7 +89,7 @@ status: {}
 `
 	blockedPath := state.writeManifest(t, "forbidden-lvmsnapshot.yaml", blocked)
 	out, err := state.kubectlResult(30*time.Second, "create", "-f", blockedPath)
-	if err == nil || !strings.Contains(out, "LVMSnapshot creation is disabled by DES-HOR-545-05") {
+	if err == nil || !strings.Contains(err.Error(), "LVMSnapshot creation is disabled by DES-HOR-545-05") {
 		t.Fatalf("LVMSnapshot CREATE was not denied by the exact admission policy: err=%v output=%s", err, out)
 	}
 	if got := strings.TrimSpace(state.kubectl(t, 30*time.Second, "get", "lvmsnapshots.local.openebs.io", "-A", "-o", "name")); got != "" {
@@ -402,7 +402,7 @@ func assertVerifiedEdgeStage(t *testing.T, state *chartState) {
 	t.Helper()
 	var address string
 	err := poll.Until(state.ctx, 3*time.Minute, 2*time.Second, func(context.Context) (bool, string, error) {
-		out, observeErr := state.client.Kubectl(state.ctx, 30*time.Second,
+		out, observeErr := state.kubectlOutput(30*time.Second,
 			"get", "service", "-n", testNamespace, "-l", "app.kubernetes.io/name=ingress-nginx",
 			"-o", "jsonpath={.items[0].status.loadBalancer.ingress[0].ip}")
 		if observeErr != nil {
@@ -443,7 +443,7 @@ func assertPrivateIngressPlaneStage(t *testing.T, state *chartState) {
 	service := testRelease + "-internal-ingress-nginx-controller"
 	var address string
 	err := poll.Until(state.ctx, 3*time.Minute, 2*time.Second, func(context.Context) (bool, string, error) {
-		out, observeErr := state.client.Kubectl(state.ctx, 30*time.Second, "get", "service/"+service, "-n", testNamespace,
+		out, observeErr := state.kubectlOutput(30*time.Second, "get", "service/"+service, "-n", testNamespace,
 			"-o", "jsonpath={.status.loadBalancer.ingress[0].ip}")
 		if observeErr != nil {
 			return false, "read private LoadBalancer address", observeErr

@@ -253,7 +253,7 @@ func assertGrafanaTLSPathsStage(t *testing.T, state *chartState) {
 	for _, container := range []string{"grafana-sc-datasources", "grafana-sc-dashboard"} {
 		var logs string
 		err := poll.Until(state.ctx, 2*time.Minute, 3*time.Second, func(context.Context) (bool, string, error) {
-			out, observeErr := state.client.Kubectl(state.ctx, 30*time.Second, "logs", "statefulset/"+testRelease+"-grafana", "-n", testNamespace, "-c", container, "--tail=200")
+			out, observeErr := state.kubectlOutput(30*time.Second, "logs", "statefulset/"+testRelease+"-grafana", "-n", testNamespace, "-c", container, "--tail=200")
 			if observeErr != nil {
 				return false, "read sidecar logs", observeErr
 			}

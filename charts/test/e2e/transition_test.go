@@ -945,7 +945,7 @@ func secretDigest(t *testing.T, state *chartState, name string) string {
 	if err != nil {
 		t.Fatalf("hash Secret %s without retaining its values: %v", name, err)
 	}
-	digest := strings.TrimSpace(result.Output)
+	digest := strings.TrimSpace(result.Stdout)
 	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(digest) {
 		t.Fatalf("Secret %s returned invalid digest %q", name, digest)
 	}
@@ -1094,7 +1094,7 @@ func currentArtifactProvisionerJobIdentity(t *testing.T, state *chartState) arti
 }
 
 func readArtifactProvisionerJobIdentity(state *chartState, name string) (artifactProvisionerJobIdentity, error) {
-	raw, err := state.client.Kubectl(state.ctx, 30*time.Second, "get", "job/"+name, "-n", testNamespace, "-o", "json")
+	raw, err := state.kubectlOutput(30*time.Second, "get", "job/"+name, "-n", testNamespace, "-o", "json")
 	if err != nil {
 		return artifactProvisionerJobIdentity{}, fmt.Errorf("read artifact-provisioner Job %s: %w", name, err)
 	}
