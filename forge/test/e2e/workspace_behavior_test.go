@@ -25,7 +25,10 @@ import (
 
 const workspaceNamespace = "iterabase-system"
 
-var bootstrapCredentialPattern = regexp.MustCompile(`API key \(scope=([^)]+)\): (\S+)`)
+var (
+	bootstrapCredentialPattern = regexp.MustCompile(`API key \(scope=([^)]+)\): (\S+)`)
+	workspaceUUIDPattern       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+)
 
 type workspaceWorkItem struct {
 	ID               string `json:"id"`
@@ -599,12 +602,9 @@ func exerciseHumanGateWorkspaceReplacementStage(t *testing.T, state *permanentCP
 	defer stopAPI()
 
 	item := startWorkspaceWork(t, baseURL, state.workspaceWorkKey, "e2e/forge-workspace-recovery", "Human-gated workspace recovery", "hor-545-human-recovery")
-	item = waitWorkspaceWorkState(t, baseURL, state.workspaceWorkKey, item.ID, "blocked", 4*time.Minute)
-	sessionBefore := workspaceDatabaseQuery(t, cluster, state, fmt.Sprintf(`SELECT session_id FROM runtime.workflow_runs WHERE id='%s'`, item.CurrentAttemptID))
-	assignedWorker := workspaceDatabaseQuery(t, cluster, state, fmt.Sprintf(`SELECT worker_id FROM runtime.turn_assignments WHERE attempt_id='%s' ORDER BY assigned_at LIMIT 1`, item.CurrentAttemptID))
-	if assignedWorker == "" {
-		t.Fatal("human-gated work has no attributable initial worker")
-	}
+	item, initialGate := waitWorkspaceRecoveryGate(t, cluster, state, baseURL, state.workspaceWorkKey, item.ID, "initial", 4*time.Minute)
+	sessionBefore := initialGate.SessionID
+	assignedWorker := initialGate.FirstWorkerID
 	oldUID := strings.TrimSpace(cluster.Kubectl(t, "get", "pod/"+assignedWorker, "-n", workspaceNamespace, "-o", "jsonpath={.metadata.uid}"))
 	pvcBefore := strings.TrimSpace(cluster.Kubectl(t, "get", "pvc/forge-storage-pool-sandbox", "-n", workspaceNamespace, "-o", "jsonpath={.metadata.uid}"))
 	assertRecoveryWorkspaceState(t, cluster, sessionBefore, "initial", false)
@@ -617,22 +617,20 @@ func exerciseHumanGateWorkspaceReplacementStage(t *testing.T, state *permanentCP
 	assertRecoveryWorkspaceState(t, cluster, sessionBefore, "replacement", false)
 
 	respondWorkspaceBlocker(t, baseURL, state.workspaceWorkKey, item.ID)
-	waitWorkspaceDatabaseValue(t, cluster, state, fmt.Sprintf(`SELECT count(*) FROM runtime.turn_assignments WHERE attempt_id='%s'`, item.CurrentAttemptID), "2", 4*time.Minute)
-	item = waitWorkspaceWorkState(t, baseURL, state.workspaceWorkKey, item.ID, "blocked", 2*time.Minute)
-	recoveryEvents := workspaceDatabaseQuery(t, cluster, state, fmt.Sprintf(`SELECT string_agg(seq::text || ':' || kind || ':' || payload::text, E'\n' ORDER BY seq) FROM runtime.events WHERE run_id='%s'`, item.CurrentAttemptID))
-	t.Logf("human-gate recovery events before external resumed proof:\n%s", recoveryEvents)
+	item, resumedGate := waitWorkspaceRecoveryGate(t, cluster, state, baseURL, state.workspaceWorkKey, item.ID, "resumed", 4*time.Minute)
+	t.Logf("human-gate resumed qualification: work=%s attempt=%s session=%s assignments=%d generations=%d bash=%d initial=%d resume=%d last_event=%d",
+		resumedGate.WorkItemID, resumedGate.AttemptID, resumedGate.SessionID, resumedGate.AssignmentCount,
+		resumedGate.GenerationCount, resumedGate.BashCallCount, resumedGate.InitialResultCount,
+		resumedGate.ResumeResultCount, resumedGate.LastEventSequence)
 	assertRecoveryWorkspaceState(t, cluster, sessionBefore, "resumed", true)
-	sessionAfter := workspaceDatabaseQuery(t, cluster, state, fmt.Sprintf(`SELECT session_id FROM runtime.workflow_runs WHERE id='%s'`, item.CurrentAttemptID))
-	if sessionAfter != sessionBefore {
-		t.Fatalf("human-gate resume changed durable session identity: before=%s after=%s", sessionBefore, sessionAfter)
+	if resumedGate.SessionID != sessionBefore {
+		t.Fatalf("human-gate resume changed durable session identity: before=%s after=%s", sessionBefore, resumedGate.SessionID)
 	}
-	assignments := workspaceDatabaseQuery(t, cluster, state, fmt.Sprintf(`SELECT count(*)::text || '|' || count(DISTINCT fencing_generation)::text FROM runtime.turn_assignments WHERE attempt_id='%s'`, item.CurrentAttemptID))
-	if assignments != "2|2" {
-		t.Fatalf("human-gate resume did not use a fresh fenced worker generation: %q", assignments)
+	if resumedGate.AssignmentCount != 2 || resumedGate.GenerationCount != 2 {
+		t.Fatalf("human-gate resume did not use a fresh fenced worker generation: assignments=%d generations=%d", resumedGate.AssignmentCount, resumedGate.GenerationCount)
 	}
-	bashCalls := workspaceDatabaseQuery(t, cluster, state, fmt.Sprintf(`SELECT count(*) FROM runtime.events WHERE run_id='%s' AND kind='tool_call_started' AND payload->>'tool_name'='bash'`, item.CurrentAttemptID))
-	if bashCalls != "2" {
-		t.Fatalf("worker replacement duplicated or omitted the intended workspace consequence: bash calls=%s", bashCalls)
+	if resumedGate.BashCallCount != 2 {
+		t.Fatalf("worker replacement duplicated or omitted the intended workspace consequence: bash calls=%d", resumedGate.BashCallCount)
 	}
 	respondWorkspaceBlocker(t, baseURL, state.workspaceWorkKey, item.ID)
 	_ = waitWorkspaceWorkState(t, baseURL, state.workspaceWorkKey, item.ID, "done", 2*time.Minute)
@@ -767,31 +765,6 @@ func readWorkspaceWork(t *testing.T, baseURL, key, id string) workspaceWorkItem 
 		t.Fatalf("decode workspace work item: %v", err)
 	}
 	return item
-}
-
-func waitWorkspaceWorkState(t *testing.T, baseURL, key, id, wanted string, timeout time.Duration) workspaceWorkItem {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var item workspaceWorkItem
-	for time.Now().Before(deadline) {
-		item = readWorkspaceWork(t, baseURL, key, id)
-		if item.State == wanted {
-			return item
-		}
-		if item.State == "failed" && wanted != "failed" {
-			t.Fatalf("workspace work %s failed while waiting for %s", id, wanted)
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	t.Fatalf("workspace work %s state=%s did not reach %s", id, item.State, wanted)
-	return workspaceWorkItem{}
-}
-
-func workspaceDatabaseQuery(t *testing.T, cluster *remotecluster.Cluster, state *permanentCPUFixtureState, query string) string {
-	t.Helper()
-	return strings.TrimSpace(cluster.Kubectl(t, "exec", "-n", workspaceNamespace,
-		"statefulset/"+state.runID+"-postgresql", "-c", "postgresql", "--",
-		"psql", "-U", "controlplane", "-d", "controlplane", "-Atc", query))
 }
 
 func waitWorkspaceConcurrencyRows(t *testing.T, cluster *remotecluster.Cluster, state *permanentCPUFixtureState, firstWorkID, secondWorkID string, requireChild bool, timeout time.Duration) []workspaceConcurrencyRow {
