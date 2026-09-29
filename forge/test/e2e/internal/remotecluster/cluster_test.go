@@ -1,10 +1,12 @@
 package remotecluster
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestKubectlSeparatedReturnsExactStdout(t *testing.T) {
@@ -62,10 +64,35 @@ exit 23
 		t.Fatalf("failure streams are unbounded: stdout=%d stderr=%d", len(stdout), len(stderr))
 	}
 	message := err.Error()
-	for _, required := range []string{"exit status 23", "stdout-marker:", "stderr-marker:", "truncated; 20014 bytes total"} {
+	for _, required := range []string{"--kubeconfig /tmp/test-kubeconfig exec postgresql -- psql", "exit status 23", "stdout-marker:", "stderr-marker:", "truncated; 20014 bytes total"} {
 		if !strings.Contains(message, required) {
 			t.Fatalf("failure diagnostic does not contain %q:\n%s", required, message)
 		}
+	}
+}
+
+func TestBoundedCommandStreamKeepsEvidenceAfterInvalidByte(t *testing.T) {
+	value := "abc\xff" + strings.Repeat("x", 20000)
+	bounded := boundedCommandStream(value, maxSeparatedCommandStreamBytes)
+	if !strings.HasPrefix(bounded, "abc\xff") {
+		t.Fatalf("bounded stream lost its exact prefix: %q", bounded)
+	}
+	if len(bounded) < maxSeparatedCommandStreamBytes-64 {
+		t.Fatalf("invalid byte collapsed retained evidence: %d bytes of %d limit", len(bounded), maxSeparatedCommandStreamBytes)
+	}
+}
+
+func TestBoundedCommandStreamDoesNotSplitMultibyteRune(t *testing.T) {
+	const limit = 64
+	suffixLength := len(fmt.Sprintf("\n...[truncated; %d bytes total]", 100000))
+	keep := limit - suffixLength
+	value := strings.Repeat("a", keep-1) + "€" + strings.Repeat("b", 100000)
+	bounded := boundedCommandStream(value, limit)
+	if !utf8.ValidString(bounded) {
+		t.Fatalf("bounded stream is not valid UTF-8: %q", bounded)
+	}
+	if !strings.HasSuffix(bounded, fmt.Sprintf("\n...[truncated; %d bytes total]", len(value))) {
+		t.Fatalf("bounded stream lost its truncation suffix: %q", bounded)
 	}
 }
 
