@@ -6,11 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nunocgoncalves/iterabase-mono/testkit/e2e/redact"
@@ -26,9 +28,13 @@ type Command struct {
 	OutputName string
 }
 
-// Result contains already-redacted combined output.
+// Result contains already-redacted command output. Output remains the combined
+// stdout+stderr stream for existing callers; Stdout and Stderr keep the exact
+// channels so assertions can read result data without protocol diagnostics.
 type Result struct {
 	Output   string
+	Stdout   string
+	Stderr   string
 	ExitCode int
 }
 
@@ -62,12 +68,17 @@ func (runner Runner) Run(ctx context.Context, command Command) (Result, error) {
 	configureProcessTree(cmd)
 	cmd.Dir = command.Dir
 	cmd.Env = mergedEnv(command.Env)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	var output lockedBuffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = io.MultiWriter(&output, &stdout)
+	cmd.Stderr = io.MultiWriter(&output, &stderr)
 	err := cmd.Run()
 	redacted := runner.Redactor.String(output.String())
-	result := Result{Output: redacted}
+	result := Result{
+		Output: redacted,
+		Stdout: runner.Redactor.String(stdout.String()),
+		Stderr: runner.Redactor.String(stderr.String()),
+	}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
 	}
@@ -102,6 +113,25 @@ func (runner Runner) writeOutput(name string, data []byte) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
+}
+
+// lockedBuffer serializes the stdout and stderr copiers that share the combined
+// evidence stream while each channel is captured independently.
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (buffer *lockedBuffer) Write(data []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.Write(data)
+}
+
+func (buffer *lockedBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.String()
 }
 
 func mergedEnv(overrides map[string]string) []string {

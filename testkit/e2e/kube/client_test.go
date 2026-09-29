@@ -13,11 +13,17 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/testkit/e2e/process"
 )
 
-type recordingExecutor struct{ commands []process.Command }
+type recordingExecutor struct {
+	commands []process.Command
+	result   process.Result
+}
 
 func (executor *recordingExecutor) Run(_ context.Context, command process.Command) (process.Result, error) {
 	executor.commands = append(executor.commands, command)
-	return process.Result{Output: "ok"}, nil
+	if executor.result == (process.Result{}) {
+		return process.Result{Output: "ok"}, nil
+	}
+	return executor.result, nil
 }
 
 func TestHelmUpgradeUsesExactChartAndSortedValues(t *testing.T) {
@@ -53,6 +59,31 @@ func TestKubectlEvidenceNameDoesNotContainArguments(t *testing.T) {
 	}
 	if name := executor.commands[0].OutputName; name == "" || strings.Contains(name, "do-not-leak") {
 		t.Fatalf("unsafe output name %q", name)
+	}
+}
+
+func TestKubectlSeparatedKeepsStderrOutOfExactStdout(t *testing.T) {
+	t.Parallel()
+	const diagnostic = "E0915 18:57:37.879813 3454 websocket.go:296] Unknown stream id 1, discarding message"
+	executor := &recordingExecutor{result: process.Result{
+		Output: diagnostic + "\n10005\n",
+		Stdout: "10005\n",
+		Stderr: diagnostic + "\n",
+	}}
+	client := Client{Executor: executor, Kubeconfig: "/tmp/isolated-kubeconfig"}
+	stdout, stderr, err := client.KubectlSeparated(context.Background(), time.Minute,
+		"exec", "statefulset/postgresql", "--", "psql", "-Atc", "SELECT 10005;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdout != "10005\n" {
+		t.Fatalf("separated kubectl stdout = %q", stdout)
+	}
+	if !strings.Contains(stderr, "Unknown stream id 1, discarding message") {
+		t.Fatalf("separated kubectl stderr = %q", stderr)
+	}
+	if executor.commands[0].Name != "kubectl" {
+		t.Fatalf("separated kubectl command = %+v", executor.commands[0])
 	}
 }
 
