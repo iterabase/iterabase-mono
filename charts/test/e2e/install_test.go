@@ -88,7 +88,7 @@ spec:
 status: {}
 `
 	blockedPath := state.writeManifest(t, "forbidden-lvmsnapshot.yaml", blocked)
-	out, err := state.kubectlResult(30*time.Second, "create", "-f", blockedPath)
+	out, err := state.kubectlOutput(30*time.Second, "create", "-f", blockedPath)
 	if err == nil || !strings.Contains(err.Error(), "LVMSnapshot creation is disabled by DES-HOR-545-05") {
 		t.Fatalf("LVMSnapshot CREATE was not denied by the exact admission policy: err=%v output=%s", err, out)
 	}
@@ -182,7 +182,7 @@ spec:
   resources: {requests: {storage: 512Mi}}
 `
 	blockedPath := state.writeManifest(t, "unrelated-agentpool-claim.yaml", blocked)
-	if _, err := state.kubectlResult(30*time.Second, "apply", "-f", blockedPath); err == nil {
+	if _, err := state.kubectlOutput(30*time.Second, "apply", "-f", blockedPath); err == nil {
 		t.Fatalf("an unrelated PVC selecting the AgentPool class was admitted; DES-HOR-545-01 requires the manager-owned AgentPool claim shape only")
 	}
 
@@ -201,7 +201,7 @@ spec:
   resources: {requests: {storage: 512Mi}}
 `
 	crossNSPath := state.writeManifest(t, "unrelated-agentpool-claim-cn.yaml", crossNS)
-	if _, err := state.kubectlResult(30*time.Second, "apply", "-f", crossNSPath); err == nil {
+	if _, err := state.kubectlOutput(30*time.Second, "apply", "-f", crossNSPath); err == nil {
 		t.Fatalf("a cross-namespace PVC selecting the AgentPool class was admitted; REQ-035 requires cluster-wide claim authority")
 	}
 
@@ -246,10 +246,10 @@ spec:
   resources: {requests: {storage: 512Mi}}
 `
 	agentClaimPath := state.writeManifest(t, "manager-agentpool-claim.yaml", agentClaim)
-	if _, err := state.kubectlResult(30*time.Second, "create", "-f", agentClaimPath, "--as", managerIdentity); err != nil {
+	if _, err := state.kubectlOutput(30*time.Second, "create", "-f", agentClaimPath, "--as", managerIdentity); err != nil {
 		t.Fatalf("manager-identity + AgentPool-owned PVC selecting the class was denied on CREATE: %v", err)
 	}
-	if _, err := state.kubectlResult(30*time.Second, "patch", "pvc/manager-agentpool-claim", "-n", testNamespace, "--type=merge", "-p", `{"metadata":{"ownerReferences":[{"apiVersion":"platform.iterabase.com/v1alpha1","kind":"AgentPool","name":"ap-other","uid":"22222222-2222-2222-2222-222222222222","controller":true}]}}`); err == nil {
+	if _, err := state.kubectlOutput(30*time.Second, "patch", "pvc/manager-agentpool-claim", "-n", testNamespace, "--type=merge", "-p", `{"metadata":{"ownerReferences":[{"apiVersion":"platform.iterabase.com/v1alpha1","kind":"AgentPool","name":"ap-other","uid":"22222222-2222-2222-2222-222222222222","controller":true}]}}`); err == nil {
 		t.Fatalf("an AgentPool PVC UPDATE swapping its controller ownerReference to a different AgentPool was admitted; ownership must be immutable")
 	}
 	consumer := `apiVersion: v1
@@ -267,13 +267,13 @@ spec:
 	consumerPath := state.writeManifest(t, "manager-agentpool-claim-consumer.yaml", consumer)
 	state.kubectl(t, 30*time.Second, "apply", "-f", consumerPath)
 	state.kubectl(t, 5*time.Minute, "wait", "pod/manager-agentpool-claim-consumer", "-n", testNamespace, "--for=condition=Ready", "--timeout=4m")
-	if _, err := state.kubectlResult(30*time.Second, "patch", "pvc/manager-agentpool-claim", "-n", testNamespace, "--type=merge", "-p", `{"spec":{"resources":{"requests":{"storage":"768Mi"}}}}`); err == nil {
+	if _, err := state.kubectlOutput(30*time.Second, "patch", "pvc/manager-agentpool-claim", "-n", testNamespace, "--type=merge", "-p", `{"spec":{"resources":{"requests":{"storage":"768Mi"}}}}`); err == nil {
 		t.Fatalf("a non-manager identity raised an AgentPool PVC request")
 	}
-	if _, err := state.kubectlResult(30*time.Second, "patch", "pvc/manager-agentpool-claim", "-n", testNamespace, "--type=merge", "-p", `{"spec":{"resources":{"requests":{"storage":"768Mi"}}}}`, "--as", managerIdentity); err != nil {
+	if _, err := state.kubectlOutput(30*time.Second, "patch", "pvc/manager-agentpool-claim", "-n", testNamespace, "--type=merge", "-p", `{"spec":{"resources":{"requests":{"storage":"768Mi"}}}}`, "--as", managerIdentity); err != nil {
 		t.Fatalf("the exact manager identity could not raise an AgentPool PVC request: %v", err)
 	}
-	if _, err := state.kubectlResult(30*time.Second, "patch", "pvc/manager-agentpool-claim", "-n", testNamespace, "--type=merge", "-p", `{"spec":{"resources":{"requests":{"storage":"512Mi"}}}}`, "--as", managerIdentity); err == nil {
+	if _, err := state.kubectlOutput(30*time.Second, "patch", "pvc/manager-agentpool-claim", "-n", testNamespace, "--type=merge", "-p", `{"spec":{"resources":{"requests":{"storage":"512Mi"}}}}`, "--as", managerIdentity); err == nil {
 		t.Fatalf("the manager identity was allowed to shrink an AgentPool PVC request")
 	}
 	if got := state.kubectl(t, 30*time.Second, "get", "pvc/manager-agentpool-claim", "-n", testNamespace, "-o", "jsonpath={.spec.resources.requests.storage}"); got != "768Mi" {

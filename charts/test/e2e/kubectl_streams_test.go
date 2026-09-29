@@ -52,7 +52,7 @@ func TestUnitPersistedStateAssertionIgnoresKubectlProtocolStderr(t *testing.T) {
 func TestUnitKubectlFailureRetainsStderrDiagnostics(t *testing.T) {
 	writeNoisyCommand(t, "kubectl", "", kubectlUnknownStreamDiagnostic, 1)
 	state := newUnitChartState(t)
-	if _, err := state.kubectlResult(10*time.Second, "get", "pods"); err == nil ||
+	if _, err := state.kubectlOutput(10*time.Second, "get", "pods"); err == nil ||
 		!strings.Contains(err.Error(), "Unknown stream id 1, discarding message") {
 		t.Fatalf("kubectl failure error = %v", err)
 	}

@@ -71,7 +71,7 @@ func installReleasedCertificateOwnerStage(t *testing.T, state *chartState) {
 func retireBundledSubstrateStage(t *testing.T, state *chartState) {
 	t.Helper()
 	helmUpgradeCurrentPlatform(t, state)
-	if _, err := state.kubectlResult(30*time.Second, "get", "deployment/"+testRelease+"-cert-manager", "-n", testNamespace); err == nil {
+	if _, err := state.kubectlOutput(30*time.Second, "get", "deployment/"+testRelease+"-cert-manager", "-n", testNamespace); err == nil {
 		t.Fatal("platform upgrade retained its old cert-manager Deployment")
 	}
 	state.kubectl(t, 3*time.Minute, "wait", "--for=condition=Established", "crd/certificates.cert-manager.io", "--timeout=2m")

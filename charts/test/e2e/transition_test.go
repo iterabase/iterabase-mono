@@ -785,7 +785,7 @@ spec:
 		invalid := strings.Replace(manifest, "metadata:\n", "metadata:\n  annotations:\n    nginx.ingress.kubernetes.io/server-snippet: return 200;\n", 1)
 		invalid = strings.Replace(invalid, name+"-valid", name+"-invalid", 1)
 		path = state.writeManifest(t, name+"-invalid-ingress.yaml", invalid)
-		out, err := state.kubectlResult(30*time.Second, "apply", "--dry-run=server", "-f", path)
+		out, err := state.kubectlOutput(30*time.Second, "apply", "--dry-run=server", "-f", path)
 		if err == nil {
 			t.Fatalf("%s admission accepted disabled server-snippet annotation", class)
 		}

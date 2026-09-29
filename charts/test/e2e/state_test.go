@@ -323,10 +323,6 @@ func (state *chartState) kubectlOutput(timeout time.Duration, args ...string) (s
 	return strings.TrimSpace(stdout), nil
 }
 
-func (state *chartState) kubectlResult(timeout time.Duration, args ...string) (string, error) {
-	return state.kubectlOutput(timeout, args...)
-}
-
 func (state *chartState) process(t *testing.T, timeout time.Duration, name string, args ...string) string {
 	t.Helper()
 	result, err := state.runner.Run(state.ctx, process.Command{Name: name, Args: args, Timeout: timeout})
