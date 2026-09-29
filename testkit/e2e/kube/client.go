@@ -61,6 +61,21 @@ func (client Client) Kubectl(ctx context.Context, timeout time.Duration, args ..
 	return result.Output, err
 }
 
+// KubectlSeparated executes one bounded command against only this kubeconfig and
+// keeps exact stdout separate from stderr diagnostics. Existing Kubectl callers
+// intentionally keep their historical combined-output behavior.
+func (client Client) KubectlSeparated(ctx context.Context, timeout time.Duration, args ...string) (stdout, stderr string, err error) {
+	if err := client.validate(); err != nil {
+		return "", "", err
+	}
+	full := append([]string{"--kubeconfig", client.Kubeconfig}, args...)
+	result, err := client.Executor.Run(ctx, process.Command{
+		Name: "kubectl", Args: full, Timeout: timeout,
+		OutputName: "kubectl-" + commandFileName(args) + ".log",
+	})
+	return result.Stdout, result.Stderr, err
+}
+
 // HelmUpgrade executes exactly one upgrade --install with sorted values.
 func (client Client) HelmUpgrade(ctx context.Context, options HelmOptions) (string, error) {
 	if err := client.validate(); err != nil {
