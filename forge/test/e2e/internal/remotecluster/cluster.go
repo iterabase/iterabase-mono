@@ -169,7 +169,8 @@ func runSeparated(name string, args ...string) (stdout, stderr string, err error
 	if ctx.Err() != nil {
 		commandErr = ctx.Err()
 	}
-	return stdout, stderr, fmt.Errorf("%s separated execution: %w\nstdout:\n%s\nstderr:\n%s", name, commandErr, stdout, stderr)
+	invocation := boundedCommandStream(strings.TrimSpace(name+" "+strings.Join(args, " ")), maxSeparatedCommandStreamBytes)
+	return stdout, stderr, fmt.Errorf("%s: %w\nstdout:\n%s\nstderr:\n%s", invocation, commandErr, stdout, stderr)
 }
 
 func boundedCommandStream(value string, limit int) string {
@@ -181,7 +182,7 @@ func boundedCommandStream(value string, limit int) string {
 	if keep < 0 {
 		return suffix[len(suffix)-limit:]
 	}
-	for keep > 0 && !utf8.ValidString(value[:keep]) {
+	for steps := 0; steps < utf8.UTFMax-1 && keep > 0 && !utf8.RuneStart(value[keep]); steps++ {
 		keep--
 	}
 	return value[:keep] + suffix
