@@ -5,6 +5,7 @@
 package remotecluster
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // Cluster binds every local Kubernetes operation to a Forge-fetched kubeconfig.
@@ -32,6 +34,15 @@ func (c *Cluster) Kubectl(t *testing.T, args ...string) string {
 	mustBin(t, "kubectl")
 	full := append([]string{"--kubeconfig", c.Kubeconfig}, args...)
 	return run(t, "kubectl", full...)
+}
+
+// KubectlSeparated runs kubectl without merging stderr into exact stdout.
+// Successful stdout is returned unchanged; stderr is independently bounded.
+// Failures return both bounded streams in the error. Existing Kubectl callers
+// intentionally keep their historical combined-output behavior.
+func (c *Cluster) KubectlSeparated(args ...string) (stdout, stderr string, err error) {
+	full := append([]string{"--kubeconfig", c.Kubeconfig}, args...)
+	return runSeparated("kubectl", full...)
 }
 
 // FirstPodName returns the name of the first pod matching a label selector
@@ -137,4 +148,41 @@ func run(t *testing.T, name string, args ...string) string {
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
 	return string(out)
+}
+
+const maxSeparatedCommandStreamBytes = 16 << 10
+
+func runSeparated(name string, args ...string) (stdout, stderr string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdoutBuffer, stderrBuffer bytes.Buffer
+	cmd.Stdout = &stdoutBuffer
+	cmd.Stderr = &stderrBuffer
+	commandErr := cmd.Run()
+	stdout = stdoutBuffer.String()
+	stderr = boundedCommandStream(stderrBuffer.String(), maxSeparatedCommandStreamBytes)
+	if commandErr == nil {
+		return stdout, stderr, nil
+	}
+	stdout = boundedCommandStream(stdout, maxSeparatedCommandStreamBytes)
+	if ctx.Err() != nil {
+		commandErr = ctx.Err()
+	}
+	return stdout, stderr, fmt.Errorf("%s separated execution: %w\nstdout:\n%s\nstderr:\n%s", name, commandErr, stdout, stderr)
+}
+
+func boundedCommandStream(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	suffix := fmt.Sprintf("\n...[truncated; %d bytes total]", len(value))
+	keep := limit - len(suffix)
+	if keep < 0 {
+		return suffix[len(suffix)-limit:]
+	}
+	for keep > 0 && !utf8.ValidString(value[:keep]) {
+		keep--
+	}
+	return value[:keep] + suffix
 }

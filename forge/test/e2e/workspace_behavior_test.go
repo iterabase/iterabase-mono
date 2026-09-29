@@ -787,11 +787,23 @@ func waitWorkspaceWorkState(t *testing.T, baseURL, key, id, wanted string, timeo
 	return workspaceWorkItem{}
 }
 
+func workspaceDatabaseQueryResult(cluster *remotecluster.Cluster, state *permanentCPUFixtureState, query string) (string, error) {
+	stdout, _, err := cluster.KubectlSeparated("exec", "-n", workspaceNamespace,
+		"statefulset/"+state.runID+"-postgresql", "-c", "postgresql", "--",
+		"psql", "-U", "controlplane", "-d", "controlplane", "-Atc", query)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout), nil
+}
+
 func workspaceDatabaseQuery(t *testing.T, cluster *remotecluster.Cluster, state *permanentCPUFixtureState, query string) string {
 	t.Helper()
-	return strings.TrimSpace(cluster.Kubectl(t, "exec", "-n", workspaceNamespace,
-		"statefulset/"+state.runID+"-postgresql", "-c", "postgresql", "--",
-		"psql", "-U", "controlplane", "-d", "controlplane", "-Atc", query))
+	result, err := workspaceDatabaseQueryResult(cluster, state, query)
+	if err != nil {
+		t.Fatalf("workspace database query: %v", err)
+	}
+	return result
 }
 
 func waitWorkspaceConcurrencyRows(t *testing.T, cluster *remotecluster.Cluster, state *permanentCPUFixtureState, firstWorkID, secondWorkID string, requireChild bool, timeout time.Duration) []workspaceConcurrencyRow {
