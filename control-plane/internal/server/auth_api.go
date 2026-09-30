@@ -427,7 +427,7 @@ func (h *Handler) setupContext(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	context, err := h.store.SetupContext(r.Context(), token)
+	context, err := h.store.SetupContext(r.Context(), token, h.authCfg.now())
 	h.writeAuthLinkError(w, err)
 	if err == nil {
 		authWrite(w, http.StatusOK, map[string]string{"email": context.Email, "role": context.Role})
