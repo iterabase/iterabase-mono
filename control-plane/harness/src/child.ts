@@ -7,6 +7,12 @@
 // the framed fd-3 channel, emits a heartbeat for liveness, and writes a final
 // `result`. A framed `abort` on fd 0 aborts pi.
 //
+// HOR-612: the fd-3 channel is written through a bounded, non-blocking writer
+// (`AuditChannel`). A full pipe sheds ephemeral frames and fails the channel
+// closed with recorded evidence instead of blocking the event loop — the same
+// loop the liveness heartbeat needs — so audit volume can no longer starve the
+// child's own heartbeat and get a healthy turn reaped by the watchdog.
+//
 // The child holds NO gateway/inference credential and has NO direct network
 // route (ARCH-003/010). Model calls cross the custom `streamSimple` provider →
 // fd 4/fd 5 → supervisor → inference gateway (mTLS). Gateway tool calls cross
@@ -61,9 +67,10 @@ import {
   Outcome,
   type TurnEvent,
 } from "./gen/iterabase/harness/v1/harness_pb.js";
-import { FrameReader, encodeFrame, parseSupervisorFrame, type ArtifactInputRefFrame, type GatewayToolDescriptor } from "./ipc.js";
+import { FrameReader, encodeFrame, parseSupervisorFrame, AUDIT_OVERFLOW_EXIT_CODE, type ArtifactInputRefFrame, type AuditChannelEvidence, type AuditFrameKind, type GatewayToolDescriptor } from "./ipc.js";
 import { ChildRpc } from "./child-rpc.js";
 import { buildOpenAIRequestBody } from "./openai-stream.js";
+import { AUDIT_FLUSH_TIMEOUT_MS, AuditChannel, auditChannelOptionsFromEnv } from "./audit-channel.js";
 
 const PROVIDER = "iterabase-inference";
 const SESSION_ID_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
@@ -199,30 +206,70 @@ function assignmentMessage(a: Assignment): string {
   ].join("\n");
 }
 
-/** Write a framed ChildFrame to fd 3 (the child→supervisor IPC channel). */
-function writeFrame(frame: unknown): void {
-  try {
-    writeSync(3, encodeFrame(frame));
-  } catch {
-    /* fd closed (supervisor gone) — exit promptly via the main loop */
-  }
+/**
+ * HOR-612: the per-turn fd-3 audit channel (bounded, non-blocking writer).
+ * Created by `main`; kept at module scope so the entrypoint can flush it before
+ * the HOR-434 clean exit and so a failed-closed channel can be reported. Null
+ * when this module is imported by unit tests that never run the entrypoint.
+ */
+let auditChannel: AuditChannel | null = null;
+/** Set once the bounded audit channel failed closed: the terminal `result` can
+ * no longer be delivered, so the entrypoint must exit with a non-zero code. */
+let auditOverflowed = false;
+
+/** Bounded grace for the supervisor to react to the overflow notice before the
+ * child exits on its own (HOR-612: the fail-closed path is memory- and
+ * time-bounded, never an unbounded pipe block or an unbounded linger). */
+const DEFAULT_AUDIT_OVERFLOW_GRACE_MS = 5_000;
+
+/** Write one child→supervisor audit frame to fd 3. Never blocks the event loop
+ * (HOR-612): the frame is queued in the bounded `AuditChannel` and shed or
+ * failed closed there if the pipe cannot keep up. */
+function writeFrame(kind: AuditFrameKind, frame: unknown): void {
+  auditChannel?.write(kind, frame);
 }
 
 function emit(payload: TurnEvent["kind"]): void {
   const te = create(TurnEventSchema, { turnId: "", sequence: 0n, timestampMs: 0n, kind: payload });
-  writeFrame({ type: "event", event: toJson(TurnEventSchema, te) });
+  writeFrame("event", { type: "event", event: toJson(TurnEventSchema, te) });
 }
 
 function emitTokenDelta(contentIndex: number, deltaType: "TEXT" | "THINKING", delta: string): void {
-  writeFrame({ type: "tokenDelta", contentIndex, deltaType, delta });
+  writeFrame("tokenDelta", { type: "tokenDelta", contentIndex, deltaType, delta });
 }
 
 function emitHeartbeat(): void {
-  writeFrame({ type: "heartbeat" });
+  // Carry the last-known audit-queue snapshot so an abort can attribute a
+  // stalled fd-3 channel from the durable record alone (HOR-612).
+  writeFrame("heartbeat", { type: "heartbeat", ...(auditChannel ? { auditQueue: auditChannel.snapshot() } : {}) });
 }
 
 function emitResult(outcome: Outcome, message?: string): void {
-  writeFrame({ type: "result", outcome, message });
+  writeFrame("result", { type: "result", outcome, message });
+}
+
+/**
+ * HOR-612 fail-closed path: the bounded fd-3 backlog exceeded its hard bound,
+ * so the audit channel can no longer carry frames (the supervisor stopped
+ * draining fd 3). Report the bounded evidence to the supervisor over fd 4 — the
+ * same synchronous fd-4 write path the RPC client uses, so the frame stream
+ * stays coherent — log it, and arm a bounded self-exit. Frames only: no
+ * payloads, prompts, model output, tool arguments, or results are recorded. If
+ * the supervisor reacts it aborts the child (SIGTERM → SIGKILL) and records the
+ * causal abort; if fd 4 is stalled too, the bounded timer still ends the turn
+ * with `AUDIT_OVERFLOW_EXIT_CODE` (which the supervisor maps to the same cause)
+ * instead of leaving the child blocked in a pipe write forever.
+ */
+function reportAuditOverflow(evidence: AuditChannelEvidence): void {
+  auditOverflowed = true;
+  try {
+    writeSync(4, encodeFrame({ type: "auditBacklogOverflow", requestId: "audit-backlog-overflow", evidence }));
+  } catch {
+    /* fd 4 closed (supervisor gone) — the exit code still classifies the turn */
+  }
+  console.error(`[harness:child-audit-overflow] ${JSON.stringify(evidence)}`);
+  const graceMs = Number(process.env.HARNESS_AUDIT_OVERFLOW_GRACE_MS ?? "") || DEFAULT_AUDIT_OVERFLOW_GRACE_MS;
+  setTimeout(() => process.exit(AUDIT_OVERFLOW_EXIT_CODE), graceMs);
 }
 
 /** Per-turn fd-5 RPC read stream (see `releasePerTurnIpc`). Never set when imported by tests. */
@@ -299,6 +346,11 @@ export function captureShutdownErrors(runner: ExtensionErrorEmitter): {
 }
 
 async function main(): Promise<void> {
+  // HOR-612: the fd-3 audit channel is a bounded, non-blocking writer. A full
+  // pipe must never block the child's event loop (that is what starved the
+  // liveness heartbeat and made the watchdog reap healthy turns).
+  auditChannel = AuditChannel.fromFd(3, { ...auditChannelOptionsFromEnv(), onOverflow: reportAuditOverflow });
+
   const assignment = await readAssignment();
   if (!assignment) {
     emitResult(Outcome.FAILED, "no valid assignment on stdin");
@@ -998,23 +1050,25 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   // (and any `process.exit`) forever, and the liveness watchdog SIGKILLs the
   // child ~5-15s later — reaping an already-completed turn as ABORTED
   // (`child killed by SIGKILL`) and discarding its result.
+  //
+  // HOR-612: the fd-3 writer is asynchronous, so the terminal `result` (and the
+  // final heartbeat) can still be queued when `main` resolves. Flush the audit
+  // channel — bounded — before exiting instead of relying on a synchronous pipe
+  // write. A child whose audit channel failed closed exits non-zero: its result
+  // could not be delivered and the supervisor classifies the turn from that.
+  const finish = async (code: number): Promise<void> => {
+    await auditChannel?.flush(AUDIT_FLUSH_TIMEOUT_MS);
+    releasePerTurnIpc();
+    process.exit(auditOverflowed ? AUDIT_OVERFLOW_EXIT_CODE : code);
+  };
   main().then(
-    () => {
-      // HOR-434: the terminal `result` frame was already emitted inside `main`;
-      // release the per-turn IPC (close fd 5, detach stdin) and clean-exit
-      // (code 0) so the supervisor's child-process resolves the provisional
-      // result. Approved child-only slice: the supervisor keeps its fd-5 write
-      // end open.
-      releasePerTurnIpc();
-      process.exit(0);
-    },
+    () => finish(0),
     (err) => {
       console.error(`child fatal: ${err instanceof Error ? err.message : err}`);
       emitResult(Outcome.FAILED);
       // Same HOR-434 guard on the fatal path: release the per-turn IPC before
-      // exiting non-zero.
-      releasePerTurnIpc();
-      process.exit(1);
+      // exiting non-zero (and the same flush for the audit channel).
+      return finish(1);
     },
   );
 }

@@ -121,6 +121,8 @@ describe("HOR-381 child entrypoint assignment handoff", { timeout: 30_000 }, () 
     const srcMtime = Math.max(
       statSync(join(HARNESS_ROOT, "src", "child.ts")).mtimeMs,
       statSync(join(HARNESS_ROOT, "src", "ipc.ts")).mtimeMs,
+      // HOR-612: the stalled-reader test imports the compiled audit writer.
+      statSync(join(HARNESS_ROOT, "src", "audit-channel.ts")).mtimeMs,
     );
     if (!existsSync(CHILD_BIN) || statSync(CHILD_BIN).mtimeMs < srcMtime) {
       execSync("npm run build", { cwd: HARNESS_ROOT, stdio: "ignore" });
@@ -270,6 +272,112 @@ describe("HOR-381 child entrypoint assignment handoff", { timeout: 30_000 }, () 
     expect(signal).toBeNull();
     expect(code).toBe(0);
     rmSync(tmp, { recursive: true, force: true });
+  });
+});
+
+describe("HOR-612 bounded fd-3 audit channel (real pipe)", { timeout: 30_000 }, () => {
+  // The child writes audit frames to fd 3 through the bounded, non-blocking
+  // `AuditChannel`. This test stalls the fd-3 reader for real (the kernel pipe
+  // fills; the parent never reads) and proves, over real pipes:
+  //   - the writer's event loop stays alive: the stub's liveness timer keeps
+  //     emitting frames on fd 4 while fd 3 is blocked;
+  //   - the durable backlog is bounded and fails the channel closed instead of
+  //     growing without limit;
+  //   - the fail-closed path reports the bounded evidence and ends the child in
+  //     bounded time with the HOR-612 overflow exit code (never a hang in a
+  //     blocking `writeSync`).
+  // The stub imports the compiled production writer, so this exercises the same
+  // `AuditChannel.fromFd` path the entrypoint uses.
+  const backpressureStub = `
+import { writeSync } from "node:fs";
+import { AuditChannel } from ${JSON.stringify(join(HARNESS_ROOT, "dist", "audit-channel.js"))};
+function frame4(obj) {
+  const body = Buffer.from(JSON.stringify(obj));
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(body.length, 0);
+  writeSync(4, Buffer.concat([header, body]));
+}
+let ticks = 0;
+let overflowed = false;
+const channel = AuditChannel.fromFd(3, {
+  maxQueuedBytes: 200 * 1024,
+  maxQueuedFrames: 100000,
+  maxEphemeralBytes: 20 * 1024,
+  onOverflow: (evidence) => {
+    overflowed = true;
+    frame4({ type: "auditBacklogOverflow", evidence });
+    setTimeout(() => process.exit(8), 300);
+  },
+});
+// Liveness: this timer is the child's heartbeat. It must keep firing while the
+// fd-3 pipe is full; a blocking fd-3 write would silence it entirely.
+setInterval(() => {
+  ticks += 1;
+  frame4({ type: "tick", n: ticks });
+  channel.write("heartbeat", { type: "heartbeat" });
+}, 20);
+// Flood durable frames: the fd-3 reader never drains, so the bounded backlog
+// must shed/fail closed rather than block this loop.
+for (let i = 0; i < 5000 && !overflowed; i += 1) {
+  channel.write("event", { type: "event", event: { turnId: "t", sequence: "0", timestampMs: "0", harnessError: { error: { message: "x".repeat(2000) } } } });
+}
+`;
+
+  it("keeps the liveness timer alive under a stalled reader and fails closed in bounded time", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "harness-audit-stall-"));
+    const stub = join(tmp, "audit-stall.mjs");
+    writeFileSync(stub, backpressureStub);
+    // fd 3 is deliberately never read by this test: the child's audit pipe
+    // fills and its writer must absorb the whole burst without blocking.
+    const proc = spawn(process.execPath, [stub], { stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe"] });
+    proc.stderr.on("data", () => {});
+    proc.stdout.on("data", () => {});
+
+    const control: unknown[] = [];
+    let buf = Buffer.alloc(0);
+    const fd4 = proc.stdio[4] as unknown as NodeJS.ReadableStream;
+    const onData = (chunk: Buffer): void => {
+      buf = Buffer.concat([buf, chunk]);
+      while (buf.length >= 4) {
+        const len = buf.readUInt32BE(0);
+        if (buf.length < 4 + len) break;
+        const body = buf.subarray(4, 4 + len);
+        buf = buf.subarray(4 + len);
+        try {
+          control.push(JSON.parse(body.toString("utf8")));
+        } catch {
+          /* skip malformed */
+        }
+      }
+    };
+    fd4.on("data", onData);
+    const exit = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+      proc.once("exit", (code, signal) => resolve([code, signal]));
+    });
+
+    const [code, signal] = await Promise.race([
+      exit,
+      new Promise<[number | null, NodeJS.Signals | null]>((resolve) => setTimeout(() => resolve([null, null]), 10_000)),
+    ]);
+    fd4.removeListener("data", onData);
+    rmSync(tmp, { recursive: true, force: true });
+
+    const ticks = control.filter((f) => (f as { type?: string }).type === "tick");
+    const overflow = control.find((f) => (f as { type?: string }).type === "auditBacklogOverflow") as
+      | { evidence: { overflowed: boolean; queuedBytes: number; queuedFrames: number; lastBlockedFrameKind?: string } }
+      | undefined;
+
+    // The heartbeat timer kept firing while the fd-3 pipe was full.
+    expect(ticks.length).toBeGreaterThanOrEqual(5);
+    // The channel failed closed with the bounded, attributable evidence.
+    expect(overflow).toBeDefined();
+    expect(overflow!.evidence.overflowed).toBe(true);
+    expect(overflow!.evidence.queuedBytes).toBeGreaterThan(0);
+    expect(overflow!.evidence.queuedFrames).toBeGreaterThan(0);
+    expect(overflow!.evidence.lastBlockedFrameKind).toBe("event");
+    // Bounded termination with the HOR-612 overflow exit code.
+    expect(signal).toBeNull();
+    expect(code).toBe(8);
   });
 });
 

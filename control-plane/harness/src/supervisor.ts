@@ -51,7 +51,7 @@ import { EventOutbox, OutboxOverflow, AckError } from "./event-outbox.js";
 import { createGatewayClient, type GatewayClient, type AssignmentScope } from "./gateway-client.js";
 import { streamModel } from "./model-bridge.js";
 import { InvokeState } from "./gen/iterabase/gateway/v1/gateway_pb.js";
-import type { ArtifactInputRefFrame, GatewayToolDescriptor } from "./ipc.js";
+import type { ArtifactInputRefFrame, AuditChannelEvidence, GatewayToolDescriptor } from "./ipc.js";
 import { materializeArtifacts, publishWorkspaceArtifact } from "./artifact-files.js";
 import type { HarnessMetrics } from "./metrics.js";
 
@@ -70,7 +70,8 @@ export type ChildAbortReason =
   | "stream_loss" // Work stream lost / connect failure (fail-closed)
   | "worker_drain" // supervisor shutdown drain
   | "rpc_protocol_error" // malformed/undecodable child RPC frame on fd 4
-  | "rpc_backlog_overflow"; // fd-5 response backlog exceeded the hard bound
+  | "rpc_backlog_overflow" // fd-5 response backlog exceeded the hard bound
+  | "audit_backlog_overflow"; // fd-3 audit backlog exceeded the hard bound (child failed closed)
 
 /** Bounded, non-secret child abort diagnostics (HOR-551): timing + lifecycle
  * state only — never prompts, model bodies, tool arguments/results, or
@@ -96,6 +97,10 @@ export interface ChildAbortRecord {
   /** The supervisor durably accepted (WAL-appended) and acked complete_step. */
   stepCompletionDurable: boolean;
   provisionalResultObserved: boolean;
+  /** HOR-612: last child-reported fd-3 audit-channel state (heartbeat snapshot
+   * while healthy; the overflow notice when the child failed closed). Present
+   * only when the child reported one. */
+  auditChannel?: AuditChannelEvidence;
   /** Signals actually delivered, in order. */
   signals: Array<{ signal: "SIGTERM" | "SIGKILL"; sentAtMs: number }>;
   /** Final exit classification (set once the child exits). */
@@ -115,12 +120,16 @@ export type ChildRpcRequest =
   | { type: "toolCall"; requestId: string; toolCallId: string; toolName: string; toolVersionDigest: string; argumentsJson: string; artifactInputRefs?: ArtifactInputRefFrame[]; idempotencyKey?: string }
   | { type: "publishArtifact"; requestId: string; relativePath: string; mimeType: string }
   | { type: "stepCompletion"; requestId: string; outcome: string; summary: string; outputJson: string; artifactRefs: Array<{artifactId:string;role:string;metadataJson:string}> }
-  | { type: "cancel"; requestId: string };
+  | { type: "cancel"; requestId: string }
+  | { type: "auditBacklogOverflow"; requestId: string; evidence: AuditChannelEvidence };
 export interface Child {
   /** Begin bounded abort escalation (SIGTERM → SIGKILL after abortGraceMs) with a machine-searchable reason (HOR-551). */
   abort(reason: ChildAbortReason, detail?: string): void;
   /** Mark the child's complete_step report durably accepted (WAL-appended). */
   noteStepCompletionDurable(): void;
+  /** Record the latest child-reported fd-3 audit-channel evidence (HOR-612) for
+   * the next abort record. */
+  noteAuditChannelEvidence(evidence: AuditChannelEvidence): void;
   events: AsyncIterable<ChildEvent>;
   /** child→supervisor RPC requests (fd 4) — model/tool calls (HOR-395). */
   rpcRequests: AsyncIterable<ChildRpcRequest>;
@@ -501,6 +510,18 @@ export class Supervisor {
     for await (const req of child.rpcRequests) {
       if (this.turn?.aborted) break;
       this.d.metrics?.childRPC.labels(req.type).inc();
+      if (req.type === "auditBacklogOverflow") {
+        // HOR-612: the child's bounded fd-3 audit backlog exceeded its hard
+        // bound — the supervisor stopped draining fd 3 long enough that frames
+        // could no longer be delivered. The child failed the turn closed
+        // instead of blocking its liveness heartbeat; record the exact channel
+        // evidence on the abort record and abort with a distinct reason so the
+        // durable outcome attributes the stall (never a bare stale-heartbeat
+        // reap). This is a notice, not a request: no response frame is sent.
+        child.noteAuditChannelEvidence(req.evidence);
+        this.abortActiveTurn("audit_backlog_overflow", "child reported an fd-3 audit backlog overflow (supervisor not draining the audit channel)");
+        continue;
+      }
       if (req.type === "cancel") {
         const ac = controllers.get(req.requestId);
         if (ac) ac.abort();
@@ -823,10 +844,10 @@ export class Supervisor {
     this.emitOutcome(Outcome.FAILED, message);
   }
 
-  private abortActiveTurn(reason: ChildAbortReason): void {
+  private abortActiveTurn(reason: ChildAbortReason, detail?: string): void {
     if (this.turn) this.turn.aborted = true;
     this.turn?.discoveryAc?.abort();
-    this.currentChild?.abort(reason);
+    this.currentChild?.abort(reason, detail);
   }
 
   /** Await bounded child termination after abort (SIGTERM → SIGKILL within abortGraceMs). */
