@@ -265,7 +265,12 @@ type SetupContext struct {
 
 // SetupContext resolves the bounded read-only context for a valid setup link.
 // Any other token state returns the matching bounded link error.
-func (s *Store) SetupContext(ctx context.Context, raw string) (SetupContext, error) {
+//
+// Expiry is decided against the caller's request clock, like every other
+// auth-link read path (ClaimAuthLinkToken, VerifyAccessRequest). Reading the
+// wall clock here made the frozen-clock integration harness expire setup links
+// as soon as real time passed the harness date (HOR-610).
+func (s *Store) SetupContext(ctx context.Context, raw string, now time.Time) (SetupContext, error) {
 	if raw == "" {
 		return SetupContext{}, ErrAuthLinkInvalid
 	}
@@ -292,7 +297,7 @@ func (s *Store) SetupContext(ctx context.Context, raw string) (SetupContext, err
 		return SetupContext{}, ErrAuthLinkSuperseded
 	case consumedAt != nil:
 		return SetupContext{}, ErrAuthLinkConsumed
-	case !time.Now().UTC().Before(expiresAt):
+	case !now.UTC().Before(expiresAt):
 		return SetupContext{}, ErrAuthLinkExpired
 	case status != LocalUserSetupPending:
 		return SetupContext{}, ErrAccountNotEligible

@@ -768,17 +768,17 @@ func TestSetupContextBoundedDisclosure(t *testing.T) {
 	require.NoError(t, err)
 	token := mustSetupToken(t, h.store, user.ID, h.now)
 
-	context, err := h.store.SetupContext(ctx, token)
+	context, err := h.store.SetupContext(ctx, token, h.now)
 	require.NoError(t, err)
 	assert.Equal(t, "ada@example.com", context.Email)
 	assert.Equal(t, "operator", context.Role)
 
-	_, err = h.store.SetupContext(ctx, "not-a-token")
+	_, err = h.store.SetupContext(ctx, "not-a-token", h.now)
 	assert.ErrorIs(t, err, ErrAuthLinkInvalid)
 
 	_, err = h.store.CompleteSetup(ctx, token, "Ada", "en", "correct-horse-battery", h.now)
 	require.NoError(t, err)
-	_, err = h.store.SetupContext(ctx, token)
+	_, err = h.store.SetupContext(ctx, token, h.now)
 	assert.ErrorIs(t, err, ErrAuthLinkConsumed)
 
 	// A disabled account cannot disclose its context even with a live link.
@@ -787,8 +787,28 @@ func TestSetupContextBoundedDisclosure(t *testing.T) {
 	otherToken := mustSetupToken(t, h.store, other.ID, h.now)
 	_, err = h.store.pool.Exec(ctx, `UPDATE identity.local_users SET status = 'disabled' WHERE identity_id = $1`, other.ID)
 	require.NoError(t, err)
-	_, err = h.store.SetupContext(ctx, otherToken)
+	_, err = h.store.SetupContext(ctx, otherToken, h.now)
 	assert.ErrorIs(t, err, ErrAccountNotEligible)
+}
+
+// TestSetupContextExpiryFollowsTheRequestClock pins the HOR-610 contract: setup
+// link expiry follows the caller's clock, so the suite can advance past the
+// lifetime instead of depending on when it runs. A wall-clock read in this path
+// would ignore the advance and return the context, failing this assertion.
+func TestSetupContextExpiryFollowsTheRequestClock(t *testing.T) {
+	h := newAuthHarness(t)
+	ctx := context.Background()
+	user, err := h.store.UpsertLocalUser(ctx, "expiry@example.com", "expiry@example.com", "operator")
+	require.NoError(t, err)
+	token := mustSetupToken(t, h.store, user.ID, h.now)
+
+	context, err := h.store.SetupContext(ctx, token, h.now)
+	require.NoError(t, err)
+	assert.Equal(t, "expiry@example.com", context.Email)
+
+	h.advance(SetupPasswordLinkTTL + time.Minute)
+	_, err = h.store.SetupContext(ctx, token, h.now)
+	assert.ErrorIs(t, err, ErrAuthLinkExpired)
 }
 
 func TestSessionNetworkCoalescingAndAuditAtomicity(t *testing.T) {
