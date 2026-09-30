@@ -3,7 +3,11 @@
 // dedicated duplex IPC channel of inherited fds:
 //   - fd 0 (stdin)  : supervisor → child  (framed SupervisorFrame: assignment, abort)
 //   - fd 3          : child → supervisor (framed ChildFrame: event, tokenDelta,
-//                     heartbeat, result)
+//                     heartbeat, result). Written by the child through the
+//                     HOR-612 bounded, non-blocking audit writer: a full pipe
+//                     sheds ephemeral frames and fails the channel closed with
+//                     recorded evidence instead of blocking the child's event
+//                     loop (and therefore its liveness heartbeat).
 // stdout (fd 1) + stderr (fd 2) are piped separately and drained as tagged
 // logs — they are NOT the protocol channel (approved trust boundary: length-
 // prefixed JSON over a TS discriminated union with runtime validation, in
@@ -38,7 +42,7 @@ import type { Child, ChildAbortReason, ChildAbortRecord, ChildEvent, ChildResult
 import type { HarnessConfig } from "./config.js";
 import type { SandboxPaths } from "./sandbox.js";
 import { AsyncQueue } from "./async-queue.js";
-import { FrameReader, encodeFrame, parseChildFrame, parseChildRpcFrame, writeFrame, type ChildRpcFrame } from "./ipc.js";
+import { FrameReader, encodeFrame, parseChildFrame, parseChildRpcFrame, writeFrame, AUDIT_OVERFLOW_EXIT_CODE, type AuditChannelEvidence, type ChildRpcFrame } from "./ipc.js";
 
 export type LaunchFn = (opts: LaunchOptions) => ChildProcess;
 
@@ -192,6 +196,11 @@ export function createChildFactory(cfg: HarnessConfig, script: string, launch: L
     let exited = false;
     let stepCompletionObserved = false;
     let stepCompletionDurable = false;
+    // HOR-612: last child-reported fd-3 audit-channel state (heartbeat snapshot
+    // while healthy, overflow notice when the child failed closed). Carried by
+    // every abort record so a stalled audit channel is attributable from the
+    // durable outcome alone.
+    let auditChannelEvidence: AuditChannelEvidence | null = null;
     let abortRecord: ChildAbortRecord | null = null;
 
     const startWatchdog = (): void => {
@@ -223,6 +232,7 @@ export function createChildFactory(cfg: HarnessConfig, script: string, launch: L
         if (!frame) return; // malformed/unknown — drop (framing prevents spoofed audit)
         if (frame.type === "heartbeat") {
           lastHeartbeat = Date.now();
+          if (frame.auditQueue) auditChannelEvidence = frame.auditQueue;
           return;
         }
         if (frame.type === "tokenDelta") {
@@ -289,6 +299,7 @@ export function createChildFactory(cfg: HarnessConfig, script: string, launch: L
         stepCompletionObserved,
         stepCompletionDurable,
         provisionalResultObserved: provisional !== null,
+        ...(auditChannelEvidence ? { auditChannel: auditChannelEvidence } : {}),
         signals: [],
       };
       logChildAbort("initiated", abortRecord);
@@ -347,7 +358,13 @@ export function createChildFactory(cfg: HarnessConfig, script: string, launch: L
         settle({ outcome: Outcome.FAILED, message: "child exited without a result" });
       } else {
         // Non-zero exit overrides a provisional COMPLETED (failed cleanup = FAILED).
-        settle({ outcome: Outcome.FAILED, message: `child exit ${code}` });
+        // HOR-612: the child's audit-overflow exit code is attributed by name so
+        // a turn whose terminal result could never be delivered is not an
+        // anonymous non-zero exit in the durable outcome.
+        settle({
+          outcome: Outcome.FAILED,
+          message: code === AUDIT_OVERFLOW_EXIT_CODE ? `child exit ${code} (fd-3 audit backlog overflow)` : `child exit ${code}`,
+        });
       }
     });
 
@@ -358,6 +375,12 @@ export function createChildFactory(cfg: HarnessConfig, script: string, launch: L
         // complete_step report. The child is now in its terminal phase: the
         // liveness watchdog applies the bounded post-completion window (HOR-551).
         stepCompletionDurable = true;
+      },
+      noteAuditChannelEvidence: (evidence: AuditChannelEvidence) => {
+        // HOR-612: latest child-reported fd-3 audit-channel state. Recorded on
+        // the next abort (heartbeat snapshots keep it fresh while the channel
+        // is healthy; the overflow notice pins it when the child fails closed).
+        auditChannelEvidence = evidence;
       },
       events,
       rpcRequests,
@@ -384,7 +407,14 @@ function abortMessage(signal: NodeJS.Signals | null, record: ChildAbortRecord | 
   const completeStep = record.stepCompletionDurable ? "durable" : record.stepCompletionObserved ? "observed" : "none";
   const signals = record.signals.map((s) => s.signal).join("+") || "none";
   const detail = record.detail ? `; detail=${record.detail}` : "";
-  return `${cause} [abort=${record.reason}; since_heartbeat_ms=${record.sinceHeartbeatMs}; liveness_ms=${record.livenessIntervalMs}; abort_grace_ms=${record.abortGraceMs}; terminal_phase=${record.terminalPhase}; complete_step=${completeStep}; provisional_result=${record.provisionalResultObserved}; signals=${signals}${detail}]`;
+  const audit = record.auditChannel ? auditChannelSuffix(record.auditChannel) : "";
+  return `${cause} [abort=${record.reason}; since_heartbeat_ms=${record.sinceHeartbeatMs}; liveness_ms=${record.livenessIntervalMs}; abort_grace_ms=${record.abortGraceMs}; terminal_phase=${record.terminalPhase}; complete_step=${completeStep}; provisional_result=${record.provisionalResultObserved}; signals=${signals}${audit}${detail}]`;
+}
+
+/** Compact, machine-searchable HOR-612 fd-3 audit-channel evidence suffix. */
+function auditChannelSuffix(e: AuditChannelEvidence): string {
+  const blocked = e.lastBlockedFrameKind ?? "none";
+  return `; audit_queue=${e.queuedFrames}f/${e.queuedBytes}b; audit_since_write_ms=${e.sinceLastWriteMs}; audit_stalled_ms=${e.stalledMs}; audit_last_blocked=${blocked}; audit_dropped_token_deltas=${e.droppedTokenDeltas}; audit_coalesced_heartbeats=${e.coalescedHeartbeats}; audit_overflowed=${e.overflowed}`;
 }
 
 /** Serialize an AssignTurn to JSON for the child (the child reconstructs it). */

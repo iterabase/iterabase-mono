@@ -38,10 +38,54 @@ export interface TokenDeltaFrame {
   deltaType: "TEXT" | "THINKING";
   delta: string;
 }
+/** The kind of a child→supervisor fd-3 audit frame (HOR-612 evidence). */
+export type AuditFrameKind = "event" | "tokenDelta" | "heartbeat" | "result";
+
+/**
+ * Exit code a child uses when its fd-3 audit channel failed closed (HOR-612).
+ * The supervisor interprets it so a turn that could never deliver its terminal
+ * `result` is still attributed to the audit backlog instead of an anonymous
+ * non-zero exit. Defined here (dependency-free) so both sides share it without
+ * the supervisor importing the pi-dependent child entrypoint.
+ */
+export const AUDIT_OVERFLOW_EXIT_CODE = 8;
+
+/**
+ * Bounded fd-3 audit-channel evidence (HOR-612). A child that cannot drain fd 3
+ * records why here instead of blocking its own event loop (and therefore its
+ * liveness heartbeat) in a synchronous pipe write. Counts and timings only —
+ * never frame bodies, prompts, model output, tool arguments, or results.
+ *
+ * - `queuedFrames`/`queuedBytes`: the child-side backlog still queued beyond
+ *   the fd-3 stream's own bounded write buffer.
+ * - `sinceLastWriteMs`: time since the last frame was successfully handed to
+ *   the kernel (a stalled channel keeps growing it).
+ * - `stalledMs`: how long the current backpressured write has been blocked
+ *   (0 when the channel is flowing).
+ * - `lastBlockedFrameKind`: the frame kind whose write hit the full pipe.
+ * - `droppedTokenDeltas`/`coalescedHeartbeats`: ephemeral frames shed to keep
+ *   the durable `event`/`result` backlog and the liveness heartbeat flowing.
+ * - `overflowed`: the hard backlog bound was exceeded and the channel is
+ *   closed (the child fails the turn closed).
+ */
+export interface AuditChannelEvidence {
+  queuedFrames: number;
+  queuedBytes: number;
+  sinceLastWriteMs: number;
+  stalledMs: number;
+  lastBlockedFrameKind?: AuditFrameKind;
+  droppedTokenDeltas: number;
+  coalescedHeartbeats: number;
+  overflowed: boolean;
+}
+
 export interface HeartbeatFrame {
   type: "heartbeat";
   /** Optional pi phase hint from the child (maps to PiPhase). */
   piPhase?: "SESSION_SETUP" | "MODEL_CALL" | "TOOL_CALL" | "COMPACTION" | "RETRY_BACKOFF" | "SHUTDOWN";
+  /** HOR-612: last-known fd-3 audit-queue snapshot, so an abort can attribute a
+   * stalled audit channel from the durable record alone. */
+  auditQueue?: AuditChannelEvidence;
 }
 export interface ResultFrame {
   type: "result";
@@ -111,7 +155,21 @@ export interface CancelRpcFrame {
   type: "cancel";
   requestId: string;
 }
-export type ChildRpcFrame = ModelRequestFrame | ToolCallFrame | PublishArtifactRpcFrame | StepCompletionRpcFrame | CancelRpcFrame;
+/**
+ * HOR-612: the child's bounded fd-3 audit backlog exceeded its hard bound (the
+ * supervisor stopped draining fd 3 for longer than the queue can absorb). This
+ * is a one-way fail-closed notice, not a request: the supervisor records the
+ * evidence and aborts the child; no response frame is sent. It travels the same
+ * validated fd-4 union (and therefore the same single writer) so it cannot
+ * interleave with, or corrupt, the model/tool request frames on that channel.
+ */
+export interface AuditBacklogOverflowFrame {
+  type: "auditBacklogOverflow";
+  /** Uncorrelated notice id; no fd-5 response is expected for this frame type. */
+  requestId: string;
+  evidence: AuditChannelEvidence;
+}
+export type ChildRpcFrame = ModelRequestFrame | ToolCallFrame | PublishArtifactRpcFrame | StepCompletionRpcFrame | CancelRpcFrame | AuditBacklogOverflowFrame;
 
 // ---- Supervisor → Child RPC (fd 5) — HOR-395 ----
 //
@@ -227,6 +285,12 @@ export function parseChildFrame(raw: unknown): ChildFrame | null {
     case "heartbeat": {
       const f: HeartbeatFrame = { type: "heartbeat" };
       if (typeof r.piPhase === "string") f.piPhase = r.piPhase as HeartbeatFrame["piPhase"];
+      if (r.auditQueue !== undefined) {
+        // Liveness must never depend on an optional diagnostic field: a
+        // malformed snapshot is dropped, the heartbeat itself is still counted.
+        const auditQueue = parseAuditChannelEvidence(r.auditQueue);
+        if (auditQueue) f.auditQueue = auditQueue;
+      }
       return f;
     }
     case "result": {
@@ -313,9 +377,47 @@ export function parseChildRpcFrame(raw: unknown): ChildRpcFrame | null {
     }
     case "cancel":
       return { type: "cancel", requestId: r.requestId };
+    case "auditBacklogOverflow": {
+      const evidence = parseAuditChannelEvidence(r.evidence);
+      if (!evidence) return null;
+      return { type: "auditBacklogOverflow", requestId: r.requestId, evidence };
+    }
     default:
       return null;
   }
+}
+
+/** Is `raw` one of the four fd-3 audit frame kinds? */
+export function isAuditFrameKind(raw: unknown): raw is AuditFrameKind {
+  return raw === "event" || raw === "tokenDelta" || raw === "heartbeat" || raw === "result";
+}
+
+/**
+ * Runtime-validate an AuditChannelEvidence payload (fd-3 heartbeat snapshot or
+ * fd-4 overflow notice). Returns null on malformed/out-of-range evidence so the
+ * caller drops the frame instead of trusting an invented shape.
+ */
+export function parseAuditChannelEvidence(raw: unknown): AuditChannelEvidence | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const count = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0;
+  if (!count(r.queuedFrames) || !count(r.queuedBytes) || !count(r.sinceLastWriteMs) || !count(r.stalledMs)) return null;
+  if (!count(r.droppedTokenDeltas) || !count(r.coalescedHeartbeats)) return null;
+  if (typeof r.overflowed !== "boolean") return null;
+  const e: AuditChannelEvidence = {
+    queuedFrames: r.queuedFrames,
+    queuedBytes: r.queuedBytes,
+    sinceLastWriteMs: r.sinceLastWriteMs,
+    stalledMs: r.stalledMs,
+    droppedTokenDeltas: r.droppedTokenDeltas,
+    coalescedHeartbeats: r.coalescedHeartbeats,
+    overflowed: r.overflowed,
+  };
+  if (r.lastBlockedFrameKind !== undefined) {
+    if (!isAuditFrameKind(r.lastBlockedFrameKind)) return null;
+    e.lastBlockedFrameKind = r.lastBlockedFrameKind;
+  }
+  return e;
 }
 
 /** Parse + validate a SupervisorRpcFrame (fd 5). Returns null for malformed/unknown. */

@@ -140,13 +140,29 @@ streams (ARCH-011).
   window still escalates `SIGTERM` → `SIGKILL` and resolves `ABORTED`. Every
   initiated abort records a machine-searchable reason — `watchdog_stale_heartbeat`,
   `watchdog_post_completion_timeout`, `control_plane_cancel`, `stream_loss`,
-  `worker_drain`, `rpc_protocol_error`, `rpc_backlog_overflow` — with heartbeat
+  `worker_drain`, `rpc_protocol_error`, `rpc_backlog_overflow`,
+  `audit_backlog_overflow` — with heartbeat
   age, configured liveness/abort-grace, observed `complete_step`/provisional-result
   state, delivered signals, and final exit classification. The record is emitted
   as a structured `[harness:child-abort]` log line, counted as
   `control_plane_harness_child_aborts_total{reason}`, and appended to the
   terminal outcome message, so the durable evidence is not limited to the bare
   string `child killed by SIGKILL`.
+- **Bounded fd-3 audit channel (HOR-612):** the child writes its audit frames
+  (`event`/`tokenDelta`/`heartbeat`/`result`) through a bounded, non-blocking
+  writer instead of a blocking `writeSync(3, …)`. A full pipe can therefore no
+  longer block the child's event loop — which is also the loop the liveness
+  heartbeat timer needs — and make the watchdog reap a healthy turn. Ephemeral
+  `tokenDelta` frames are shed above a small budget and heartbeats are
+  coalesced, so streamed model output cannot crowd out durable frames; the
+  remaining backlog is bounded, and crossing the bound fails the channel closed:
+  the child reports the exact queue depth, stall timings, and the frame kind that
+  hit the full pipe over fd 4 (`auditBacklogOverflow`), then exits with
+  `AUDIT_OVERFLOW_EXIT_CODE`. The supervisor records that evidence on the abort
+  record and appends it to the terminal outcome message (`audit_queue=…`), so a
+  stalled audit channel is attributable from the durable artifact alone. A
+  heartbeat frame also carries the last-known audit-queue snapshot, so even a
+  plain stale-heartbeat abort records the channel state it observed.
 - **Open design question (recorded, not resolved):** whether a durably accepted
   `complete_step` should itself become the terminal turn boundary. HOR-551 keeps
   the clean-exit requirement and the completion/abort semantics unchanged;
@@ -163,6 +179,8 @@ streams (ARCH-011).
 - `child-process.ts` — spawn the child via the launcher + IPC (fd 0/3/4/5) + exit classification.
 - `child.ts` — the pi child: `AgentSession` + custom `streamSimple` provider +
   gateway tool stubs + pi-event → `TurnEvent` mapping.
+- `audit-channel.ts` — the bounded, non-blocking fd-3 child→supervisor audit
+  writer (sheds ephemeral frames, bounds the durable backlog, reports evidence).
 - `child-rpc.ts` — child→supervisor RPC demux (model/tool requests over fd 4/fd 5).
 - `gateway-client.ts` — supervisor→gateway Connect client (tool discovery/invocation plus streaming artifacts).
 - `artifact-files.ts` — verified input materialization + fd-bound secure publication.

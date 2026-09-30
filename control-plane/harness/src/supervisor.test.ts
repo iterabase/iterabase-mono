@@ -64,7 +64,7 @@ function fakeChild(events: ChildEvent[], outcome: Outcome, message?: string): Ch
   const rpcQ = new Q<import("./supervisor.js").ChildRpcRequest>();
   rpcQ.close(); // no RPC requests in these tests
   const result = Promise.resolve<ChildResult>({ outcome, message });
-  return { abort: () => {}, noteStepCompletionDurable: () => {}, events: q, rpcRequests: rpcQ, rpcSend: () => {}, result };
+  return { abort: () => {}, noteStepCompletionDurable: () => {}, noteAuditChannelEvidence: () => {}, events: q, rpcRequests: rpcQ, rpcSend: () => {}, result };
 }
 
 const UID = process.getuid();
@@ -747,7 +747,7 @@ function fakeToolCallChild(toolName: string): Child & { sent: unknown[] } {
   rpcQ.close();
   const sent: unknown[] = [];
   const result = new Promise<ChildResult>(() => {}); // never resolves (test drains)
-  return { abort: () => {}, noteStepCompletionDurable: () => {}, events: q, rpcRequests: rpcQ, rpcSend: (f) => sent.push(f), result, sent } as Child & { sent: unknown[] };
+  return { abort: () => {}, noteStepCompletionDurable: () => {}, noteAuditChannelEvidence: () => {}, events: q, rpcRequests: rpcQ, rpcSend: (f) => sent.push(f), result, sent } as Child & { sent: unknown[] };
 }
 
 /** A fake Child that records every abort reason the supervisor passes and stays
@@ -771,7 +771,7 @@ function recordingChild(): Child & { aborts: string[]; aborted: Promise<string>;
       aborts.push(reason);
       resolveAborted(reason);
     },
-    noteStepCompletionDurable: () => {},
+    noteStepCompletionDurable: () => {}, noteAuditChannelEvidence: () => {},
     events: q,
     rpcRequests: rpcQ,
     rpcSend: () => {},
@@ -863,7 +863,7 @@ describe("Supervisor RPC dispatch (HOR-395)", () => {
     requests.push({ type: "toolCall", requestId: "after", toolCallId: "tc-after", toolName: "graph.write", toolVersionDigest: "sha256:xyz", argumentsJson: "{}" });
     requests.close();
     const sent: unknown[] = [];
-    const child: Child = { abort: () => {}, noteStepCompletionDurable: () => {}, events, rpcRequests: requests, rpcSend: (frame) => sent.push(frame), result: new Promise<ChildResult>(() => {}) };
+    const child: Child = { abort: () => {}, noteStepCompletionDurable: () => {}, noteAuditChannelEvidence: () => {}, events, rpcRequests: requests, rpcSend: (frame) => sent.push(frame), result: new Promise<ChildResult>(() => {}) };
     let invoked = false;
     const sup = new Supervisor({
       cfg: makeCfg(sandboxParent, walDir),
@@ -888,6 +888,67 @@ describe("Supervisor RPC dispatch (HOR-395)", () => {
     expect(blocked?.isError).toBe(true);
     expect(blocked?.errorMessage).toContain("disabled after complete_step");
     expect(invoked).toBe(false);
+  }, 5_000);
+
+  it("HOR-612: an fd-3 audit backlog overflow notice aborts with the child's channel evidence", async () => {
+    let assignTurnSent = false;
+    const transport = createRouterTransport((router) => {
+      router.service(Harness, {
+        async *work(req) {
+          yield create(ControlMessageSchema, { kind: { case: "welcome", value: create(WelcomeSchema, { fencingGeneration: 1n }) } as never });
+          for await (const m of req) {
+            if (m.kind.case === "ready" && !assignTurnSent) {
+              assignTurnSent = true;
+              yield assignTurn("sess-a");
+            }
+          }
+        },
+      });
+    });
+    const evidence = {
+      queuedFrames: 12,
+      queuedBytes: 340_000,
+      sinceLastWriteMs: 6_123,
+      stalledMs: 5_000,
+      lastBlockedFrameKind: "event" as const,
+      droppedTokenDeltas: 42,
+      coalescedHeartbeats: 3,
+      overflowed: true,
+    };
+    const events = new Q<ChildEvent>();
+    events.close();
+    const requests = new Q<import("./supervisor.js").ChildRpcRequest>();
+    requests.push({ type: "auditBacklogOverflow", requestId: "audit-backlog-overflow", evidence });
+    requests.close();
+    const aborts: string[] = [];
+    const noted: unknown[] = [];
+    const child: Child = {
+      abort: (reason: string) => aborts.push(reason),
+      noteStepCompletionDurable: () => {},
+      noteAuditChannelEvidence: (e) => noted.push(e),
+      events,
+      rpcRequests: requests,
+      rpcSend: () => {},
+      result: new Promise<ChildResult>(() => {}),
+    };
+    const sup = new Supervisor({
+      cfg: makeCfg(sandboxParent, walDir),
+      hello: create(WorkerMessageSchema, { kind: { case: "hello", value: create(HelloSchema, { workerId: "pod-1", poolId: "pool-1" }) } }),
+      childFactory: () => child,
+      probes,
+      transport: () => transport,
+      gatewayClient: fakeGatewayClient(),
+      modelStream: fakeModelStream(),
+    });
+    const runP = sup.run();
+    await new Promise((r) => setTimeout(r, 200));
+    await sup.drain();
+    await runP.catch(() => {});
+    // The child's fail-closed notice is recorded as channel evidence and maps to
+    // a distinct abort reason (never a bare stale-heartbeat reap). The later
+    // `worker_drain` abort from the test teardown keeps the original reason.
+    expect(aborts[0]).toBe("audit_backlog_overflow");
+    expect(noted).toEqual([evidence]);
   }, 5_000);
 
   it("rejects a duplicate active requestId fail-closed (bounded in-flight, unambiguous cancellation)", async () => {
@@ -915,7 +976,7 @@ describe("Supervisor RPC dispatch (HOR-395)", () => {
     rpcQ.push({ type: "toolCall", requestId: "dup", toolCallId: "tc-2", toolName: "graph.read", toolVersionDigest: "sha256:xyz", argumentsJson: "{}", idempotencyKey: "tc-2" });
     rpcQ.close();
     const sent: unknown[] = [];
-    const child: Child & { sent: unknown[] } = { abort: () => {}, noteStepCompletionDurable: () => {}, events: q, rpcRequests: rpcQ, rpcSend: (f) => sent.push(f), result: new Promise<ChildResult>(() => {}), sent } as Child & { sent: unknown[] };
+    const child: Child & { sent: unknown[] } = { abort: () => {}, noteStepCompletionDurable: () => {}, noteAuditChannelEvidence: () => {}, events: q, rpcRequests: rpcQ, rpcSend: (f) => sent.push(f), result: new Promise<ChildResult>(() => {}), sent } as Child & { sent: unknown[] };
     let invokeCount = 0;
     const sup = new Supervisor({
       cfg: makeCfg(sandboxParent, walDir),

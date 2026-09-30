@@ -181,6 +181,21 @@ try {
     expect(result.message).toContain("3");
   });
 
+  it("HOR-612: attributes the audit-overflow exit code when the terminal result could not be delivered", async () => {
+    // The worst case for the bounded audit channel: fd 3 failed closed (so no
+    // `result` frame can ever arrive) and the fd-4 overflow notice did not get
+    // through either. The exit code alone must still name the cause.
+    const overflowScript = join(dir, "audit-overflow-exit.cjs");
+    writeFileSync(overflowScript, "process.exit(8);\n");
+    const factory = createChildFactory(cfg(), overflowScript, launchStub);
+    const sandbox = { root: join(dir, "sess-a"), home: "", tmp: "", session: "", workspace: "" };
+    const child = factory(assignment(), sandbox as never, "");
+    const result = await child.result;
+    expect(result.outcome).toBe(Outcome.FAILED);
+    expect(result.message).toContain("child exit 8");
+    expect(result.message).toContain("fd-3 audit backlog overflow");
+  });
+
   it("abort() sends SIGTERM (child exits; classified ABORTED if no result)", async () => {
     const hangScript = join(dir, "hang.cjs");
     writeFileSync(hangScript, 'setInterval(()=>{}, 1000);\n');
@@ -249,6 +264,44 @@ setInterval(()=>{}, 1000);\n`,
     expect(result.abort?.finalSignal).toBe("SIGKILL");
     expect(result.message).toContain("abort=watchdog_stale_heartbeat");
     expect(result.message).toContain("signals=SIGTERM+SIGKILL");
+  }, 10_000);
+
+  it("HOR-612: the abort record carries the last child-reported fd-3 audit-channel evidence", async () => {
+    // A stale-heartbeat abort must be attributable from the durable record: the
+    // child's last audit-queue snapshot (delivered on its heartbeat) tells an
+    // operator whether the liveness channel was already backpressured or the
+    // child went silent with a healthy pipe.
+    const staleCfg = cfg();
+    staleCfg.child = { livenessIntervalMs: 500, abortGraceMs: 500 };
+    const staleScript = join(dir, "stale-with-audit.cjs");
+    writeFileSync(
+      staleScript,
+      `const fs = require('fs');
+function frame(obj){const j=Buffer.from(JSON.stringify(obj));const h=Buffer.alloc(4);h.writeUInt32BE(j.length,0);fs.writeSync(3,Buffer.concat([h,j]));}
+frame({type:'heartbeat',auditQueue:{queuedFrames:9,queuedBytes:12345,sinceLastWriteMs:4321,stalledMs:4000,lastBlockedFrameKind:'tokenDelta',droppedTokenDeltas:7,coalescedHeartbeats:2,overflowed:false}});
+process.on('SIGTERM', () => {});
+setInterval(()=>{}, 1000);\n`,
+    );
+    const factory = createChildFactory(staleCfg, staleScript, launchStub);
+    const sandbox = { root: join(dir, "sess-a"), home: "", tmp: "", session: "", workspace: "" };
+    const child = factory(assignment(), sandbox as never, "");
+    const result = await child.result;
+    expect(result.outcome).toBe(Outcome.ABORTED);
+    expect(result.abort?.reason).toBe("watchdog_stale_heartbeat");
+    expect(result.abort?.auditChannel).toEqual({
+      queuedFrames: 9,
+      queuedBytes: 12_345,
+      sinceLastWriteMs: 4_321,
+      stalledMs: 4_000,
+      lastBlockedFrameKind: "tokenDelta",
+      droppedTokenDeltas: 7,
+      coalescedHeartbeats: 2,
+      overflowed: false,
+    });
+    expect(result.message).toContain("audit_queue=9f/12345b");
+    expect(result.message).toContain("audit_last_blocked=tokenDelta");
+    expect(result.message).toContain("audit_dropped_token_deltas=7");
+    expect(result.message).toContain("audit_overflowed=false");
   }, 10_000);
 
   it("HOR-551: the terminal phase gets a bounded post-completion window instead of the liveness window", async () => {
