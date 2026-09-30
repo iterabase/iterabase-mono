@@ -296,4 +296,63 @@ describe("buildOpenAIRequestBody", () => {
     const toolMsg = messages.find((m) => m.role === "tool");
     expect(toolMsg?.content).toBe("(see attached image)");
   });
+
+  it("HOR-612: sends pi 0.87.1 in-context system messages in place", () => {
+    // pi >= 0.87.1 carries the prompt as leading/mid-conversation system
+    // messages inside `context.messages` (with `context.systemPrompt` null).
+    // Missing this branch made the converter rewind its index forever, pegging
+    // the child's event loop and starving its liveness heartbeat.
+    const body = buildOpenAIRequestBody(
+      "m1",
+      {
+        messages: [
+          { role: "system", content: "you are an agent" } as never,
+          { role: "user", content: [{ type: "text", text: "hi" }] } as never,
+          { role: "assistant", content: [{ type: "text", text: "hello" }] } as never,
+          { role: "system", content: "additional instruction" } as never,
+        ],
+      },
+      undefined,
+    ) as Record<string, unknown>;
+    expect(body.messages).toEqual([
+      { role: "system", content: "you are an agent" },
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "system", content: "additional instruction" },
+    ]);
+  });
+
+  it("HOR-612: renders system prompt sections verbatim after the instruction text", () => {
+    const body = buildOpenAIRequestBody(
+      "m1",
+      {
+        messages: [
+          { role: "system", content: [{ type: "text", text: "base" }], sections: { tools: "TOOLS SECTION", removed: null } } as never,
+          { role: "user", content: "hi" } as never,
+        ],
+      },
+      undefined,
+    ) as Record<string, unknown>;
+    expect((body.messages as { role: string; content: string }[])[0]).toEqual({ role: "system", content: "base\n\nTOOLS SECTION" });
+  });
+
+  it(
+    "HOR-612: an unknown message role is skipped without hanging the converter",
+    () => {
+      const body = buildOpenAIRequestBody(
+        "m1",
+        {
+          messages: [
+            { role: "user", content: "hi" } as never,
+            { role: "futureKind", content: "unknown" } as never,
+            { role: "toolResult", toolCallId: "tc-1", toolName: "t", content: [{ type: "text", text: "ok" }] } as never,
+          ],
+        },
+        undefined,
+      ) as Record<string, unknown>;
+      // The unknown role is dropped; the following tool result is still grouped.
+      expect((body.messages as { role: string }[]).map((m) => m.role)).toEqual(["user", "tool"]);
+    },
+    2_000, // a regression here would spin forever; fail fast instead of hanging CI
+  );
 });

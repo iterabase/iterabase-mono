@@ -381,6 +381,104 @@ for (let i = 0; i < 5000 && !overflowed; i += 1) {
   });
 });
 
+describe("HOR-612 pi runtime context contract (real child, full turn)", { timeout: 30_000 }, () => {
+  it("converts pi's in-context system messages and completes a turn over the framed IPC", async () => {
+    // The bump's measured regression: pi 0.87.1 moved the prompt into
+    // `context.messages` as a system message; the harness converter fell
+    // through to the toolResult grouping, rewound its index forever, pegged the
+    // child's event loop, and starved the liveness heartbeat — the observed
+    // `watchdog_stale_heartbeat` reap. Driving the real entrypoint end to end
+    // makes a future context-contract change fail here instead of in E2E.
+    const tmp = mkdtempSync(join(tmpdir(), "harness-child-turn-"));
+    const proc = spawn(process.execPath, [CHILD_BIN], {
+      stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        HARNESS_SESSION_DIR: join(tmp, "session"),
+        HARNESS_WORKING_DIR: tmp,
+        HARNESS_PI_DIRS: "",
+        HARNESS_MODEL_MAX_ATTEMPTS: "1",
+        HARNESS_LIVENESS_INTERVAL_MS: "60000",
+        HOME: tmp,
+      },
+    });
+    proc.stdout.on("data", () => {});
+    proc.stderr.on("data", () => {});
+
+    interface RawFrame {
+      type?: string;
+      outcome?: number;
+      requestId?: string;
+      body?: { messages?: Array<{ role: string; content: unknown }> };
+    }
+    const fd3: RawFrame[] = [];
+    const fd4: RawFrame[] = [];
+    const collect = (stream: NodeJS.ReadableStream, sink: RawFrame[]): void => {
+      let buf = Buffer.alloc(0);
+      stream.on("data", (chunk: Buffer) => {
+        buf = Buffer.concat([buf, chunk]);
+        while (buf.length >= 4) {
+          const len = buf.readUInt32BE(0);
+          if (buf.length < 4 + len) break;
+          const body = buf.subarray(4, 4 + len);
+          buf = buf.subarray(4 + len);
+          try {
+            sink.push(JSON.parse(body.toString("utf8")) as RawFrame);
+          } catch {
+            /* skip malformed */
+          }
+        }
+      });
+    };
+    collect(proc.stdio[3] as unknown as NodeJS.ReadableStream, fd3);
+    collect(proc.stdio[4] as unknown as NodeJS.ReadableStream, fd4);
+    const exit = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+      proc.once("exit", (code, signal) => resolve([code, signal]));
+    });
+    const waitFor = async (cond: () => boolean, timeoutMs = 20_000): Promise<void> => {
+      const deadline = Date.now() + timeoutMs;
+      while (!cond()) {
+        if (Date.now() > deadline) throw new Error("timed out waiting for a child frame");
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+
+    proc.stdin.write(encodeFrame({ type: "assignment", assignment: assignmentJson() }));
+    // The child registers its fd-5 read stream only after parsing the assignment.
+    await waitFor(() => fd3.some((f) => f.type === "heartbeat"));
+    proc.stdio[5]!.write(encodeFrame({ type: "gatewayTools", descriptors: [] }));
+    await waitFor(() => fd4.some((f) => f.type === "modelRequest"));
+
+    const request = fd4.find((f) => f.type === "modelRequest")!;
+    const messages = request.body?.messages ?? [];
+    // pi delivers the assigned persona as a system message in the context.
+    expect(messages[0]?.role).toBe("system");
+    expect(String(messages[0]?.content)).toContain("you are an agent");
+    expect(messages.at(-1)?.role).toBe("user");
+    expect(JSON.stringify(messages.at(-1)?.content)).toContain("hi");
+
+    const chunk = (data: unknown): void => {
+      proc.stdio[5]!.write(encodeFrame({ type: "modelChunk", requestId: request.requestId, data: JSON.stringify(data) }));
+    };
+    chunk({ choices: [{ delta: { role: "assistant", content: "hello" } }] });
+    chunk({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+    proc.stdio[5]!.write(encodeFrame({ type: "modelEnd", requestId: request.requestId, status: "ok" }));
+
+    await waitFor(() => fd3.some((f) => f.type === "result"));
+    const [code, signal] = await Promise.race([
+      exit,
+      new Promise<[number | null, NodeJS.Signals | null]>((resolve) => setTimeout(() => resolve([null, null]), 5_000)),
+    ]);
+    rmSync(tmp, { recursive: true, force: true });
+
+    expect(fd3.some((f) => f.type === "tokenDelta")).toBe(true);
+    expect(fd3.some((f) => f.type === "event" && JSON.stringify(f).includes("assistantMessage"))).toBe(true);
+    expect(fd3.find((f) => f.type === "result")?.outcome).toBe(1 /* COMPLETED */);
+    expect(signal).toBeNull();
+    expect(code).toBe(0);
+  });
+});
+
 describe("captureShutdownErrors", () => {
   /** A minimal fake of pi's ExtensionRunner error surface. */
   function fakeEmitter(): { emitter: ExtensionErrorEmitter; emit: (e: { event: string; extensionPath: string; error: string }) => void; state: { unsubbed: boolean } } {

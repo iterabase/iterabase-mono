@@ -13,6 +13,7 @@
 import type {
   AssistantMessage,
   AssistantMessageEvent,
+  JsonObject,
   Message,
   StopReason,
   ToolCall,
@@ -363,10 +364,16 @@ function validateOpenAIChunk(raw: unknown): OpenAIChunk {
   return raw as OpenAIChunk;
 }
 
-function safeParseArgs(args: string): Record<string, unknown> {
+// pi 0.87.1 types `ToolCall.arguments` as `JsonObject` (a strict JSON value
+// map). A streamed tool call's arguments are model-supplied JSON, so a non-object
+// payload is preserved verbatim under `_raw` for attributable downstream failure
+// (same shape as the malformed-JSON path).
+function safeParseArgs(args: string): JsonObject {
   if (!args) return {};
   try {
-    return JSON.parse(args) as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(args);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as JsonObject;
+    return { _raw: args };
   } catch {
     return { _raw: args };
   }
@@ -387,6 +394,17 @@ export function buildOpenAIRequestBody(
   const modelSupportsImages = true; // assignedModel.input includes "image"
   for (let i = 0; i < context.messages.length; i++) {
     const m = context.messages[i];
+    if (m.role === "system") {
+      // pi >= 0.87.1 delivers the prompt as leading/mid-conversation system
+      // messages inside `context.messages` (the singular `context.systemPrompt`
+      // is null there), so each one is sent in place — OpenAI chat-completions
+      // accepts a system message at any position. Missing this branch used to
+      // fall through to the toolResult grouping and rewind the index forever,
+      // pegging the child's event loop and starving its liveness heartbeat
+      // (HOR-612).
+      messages.push({ role: "system", content: piSystemContentToOpenAI(m) });
+      continue;
+    }
     if (m.role === "user") {
       messages.push({ role: "user", content: piUserContentToOpenAI(m.content) });
       continue;
@@ -403,6 +421,13 @@ export function buildOpenAIRequestBody(
       if (textParts) entry.content = textParts;
       if (toolCalls.length) entry.tool_calls = toolCalls;
       messages.push(entry);
+      continue;
+    }
+    if (m.role !== "toolResult") {
+      // Unsupported/future message kind: skip it and keep the index moving. The
+      // converter must never be able to hang the child on a role it does not
+      // know (HOR-612), so the toolResult grouping below only ever runs when the
+      // current message really is a tool result.
       continue;
     }
     // toolResult — group consecutive tool results so their images are attached
@@ -449,6 +474,20 @@ export function buildOpenAIRequestBody(
     }));
   }
   return body;
+}
+
+/** Serialize a pi system message (pi >= 0.87.1) to OpenAI system content: the
+ * instruction `content` followed by any named prompt `sections`, which pi
+ * defines as rendered verbatim after the content (`null` removes a section). */
+function piSystemContentToOpenAI(m: Extract<Message, { role: "system" }>): string {
+  const parts: string[] = [];
+  if (typeof m.content === "string") {
+    if (m.content) parts.push(m.content);
+  } else {
+    for (const c of m.content) if (c.type === "text" && c.text) parts.push(c.text);
+  }
+  for (const section of Object.values(m.sections ?? {})) if (section) parts.push(section);
+  return parts.join("\n\n");
 }
 
 /** Serialize a pi user message's content to OpenAI content parts. Text blocks
