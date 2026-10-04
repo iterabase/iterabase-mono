@@ -19,6 +19,7 @@ import type {
   ToolCall,
   Usage,
 } from "@earendil-works/pi-ai";
+import { getDeclaredTools, resolveTranscriptTools } from "@earendil-works/pi-ai";
 
 interface OpenAIUsage {
   prompt_tokens?: number;
@@ -467,8 +468,22 @@ export function buildOpenAIRequestBody(
   };
   if (options?.maxTokens) body.max_tokens = options.maxTokens;
   if (options?.reasoning && options.reasoning !== "off") body.reasoning_effort = options.reasoning;
-  if (context.tools?.length) {
-    body.tools = context.tools.map((t) => ({
+  // pi >= 0.87.1 folds `Context.systemPrompt` and `Context.tools` into the
+  // transcript's system messages before a provider runs (pi's ModelRuntime
+  // `normalizeContext`), so a provider receives only `messages` — reading
+  // `context.tools` alone silently sent no tool declarations at all after the
+  // bump (HOR-612 review). The current declarations are therefore replayed from
+  // the transcript's `toolsAdded`/`toolsRemoved` deltas. Chat-completions has
+  // no in-place tool additions, so the complete current set goes in the
+  // top-level `tools` field (`resolveTranscriptTools(..., false)`), exactly as
+  // pi's own chat-completions provider does. A raw pre-0.87.1 `Context` (or a
+  // direct unit-test call) with no transcript tool history still supplies
+  // `tools` directly.
+  const requestTools = getDeclaredTools(context.messages).length > 0
+    ? resolveTranscriptTools(context.messages, false).requestTools
+    : context.tools ?? [];
+  if (requestTools.length > 0) {
+    body.tools = requestTools.map((t) => ({
       type: "function",
       function: { name: t.name, description: t.description, parameters: t.parameters },
     }));

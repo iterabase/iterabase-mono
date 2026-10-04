@@ -355,4 +355,55 @@ describe("buildOpenAIRequestBody", () => {
     },
     2_000, // a regression here would spin forever; fail fast instead of hanging CI
   );
+
+  it("HOR-612 review: recovers the request tools from the pi 0.87.1 transcript", () => {
+    // `normalizeContext` folds `Context.tools` into the leading system message
+    // (`toolsAdded`) before a provider runs, so `context.tools` is absent and
+    // the request tools must be replayed from the transcript. Reading only
+    // `context.tools` sent no tool declarations at all after the bump.
+    const parameters = { type: "object", properties: { query: { type: "string" } }, additionalProperties: false };
+    const body = buildOpenAIRequestBody(
+      "m1",
+      {
+        messages: [
+          {
+            role: "system",
+            content: "you are an agent",
+            toolsAdded: [{ name: "graph.read_mail", description: "Read the fixture mailbox", parameters }],
+          } as never,
+          { role: "user", content: "hi" } as never,
+        ],
+      },
+      undefined,
+    ) as Record<string, unknown>;
+    expect(body.tools).toEqual([
+      { type: "function", function: { name: "graph.read_mail", description: "Read the fixture mailbox", parameters } },
+    ]);
+  });
+
+  it("HOR-612 review: applies transcript tool removals to the request tools", () => {
+    const tool = (name: string): unknown => ({ name, description: `${name} tool`, parameters: { type: "object" } });
+    const body = buildOpenAIRequestBody(
+      "m1",
+      {
+        messages: [
+          { role: "system", content: "base", toolsAdded: [tool("a"), tool("b")] } as never,
+          { role: "user", content: "hi" } as never,
+          { role: "system", content: "narrowed", toolsRemoved: [{ name: "b" }] } as never,
+        ],
+      },
+      undefined,
+    ) as Record<string, unknown>;
+    expect((body.tools as { function: { name: string } }[]).map((t) => t.function.name)).toEqual(["a"]);
+  });
+
+  it("HOR-612 review: keeps raw-context tools when the transcript declares none", () => {
+    // A direct pre-0.87.1 `Context` call still converts its `tools` field.
+    const body = buildOpenAIRequestBody(
+      "m1",
+      { messages: [], tools: [{ name: "t", description: "d", parameters: { type: "object" } }] } as never,
+      undefined,
+    ) as Record<string, unknown>;
+    expect((body.tools as { function: { name: string } }[]).map((t) => t.function.name)).toEqual(["t"]);
+  });
 });

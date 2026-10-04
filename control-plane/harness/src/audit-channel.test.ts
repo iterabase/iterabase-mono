@@ -157,6 +157,20 @@ describe("AuditChannel (HOR-612 bounded fd-3 writer)", () => {
     await expect(channel.flush(250)).resolves.toBe(true);
   });
 
+  it("reports false when the just-queued token delta is shed by the ephemeral trim", () => {
+    // A durable frame already over the ephemeral budget keeps the queue over it,
+    // so a token delta queued behind it is shed immediately; `write()` must
+    // report that, matching its documented contract.
+    const sink = new FakeSink();
+    const channel = new AuditChannel(sink, { maxQueuedBytes: 10_000_000, maxQueuedFrames: 100_000, maxEphemeralBytes: 1_000 });
+    sink.stalled = true;
+    expect(channel.write("heartbeat", { type: "heartbeat" })).toBe(true); // buffered by the stalled sink
+    expect(channel.write("event", durableEvent(2_000_000))).toBe(true); // queued: larger than the ephemeral budget
+    expect(channel.write("tokenDelta", tokenDelta())).toBe(false); // shed by the trim
+    expect(channel.snapshot().droppedTokenDeltas).toBe(1);
+    expect(channel.snapshot().overflowed).toBe(false);
+  });
+
   it("reports the stall timing and the frame kind that hit the full pipe", async () => {
     const sink = new FakeSink();
     const channel = new AuditChannel(sink, { maxQueuedBytes: 10_000_000, maxQueuedFrames: 100_000, maxEphemeralBytes: 1_000 });

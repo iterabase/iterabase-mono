@@ -121,8 +121,10 @@ describe("HOR-381 child entrypoint assignment handoff", { timeout: 30_000 }, () 
     const srcMtime = Math.max(
       statSync(join(HARNESS_ROOT, "src", "child.ts")).mtimeMs,
       statSync(join(HARNESS_ROOT, "src", "ipc.ts")).mtimeMs,
-      // HOR-612: the stalled-reader test imports the compiled audit writer.
+      // HOR-612: the stalled-reader test imports the compiled audit writer, and
+      // the full-turn test asserts the compiled context converter's output.
       statSync(join(HARNESS_ROOT, "src", "audit-channel.ts")).mtimeMs,
+      statSync(join(HARNESS_ROOT, "src", "openai-stream.ts")).mtimeMs,
     );
     if (!existsSync(CHILD_BIN) || statSync(CHILD_BIN).mtimeMs < srcMtime) {
       execSync("npm run build", { cwd: HARNESS_ROOT, stdio: "ignore" });
@@ -382,13 +384,15 @@ for (let i = 0; i < 5000 && !overflowed; i += 1) {
 });
 
 describe("HOR-612 pi runtime context contract (real child, full turn)", { timeout: 30_000 }, () => {
-  it("converts pi's in-context system messages and completes a turn over the framed IPC", async () => {
-    // The bump's measured regression: pi 0.87.1 moved the prompt into
-    // `context.messages` as a system message; the harness converter fell
-    // through to the toolResult grouping, rewound its index forever, pegged the
-    // child's event loop, and starved the liveness heartbeat — the observed
-    // `watchdog_stale_heartbeat` reap. Driving the real entrypoint end to end
-    // makes a future context-contract change fail here instead of in E2E.
+  it("converts pi's in-context system messages and transcript tools, then completes a turn", async () => {
+    // The bump's measured regression: pi 0.87.1 moved the prompt *and the tool
+    // declarations* into `context.messages` (leading system message
+    // `toolsAdded`); the harness converter originally read only the now-absent
+    // `context.systemPrompt`/`context.tools`, and its toolResult fallthrough
+    // rewound the loop index forever — pegging the child's event loop, starving
+    // the liveness heartbeat (the observed `watchdog_stale_heartbeat` reap) and
+    // sending no tools at all. Driving the real entrypoint end to end with a
+    // registered gateway tool makes both failures land here, not in E2E.
     const tmp = mkdtempSync(join(tmpdir(), "harness-child-turn-"));
     const proc = spawn(process.execPath, [CHILD_BIN], {
       stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe"],
@@ -409,7 +413,10 @@ describe("HOR-612 pi runtime context contract (real child, full turn)", { timeou
       type?: string;
       outcome?: number;
       requestId?: string;
-      body?: { messages?: Array<{ role: string; content: unknown }> };
+      body?: {
+        messages?: Array<{ role: string; content: unknown }>;
+        tools?: Array<{ type?: string; function?: { name?: string } }>;
+      };
     }
     const fd3: RawFrame[] = [];
     const fd4: RawFrame[] = [];
@@ -446,7 +453,21 @@ describe("HOR-612 pi runtime context contract (real child, full turn)", { timeou
     proc.stdin.write(encodeFrame({ type: "assignment", assignment: assignmentJson() }));
     // The child registers its fd-5 read stream only after parsing the assignment.
     await waitFor(() => fd3.some((f) => f.type === "heartbeat"));
-    proc.stdio[5]!.write(encodeFrame({ type: "gatewayTools", descriptors: [] }));
+    proc.stdio[5]!.write(
+      encodeFrame({
+        type: "gatewayTools",
+        descriptors: [
+          {
+            name: "graph.read_mail",
+            version: "1",
+            digest: `sha256:${"0".repeat(64)}`,
+            description: "Read the fixture mailbox",
+            inputSchema: { type: "object", additionalProperties: false, properties: {} },
+            effectClass: "read_only",
+          },
+        ],
+      }),
+    );
     await waitFor(() => fd4.some((f) => f.type === "modelRequest"));
 
     const request = fd4.find((f) => f.type === "modelRequest")!;
@@ -456,6 +477,10 @@ describe("HOR-612 pi runtime context contract (real child, full turn)", { timeou
     expect(String(messages[0]?.content)).toContain("you are an agent");
     expect(messages.at(-1)?.role).toBe("user");
     expect(JSON.stringify(messages.at(-1)?.content)).toContain("hi");
+    // …and the gateway tool declaration survives normalization into the
+    // transcript and reaches the model request's top-level `tools` field.
+    const requestTools = request.body?.tools ?? [];
+    expect(requestTools.map((t) => t.function?.name)).toContain("graph.read_mail");
 
     const chunk = (data: unknown): void => {
       proc.stdio[5]!.write(encodeFrame({ type: "modelChunk", requestId: request.requestId, data: JSON.stringify(data) }));
