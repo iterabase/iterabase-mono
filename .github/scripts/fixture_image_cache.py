@@ -7,7 +7,10 @@ E2E harness. This module is the single source of truth for which pinned runtime
 images each capacity caches, the deterministic generation hash, and the
 per-image archive names. The seed workflow and the real-machine jobs both
 derive their expectations from it, so the host cache cannot drift from
-`.github/inputs/remote-content.json`.
+`.github/inputs/remote-content.json`. A seed dispatch also verifies a matching
+generation archive by archive and repairs anything missing, truncated,
+corrupt, or recorded without archive digests through the same staging and
+atomic-swap path.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 SCHEMA_VERSION = 1
 # Bump when the on-host archive format or naming changes so every fixture
@@ -29,6 +32,7 @@ SEED_FORMAT_VERSION = 4
 CACHE_ROOT = "/var/lib/iterabase-e2e/image-cache"
 CAPACITIES = ("cpu", "gpu")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 ARCHIVE_RE = re.compile(r"^[A-Za-z0-9._-]+\.tar$")
 
 
@@ -201,6 +205,137 @@ def build_manifest(root: Path, capacity: str) -> dict[str, Any]:
     }
 
 
+# Remote verification emits one machine-readable line per archive so a seed
+# dispatch can compare a matching generation against the digests recorded at
+# seed time. A missing or unreadable archive exits non-zero; every other archive
+# is still reported so one dispatch names all damage.
+ARCHIVE_VERIFICATION_SCRIPT = """\
+status=0
+for path in "$@"; do
+  if test ! -f "$path"; then printf "missing %s\\n" "$path"; status=1; continue; fi
+  size=$(stat -c %s "$path") || { printf "unreadable %s\\n" "$path"; status=1; continue; }
+  hash=$(sha256sum "$path" | cut -d " " -f1)
+  printf "archive %s %s %s\\n" "$hash" "$size" "$path"
+done
+exit $status
+"""
+
+
+def verification_command(remote_dir: str, archives: list[str]) -> str:
+    """Return the remote command that reports every archive's size and sha256."""
+    paths = " ".join(
+        shlex.quote(f"{remote_dir}/images/{archive}") for archive in archives
+    )
+    return (
+        f"sudo bash -c {shlex.quote(ARCHIVE_VERIFICATION_SCRIPT)} "
+        f"fixture-image-cache {paths}"
+    )
+
+
+def recorded_archive_expectations(recorded: dict[str, Any]) -> dict[str, tuple[str, int]]:
+    """Return the per-archive sha256/size a recorded generation.json must satisfy.
+
+    A generation seeded before archive digests were recorded, or one with any
+    incomplete entry, yields no expectations so the seeder repairs it instead
+    of treating it as intact.
+    """
+    images = recorded.get("images")
+    if not isinstance(images, list) or not images:
+        return {}
+    expectations: dict[str, tuple[str, int]] = {}
+    for entry in images:
+        if not isinstance(entry, dict):
+            return {}
+        archive = entry.get("archive")
+        sha256 = entry.get("sha256")
+        size = entry.get("size")
+        if (
+            not isinstance(archive, str)
+            or not ARCHIVE_RE.match(archive)
+            or not isinstance(sha256, str)
+            or not SHA256_HEX_RE.match(sha256)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size <= 0
+            or archive in expectations
+        ):
+            return {}
+        expectations[archive] = (sha256, size)
+    return expectations
+
+
+def archive_verification_failures(
+    *,
+    images: list[dict[str, str]],
+    expectations: dict[str, tuple[str, int]],
+    remote_dir: str,
+    output: str,
+) -> list[str]:
+    """Return why each expected archive fails the recorded digest contract."""
+    verified: dict[str, tuple[str, int]] = {}
+    absent: set[str] = set()
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in {"missing", "unreadable"}:
+            absent.add(parts[1])
+        elif len(parts) == 4 and parts[0] == "archive":
+            try:
+                verified[parts[3]] = (parts[1], int(parts[2]))
+            except ValueError:
+                continue
+    failures: list[str] = []
+    for image in images:
+        archive = image["archive"]
+        path = f"{remote_dir}/images/{archive}"
+        expectation = expectations.get(archive)
+        if expectation is None:
+            failures.append(f"archive {archive} has no recorded sha256/size")
+            continue
+        if path in absent:
+            failures.append(f"archive is absent: {archive}")
+            continue
+        actual = verified.get(path)
+        if actual is None:
+            failures.append(f"archive was not verified: {archive}")
+            continue
+        actual_sha256, actual_size = actual
+        expected_sha256, expected_size = expectation
+        if actual_size != expected_size:
+            failures.append(
+                f"archive size mismatch for {archive}: {actual_size} != {expected_size}"
+            )
+        elif actual_sha256 != expected_sha256:
+            failures.append(f"archive sha256 mismatch for {archive}")
+    return failures
+
+
+def verify_recorded_generation(
+    *,
+    images: list[dict[str, str]],
+    recorded: dict[str, Any],
+    remote_dir: str,
+    capture: Callable[[str], subprocess.CompletedProcess[str]],
+) -> list[str]:
+    """Return the reason a matching generation is not intact, or [] when it is."""
+    expectations = recorded_archive_expectations(recorded)
+    if not expectations:
+        return ["generation.json does not record per-archive sha256/size"]
+    unknown = [
+        image["archive"] for image in images if image["archive"] not in expectations
+    ]
+    if unknown:
+        return [f"generation.json does not record archive {archive}" for archive in unknown]
+    result = capture(
+        verification_command(remote_dir, [image["archive"] for image in images])
+    )
+    return archive_verification_failures(
+        images=images,
+        expectations=expectations,
+        remote_dir=remote_dir,
+        output=result.stdout,
+    )
+
+
 def seed_fixture_image_cache(
     *,
     manifest: dict[str, Any],
@@ -217,7 +352,8 @@ def seed_fixture_image_cache(
 
     Pulls every pinned image with the reviewed crane binary directly on the
     fixture, stages the generation under a temporary directory, and swaps it in
-    atomically. A matching generation is left untouched.
+    atomically. A matching generation is verified archive by archive and left
+    untouched only when every archive is intact.
     """
     capacity = manifest["capacity"]
     generation = manifest["generation"]
@@ -277,29 +413,46 @@ def seed_fixture_image_cache(
         result = runner(command, check=True, capture_output=True, text=True)
         return result.stdout
 
+    def probe(remote_command: str) -> subprocess.CompletedProcess[str]:
+        """Run a read-only remote command that may exit non-zero on absence."""
+        command = ssh_command(remote_command)
+        commands.append(" ".join(shlex.quote(part) for part in command))
+        return runner(command, capture_output=True, text=True)
+
     if not dry_run:
-        probe = subprocess.run(
-            ssh_command(
-                f"sudo test -f {remote_dir}/generation.json && "
-                f"sudo cat {remote_dir}/generation.json"
-            ),
-            capture_output=True,
-            text=True,
+        recorded: Any = None
+        probe_result = probe(
+            f"sudo test -f {remote_dir}/generation.json && "
+            f"sudo cat {remote_dir}/generation.json"
         )
-        if probe.returncode == 0:
+        if probe_result.returncode == 0:
             try:
-                existing = json.loads(probe.stdout)
+                recorded = json.loads(probe_result.stdout)
             except json.JSONDecodeError:
-                existing = {}
-            if (
-                isinstance(existing, dict)
-                and existing.get("generation") == generation
-                and existing.get("capacity") == capacity
-            ):
+                recorded = None
+        if (
+            isinstance(recorded, dict)
+            and recorded.get("generation") == generation
+            and recorded.get("capacity") == capacity
+        ):
+            failures = verify_recorded_generation(
+                images=manifest["images"],
+                recorded=recorded,
+                remote_dir=remote_dir,
+                capture=probe,
+            )
+            if not failures:
                 print(
-                    f"fixture {address}: cache generation {generation} already seeded"
+                    f"fixture {address}: cache generation {generation} "
+                    "already seeded and verified"
                 )
                 return commands
+            for failure in failures:
+                print(
+                    f"fixture {address}: cache generation {generation} "
+                    f"failed verification ({failure}); repairing",
+                    file=sys.stderr,
+                )
 
     execute(ssh_command(f"sudo mkdir -p {remote_root}"))
     execute(ssh_command(f"df -h {remote_root}"))
@@ -339,6 +492,25 @@ def seed_fixture_image_cache(
                 manifest_bytes.encode("utf-8"), image["reference"]
             )
         execute(ssh_command(f"sudo tar -C {workdir} -cf {shlex.quote(archive)} ."))
+        archive_sha256 = capture(
+            ssh_command(f"sudo sha256sum {shlex.quote(archive)}")
+        )
+        archive_size = capture(ssh_command(f"sudo stat -c %s {shlex.quote(archive)}"))
+        if not dry_run:
+            digest_fields = archive_sha256.split()
+            if not digest_fields or not SHA256_HEX_RE.match(digest_fields[0]):
+                raise FixtureImageCacheError(
+                    f"unexpected sha256sum output for {archive!r}: {archive_sha256!r}"
+                )
+            try:
+                image["size"] = int(archive_size.strip())
+            except ValueError as error:
+                raise FixtureImageCacheError(
+                    f"unexpected size output for {archive!r}: {archive_size!r}"
+                ) from error
+            if image["size"] <= 0:
+                raise FixtureImageCacheError(f"seeded archive {archive!r} is empty")
+            image["sha256"] = digest_fields[0]
         execute(ssh_command(f"sudo rm -rf {workdir}"))
 
     rendered_manifest = json.dumps(manifest, indent=2) + "\n"
