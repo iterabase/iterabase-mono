@@ -282,10 +282,14 @@ updates:
         patterns:
           - "*"
 
-  # GitHub Actions — advisory coverage only. Routine SHA refreshes of the
-  # SHA-pinned actions stay manual and ticket-backed (HOR-518/HOR-588 precedent);
-  # this entry only ensures an advisory against one of them opens a security PR
-  # with the minimum patched version.
+  # GitHub Actions — inventory entry only. Every external action is SHA-pinned,
+  # and Dependabot alerts for GitHub Actions require a semantic-version
+  # reference, so these pins receive no automated advisory signal. The entry is
+  # retained for inventory and for a future semantic-version reference; action
+  # advisories are handled by the manual, ticket-backed SHA refresh
+  # (HOR-518/HOR-588 precedent), never by Dependabot. `actions/cache` is also
+  # outside the dependency graph's scan scope because it is referenced only
+  # from composite actions under `.github/actions/`.
   - package-ecosystem: github-actions
     directory: /
     target-branch: master
@@ -294,6 +298,7 @@ updates:
     open-pull-requests-limit: 0
     labels:
       - dependencies
+      - github-actions
     cooldown:
       default-days: 3
     groups:
