@@ -2,7 +2,7 @@
 
 - **Status:** mitigated by non-reachability
 - **Owner:** control-plane
-- **Last reviewed:** 2026-09-28
+- **Last reviewed:** 2026-10-04
 - **Tracking:** HOR-499
 - **Related:** HOR-586 (split `github.com/moby/go-archive` bump)
 
@@ -90,10 +90,15 @@ reported by `go list -m -versions github.com/docker/docker` is v28.5.2.
 Consequently, upgrading the legacy pin cannot currently close these alerts
 without an unsupported module-path substitution.
 
-After this decision is reviewed and merged, the five Dependabot alerts may be
-dismissed with Dependabot reason `not_used` ("Vulnerable code is not actually
-used"), referencing HOR-499 and this document. The dismissal must be revisited
-under any trigger below.
+After this decision was reviewed and merged (PR #43), the open Dependabot alerts
+for `github.com/docker/docker` were dismissed with Dependabot reason `not_used`
+("Vulnerable code is not actually used") on 2026-10-04 under HOR-608,
+referencing HOR-499 and this document. Four alerts were open and are now
+dismissed: `GHSA-rg2x-37c3-w2rh`, `GHSA-vp62-88p7-qqf5`, `GHSA-x86f-5xw2-fm2r`,
+and `GHSA-pxq6-2prw-chj9`; `GHSA-x744-4wpc-v9h2` never produced a repository
+alert. The reachability evidence above was re-verified at the HOR-608 ticket
+head before dismissal. The dismissals must be revisited under any trigger
+below.
 
 ## Re-entry triggers
 
