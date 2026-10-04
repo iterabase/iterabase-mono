@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
 import random
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -15,6 +17,129 @@ import unittest
 import fixture_image_cache
 
 ROOT = Path(__file__).resolve().parents[2]
+
+DOCKER_MANIFEST = json.dumps(
+    [
+        {
+            "Config": "sha256:" + "b" * 64,
+            "RepoTags": ["busybox:1.37.0"],
+            "Layers": ["436a1b1f.tar.gz"],
+        }
+    ]
+)
+
+
+def fake_archive_sha256(path: str) -> str:
+    return hashlib.sha256(path.encode("utf-8")).hexdigest()
+
+
+def fake_archive_size(path: str) -> int:
+    return 1024 + len(path)
+
+
+def remote_archive_path(manifest: dict[str, object], archive: str) -> str:
+    return (
+        f"{manifest['cache_root']}/{manifest['capacity']}/"
+        f"{manifest['generation']}/images/{archive}"
+    )
+
+
+def recorded_generation(manifest: dict[str, object]) -> dict[str, object]:
+    """Return the generation.json the current seeder would write for a manifest."""
+    return {
+        "schema_version": fixture_image_cache.SCHEMA_VERSION,
+        "seed_format": fixture_image_cache.SEED_FORMAT_VERSION,
+        "capacity": manifest["capacity"],
+        "generation": manifest["generation"],
+        "cache_root": manifest["cache_root"],
+        "images": [
+            {
+                "reference": image["reference"],
+                "digest": image["digest"],
+                "archive": image["archive"],
+                "sha256": fake_archive_sha256(remote_archive_path(manifest, image["archive"])),
+                "size": fake_archive_size(remote_archive_path(manifest, image["archive"])),
+            }
+            for image in manifest["images"]
+        ],
+    }
+
+
+class FakeFixtureHost:
+    """SSH runner double for the pinned-image cache seed contract.
+
+    Serves one recorded generation and an archive health map. Every archive is
+    healthy unless the test breaks it: ``missing`` removes it, ``truncated``
+    reports a different size, and ``corrupt`` reports a different sha256.
+    """
+
+    def __init__(
+        self,
+        *,
+        generation_json: dict[str, object] | None,
+        broken: dict[str, str] | None = None,
+    ) -> None:
+        self.generation_json = generation_json
+        self.broken = broken or {}
+        self.commands: list[str] = []
+        self.generation_written: str | None = None
+
+    def __call__(
+        self, command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        rendered = " ".join(shlex.quote(part) for part in command)
+        self.commands.append(rendered)
+        if "sudo tee" in rendered and "generation.json" in rendered:
+            self.generation_written = kwargs.get("input")  # type: ignore[assignment]
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if "sudo test -f" in rendered and "generation.json" in rendered:
+            if self.generation_json is None:
+                return subprocess.CompletedProcess(command, 1, "", "absent")
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps(self.generation_json), ""
+            )
+        if "bash -c" in rendered and "fixture-image-cache" in rendered:
+            return subprocess.CompletedProcess(
+                command, 0, self._verification_output(rendered), ""
+            )
+        if "manifest.json" in rendered:
+            return subprocess.CompletedProcess(command, 0, DOCKER_MANIFEST, "")
+        if "sha256sum" in rendered:
+            path = shlex.split(rendered)[-1]
+            return subprocess.CompletedProcess(
+                command, 0, f"{fake_archive_sha256(path)}  {path}\n", ""
+            )
+        if "stat -c %s" in rendered:
+            path = shlex.split(rendered)[-1]
+            return subprocess.CompletedProcess(
+                command, 0, f"{fake_archive_size(path)}\n", ""
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def _verification_output(self, rendered: str) -> str:
+        remote_command = shlex.split(rendered)[-1]
+        paths = [
+            token for token in shlex.split(remote_command) if token.endswith(".tar")
+        ]
+        lines: list[str] = []
+        for path in paths:
+            archive = path.rsplit("/", 1)[-1]
+            state = self.broken.get(archive)
+            if state == "missing":
+                lines.append(f"missing {path}")
+            elif state == "truncated":
+                lines.append(
+                    f"archive {fake_archive_sha256(path)} "
+                    f"{fake_archive_size(path) + 1} {path}"
+                )
+            elif state == "corrupt":
+                lines.append(f"archive {'0' * 64} {fake_archive_size(path)} {path}")
+            else:
+                lines.append(
+                    f"archive {fake_archive_sha256(path)} "
+                    f"{fake_archive_size(path)} {path}"
+                )
+        return "\n".join(lines) + "\n"
 
 
 class FixtureImageCacheTests(unittest.TestCase):
@@ -113,13 +238,15 @@ class FixtureImageCacheTests(unittest.TestCase):
                 crane=Path("/tmp/crane"),
                 dry_run=True,
             )
-        self.assertEqual(len(commands), len(manifest["images"]) * 7 + 9)
+        self.assertEqual(len(commands), len(manifest["images"]) * 9 + 9)
         printed = output.getvalue()
         for image in manifest["images"]:
             self.assertIn(f"{image['reference']}@{image['digest']}", printed)
             self.assertIn(image["archive"], printed)
         self.assertIn(f"{manifest['cache_root']}/gpu/{manifest['generation']}", printed)
         self.assertIn("StrictHostKeyChecking=yes", printed)
+        self.assertIn("sha256sum", printed)
+        self.assertIn("stat -c %s", printed)
 
     def test_seed_replays_without_a_runner(self) -> None:
         manifest = fixture_image_cache.build_manifest(ROOT, "cpu")
@@ -137,7 +264,98 @@ class FixtureImageCacheTests(unittest.TestCase):
             dry_run=True,
             runner=failing_runner,
         )
-        self.assertEqual(len(commands), len(manifest["images"]) * 7 + 9)
+        self.assertEqual(len(commands), len(manifest["images"]) * 9 + 9)
+
+    def _seed_with_fake_host(
+        self, manifest: dict[str, object], host: FakeFixtureHost
+    ) -> tuple[list[str], str, str]:
+        output = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            commands = fixture_image_cache.seed_fixture_image_cache(
+                manifest=manifest,
+                address="192.0.2.10",
+                user="forge-ci",
+                key=Path("/tmp/fixture-key"),
+                host_key=Path("/tmp/fixture-host.pub"),
+                crane=Path("/tmp/crane"),
+                runner=host,
+            )
+        return commands, output.getvalue(), errors.getvalue()
+
+    def test_seed_leaves_a_verified_generation_untouched(self) -> None:
+        manifest = fixture_image_cache.build_manifest(ROOT, "cpu")
+        host = FakeFixtureHost(generation_json=recorded_generation(manifest))
+
+        commands, stdout, _ = self._seed_with_fake_host(manifest, host)
+
+        self.assertIn("already seeded", stdout)
+        self.assertTrue(
+            any("fixture-image-cache" in command for command in commands),
+            "the seed must verify archives before trusting a matching generation",
+        )
+        self.assertFalse(any(".staging-" in command for command in commands))
+        self.assertIsNone(host.generation_written)
+
+    def test_seed_detects_and_repairs_every_broken_archive(self) -> None:
+        for state in ("missing", "truncated", "corrupt"):
+            with self.subTest(state=state):
+                manifest = fixture_image_cache.build_manifest(ROOT, "cpu")
+                archive = manifest["images"][3]["archive"]
+                host = FakeFixtureHost(
+                    generation_json=recorded_generation(manifest),
+                    broken={archive: state},
+                )
+
+                commands, stdout, stderr = self._seed_with_fake_host(manifest, host)
+
+                self.assertNotIn("already seeded", stdout)
+                self.assertIn(archive, stderr)
+                self.assertTrue(
+                    any(".staging-" in command for command in commands),
+                    "a broken archive must be repaired through staging",
+                )
+                self.assertIsNotNone(host.generation_written)
+                rewritten = json.loads(host.generation_written)
+                self.assertEqual(len(rewritten["images"]), len(manifest["images"]))
+                for image in rewritten["images"]:
+                    self.assertRegex(image["sha256"], r"^[0-9a-f]{64}$")
+                    self.assertGreater(image["size"], 0)
+
+    def test_seed_repairs_a_legacy_generation_without_archive_digests(self) -> None:
+        manifest = fixture_image_cache.build_manifest(ROOT, "cpu")
+        legacy = recorded_generation(manifest)
+        for image in legacy["images"]:
+            del image["sha256"]
+            del image["size"]
+        host = FakeFixtureHost(generation_json=legacy)
+
+        commands, stdout, stderr = self._seed_with_fake_host(manifest, host)
+
+        self.assertNotIn("already seeded", stdout)
+        self.assertIn("sha256", stderr)
+        self.assertTrue(any(".staging-" in command for command in commands))
+        self.assertIsNotNone(host.generation_written)
+
+    def test_recorded_archive_expectations_reject_incomplete_records(self) -> None:
+        manifest = fixture_image_cache.build_manifest(ROOT, "cpu")
+        recorded = recorded_generation(manifest)
+        self.assertEqual(
+            len(fixture_image_cache.recorded_archive_expectations(recorded)),
+            len(manifest["images"]),
+        )
+        for mutation in ("unprefixed", "zero", "text"):
+            with self.subTest(mutation=mutation):
+                broken = recorded_generation(manifest)
+                if mutation == "unprefixed":
+                    broken["images"][0]["sha256"] = "sha256:" + "a" * 64
+                elif mutation == "zero":
+                    broken["images"][0]["size"] = 0
+                else:
+                    broken["images"][0]["size"] = "123"
+                self.assertEqual(
+                    fixture_image_cache.recorded_archive_expectations(broken), {}
+                )
 
     def test_rewrite_docker_manifest_binds_the_exact_reference(self) -> None:
         manifest = json.dumps(
