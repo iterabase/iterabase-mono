@@ -70,7 +70,7 @@ func applyGPUSubstrateStage(t *testing.T, state *permanentGPUFixtureState) {
 	bootstrap := applyOnceArgs(t, state.forgeBin, state.forgeHome, cfgPath,
 		"--skip-gpu", "--skip-chart", "--skip-overlay", "--skip-secrets", "--skip-flux")
 	assertApplyMarkers(t, bootstrap, "action:     install", "node ready: true", "data storage: iterabase-data")
-	preparePinnedImageCache(t, state.host.IP, state.privKeyPath, "gpu")
+	preparePinnedImageCache(t, &state.diagnostics, state.host.IP, state.privKeyPath, "gpu")
 	out := applyOnce(t, state.forgeBin, state.forgeHome, cfgPath)
 	assertApplyMarkers(t, out, "node ready: true", "data storage: iterabase-data", "gpu ready: true", "gpu driver: "+gpuUpgradeBaselineDriver)
 	state.bindKubeconfigTunnel(t)
