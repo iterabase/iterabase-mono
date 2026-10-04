@@ -186,8 +186,9 @@ streams (ARCH-011).
 - `artifact-files.ts` — verified input materialization + fd-bound secure publication.
 - `model-bridge.ts` — supervisor→inference-gateway HTTP/2 mTLS SSE bridge.
 - `openai-stream.ts` — pi context ⇄ OpenAI chat-completions (in-context `system`
-  messages incl. prompt sections, tool calls/results, images) and OpenAI SSE →
-  pi `AssistantMessageEvent` (child-owned model semantics).
+  messages incl. prompt sections, transcript-resolved tool declarations, tool
+  calls/results, images) and OpenAI SSE → pi `AssistantMessageEvent` (child-owned
+  model semantics).
 - `ipc.ts` — framed discriminated-union IPC for fd 0/3/4/5 + runtime validation.
 - `launcher.ts` — the `setpriv` privilege-dropping launcher (equal UID/GID, cleared groups, full cap-drop, `no_new_privs`, umask `0077`).
 - `sandbox.ts` — canonical paths + ownership/mode/cwd validation.

@@ -137,9 +137,10 @@ export class AuditChannel {
   }
 
   /**
-   * Queue one framed audit frame. Returns false when the frame was shed
-   * (coalesced heartbeat), dropped (ephemeral overflow), or refused (the
-   * channel already failed closed) — never because the caller had to wait.
+   * Queue one framed audit frame. Returns false when this frame did not reach
+   * the queue — a coalesced heartbeat, an ephemeral token delta shed by the
+   * trim, or a channel that already failed closed — never because the caller
+   * had to wait.
    */
   write(kind: AuditFrameKind, frame: unknown): boolean {
     if (this.overflowed) return false;
@@ -159,13 +160,14 @@ export class AuditChannel {
       this.droppedTokenDeltas += 1;
       return false;
     }
-    this.queue.push({ buf, kind, heartbeat: kind === "heartbeat" });
+    const queued: QueuedAuditFrame = { buf, kind, heartbeat: kind === "heartbeat" };
+    this.queue.push(queued);
     this.queuedBytes += buf.length;
     if (kind === "heartbeat") this.heartbeatOutstanding = true;
-    this.trimEphemeral();
+    const shedPending = this.trimEphemeral(queued);
     this.pump();
     this.checkOverflow();
-    return !this.overflowed;
+    return !shedPending && !this.overflowed;
   }
 
   /** Has the channel failed closed (hard backlog bound exceeded)? */
@@ -216,9 +218,13 @@ export class AuditChannel {
 
   // ---- internals ----
 
-  /** Drop oldest queued token deltas until the ephemeral budget holds. */
-  private trimEphemeral(): void {
-    if (this.queuedBytes <= this.maxEphemeralBytes) return;
+  /** Drop oldest queued token deltas until the ephemeral budget holds. Returns
+   * true when the just-queued `pending` frame was itself shed: a durable frame
+   * already over the ephemeral budget keeps the queue over it, so the trim
+   * clears the whole ephemeral tail including the frame that triggered it. */
+  private trimEphemeral(pending: QueuedAuditFrame): boolean {
+    if (this.queuedBytes <= this.maxEphemeralBytes) return false;
+    let shedPending = false;
     for (let i = 0; i < this.queue.length && this.queuedBytes > this.maxEphemeralBytes; ) {
       const f = this.queue[i]!;
       if (f.kind !== "tokenDelta") {
@@ -228,7 +234,9 @@ export class AuditChannel {
       this.queue.splice(i, 1);
       this.queuedBytes -= f.buf.length;
       this.droppedTokenDeltas += 1;
+      if (f === pending) shedPending = true;
     }
+    return shedPending;
   }
 
   /** Hand queued frames to the sink until it backpressures (or the queue drains). */
