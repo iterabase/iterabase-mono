@@ -13,6 +13,9 @@ import (
 const (
 	pinnedImageCacheRootEnv       = "FORGE_E2E_IMAGE_CACHE_ROOT"
 	pinnedImageCacheGenerationEnv = "FORGE_E2E_IMAGE_CACHE_GENERATION"
+	// pinnedImageCacheContainerdRoot is k3s's containerd state root, the
+	// filesystem behind kubelet's image filesystem capacity.
+	pinnedImageCacheContainerdRoot = "/var/lib/rancher/k3s/agent/containerd"
 )
 
 var pinnedImageCacheGenerationPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -73,7 +76,9 @@ func parsePinnedImageCacheManifest(capacity string, data []byte) (pinnedImageCac
 // fixture and proves every image is present under its exact reference before any
 // Helm apply runs, so the applies never depend on a public registry. Missing or
 // mismatched cache state fails the scenario instead of silently falling back.
-func preparePinnedImageCache(t *testing.T, ip, keyPath, capacity string) {
+// An import or post-import verification failure additionally retains bounded
+// classification evidence through diagnostics.
+func preparePinnedImageCache(t *testing.T, diagnostics *forgeDiagnostics, ip, keyPath, capacity string) {
 	t.Helper()
 	root := os.Getenv(pinnedImageCacheRootEnv)
 	generation := os.Getenv(pinnedImageCacheGenerationEnv)
@@ -113,19 +118,66 @@ func preparePinnedImageCache(t *testing.T, ip, keyPath, capacity string) {
 		}
 		if !verified {
 			archive := path.Join(root, capacity, generation, "images", image.Archive)
-			if output, err := sshOutput(client, "sudo k3s ctr images import "+candidateShellQuote(archive)); err != nil {
-				t.Fatalf("import pinned image %s from %s: %v\n%s", image.Reference, archive, err, output)
-			}
-			output, err := sshOutput(client, "sudo k3s crictl inspecti "+candidateShellQuote(image.Reference))
+			importOutput, err := sshOutput(client, "sudo k3s ctr images import "+candidateShellQuote(archive))
 			if err != nil {
-				t.Fatalf("pinned image %s is absent after import from %s: %v\n%s", image.Reference, archive, err, output)
+				diagnostics.collectPinnedImageCacheEvidence(t, ip, keyPath, archive, root, image.Reference, importOutput)
+				t.Fatalf("import pinned image %s from %s: %v\n%s", image.Reference, archive, err, importOutput)
 			}
-			if _, _, err := importedRuntimeImageConfig([]byte(output), image.ConfigDigest); err != nil {
+			inspectOutput, err := sshOutput(client, "sudo k3s crictl inspecti "+candidateShellQuote(image.Reference))
+			if err != nil {
+				diagnostics.collectPinnedImageCacheEvidence(t, ip, keyPath, archive, root, image.Reference, importOutput)
+				t.Fatalf("pinned image %s is absent after import from %s: %v\n%s", image.Reference, archive, err, inspectOutput)
+			}
+			if _, _, err := importedRuntimeImageConfig([]byte(inspectOutput), image.ConfigDigest); err != nil {
+				diagnostics.collectPinnedImageCacheEvidence(t, ip, keyPath, archive, root, image.Reference, importOutput)
 				t.Fatalf("pinned image %s does not match the cached config digest %s: %v\n%s",
-					image.Reference, image.ConfigDigest, err, output)
+					image.Reference, image.ConfigDigest, err, inspectOutput)
 			}
 			imported++
 		}
 	}
 	t.Logf("pinned image cache generation %s ready: %d images verified (%d imported this run)", generation, len(manifest.Images), imported)
+}
+
+// pinnedImageCacheRepository returns the registry/repository path of a pinned
+// image reference so runtime evidence can be filtered to it.
+func pinnedImageCacheRepository(reference string) string {
+	name, _, _ := strings.Cut(reference, "@")
+	slash := strings.LastIndex(name, "/")
+	if colon := strings.LastIndex(name, ":"); colon > slash {
+		name = name[:colon]
+	}
+	return name
+}
+
+func pinnedImageCacheArchiveEvidenceCommand(archive string) string {
+	return fmt.Sprintf("sudo ls -l %s 2>&1 || true; sudo sha256sum %s 2>&1 || true",
+		candidateShellQuote(archive), candidateShellQuote(archive))
+}
+
+func pinnedImageCacheCapacityEvidenceCommand(root string) string {
+	return fmt.Sprintf("df -h %s 2>&1 || true; df -h %s 2>&1 || true",
+		candidateShellQuote(root), candidateShellQuote(pinnedImageCacheContainerdRoot))
+}
+
+func pinnedImageCacheRuntimeEvidenceCommand(reference string) string {
+	return fmt.Sprintf("sudo k3s crictl images 2>&1 | grep -F -- %s || true",
+		candidateShellQuote(pinnedImageCacheRepository(reference)))
+}
+
+// collectPinnedImageCacheEvidence retains bounded, classifiable evidence for a
+// cache import or verification failure: the failed archive's size and sha256,
+// cache-root and containerd-root capacity, the runtime's view of the reference,
+// and the raw import output. Only one archive is hashed, so the cost is bounded
+// regardless of cache size.
+func (diagnostics *forgeDiagnostics) collectPinnedImageCacheEvidence(
+	t *testing.T, ip, keyPath, archive, root, reference, importOutput string,
+) {
+	t.Helper()
+	diagnostics.collectSSH(t, ip, keyPath, map[string]string{
+		"pinned-image-cache-archive":  pinnedImageCacheArchiveEvidenceCommand(archive),
+		"pinned-image-cache-capacity": pinnedImageCacheCapacityEvidenceCommand(root),
+		"pinned-image-cache-runtime":  pinnedImageCacheRuntimeEvidenceCommand(reference),
+	})
+	diagnostics.recordRemoteLog(t, "pinned-image-cache-import", importOutput)
 }

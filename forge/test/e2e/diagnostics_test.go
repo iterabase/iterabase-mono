@@ -74,14 +74,21 @@ func (diagnostics *forgeDiagnostics) collectSSH(t *testing.T, ip, keyPath string
 	defer client.Close()
 	for name, command := range commands {
 		output, commandErr := sshOutput(client, command)
-		redacted := diagnostics.redactor.String(output)
-		path := filepath.Join(diagnostics.outputDir, "remote-"+name+".log")
-		if err := os.WriteFile(path, []byte(redacted), 0o600); err != nil {
-			t.Logf("write remote diagnostic %s: %v", name, err)
-		}
+		diagnostics.recordRemoteLog(t, name, output)
 		if commandErr != nil {
 			t.Logf("remote diagnostic %s: %v", name, commandErr)
 		}
+	}
+}
+
+// recordRemoteLog persists one redacted remote command output under the run
+// diagnostics directory so failure evidence survives the test process.
+func (diagnostics *forgeDiagnostics) recordRemoteLog(t *testing.T, name, output string) {
+	t.Helper()
+	redacted := diagnostics.redactor.String(output)
+	path := filepath.Join(diagnostics.outputDir, "remote-"+name+".log")
+	if err := os.WriteFile(path, []byte(redacted), 0o600); err != nil {
+		t.Logf("write remote diagnostic %s: %v", name, err)
 	}
 }
 

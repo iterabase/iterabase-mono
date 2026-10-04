@@ -37,7 +37,7 @@ func runOverlayStage(t *testing.T, state *permanentCPUFixtureState) {
 		assertApplyMarkers(t, bootstrap, "action:     install", "node ready: true", "data storage: iterabase-data", "LVM storage substrate applied: false")
 	}
 	state.runtimeImageDigests = prepareCandidateImages(t, state.ip, state.privKeyPath)
-	preparePinnedImageCache(t, state.ip, state.privKeyPath, "cpu")
+	preparePinnedImageCache(t, &state.diagnostics, state.ip, state.privKeyPath, "cpu")
 	out := applyOnce(t, state.forgeBin, state.forgeHome, candidateConfig)
 	markers := []string{"action:     skip", "node ready: true", "data storage: iterabase-data",
 		"LVM storage ready: true", "certificate substrate applied: true", "LVM storage substrate applied: true",
