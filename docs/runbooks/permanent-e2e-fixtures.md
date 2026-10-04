@@ -173,8 +173,8 @@ fixture has a dedicated cache volume.
 - Layout: `/var/lib/iterabase-e2e/image-cache/<capacity>/<generation>/` holds
   `generation.json` (emitted by
   `.github/scripts/fixture_image_cache.py manifest --capacity <capacity>`, plus
-  the per-image config digest recorded at seed time) and `images/<archive>.tar`,
-  one digest-pinned image per archive.
+  the per-image config digest and per-archive `size`/`sha256` recorded at seed
+  time) and `images/<archive>.tar`, one digest-pinned image per archive.
 - Capacity sets: both capacities cache the same shared set (49 images at this
   head, ~4.5 GB). GPU-only registries/repositories (`nvcr.io`, `nvidia/*`,
   vLLM) are excluded because the GPU fixture's 96 GB root disk cannot hold the
@@ -185,8 +185,12 @@ fixture has a dedicated cache volume.
   the reviewed `crane` binary directly on the host, stages
   `.staging-<generation>`, writes `generation.json`, swaps it into place, and
   only then prunes superseded generations. Seeding is required again only when
-  the pinned list changes (new generation); a matching generation is left
-  untouched.
+  the pinned list changes (new generation). A matching generation is verified
+  archive by archive (presence, recorded size, and recorded `sha256`) and left
+  untouched only when every archive is intact; a missing, truncated, corrupt,
+  or legacy (no recorded archive digests) archive set is repaired in the same
+  dispatch through the staging and atomic-swap path, so no manual host surgery
+  is needed.
 - Failed seeds: staging happens before any prune, so a seed that fails partway
   leaves the previous generation intact and usable. Re-run the workflow to
   retry; the next run discards the failed staging directory.
@@ -194,7 +198,10 @@ fixture has a dedicated cache volume.
   `remote-content.json`, and the harness imports and verifies every reference —
   including the recorded config digest, not just the tag — before the first
   apply. A missing or mismatched generation or image fails the scenario with an
-  actionable message instead of falling back to registries.
+  actionable message instead of falling back to registries. An import or
+  absent-after-import failure also retains the archive size/sha256, cache-root
+  and containerd-root capacity, `crictl images` filtered to the reference, and
+  the raw `ctr images import` output in the run diagnostics.
 - Retention: superseded generations are pruned only after a new generation is
   finalized; keep the generation referenced by the checked-out source. The seed
   workflow reports the retained generation sizes.
