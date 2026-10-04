@@ -29,6 +29,16 @@ The Go modules remain independently buildable. The root `go.work` is for atomic 
 
 See [`docs/source-authority.md`](docs/source-authority.md) for the cutover audit and catastrophic-only unarchive boundary.
 
+## Dependency and supply-chain updates
+
+- Dependabot is configured security-updates-only in [`.github/dependabot.yml`](.github/dependabot.yml). Every entry sets `open-pull-requests-limit: 0`, which disables version updates for that ecosystem while security-update pull requests remain exempt. Version updates, auto-merge, and `docker`, `helm`, `docker-compose`, or `devcontainers` entries require a new recorded decision.
+- Dependency pull requests are ticket-backed and are never self-merged. A Dependabot pull request is a diff source; only the user approves and merges, and required CI is a floor, not an approval.
+- Security updates are grouped per configured directory. Do not add `group-by: dependency-name`, repository-level, or organization-level grouping that can converge components onto a version above the minimum patched version.
+- GitHub Actions SHAs are refreshed manually in a ticket-backed change, never by a scheduled version-update pull request.
+- Advisory disposition uses reachability evidence. Verify vendor-shrinkwrap-pinned packages against the installed and shipped on-disk version, not `npm audit`; dismiss untriggered advisories with the documented reason and record the evidence. Dismissed Moby daemon advisories and their re-entry triggers live in [`control-plane/docs/moby-test-dependency-risk.md`](control-plane/docs/moby-test-dependency-risk.md).
+- Base-image and Dockerfile-frontend digests are governed by [`.github/inputs/remote-content.json`](.github/inputs/remote-content.json) and `.github/scripts/remote_content.py validate`, not by Dependabot.
+- Coverage, exclusions, and the conventions for dependency pull requests are recorded in [`docs/dependencies.md`](docs/dependencies.md).
+
 ## Shared ticket and Git workflow
 
 - Direct pushes to `master` are prohibited. Work on one `<TICKET>-<short-description>` branch.

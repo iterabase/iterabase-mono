@@ -1,0 +1,303 @@
+# Dependabot steering for the iterabase monorepo (decision recorded under HOR-608).
+#
+# Posture: security updates only, in every ecosystem. Every entry below sets
+# `open-pull-requests-limit: 0`, which disables Dependabot version updates for
+# that entry; security update pull requests are not subject to that limit, so
+# advisory-driven pull requests still open. Do not raise the limit: doing so
+# re-enables scheduled version updates, an explicit non-goal of HOR-608.
+#
+# `schedule` is required by the config schema but gates version updates only, so
+# it is inert while the limit is zero.
+#
+# Groups: each entry groups only its own directory's security updates
+# (`applies-to: security-updates`, `patterns: ["*"]`). A config file overrides
+# repository-level security-update grouping, so configured directories no longer
+# converge onto one version. PR #117 previously forced three npm directories
+# onto vitest 5.0.2 when the patched floor was 4.1.11 (GHSA-82fw-gwwq-j7x9).
+#
+# Excluded ecosystems:
+# - `docker`: Dockerfile base-image digests are governed by
+#   `.github/inputs/remote-content.json` and enforced bi-directionally by
+#   `python3 .github/scripts/remote_content.py validate` in ci.yml and
+#   release-candidate.yml. The docker ecosystem has no Dependabot alert
+#   coverage, so an entry would open pull requests that fail the authority
+#   check with no security gain.
+# - `helm`, `docker-compose`, `devcontainers`: manifests exist but have no alert
+#   coverage, so entries would be version-update-only, which the posture forbids.
+# - `pip`, `cargo`, `bundler`, `terraform`, `deno`: no such manifests exist.
+#
+# Conventions for the pull requests these entries open are recorded in
+# docs/dependencies.md.
+version: 2
+updates:
+  # npm lockfile — control-plane harness.
+  - package-ecosystem: npm
+    directory: /control-plane/harness
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - javascript
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # npm lockfile — control-plane dashboard (ui).
+  - package-ecosystem: npm
+    directory: /control-plane/ui
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - javascript
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # npm lockfile — control-plane tool runner.
+  - package-ecosystem: npm
+    directory: /control-plane/tool-runner
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - javascript
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # npm lockfile — control-plane end-to-end Playwright harness.
+  - package-ecosystem: npm
+    directory: /control-plane/test/e2e/playwright
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - javascript
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # npm lockfile — protobuf tooling under the shared .github tools.
+  - package-ecosystem: npm
+    directory: /.github/tools/protobuf
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - javascript
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Go module — control-plane.
+  - package-ecosystem: gomod
+    directory: /control-plane
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - go
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Go module — inference-gateway.
+  - package-ecosystem: gomod
+    directory: /inference-gateway
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - go
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Go module — forge.
+  - package-ecosystem: gomod
+    directory: /forge
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - go
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Go module — forge end-to-end harness.
+  - package-ecosystem: gomod
+    directory: /forge/test/e2e
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - go
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Go module — shared testkit end-to-end mechanics.
+  - package-ecosystem: gomod
+    directory: /testkit/e2e
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - go
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Go module — control-plane end-to-end harness.
+  - package-ecosystem: gomod
+    directory: /control-plane/test/e2e
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - go
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Go module — charts end-to-end harness.
+  - package-ecosystem: gomod
+    directory: /charts/test/e2e
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - go
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Go module — shared .github tooling.
+  - package-ecosystem: gomod
+    directory: /.github/tools
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - go
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Go module — control-plane .github tooling.
+  - package-ecosystem: gomod
+    directory: /.github/tools/control-plane
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+      - go
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # GitHub Actions — advisory coverage only. Routine SHA refreshes of the
+  # SHA-pinned actions stay manual and ticket-backed (HOR-518/HOR-588 precedent);
+  # this entry only ensures an advisory against one of them opens a security PR
+  # with the minimum patched version.
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: master
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    labels:
+      - dependencies
+    cooldown:
+      default-days: 3
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
