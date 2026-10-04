@@ -160,11 +160,17 @@ repository Go modules and npm package lock that govern controller/code-generatio
 tools, plus the product dependency and model locks. Permanent fixtures retain a
 generation-stamped pinned-image cache
 (`/var/lib/iterabase-e2e/image-cache/<capacity>/<generation>`) seeded by the
-`Fixture image cache` workflow; real-machine jobs import and verify the cached
+`Fixture image cache` workflow, which records per-archive `sha256`/size and
+verifies a matching generation archive by archive, repairing a missing,
+truncated, corrupt, or digest-less archive set in the same dispatch;
+real-machine jobs import and verify the cached
 archives before any apply, so the platform applies never pull those cached
 images from public registries (GPU-only pins remain per-run pulls until the GPU
 fixture has a dedicated cache volume), and a missing generation fails the
-scenario rather than falling back. Chart builders do not trust mutable repository indexes: they
+scenario rather than falling back. An import or absent-after-import failure
+retains the archive size/sha256, cache-root and containerd-root capacity,
+`crictl images` filtered to the reference, and the raw `ctr images import`
+output in the run diagnostics. Chart builders do not trust mutable repository indexes: they
 download an exact archive, fail
 immediately on changed bytes, and only retry transport. Dockerfiles require
 reviewed tag-plus-digest identities; control-plane and protobuf Go tools install
