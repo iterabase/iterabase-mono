@@ -147,7 +147,11 @@ def host_trust_entry(address: str, public_key: str) -> str:
         raise AwsCiError(f"public key is not a one-line OpenSSH key: {public_key!r}")
     if not address or any(character.isspace() for character in address):
         raise AwsCiError(f"host address is not a token: {address!r}")
-    return f"[{address}]:22 {fields[0]} {fields[1]}"
+    # OpenSSH only consults a bracketed `[host]:port` entry for a non-default port
+    # (verified: `[github.com]:22` produced "No ED25519 host key is known" while the
+    # bare form matched), and the fixture listens on the default port, so the entry
+    # uses the bare host form.
+    return f"{address} {fields[0]} {fields[1]}"
 
 
 def render_user_data(*, host_private_key: str, host_public_key: str, authorized_key: str) -> str:
