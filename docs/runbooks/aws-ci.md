@@ -16,7 +16,7 @@ workflow is the executable proof that the account is still correct.
 | Surface | Contract |
 | --- | --- |
 | Credentials | GitHub OIDC only, no static keys anywhere, no GitHub environment. Trust covers `aud=sts.amazonaws.com` and `sub=repo:nunocgoncalves@64640406/iterabase-mono@1330311216:*` — the immutable subject form GitHub issues for repositories created after 2026-07-15, which pins the owner and repository IDs so a rename or a recreated repository cannot inherit trust; fork pull requests cannot request OIDC tokens. |
-| Launch | `RunInstances` only for `m6i.xlarge` (CPU) and `g5.xlarge` (GPU), only from AMIs owned by the CI account, only with no instance profile, and only with the mandatory tags. All four are enforced twice: as allow conditions and as explicit denies. |
+| Launch | `RunInstances` only for `m6i.xlarge` (CPU) and `g5.xlarge` (GPU), only from AMIs owned by the CI account, and only with no instance profile — each enforced twice, as an allow condition and as an explicit deny. The mandatory tags are enforced at tag-on-create (`ec2:CreateTags` requires the marker and run tags through `aws:RequestTag`), because the launch action's own authorization context carries no request-tag keys. |
 | Tags | `iterabase-ci=true` (marker, mandatory), `iterabase-ci-run=<github run id>` (mandatory), `iterabase-ci-scenario=<identity>` (mandatory), optional `iterabase-ci-deadline=<RFC3339 UTC>`, `Name=iterabase-ci-<run>-<scenario>`. The marker is the IAM condition key and the reaper's only selection criterion. |
 | Lifecycle | Terminate, volume, snapshot, and AMI actions are scoped to resources carrying `iterabase-ci=true`; tag-on-create is bound to the creating action. |
 | Reaper | `iterabase-ci-deadline` when present, otherwise `LaunchTime + 180 minutes`. Untagged or foreign instances are reported and never touched; the role cannot terminate them. |
@@ -544,20 +544,41 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
     printf '%s\n' "$POLICY_ARN"
     ```
     The renderer refuses any region other than `eu-west-1` and any account id
-    that is not twelve digits. The policy is 19 statements: read-only describes,
-    the approved launch surface, tag-on-create, tag-scoped lifecycle actions,
-    the copy-source allowance, five explicit launch denies (instance profile,
-    unapproved instance type, non-CI-account AMI, missing marker tag, missing run
-    tag), and a deny for the privilege and data surface. Each mandatory tag has
-    its own single-key deny statement, because IAM ANDs every key inside one
-    condition block — a deny that names two tags only fires when both are missing.
-    `ec2:CopyImage` carries its own allow against
-    `arn:aws:ec2:eu-west-1::image/*`: EC2 authorizes a copy against the **source**
-    image ARN, which for a public Canonical image is an empty-account ARN that the
-    account-scoped pattern cannot match (a smoke dispatch proved that with
-    `UnauthorizedOperation` on `CopyImage`). The copy still lands in the CI account
-    and still carries the mandatory tags, and `RunInstances` stays restricted to
-    CI-owned AMIs, so the launch boundary is unchanged.
+    that is not twelve digits. The policy is 18 statements, and its shape follows
+    what EC2 actually puts in each authorization context (every step below was
+    proven by decoding `UnauthorizedOperation` from real dispatches, not inferred):
+
+    - Read-only describes; the approved launch surface; tag-scoped lifecycle
+      actions; and a deny for the privilege and data surface.
+    - Launch constraints. `ec2:InstanceType` and the absence of an instance profile
+      are allow conditions on the launch statement, with `DenyUnapprovedInstanceType`
+      and `DenyInstanceProfile` as explicit denies. `DenyNonCiOwnedAmi` is scoped to
+      image ARNs, because an unscoped `StringNotEquals` on `ec2:Owner` denies every
+      launch — the instance being created is an `aws:ResourceBeingCreated` context
+      that carries `ec2:InstanceType` but neither `ec2:Owner` nor any request-tag
+      key, and `StringNotEquals` is true when its key is absent.
+    - Mandatory tags. They are enforced at tag-on-create, not on the creating
+      action: `TagCiResourcesOnCreate` and `TagCopiedImagesOnCreate` require
+      `aws:RequestTag/iterabase-ci=true` and a present `aws:RequestTag/iterabase-ci-run`
+      through `ec2:CreateTags`. `aws:RequestTag` is populated for `ec2:CreateTags`
+      (the bootstrap copy's tagging passes through these statements) and absent for
+      `RunInstances`, so a tag condition — allow or deny — on the launch statement
+      could never match.
+    - `ec2:CopyImage` carries its own unconditional allow: EC2 authorizes a copy
+      against the **source image and its source snapshot** — for a public Canonical
+      image both are empty-account ARNs that the account-scoped patterns cannot match
+      — and against destination wildcard ARNs whose context carries no request-tag
+      keys. A copy always lands in the CI account, and its tags are enforced by
+      `TagCopiedImagesOnCreate`, whose `ec2:CreateAction` list is `CopyImage`.
+    - Copies carry the empty-account ARN form, so both forms are allowed wherever a
+      copied AMI is evaluated: `RemoveCiImagesAndSnapshots` (EC2 reports the copied
+      image's own ARN with an empty account segment even with its `ec2:ResourceTag`
+      keys present) and `LaunchFromCiOwnedAmi` (the same form appears for the launch's
+      image evaluation). The `ec2:Owner` condition keeps launches to AMIs this account
+      owns, and the marker tag condition still scopes removal to CI resources.
+
+    `RunInstances` stays restricted to CI-owned AMIs, so the launch boundary is
+    unchanged.
     (`iam:*`, `organizations:*`, `s3:*`, `ssm:*`, `sts:AssumeRole`).
 11. **Create the CI role** with the GitHub OIDC trust policy:
     ```bash
