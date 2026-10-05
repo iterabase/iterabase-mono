@@ -296,7 +296,7 @@ class PolicyContractTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(self.document, separators=(",", ":"))), MAX_POLICY_CHARACTERS)
 
     def test_every_statement_is_rendered_and_well_formed(self) -> None:
-        self.assertEqual(len(self.document["Statement"]), 20)
+        self.assertEqual(len(self.document["Statement"]), 21)
         for statement in self.document["Statement"]:
             self.assertIn(statement["Effect"], {"Allow", "Deny"})
             self.assertTrue(statement["Action"])
@@ -426,9 +426,15 @@ class PolicyContractTests(unittest.TestCase):
                 "DenyInstanceProfile",
                 "DenyUnapprovedInstanceType",
                 "DenyNonCiOwnedAmi",
+                "DenyOutsideCiRegions",
                 "DenyPrivilegeAndDataSurface",
             },
         )
+        self.assertEqual(
+            denied["DenyOutsideCiRegions"]["Condition"],
+            {"StringNotEquals": {"aws:RequestedRegion": list(CI_REGIONS)}},
+        )
+        self.assertEqual(denied["DenyOutsideCiRegions"]["Action"], "ec2:*")
         self.assertEqual(
             denied["DenyUnapprovedInstanceType"]["Resource"],
             f"arn:aws:ec2:*:{ACCOUNT_ID}:instance/*",
@@ -496,13 +502,33 @@ class PolicyContractTests(unittest.TestCase):
                 f"arn:aws:ec2:*:{ACCOUNT_ID}:snapshot/*",
             ],
         )
-        self.assertNotIn("Condition", statement)
+        # The source is pinned by owner: `ec2:Owner` is present in both copy
+        # evaluations (amazon for the public Canonical source, this account for the
+        # destination wildcard), so third-party images cannot be pulled in.
+        self.assertEqual(
+            statement["Condition"],
+            {"StringEquals": {"ec2:Owner": ["amazon", ACCOUNT_ID]}},
+        )
         self.assertNotIn("ec2:CopyImage", self.statements["BuildCiImagesAndSnapshots"]["Action"])
         tag_on_create = self.statements["TagCiResourcesOnCreate"]["Condition"]
         self.assertIn("CopyImage", tag_on_create["StringEquals"]["ec2:CreateAction"])
         self.assertEqual(
             tag_on_create["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"],
             "true",
+        )
+
+    def test_region_boundary_is_enforced_by_the_policy_not_only_the_driver(self) -> None:
+        # The ARNs carry a wildcard region (listing three regions blows the 6,144
+        # character limit), so the allowed set is enforced by an explicit deny on the
+        # global aws:RequestedRegion key and the driver's CI_REGIONS stays the search
+        # order rather than the boundary.
+        deny = self.statements["DenyOutsideCiRegions"]
+        self.assertEqual(deny["Effect"], "Deny")
+        self.assertEqual(deny["Action"], "ec2:*")
+        self.assertEqual(deny["Resource"], "*")
+        self.assertEqual(
+            deny["Condition"]["StringNotEquals"]["aws:RequestedRegion"],
+            list(CI_REGIONS),
         )
 
     def test_only_documented_statements_leave_the_ci_account(self) -> None:
@@ -778,11 +804,16 @@ class RepositoryContractTests(unittest.TestCase):
 
     def test_ami_map_parses_and_rejects_unknown_regions(self) -> None:
         self.assertEqual(parse_ami_ids("ami-1"), {CI_REGION: "ami-1"})
+        self.assertEqual(parse_ami_ids("ami-1", "eu-central-1"), {"eu-central-1": "ami-1"})
+        self.assertEqual(parse_ami_ids("ami-1", "eu-north-1"), {"eu-north-1": "ami-1"})
+        with self.assertRaises(AwsCiError):
+            parse_ami_ids("ami-1", "us-east-1")
         self.assertEqual(
             parse_ami_ids("eu-north-1=ami-3, eu-west-1=ami-1,eu-central-1=ami-2"),
             {"eu-north-1": "ami-3", "eu-west-1": "ami-1", "eu-central-1": "ami-2"},
         )
-        self.assertEqual(parse_ami_ids(" "), {}) if False else None
+        with self.assertRaises(AwsCiError):
+            parse_ami_ids(" ")
         with self.assertRaises(AwsCiError):
             parse_ami_ids("us-east-1=ami-1")
         with self.assertRaises(AwsCiError):

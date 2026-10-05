@@ -1,7 +1,10 @@
 # AWS CI fixture account operations
 
-Authority: `DES-HOR-591-01` (HOR-591, approved 2026-09-27) and D1/D2 of
-`Areas/ho/Delivery/Fast Validation Pipeline — Engineering Plan.md`. The GitHub
+Authority: `DES-HOR-591-01` (HOR-591, approved 2026-09-27) for the tag scheme and
+IAM boundary and `DES-HOR-591-02` (HOR-591, approved 2026-10-05) for the region set
+and GPU type allowlist, both recorded on the HOR-591 ticket, plus D1/D2 of
+`Areas/ho/Delivery/Fast Validation Pipeline — Engineering Plan.md` and its
+2026-10-05 amendment. The GitHub
 workflows this runbook sets up are `.github/workflows/aws-ci-smoke.yml` and
 `.github/workflows/aws-ci-reaper.yml`; the contract and its enforcement live in
 `.github/scripts/aws_ci.py`.
@@ -16,12 +19,12 @@ workflow is the executable proof that the account is still correct.
 | Surface | Contract |
 | --- | --- |
 | Credentials | GitHub OIDC only, no static keys anywhere, no GitHub environment. Trust covers `aud=sts.amazonaws.com` and `sub=repo:nunocgoncalves@64640406/iterabase-mono@1330311216:*` — the immutable subject form GitHub issues for repositories created after 2026-07-15, which pins the owner and repository IDs so a rename or a recreated repository cannot inherit trust; fork pull requests cannot request OIDC tokens. |
-| Launch | `RunInstances` only for `m6i.xlarge` (CPU) and `g5.xlarge` (GPU), only from AMIs owned by the CI account, and only with no instance profile — each enforced twice, as an allow condition and as an explicit deny. The mandatory tags are enforced at tag-on-create (`ec2:CreateTags` requires the marker and run tags through `aws:RequestTag`), because the launch action's own authorization context carries no request-tag keys. |
+| Launch | `RunInstances` only for `m6i.xlarge` (CPU) and `g6.xlarge`, `g5.xlarge`, `g6.2xlarge`, `g5.2xlarge`, `g5.4xlarge` (GPU; all 24 GiB and at least sm_86), only from AMIs owned by the CI account, and only with no instance profile — each enforced twice, as an allow condition and as an explicit deny. The mandatory tags are required on the instance and volume resources of the launch statement itself and again at tag-on-create (`ec2:CreateTags`); `aws:RequestTag` is absent only from the plumbing resources' contexts (subnet, network interface, key pair), which is why the conditions are split per resource. |
 | Tags | `iterabase-ci=true` (marker, mandatory), `iterabase-ci-run=<github run id>` (mandatory), `iterabase-ci-scenario=<identity>` (mandatory), optional `iterabase-ci-deadline=<RFC3339 UTC>`, `Name=iterabase-ci-<run>-<scenario>`. The marker is the IAM condition key and the reaper's only selection criterion. |
 | Lifecycle | Terminate, volume, snapshot, and AMI actions are scoped to resources carrying `iterabase-ci=true`; tag-on-create is bound to the creating action. |
 | Reaper | `iterabase-ci-deadline` when present, otherwise `LaunchTime + 180 minutes`. Untagged or foreign instances are reported and never touched; the role cannot terminate them. |
 | Unreachable by the role | `iam:*`, `organizations:*`, `s3:*`, `ssm:*`, and `sts:AssumeRole` (no `iam:PassRole`, so no instance profile can ever be attached). |
-| Region | Three allowed regions in preference order: `eu-west-1` (primary: default VPC, bootstrap AMI, CPU fixtures, cheapest `g5`), `eu-central-1`, `eu-north-1`. A GPU fixture walks regions, then approved types, then offered AZs, because `eu-west-1` offers `g5` without live capacity and does not offer the `g6`/L4 family at all. The policy's ARNs carry a wildcard region (listing three regions would exceed the 6144-character managed-policy limit), so the region set is a service contract, and cost misuse in another region is bounded by the budget alarm. |
+| Region | Three allowed regions in preference order: `eu-west-1` (primary: default VPC, bootstrap AMI, CPU fixtures, cheapest `g5`), `eu-central-1`, `eu-north-1`. A GPU fixture walks regions, then approved types, then offered AZs, because `eu-west-1` offers `g5` without live capacity and does not offer the `g6`/L4 family at all. The policy's ARNs carry a wildcard region — listing three regions would exceed the 6,144-character managed-policy limit (9,136 expanded) — and the allowed set is enforced by an explicit `DenyOutsideCiRegions` on `aws:RequestedRegion`, so the boundary stays in the artifact AWS evaluates. |
 | Budget | `$250/month` cost budget `iterabase-ci-monthly` on the member account, forecast alert at 80% and actual alert at 100%. The budget measures gross usage cost (`IncludeCredit=false`), so startup credits cannot hide runaway spend. |
 
 `Describe*` actions cannot be resource-scoped by AWS design; the policy grants
@@ -549,17 +552,20 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
       --query "Policies[?PolicyName=='iterabase-ci-role-policy'].Arn" --output text)
     printf '%s\n' "$POLICY_ARN"
     ```
-    The renderer refuses any region other than `eu-west-1` and any account id
-    that is not twelve digits. The policy is 18 statements, and its shape follows
+    The renderer refuses any account id that is not twelve digits, and the policy
+    restricts `ec2:*` to the allowed regions with an explicit `DenyOutsideCiRegions`
+    (`StringNotEquals` on `aws:RequestedRegion`). The policy is 21 statements, and its shape follows
     what EC2 actually puts in each authorization context (every step below was
     proven by decoding `UnauthorizedOperation` from real dispatches, not inferred):
 
     - Read-only describes; the approved launch surface; tag-scoped lifecycle
       actions; and a deny for the privilege and data surface.
     - Regions. Resource ARNs carry a wildcard region (`arn:aws:ec2:*:<account>:…`)
-      because three regions are allowed and listing each would exceed the 6144-character
-      managed-policy limit; the allowed set is enforced by the driver (`CI_REGIONS`) and
-      covered by the budget alarm.
+      because three regions are allowed and listing each would exceed the 6,144-character
+      managed-policy limit (expanded: 9,136 characters). The allowed set is still
+      enforced by the policy itself through `DenyOutsideCiRegions`, so the boundary
+      lives in the artifact AWS evaluates; the driver's `CI_REGIONS` mirrors it as a
+      search order, and the budget alarm bounds cost.
     - Types. The launch allow lists every approved type — `m6i.xlarge` for CPU and
       `g6.xlarge`, `g5.xlarge`, `g6.2xlarge`, `g5.2xlarge`, `g5.4xlarge` for GPU (all
       24 GiB and at least sm_86; `g4dn`/T4 is sm_75 and cannot run the validated stack).
@@ -570,13 +576,14 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
       launch — the instance being created is an `aws:ResourceBeingCreated` context
       that carries `ec2:InstanceType` but neither `ec2:Owner` nor any request-tag
       key, and `StringNotEquals` is true when its key is absent.
-    - Mandatory tags. They are enforced at tag-on-create, not on the creating
-      action: `TagCiResourcesOnCreate` and `TagCopiedImagesOnCreate` require
-      `aws:RequestTag/iterabase-ci=true` and a present `aws:RequestTag/iterabase-ci-run`
-      through `ec2:CreateTags`. `aws:RequestTag` is populated for `ec2:CreateTags`
-      (the bootstrap copy's tagging passes through these statements) and absent for
-      `RunInstances`, so a tag condition — allow or deny — on the launch statement
-      could never match.
+    - Mandatory tags. They are required in two places, per resource: the launch
+      statement's instance and volume entries carry `aws:RequestTag/iterabase-ci=true`
+      plus a present `aws:RequestTag/iterabase-ci-run`, and the tag-on-create
+      statements (`TagCiResourcesOnCreate`, `TagCopiedImagesOnCreate`) require the
+      same keys through `ec2:CreateTags`. The decoded evidence was narrower than "no
+      tag conditions apply": `aws:RequestTag` is absent from the *plumbing*
+      resources' contexts (subnet, network interface, key pair), which is why the
+      conditions were split per resource rather than removed.
     - `ec2:CopyImage` carries its own unconditional allow: EC2 authorizes a copy
       against the **source image and its source snapshot** — for a public Canonical
       image both are empty-account ARNs that the account-scoped patterns cannot match

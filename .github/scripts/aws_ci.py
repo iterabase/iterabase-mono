@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """AWS CI fixture-account contract, smoke validation, and host reaper.
 
-Authority: `DES-HOR-591-01` (HOR-591) and `docs/runbooks/aws-ci.md`.
+Authority: `DES-HOR-591-01` (HOR-591, tags/IAM boundary), `DES-HOR-591-02` (HOR-591,
+region set and GPU type allowlist) and `docs/runbooks/aws-ci.md`.
 
 This module is the single implementation of the AWS CI substrate contract: the
 mandatory tag scheme, the least-privilege CI role policy, the dispatchable smoke
@@ -47,14 +48,25 @@ ALL_APPROVED_INSTANCE_TYPES: tuple[str, ...] = tuple(
 )
 
 
+def approved_instance_types(capacity: str) -> tuple[str, ...]:
+    """Approved types for one capacity, cheapest-first for the GPU family.
+
+    The launch search reads the tuple through this helper so the ordering and the
+    allowlist stay single-sourced.
+    """
+    if capacity not in APPROVED_INSTANCE_TYPES:
+        raise AwsCiError(f"capacity must be one of {sorted(APPROVED_INSTANCE_TYPES)}")
+    return APPROVED_INSTANCE_TYPES[capacity]
+
+
 def cpu_instance_type() -> str:
     """The single approved CPU type (a tuple entry, so callers never pass the tuple)."""
-    return APPROVED_INSTANCE_TYPES["cpu"][0]
+    return approved_instance_types("cpu")[0]
 
 
 def gpu_instance_types() -> tuple[str, ...]:
     """Approved GPU types in the documented cheapest-first order."""
-    return APPROVED_INSTANCE_TYPES["gpu"]
+    return approved_instance_types("gpu")
 SECURITY_GROUP_NAME = "iterabase-ci-ssh"
 MARKER_TAG = "iterabase-ci"
 MARKER_VALUE = "true"
@@ -422,6 +434,12 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
                 arn("image"),
                 arn("snapshot"),
             ],
+            # Neither `aws:RequestTag` (absent from both copy contexts) nor the image
+            # attribute keys (absent from the destination context) can discriminate
+            # here, but `ec2:Owner` is present in both: it is `amazon` for the public
+            # Canonical source and this account for the destination wildcard, so this
+            # pins the source to Amazon/Canonical images and still lets the copy land.
+            "Condition": {"StringEquals": {"ec2:Owner": ["amazon", account_id]}},
         },
         {
             "Sid": "CreateCiSnapshots",
@@ -472,6 +490,17 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Action": "ec2:RunInstances",
             "Resource": [public_arn("image"), arn("image")],
             "Condition": {"StringNotEquals": {"ec2:Owner": account_id}},
+        },
+        {
+            # Keep the region boundary in the artifact AWS enforces rather than in the
+            # driver: `aws:RequestedRegion` is a global request key, so one small deny
+            # replaces expanding every ARN three ways (9,136 characters, above the
+            # 6,144 limit).
+            "Sid": "DenyOutsideCiRegions",
+            "Effect": "Deny",
+            "Action": "ec2:*",
+            "Resource": "*",
+            "Condition": {"StringNotEquals": {"aws:RequestedRegion": list(CI_REGIONS)}},
         },
         {
             "Sid": "DenyPrivilegeAndDataSurface",
@@ -856,13 +885,7 @@ def aws_json(args: list[str]) -> Any:
 
 
 def require_region(region: str | None) -> str:
-    """Validate one CI region, and return the region order to search.
-
-    The primary region always comes first, then the remaining allowed regions in
-    their declared order, so a fixture that cannot be placed in the primary region
-    (GPU capacity in eu-west-1 is intermittent and g6 is not offered there) still
-    has somewhere to go.
-    """
+    """Validate and return one allowed CI region."""
     resolved = region or os.environ.get("AWS_REGION") or os.environ.get("AWS_CI_REGION") or ""
     if resolved not in CI_REGIONS:
         raise AwsCiError(f"AWS CI region must be one of {CI_REGIONS}, not {resolved or '<unset>'!r}")
@@ -870,6 +893,12 @@ def require_region(region: str | None) -> str:
 
 
 def region_order(primary: str | None) -> tuple[str, ...]:
+    """Return the regions to search: the primary first, then the rest in order.
+
+    The primary always leads, so a fixture prefers its home region (default VPC,
+    bootstrap AMI, cheapest g5) and only moves when capacity or quota says so:
+    GPU capacity in eu-west-1 is intermittent and g6 is not offered there at all.
+    """
     resolved = require_region(primary)
     return (resolved, *(region for region in CI_REGIONS if region != resolved))
 
@@ -1117,7 +1146,7 @@ def command_bootstrap_ami(args: argparse.Namespace) -> int:
                 "--name",
                 f"{TAG_PREFIX}-ubuntu-24.04-{args.run_id}",
                 "--description",
-                f"iterabase CI bootstrap AMI for run {args.run_id} (DES-HOR-591-01)",
+                f"iterabase CI bootstrap AMI for run {args.run_id} (DES-HOR-591-01, DES-HOR-591-02)",
                 "--tag-specifications",
                 tag_specifications("image", tags),
                 tag_specifications("snapshot", tags),
@@ -1154,8 +1183,14 @@ def wait_for_image(region: str, image_id: str, timeout_seconds: int = 900) -> No
         time.sleep(15)
 
 
-def parse_ami_ids(value: str) -> dict[str, str]:
-    """Parse `region=ami-...,region=ami-...` (or a bare AMI id for the primary)."""
+def parse_ami_ids(value: str, primary: str = CI_REGION) -> dict[str, str]:
+    """Parse `region=ami-...,region=ami-...`, or a bare id for `primary`.
+
+    The bare form binds to the *resolved* primary region, not the module constant:
+    with `AWS_CI_REGION=eu-central-1`, a bare id mapped to `eu-west-1` would leave the
+    launch search with no AMI for the region it actually searches.
+    """
+    primary = require_region(primary)
     mapping: dict[str, str] = {}
     for entry in value.split(","):
         entry = entry.strip()
@@ -1167,7 +1202,7 @@ def parse_ami_ids(value: str) -> dict[str, str]:
                 raise AwsCiError(f"AMI map names an unknown region: {region!r}")
             mapping[region] = ami
         else:
-            mapping[CI_REGION] = entry
+            mapping[primary] = entry
     if not mapping:
         raise AwsCiError("no AMI ids were supplied")
     return mapping
@@ -1198,7 +1233,7 @@ def place_fixture(
                 continue
             vpc = default_vpc(region)
             security_group = ci_security_group(region)
-            for instance_type in APPROVED_INSTANCE_TYPES[capacity]:
+            for instance_type in approved_instance_types(capacity):
                 azs = offered_azs(region, instance_type)
                 if not azs:
                     continue
@@ -1229,9 +1264,8 @@ def place_fixture(
 
 def command_run_host(args: argparse.Namespace) -> int:
     primary = require_region(args.region)
-    if args.capacity not in APPROVED_INSTANCE_TYPES:
-        raise AwsCiError(f"capacity must be one of {sorted(APPROVED_INSTANCE_TYPES)}")
-    ami_ids = parse_ami_ids(args.ami_ids)
+    approved_instance_types(args.capacity)
+    ami_ids = parse_ami_ids(args.ami_ids, primary)
     scenario = f"smoke-{args.capacity}"
     # CPU capacity is not scarce, so it stays in the primary region; the GPU family
     # walks the whole allowed region order.
