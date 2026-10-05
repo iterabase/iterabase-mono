@@ -208,9 +208,13 @@ def build_manifest(root: Path, capacity: str) -> dict[str, Any]:
 # Remote verification emits one machine-readable line per archive so a seed
 # dispatch can compare a matching generation against the digests recorded at
 # seed time. A missing or unreadable archive exits non-zero; every other archive
-# is still reported so one dispatch names all damage.
+# is still reported so one dispatch names all damage. A missing tool is named
+# before any archive verdict, so the operator sees one cause, not 49 symptoms.
 ARCHIVE_VERIFICATION_SCRIPT = """\
 status=0
+for tool in stat sha256sum; do
+  command -v "$tool" >/dev/null 2>&1 || { printf "tool-missing %s\\n" "$tool"; exit 1; }
+done
 for path in "$@"; do
   if test ! -f "$path"; then printf "missing %s\\n" "$path"; status=1; continue; fi
   size=$(stat -c %s "$path") || { printf "unreadable %s\\n" "$path"; status=1; continue; }
@@ -218,6 +222,27 @@ for path in "$@"; do
   printf "archive %s %s %s\\n" "$hash" "$size" "$path"
 done
 exit $status
+"""
+
+# The final swap keeps the destination generation on disk until the staged
+# replacement is in place, and restores it when the replacement move fails, so
+# repairing the live generation never leaves an empty window behind.
+ATOMIC_SWAP_SCRIPT = """\
+set -e
+destination=$1
+staging=$2
+previous="${destination}.previous"
+rm -rf "$previous"
+if test -d "$destination"; then
+  mv "$destination" "$previous"
+fi
+if ! mv "$staging" "$destination"; then
+  if test -d "$previous"; then
+    mv "$previous" "$destination"
+  fi
+  exit 1
+fi
+rm -rf "$previous"
 """
 
 
@@ -228,8 +253,26 @@ def verification_command(remote_dir: str, archives: list[str]) -> str:
     )
     return (
         f"sudo bash -c {shlex.quote(ARCHIVE_VERIFICATION_SCRIPT)} "
-        f"fixture-image-cache {paths}"
+        f"fixture-image-cache-verify {paths}"
     )
+
+
+def atomic_swap_command(destination: str, staging: str) -> str:
+    """Return the remote command that installs staging over destination."""
+    return (
+        f"sudo bash -c {shlex.quote(ATOMIC_SWAP_SCRIPT)} "
+        f"fixture-image-cache-swap {shlex.quote(destination)} {shlex.quote(staging)}"
+    )
+
+
+def verification_verdict_lines(output: str) -> list[str]:
+    """Return the per-archive verdict lines in a verification command's output."""
+    prefixes = {"archive", "missing", "unreadable"}
+    return [
+        line
+        for line in output.splitlines()
+        if line.split() and line.split()[0] in prefixes
+    ]
 
 
 def recorded_archive_expectations(recorded: dict[str, Any]) -> dict[str, tuple[str, int]]:
@@ -273,11 +316,11 @@ def archive_verification_failures(
 ) -> list[str]:
     """Return why each expected archive fails the recorded digest contract."""
     verified: dict[str, tuple[str, int]] = {}
-    absent: set[str] = set()
+    verdicts: dict[str, str] = {}
     for line in output.splitlines():
         parts = line.split()
         if len(parts) == 2 and parts[0] in {"missing", "unreadable"}:
-            absent.add(parts[1])
+            verdicts[parts[1]] = parts[0]
         elif len(parts) == 4 and parts[0] == "archive":
             try:
                 verified[parts[3]] = (parts[1], int(parts[2]))
@@ -291,8 +334,9 @@ def archive_verification_failures(
         if expectation is None:
             failures.append(f"archive {archive} has no recorded sha256/size")
             continue
-        if path in absent:
-            failures.append(f"archive is absent: {archive}")
+        verdict = verdicts.get(path)
+        if verdict is not None:
+            failures.append(f"archive is {verdict}: {archive}")
             continue
         actual = verified.get(path)
         if actual is None:
@@ -328,6 +372,14 @@ def verify_recorded_generation(
     result = capture(
         verification_command(remote_dir, [image["archive"] for image in images])
     )
+    if not verification_verdict_lines(result.stdout):
+        details = (result.stderr or "").strip().splitlines() or (
+            result.stdout or ""
+        ).strip().splitlines()
+        summary = details[0][:200] if details else "no verdict output"
+        return [
+            f"verification command failed (exit {result.returncode}): {summary}"
+        ]
     return archive_verification_failures(
         images=images,
         expectations=expectations,
@@ -450,7 +502,7 @@ def seed_fixture_image_cache(
             for failure in failures:
                 print(
                     f"fixture {address}: cache generation {generation} "
-                    f"failed verification ({failure}); repairing",
+                    f"failed verification: {failure}; repairing",
                     file=sys.stderr,
                 )
 
@@ -518,7 +570,7 @@ def seed_fixture_image_cache(
         ssh_command(f"sudo tee {staging_dir}/generation.json >/dev/null"),
         stdin_text=rendered_manifest,
     )
-    execute(ssh_command(f"sudo rm -rf {remote_dir} && sudo mv {staging_dir} {remote_dir}"))
+    execute(ssh_command(atomic_swap_command(remote_dir, staging_dir)))
     # Prune only after the new generation is in place, so a failed seed leaves
     # the previous generation intact and usable.
     execute(

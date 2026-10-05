@@ -78,9 +78,11 @@ class FakeFixtureHost:
         *,
         generation_json: dict[str, object] | None,
         broken: dict[str, str] | None = None,
+        verification_failure: tuple[int, str] | None = None,
     ) -> None:
         self.generation_json = generation_json
         self.broken = broken or {}
+        self.verification_failure = verification_failure
         self.commands: list[str] = []
         self.generation_written: str | None = None
 
@@ -89,6 +91,8 @@ class FakeFixtureHost:
     ) -> subprocess.CompletedProcess[str]:
         rendered = " ".join(shlex.quote(part) for part in command)
         self.commands.append(rendered)
+        if "fixture-image-cache-swap" in rendered:
+            return subprocess.CompletedProcess(command, 0, "", "")
         if "sudo tee" in rendered and "generation.json" in rendered:
             self.generation_written = kwargs.get("input")  # type: ignore[assignment]
             return subprocess.CompletedProcess(command, 0, "", "")
@@ -98,7 +102,10 @@ class FakeFixtureHost:
             return subprocess.CompletedProcess(
                 command, 0, json.dumps(self.generation_json), ""
             )
-        if "bash -c" in rendered and "fixture-image-cache" in rendered:
+        if "bash -c" in rendered and "fixture-image-cache-verify" in rendered:
+            if self.verification_failure is not None:
+                returncode, stderr = self.verification_failure
+                return subprocess.CompletedProcess(command, returncode, "", stderr)
             return subprocess.CompletedProcess(
                 command, 0, self._verification_output(rendered), ""
             )
@@ -127,6 +134,8 @@ class FakeFixtureHost:
             state = self.broken.get(archive)
             if state == "missing":
                 lines.append(f"missing {path}")
+            elif state == "unreadable":
+                lines.append(f"unreadable {path}")
             elif state == "truncated":
                 lines.append(
                     f"archive {fake_archive_sha256(path)} "
@@ -291,14 +300,19 @@ class FixtureImageCacheTests(unittest.TestCase):
 
         self.assertIn("already seeded", stdout)
         self.assertTrue(
-            any("fixture-image-cache" in command for command in commands),
+            any("fixture-image-cache-verify" in command for command in commands),
             "the seed must verify archives before trusting a matching generation",
         )
         self.assertFalse(any(".staging-" in command for command in commands))
         self.assertIsNone(host.generation_written)
 
     def test_seed_detects_and_repairs_every_broken_archive(self) -> None:
-        for state in ("missing", "truncated", "corrupt"):
+        for state, reason in (
+            ("missing", "archive is missing"),
+            ("unreadable", "archive is unreadable"),
+            ("truncated", "archive size mismatch"),
+            ("corrupt", "archive sha256 mismatch"),
+        ):
             with self.subTest(state=state):
                 manifest = fixture_image_cache.build_manifest(ROOT, "cpu")
                 archive = manifest["images"][3]["archive"]
@@ -311,9 +325,15 @@ class FixtureImageCacheTests(unittest.TestCase):
 
                 self.assertNotIn("already seeded", stdout)
                 self.assertIn(archive, stderr)
+                self.assertIn(reason, stderr)
+                self.assertNotIn("archive is absent", stderr)
                 self.assertTrue(
                     any(".staging-" in command for command in commands),
                     "a broken archive must be repaired through staging",
+                )
+                self.assertTrue(
+                    any("fixture-image-cache-swap" in command for command in commands),
+                    "the repair must install the staged generation through the swap",
                 )
                 self.assertIsNotNone(host.generation_written)
                 rewritten = json.loads(host.generation_written)
@@ -321,6 +341,29 @@ class FixtureImageCacheTests(unittest.TestCase):
                 for image in rewritten["images"]:
                     self.assertRegex(image["sha256"], r"^[0-9a-f]{64}$")
                     self.assertGreater(image["size"], 0)
+
+    def test_seed_reports_a_failed_verification_command_instead_of_every_archive(
+        self,
+    ) -> None:
+        manifest = fixture_image_cache.build_manifest(ROOT, "cpu")
+        host = FakeFixtureHost(
+            generation_json=recorded_generation(manifest),
+            verification_failure=(
+                255,
+                "ssh: connect to host 192.0.2.10 port 22: Connection refused",
+            ),
+        )
+
+        commands, stdout, stderr = self._seed_with_fake_host(manifest, host)
+
+        self.assertNotIn("already seeded", stdout)
+        self.assertIn("verification command failed (exit 255)", stderr)
+        self.assertIn("Connection refused", stderr)
+        self.assertNotIn("archive was not verified", stderr)
+        self.assertTrue(
+            any(".staging-" in command for command in commands),
+            "a command failure must still fail closed into a repair",
+        )
 
     def test_seed_repairs_a_legacy_generation_without_archive_digests(self) -> None:
         manifest = fixture_image_cache.build_manifest(ROOT, "cpu")
@@ -336,6 +379,60 @@ class FixtureImageCacheTests(unittest.TestCase):
         self.assertIn("sha256", stderr)
         self.assertTrue(any(".staging-" in command for command in commands))
         self.assertIsNotNone(host.generation_written)
+
+    def test_atomic_swap_keeps_the_previous_generation_until_installed(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            script = root / "swap.sh"
+            script.write_text(fixture_image_cache.ATOMIC_SWAP_SCRIPT, encoding="utf-8")
+
+            destination = root / "generation"
+            destination.mkdir()
+            (destination / "generation.json").write_text("old", encoding="utf-8")
+            staging = root / ".staging-generation"
+            staging.mkdir()
+            (staging / "generation.json").write_text("new", encoding="utf-8")
+            completed = subprocess.run(
+                ["bash", str(script), str(destination), str(staging)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                (destination / "generation.json").read_text(encoding="utf-8"), "new"
+            )
+            self.assertFalse((root / "generation.previous").exists())
+            self.assertFalse(staging.exists())
+
+            keep = root / "generation-keep"
+            keep.mkdir()
+            (keep / "generation.json").write_text("keep", encoding="utf-8")
+            completed = subprocess.run(
+                ["bash", str(script), str(keep), str(root / "missing-staging")],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertEqual(
+                (keep / "generation.json").read_text(encoding="utf-8"), "keep"
+            )
+            self.assertFalse((root / "generation-keep.previous").exists())
+
+    def test_verification_script_names_a_missing_tool_instead_of_archives(self) -> None:
+        completed = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                fixture_image_cache.ARCHIVE_VERIFICATION_SCRIPT,
+                "fixture-image-cache-verify",
+                "/tmp/unused.tar",
+            ],
+            env={"PATH": "/nonexistent"},
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("tool-missing stat", completed.stdout)
 
     def test_recorded_archive_expectations_reject_incomplete_records(self) -> None:
         manifest = fixture_image_cache.build_manifest(ROOT, "cpu")

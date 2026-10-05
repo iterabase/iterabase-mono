@@ -190,10 +190,16 @@ fixture has a dedicated cache volume.
   untouched only when every archive is intact; a missing, truncated, corrupt,
   or legacy (no recorded archive digests) archive set is repaired in the same
   dispatch through the staging and atomic-swap path, so no manual host surgery
-  is needed.
-- Failed seeds: staging happens before any prune, so a seed that fails partway
-  leaves the previous generation intact and usable. Re-run the workflow to
-  retry; the next run discards the failed staging directory.
+  is needed. A legacy generation has no recorded expectations, so the next
+  explicit dispatch re-pulls its archives and rewrites `generation.json` under
+  the same generation hash; the consumed generation identity and references do
+  not change.
+- Failed seeds: staging happens before any prune, and the final swap moves the
+  previous generation aside, installs the staged replacement, and restores the
+  previous copy if that install fails. A seed that fails or is interrupted part
+  way therefore leaves the previous generation intact or recoverable as
+  `<generation>.previous`. Re-run the workflow to retry; the next run discards
+  the failed staging directory.
 - Per run: real-machine PR and candidate jobs derive the generation from
   `remote-content.json`, and the harness imports and verifies every reference —
   including the recorded config digest, not just the tag — before the first
