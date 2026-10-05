@@ -360,14 +360,18 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Condition": {"StringNotEquals": {"ec2:Owner": account_id}},
         },
         {
-            "Sid": "DenyMissingMandatoryTags",
+            "Sid": "DenyMissingMarkerTag",
             "Effect": "Deny",
             "Action": "ec2:RunInstances",
             "Resource": "*",
-            "Condition": {
-                "Null": {"aws:RequestTag/" + RUN_TAG: "true"},
-                "StringNotEquals": {"aws:RequestTag/" + MARKER_TAG: MARKER_VALUE},
-            },
+            "Condition": {"StringNotEquals": {"aws:RequestTag/" + MARKER_TAG: MARKER_VALUE}},
+        },
+        {
+            "Sid": "DenyMissingRunTag",
+            "Effect": "Deny",
+            "Action": "ec2:RunInstances",
+            "Resource": "*",
+            "Condition": {"Null": {"aws:RequestTag/" + RUN_TAG: "true"}},
         },
         {
             "Sid": "DenyPrivilegeAndDataSurface",

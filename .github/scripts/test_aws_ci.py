@@ -283,7 +283,7 @@ class PolicyContractTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(self.document, separators=(",", ":"))), MAX_POLICY_CHARACTERS)
 
     def test_every_statement_is_rendered_and_well_formed(self) -> None:
-        self.assertEqual(len(self.document["Statement"]), 17)
+        self.assertEqual(len(self.document["Statement"]), 18)
         for statement in self.document["Statement"]:
             self.assertIn(statement["Effect"], {"Allow", "Deny"})
             self.assertTrue(statement["Action"])
@@ -365,16 +365,18 @@ class PolicyContractTests(unittest.TestCase):
                 "DenyInstanceProfile",
                 "DenyUnapprovedInstanceType",
                 "DenyNonCiOwnedAmi",
-                "DenyMissingMandatoryTags",
+                "DenyMissingMarkerTag",
+                "DenyMissingRunTag",
                 "DenyPrivilegeAndDataSurface",
             },
         )
         self.assertEqual(
-            denied["DenyMissingMandatoryTags"]["Condition"],
-            {
-                "Null": {f"aws:RequestTag/{RUN_TAG}": "true"},
-                "StringNotEquals": {f"aws:RequestTag/{MARKER_TAG}": "true"},
-            },
+            denied["DenyMissingMarkerTag"]["Condition"],
+            {"StringNotEquals": {f"aws:RequestTag/{MARKER_TAG}": "true"}},
+        )
+        self.assertEqual(
+            denied["DenyMissingRunTag"]["Condition"],
+            {"Null": {f"aws:RequestTag/{RUN_TAG}": "true"}},
         )
         self.assertEqual(denied["DenyInstanceProfile"]["Condition"], {"Null": {"ec2:InstanceProfile": "false"}})
         self.assertEqual(
@@ -389,6 +391,25 @@ class PolicyContractTests(unittest.TestCase):
             set(denied["DenyPrivilegeAndDataSurface"]["Action"]),
             {"iam:*", "organizations:*", "s3:*", "ssm:*", "sts:AssumeRole"},
         )
+
+    def test_each_mandatory_tag_has_its_own_single_key_deny(self) -> None:
+        # IAM ANDs every key inside one condition block, so two mandatory tags in a
+        # single Deny would only fire when both were missing. Each tag needs its own
+        # statement, and this test keeps the conjunction from coming back.
+        denies = [
+            statement
+            for statement in self.document["Statement"]
+            if statement["Effect"] == "Deny"
+            and statement["Action"] == "ec2:RunInstances"
+            and "aws:RequestTag" in json.dumps(statement.get("Condition", {}))
+        ]
+        self.assertEqual(
+            [statement["Sid"] for statement in denies], ["DenyMissingMarkerTag", "DenyMissingRunTag"]
+        )
+        for statement in denies:
+            with self.subTest(sid=statement["Sid"]):
+                keys = [key for block in statement["Condition"].values() for key in block]
+                self.assertEqual(len(keys), 1, "a mandatory-tag deny must guard exactly one tag key")
 
     def test_only_the_describe_and_deny_statements_are_unscoped(self) -> None:
         for sid, statement in self.statements.items():
