@@ -11,12 +11,16 @@ from content_digest import content_digest
 ROOT = Path(__file__).resolve().parents[2]
 
 # Upstream action.yml runtimes for these immutable refs, reviewed 2026-08-18.
+# `aws-actions/configure-aws-credentials` was reviewed on 2026-10-05 (HOR-591):
+# its action.yml declares `using: node24`, needs runner v2.327.1 or later, and
+# `role-skip-session-tagging` keeps the trust policy to aud+sub only.
 REVIEWED_EXTERNAL_ACTION_RUNTIMES = {
     "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a": "composite",
     "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9": "node24",
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1": "node24",
     "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c": "node24",
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a": "node24",
+    "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd": "node24",
     "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a": "node24",
     "docker/login-action@dbcb813823bdd20940b903addbd779551569679f": "node24",
 }
@@ -100,10 +104,16 @@ class CacheContractTests(unittest.TestCase):
         self.assertNotIn("node20", REVIEWED_EXTERNAL_ACTION_RUNTIMES.values())
 
     def test_forbidden_mutable_state_is_not_cached(self) -> None:
+        # Only an action that caches can cache mutable state. Scanning every
+        # composite action also matched actions that merely name a credential
+        # provider: `setup-aws-ci` references `aws-actions/configure-aws-credentials`
+        # (HOR-591) and raises no cache at all.
         cache_actions = "\n".join(
             action.read_text()
             for action in (ROOT / ".github/actions").glob("*/action.yml")
+            if "actions/cache@" in action.read_text()
         )
+        self.assertTrue(cache_actions)
         for forbidden in (
             ".kube",
             "node_modules",
