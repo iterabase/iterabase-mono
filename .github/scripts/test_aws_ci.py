@@ -285,7 +285,7 @@ class PolicyContractTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(self.document, separators=(",", ":"))), MAX_POLICY_CHARACTERS)
 
     def test_every_statement_is_rendered_and_well_formed(self) -> None:
-        self.assertEqual(len(self.document["Statement"]), 19)
+        self.assertEqual(len(self.document["Statement"]), 20)
         for statement in self.document["Statement"]:
             self.assertIn(statement["Effect"], {"Allow", "Deny"})
             self.assertTrue(statement["Action"])
@@ -298,17 +298,65 @@ class PolicyContractTests(unittest.TestCase):
         )
         self.assertEqual(
             self.statements["LaunchFromCiOwnedAmi"]["Resource"],
-            f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:image/*",
+            [
+                f"arn:aws:ec2:{CI_REGION}::image/*",
+                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:image/*",
+            ],
         )
         condition = self.statements["RunApprovedInstances"]["Condition"]
         self.assertEqual(condition["StringEquals"]["ec2:InstanceType"], sorted(APPROVED_INSTANCE_TYPES.values()))
         self.assertEqual(condition["Null"]["ec2:InstanceProfile"], "true")
 
-    def test_launch_allow_requires_the_mandatory_marker_and_run_tags(self) -> None:
-        condition = self.statements["RunApprovedInstances"]["Condition"]
+    def test_launch_requires_tags_on_the_instance_and_volume_resources(self) -> None:
+        # AWS's documented require-tags-at-launch shape: the mandate sits on the
+        # instance and volume resources (whose contexts carry aws:RequestTag), while
+        # the plumbing resources are condition-free because conditions are evaluated
+        # per resource and ec2:InstanceType exists only on the instance context.
+        instance = self.statements["RunApprovedInstances"]
+        self.assertEqual(instance["Resource"], f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:instance/*")
+        condition = instance["Condition"]
+        self.assertEqual(condition["StringEquals"]["ec2:InstanceType"], sorted(APPROVED_INSTANCE_TYPES.values()))
         self.assertEqual(condition["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"], "true")
+        self.assertEqual(condition["Null"]["ec2:InstanceProfile"], "true")
         self.assertEqual(condition["Null"][f"aws:RequestTag/{RUN_TAG}"], "false")
         self.assertEqual(condition["ForAllValues:StringLike"]["aws:TagKeys"], [f"{MARKER_TAG}*", NAME_TAG])
+
+        volumes = self.statements["RunApprovedVolumes"]
+        self.assertEqual(volumes["Resource"], f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:volume/*")
+        self.assertEqual(volumes["Condition"]["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"], "true")
+        self.assertEqual(volumes["Condition"]["Null"][f"aws:RequestTag/{RUN_TAG}"], "false")
+
+        dependencies = self.statements["RunInstanceDependencies"]
+        self.assertEqual(
+            dependencies["Resource"],
+            [
+                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:network-interface/*",
+                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:subnet/*",
+                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:key-pair/*",
+            ],
+        )
+        self.assertNotIn("Condition", dependencies)
+
+    def test_tag_conditions_live_only_on_the_tagging_action(self) -> None:
+        # aws:RequestTag is present for ec2:CreateTags (proven: the bootstrap copy's
+        # tagging succeeded through these statements) and for the instance/volume
+        # launch resources; the plumbing resources never carry it.
+        for sid, statement in self.statements.items():
+            if "ec2:RunInstances" not in json.dumps(statement["Action"]):
+                continue
+            if sid in {"RunApprovedInstances", "RunApprovedVolumes"}:
+                continue
+            with self.subTest(sid=sid):
+                self.assertNotIn("aws:RequestTag", json.dumps(statement))
+        for sid in ("TagCiResourcesOnCreate", "TagCopiedImagesOnCreate"):
+            with self.subTest(sid=sid):
+                condition = self.statements[sid]["Condition"]
+                self.assertEqual(condition["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"], "true")
+                self.assertEqual(condition["Null"][f"aws:RequestTag/{RUN_TAG}"], "false")
+                self.assertEqual(
+                    condition["ForAllValues:StringLike"]["aws:TagKeys"],
+                    [f"{MARKER_TAG}*", NAME_TAG],
+                )
 
     def test_launch_allow_uses_the_tagged_ci_security_group_only(self) -> None:
         self.assertEqual(
@@ -367,18 +415,19 @@ class PolicyContractTests(unittest.TestCase):
                 "DenyInstanceProfile",
                 "DenyUnapprovedInstanceType",
                 "DenyNonCiOwnedAmi",
-                "DenyMissingMarkerTag",
-                "DenyMissingRunTag",
                 "DenyPrivilegeAndDataSurface",
             },
         )
         self.assertEqual(
-            denied["DenyMissingMarkerTag"]["Condition"],
-            {"StringNotEquals": {f"aws:RequestTag/{MARKER_TAG}": "true"}},
+            denied["DenyUnapprovedInstanceType"]["Resource"],
+            f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:instance/*",
         )
         self.assertEqual(
-            denied["DenyMissingRunTag"]["Condition"],
-            {"Null": {f"aws:RequestTag/{RUN_TAG}": "true"}},
+            denied["DenyNonCiOwnedAmi"]["Resource"],
+            [
+                f"arn:aws:ec2:{CI_REGION}::image/*",
+                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:image/*",
+            ],
         )
         self.assertEqual(denied["DenyInstanceProfile"]["Condition"], {"Null": {"ec2:InstanceProfile": "false"}})
         self.assertEqual(
@@ -394,35 +443,54 @@ class PolicyContractTests(unittest.TestCase):
             {"iam:*", "organizations:*", "s3:*", "ssm:*", "sts:AssumeRole"},
         )
 
-    def test_each_mandatory_tag_has_its_own_single_key_deny(self) -> None:
-        # IAM ANDs every key inside one condition block, so two mandatory tags in a
-        # single Deny would only fire when both were missing. Each tag needs its own
-        # statement, and this test keeps the conjunction from coming back.
-        denies = [
-            statement
-            for statement in self.document["Statement"]
-            if statement["Effect"] == "Deny"
-            and statement["Action"] == "ec2:RunInstances"
-            and "aws:RequestTag" in json.dumps(statement.get("Condition", {}))
-        ]
+    def test_copied_images_are_tagged_through_an_empty_account_statement(self) -> None:
+        # EC2 evaluates the copy's tag-on-create against wildcard image/snapshot ARNs
+        # with an empty account (decoded from a real denial), so the copied AMI's
+        # tags are enforced here rather than in the account-scoped statement.
+        statement = self.statements["TagCopiedImagesOnCreate"]
+        self.assertEqual(statement["Action"], "ec2:CreateTags")
         self.assertEqual(
-            [statement["Sid"] for statement in denies], ["DenyMissingMarkerTag", "DenyMissingRunTag"]
+            statement["Resource"],
+            [f"arn:aws:ec2:{CI_REGION}::image/*", f"arn:aws:ec2:{CI_REGION}::snapshot/*"],
         )
-        for statement in denies:
-            with self.subTest(sid=statement["Sid"]):
-                keys = [key for block in statement["Condition"].values() for key in block]
-                self.assertEqual(len(keys), 1, "a mandatory-tag deny must guard exactly one tag key")
+        self.assertEqual(statement["Condition"]["StringEquals"]["ec2:CreateAction"], ["CopyImage"])
+        self.assertEqual(
+            statement["Condition"]["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"],
+            "true",
+        )
+        self.assertEqual(
+            statement["Condition"]["Null"][f"aws:RequestTag/{RUN_TAG}"],
+            "false",
+        )
 
+    # EC2 authorizes a copy against the source image and its source snapshot (for a
+    # public AMI both are empty-account ARNs), and against destination wildcard ARNs
+    # whose context carries no request tags; a tag condition here would deny every
+    # copy, so the tags are enforced by TagCopiedImagesOnCreate instead.
     def test_copy_image_is_allowed_against_a_public_source_arn(self) -> None:
         # The smoke workflow's bootstrap copies a public Canonical image, and EC2
         # authorizes the copy against the source image ARN (empty account), so the
         # account-scoped pattern alone produced UnauthorizedOperation on CopyImage.
+        # The decoded failures showed that neither evaluation carries
+        # aws:RequestTag keys, so this statement must stay unconditional while the
+        # copied AMI's tags are enforced at ec2:CreateTags.
         statement = self.statements["CopyImagesIntoTheCiAccount"]
         self.assertEqual(statement["Action"], "ec2:CopyImage")
-        self.assertEqual(statement["Resource"], f"arn:aws:ec2:{CI_REGION}::image/*")
-        self.assertEqual(statement["Condition"], self.statements["BuildCiImagesAndSnapshots"]["Condition"])
         self.assertEqual(
-            statement["Condition"]["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"],
+            statement["Resource"],
+            [
+                f"arn:aws:ec2:{CI_REGION}::image/*",
+                f"arn:aws:ec2:{CI_REGION}::snapshot/*",
+                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:image/*",
+                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:snapshot/*",
+            ],
+        )
+        self.assertNotIn("Condition", statement)
+        self.assertNotIn("ec2:CopyImage", self.statements["BuildCiImagesAndSnapshots"]["Action"])
+        tag_on_create = self.statements["TagCiResourcesOnCreate"]["Condition"]
+        self.assertIn("CopyImage", tag_on_create["StringEquals"]["ec2:CreateAction"])
+        self.assertEqual(
+            tag_on_create["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"],
             "true",
         )
 
@@ -430,7 +498,13 @@ class PolicyContractTests(unittest.TestCase):
         # Every allow is scoped to this account and region except the describe list
         # and the copy-source statement, whose public-image ARN is necessarily
         # empty-account; the deny statements are scoped separately by design.
-        exempt = {"DescribeCiState", "CopyImagesIntoTheCiAccount"}
+        exempt = {
+            "DescribeCiState",
+            "LaunchFromCiOwnedAmi",
+            "CopyImagesIntoTheCiAccount",
+            "TagCopiedImagesOnCreate",
+            "RemoveCiImagesAndSnapshots",
+        }
         for sid, statement in self.statements.items():
             if sid in exempt or statement["Effect"] == "Deny":
                 continue

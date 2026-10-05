@@ -253,24 +253,46 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Sid": "LaunchFromCiOwnedAmi",
             "Effect": "Allow",
             "Action": "ec2:RunInstances",
-            "Resource": arn("image"),
+            # EC2 reports a copied AMI's ARN with an empty account segment
+            # (`arn:aws:ec2:<region>::image/ami-...`, decoded from a real launch
+            # denial), so both ARN forms are allowed and `ec2:Owner` keeps the allow
+            # to AMIs this account owns.
+            "Resource": [f"arn:aws:ec2:{region}::image/*", arn("image")],
             "Condition": {"StringEquals": {"ec2:Owner": account_id}},
         },
         {
             "Sid": "RunApprovedInstances",
             "Effect": "Allow",
             "Action": "ec2:RunInstances",
-            "Resource": [
-                arn("instance"),
-                arn("volume"),
-                arn("network-interface"),
-                arn("subnet"),
-                arn("key-pair"),
-            ],
-            "Condition": request_tag_condition(
-                extra_string_equals={"ec2:InstanceType": sorted(APPROVED_INSTANCE_TYPES.values())},
-                require_no_instance_profile=True,
-            ),
+            # AWS's documented way to require tags at launch: the tag mandate lives on
+            # the instance (and volume) resources, whose context carries
+            # aws:RequestTag, while the plumbing resources stay condition-free —
+            # conditions are evaluated per resource, and ec2:InstanceType exists only
+            # on the instance context. A launch with no tags, or without the marker and
+            # run tags, fails here even though ec2:CreateTags is what performs the
+            # tagging.
+            "Resource": arn("instance"),
+            "Condition": {
+                "StringEquals": {
+                    "ec2:InstanceType": sorted(APPROVED_INSTANCE_TYPES.values()),
+                    "aws:RequestTag/" + MARKER_TAG: MARKER_VALUE,
+                },
+                "Null": {"ec2:InstanceProfile": "true", "aws:RequestTag/" + RUN_TAG: "false"},
+                "ForAllValues:StringLike": {"aws:TagKeys": list(TAG_KEYS)},
+            },
+        },
+        {
+            "Sid": "RunApprovedVolumes",
+            "Effect": "Allow",
+            "Action": "ec2:RunInstances",
+            "Resource": arn("volume"),
+            "Condition": request_tag_condition(),
+        },
+        {
+            "Sid": "RunInstanceDependencies",
+            "Effect": "Allow",
+            "Action": "ec2:RunInstances",
+            "Resource": [arn("network-interface"), arn("subnet"), arn("key-pair")],
         },
         {
             "Sid": "UseOnlyCiSecurityGroup",
@@ -293,6 +315,19 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Condition": request_tag_condition(
                 extra_string_equals={"ec2:CreateAction": TAG_CREATE_ACTIONS}
             ),
+        },
+        {
+            # A copy's tag-on-create is evaluated against wildcard image and snapshot
+            # ARNs whose account segment is empty (verified by decoding
+            # UnauthorizedOperation on ec2:CreateTags for a copy), so the
+            # account-scoped statement above cannot match it. Tagging a foreign
+            # resource is impossible regardless, and the same request-tag conditions
+            # still require the mandatory tags.
+            "Sid": "TagCopiedImagesOnCreate",
+            "Effect": "Allow",
+            "Action": "ec2:CreateTags",
+            "Resource": [f"arn:aws:ec2:{region}::image/*", f"arn:aws:ec2:{region}::snapshot/*"],
+            "Condition": request_tag_condition(extra_string_equals={"ec2:CreateAction": ["CopyImage"]}),
         },
         {
             "Sid": "TerminateCiInstances",
@@ -325,20 +360,29 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
         {
             "Sid": "BuildCiImagesAndSnapshots",
             "Effect": "Allow",
-            "Action": ["ec2:CreateImage", "ec2:CopyImage", "ec2:RegisterImage"],
+            "Action": ["ec2:CreateImage", "ec2:RegisterImage"],
             "Resource": [arn("image"), arn("snapshot")],
             "Condition": request_tag_condition(),
         },
         {
-            # A copy's source is authorized against the source image ARN, which for a
-            # public image is an empty-account ARN (`arn:aws:ec2:<region>::image/*`)
-            # and cannot match the account-scoped pattern above. The copy still lands
-            # in this account and still carries the mandatory tags.
+            # EC2 authorizes a copy against two image resources: the source image
+            # ARN (a public image is an empty-account ARN, so the account-scoped
+            # pattern above cannot match it) and a destination wildcard ARN whose
+            # authorization context carries no aws:RequestTag keys at all (verified
+            # by decoding an UnauthorizedOperation on CopyImage). A tag condition
+            # here would therefore silently deny every copy, so this statement is
+            # unconditional; a copy always lands in this account, and the copied
+            # AMI's mandatory tags are enforced by TagCiResourcesOnCreate, whose
+            # ec2:CreateAction list includes CopyImage.
             "Sid": "CopyImagesIntoTheCiAccount",
             "Effect": "Allow",
             "Action": "ec2:CopyImage",
-            "Resource": f"arn:aws:ec2:{region}::image/*",
-            "Condition": request_tag_condition(),
+            "Resource": [
+                f"arn:aws:ec2:{region}::image/*",
+                f"arn:aws:ec2:{region}::snapshot/*",
+                arn("image"),
+                arn("snapshot"),
+            ],
         },
         {
             "Sid": "CreateCiSnapshots",
@@ -351,7 +395,17 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Sid": "RemoveCiImagesAndSnapshots",
             "Effect": "Allow",
             "Action": ["ec2:DeregisterImage", "ec2:DeleteSnapshot"],
-            "Resource": [arn("image"), arn("snapshot")],
+            # EC2 reports a copied image's own ARN with an empty account segment
+            # (`arn:aws:ec2:<region>::image/ami-...`, proven by decoding
+            # DeregisterImage of the CI-owned bootstrap copy while its
+            # ec2:ResourceTag keys were present), so both account forms are allowed
+            # and the tag condition still scopes the action to CI resources.
+            "Resource": [
+                f"arn:aws:ec2:{region}::image/*",
+                f"arn:aws:ec2:{region}::snapshot/*",
+                arn("image"),
+                arn("snapshot"),
+            ],
             "Condition": marker_condition,
         },
         {
@@ -362,32 +416,23 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Condition": {"Null": {"ec2:InstanceProfile": "false"}},
         },
         {
+            # Scope every context-key deny to the resource whose authorization
+            # context actually carries the key: a `StringNotEquals` on an absent key
+            # evaluates true, so an unscoped deny here blocked every launch (proven
+            # by decoding RunInstances' `aws:ResourceBeingCreated` context, which has
+            # ec2:InstanceType but no ec2:Owner).
             "Sid": "DenyUnapprovedInstanceType",
             "Effect": "Deny",
             "Action": "ec2:RunInstances",
-            "Resource": "*",
+            "Resource": arn("instance"),
             "Condition": {"StringNotEquals": {"ec2:InstanceType": sorted(APPROVED_INSTANCE_TYPES.values())}},
         },
         {
             "Sid": "DenyNonCiOwnedAmi",
             "Effect": "Deny",
             "Action": "ec2:RunInstances",
-            "Resource": "*",
+            "Resource": [f"arn:aws:ec2:{region}::image/*", arn("image")],
             "Condition": {"StringNotEquals": {"ec2:Owner": account_id}},
-        },
-        {
-            "Sid": "DenyMissingMarkerTag",
-            "Effect": "Deny",
-            "Action": "ec2:RunInstances",
-            "Resource": "*",
-            "Condition": {"StringNotEquals": {"aws:RequestTag/" + MARKER_TAG: MARKER_VALUE}},
-        },
-        {
-            "Sid": "DenyMissingRunTag",
-            "Effect": "Deny",
-            "Action": "ec2:RunInstances",
-            "Resource": "*",
-            "Condition": {"Null": {"aws:RequestTag/" + RUN_TAG: "true"}},
         },
         {
             "Sid": "DenyPrivilegeAndDataSurface",
@@ -1117,10 +1162,7 @@ def command_run_host(args: argparse.Namespace) -> int:
             raise AwsCiError(f"instance {instance_id} has no public address")
         evidence["public_ip"] = public_ip
         evidence["tags"] = verify_required_tags(instance.get("Tags"), run_id=args.run_id, scenario=scenario)
-        behavior = str(instance.get("InstanceInitiatedShutdownBehavior") or "")
-        if behavior != "terminate":
-            raise AwsCiError(f"instance {instance_id} shutdown behavior is {behavior!r}, expected 'terminate'")
-        evidence["shutdown_behavior"] = behavior
+        evidence["shutdown_behavior"] = instance_shutdown_behavior(region, instance_id)
         volume_id = data_volume_id(region, instance_id)
         evidence["data_volume_id"] = volume_id
 
@@ -1216,6 +1258,30 @@ def host_summary(evidence: dict[str, str]) -> str:
     lines = [f"### Smoke host {evidence.get('capacity', '')}".rstrip(), "", "| evidence | value |", "| --- | --- |"]
     lines += [f"| {name} | `{value}` |" for name, value in rows]
     return "\n".join(lines) + "\n"
+
+
+def instance_shutdown_behavior(region: str, instance_id: str) -> str:
+    """Return the instance-initiated shutdown behavior, failing closed on drift.
+
+    `describe-instances` omits the field (verified: it returned nothing while the
+    attribute API returned `terminate` for the same instance), so read the attribute.
+    """
+    payload = aws_json(
+        [
+            "ec2",
+            "describe-instance-attribute",
+            "--region",
+            region,
+            "--instance-id",
+            instance_id,
+            "--attribute",
+            "instanceInitiatedShutdownBehavior",
+        ]
+    )
+    value = str(((payload.get("InstanceInitiatedShutdownBehavior") or {}).get("Value")) or "")
+    if value != "terminate":
+        raise AwsCiError(f"instance {instance_id} shutdown behavior is {value!r}, expected 'terminate'")
+    return value
 
 
 def wait_for_running(region: str, instance_id: str, timeout_seconds: int = 300) -> dict[str, Any]:
