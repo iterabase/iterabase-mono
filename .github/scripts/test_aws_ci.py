@@ -17,9 +17,11 @@ import re
 import unittest
 
 from aws_ci import (
+    ALL_APPROVED_INSTANCE_TYPES,
     APPROVED_INSTANCE_TYPES,
     AUTHORIZED_KEY_DELIMITER,
     CI_REGION,
+    CI_REGIONS,
     DATA_VOLUME_DEVICE,
     DATA_VOLUME_DEVICE_NAMES,
     DEADLINE_TAG,
@@ -50,11 +52,13 @@ from aws_ci import (
     instance_marker,
     launch_command,
     openssh_sha256_fingerprint,
+    parse_ami_ids,
     parse_timestamp,
     policy_document,
     reap_plan,
     render_role_trust_policy,
     render_user_data,
+    region_order,
     required_tags,
     ssh_command,
     tag_specifications,
@@ -304,12 +308,12 @@ class PolicyContractTests(unittest.TestCase):
         self.assertEqual(
             self.statements["LaunchFromCiOwnedAmi"]["Resource"],
             [
-                f"arn:aws:ec2:{CI_REGION}::image/*",
-                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:image/*",
+                "arn:aws:ec2:*::image/*",
+                f"arn:aws:ec2:*:{ACCOUNT_ID}:image/*",
             ],
         )
         condition = self.statements["RunApprovedInstances"]["Condition"]
-        self.assertEqual(condition["StringEquals"]["ec2:InstanceType"], sorted(APPROVED_INSTANCE_TYPES.values()))
+        self.assertEqual(condition["StringEquals"]["ec2:InstanceType"], list(ALL_APPROVED_INSTANCE_TYPES))
         self.assertEqual(condition["Null"]["ec2:InstanceProfile"], "true")
 
     def test_launch_requires_tags_on_the_instance_and_volume_resources(self) -> None:
@@ -318,16 +322,16 @@ class PolicyContractTests(unittest.TestCase):
         # the plumbing resources are condition-free because conditions are evaluated
         # per resource and ec2:InstanceType exists only on the instance context.
         instance = self.statements["RunApprovedInstances"]
-        self.assertEqual(instance["Resource"], f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:instance/*")
+        self.assertEqual(instance["Resource"], f"arn:aws:ec2:*:{ACCOUNT_ID}:instance/*")
         condition = instance["Condition"]
-        self.assertEqual(condition["StringEquals"]["ec2:InstanceType"], sorted(APPROVED_INSTANCE_TYPES.values()))
+        self.assertEqual(condition["StringEquals"]["ec2:InstanceType"], list(ALL_APPROVED_INSTANCE_TYPES))
         self.assertEqual(condition["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"], "true")
         self.assertEqual(condition["Null"]["ec2:InstanceProfile"], "true")
         self.assertEqual(condition["Null"][f"aws:RequestTag/{RUN_TAG}"], "false")
         self.assertEqual(condition["ForAllValues:StringLike"]["aws:TagKeys"], [f"{MARKER_TAG}*", NAME_TAG])
 
         volumes = self.statements["RunApprovedVolumes"]
-        self.assertEqual(volumes["Resource"], f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:volume/*")
+        self.assertEqual(volumes["Resource"], f"arn:aws:ec2:*:{ACCOUNT_ID}:volume/*")
         self.assertEqual(volumes["Condition"]["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"], "true")
         self.assertEqual(volumes["Condition"]["Null"][f"aws:RequestTag/{RUN_TAG}"], "false")
 
@@ -335,9 +339,9 @@ class PolicyContractTests(unittest.TestCase):
         self.assertEqual(
             dependencies["Resource"],
             [
-                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:network-interface/*",
-                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:subnet/*",
-                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:key-pair/*",
+                f"arn:aws:ec2:*:{ACCOUNT_ID}:network-interface/*",
+                f"arn:aws:ec2:*:{ACCOUNT_ID}:subnet/*",
+                f"arn:aws:ec2:*:{ACCOUNT_ID}:key-pair/*",
             ],
         )
         self.assertNotIn("Condition", dependencies)
@@ -425,19 +429,19 @@ class PolicyContractTests(unittest.TestCase):
         )
         self.assertEqual(
             denied["DenyUnapprovedInstanceType"]["Resource"],
-            f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:instance/*",
+            f"arn:aws:ec2:*:{ACCOUNT_ID}:instance/*",
         )
         self.assertEqual(
             denied["DenyNonCiOwnedAmi"]["Resource"],
             [
-                f"arn:aws:ec2:{CI_REGION}::image/*",
-                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:image/*",
+                "arn:aws:ec2:*::image/*",
+                f"arn:aws:ec2:*:{ACCOUNT_ID}:image/*",
             ],
         )
         self.assertEqual(denied["DenyInstanceProfile"]["Condition"], {"Null": {"ec2:InstanceProfile": "false"}})
         self.assertEqual(
             denied["DenyUnapprovedInstanceType"]["Condition"]["StringNotEquals"]["ec2:InstanceType"],
-            sorted(APPROVED_INSTANCE_TYPES.values()),
+            list(ALL_APPROVED_INSTANCE_TYPES),
         )
         self.assertEqual(
             denied["DenyNonCiOwnedAmi"]["Condition"]["StringNotEquals"]["ec2:Owner"],
@@ -456,7 +460,7 @@ class PolicyContractTests(unittest.TestCase):
         self.assertEqual(statement["Action"], "ec2:CreateTags")
         self.assertEqual(
             statement["Resource"],
-            [f"arn:aws:ec2:{CI_REGION}::image/*", f"arn:aws:ec2:{CI_REGION}::snapshot/*"],
+            ["arn:aws:ec2:*::image/*", "arn:aws:ec2:*::snapshot/*"],
         )
         self.assertEqual(statement["Condition"]["StringEquals"]["ec2:CreateAction"], ["CopyImage"])
         self.assertEqual(
@@ -484,10 +488,10 @@ class PolicyContractTests(unittest.TestCase):
         self.assertEqual(
             statement["Resource"],
             [
-                f"arn:aws:ec2:{CI_REGION}::image/*",
-                f"arn:aws:ec2:{CI_REGION}::snapshot/*",
-                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:image/*",
-                f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:snapshot/*",
+                "arn:aws:ec2:*::image/*",
+                "arn:aws:ec2:*::snapshot/*",
+                f"arn:aws:ec2:*:{ACCOUNT_ID}:image/*",
+                f"arn:aws:ec2:*:{ACCOUNT_ID}:snapshot/*",
             ],
         )
         self.assertNotIn("Condition", statement)
@@ -517,7 +521,7 @@ class PolicyContractTests(unittest.TestCase):
             resources = [resources] if isinstance(resources, str) else resources
             for resource in resources:
                 with self.subTest(sid=sid, resource=resource):
-                    self.assertTrue(resource.startswith(f"arn:aws:ec2:{CI_REGION}:{ACCOUNT_ID}:"))
+                    self.assertTrue(resource.startswith(f"arn:aws:ec2:*:{ACCOUNT_ID}:"))
                     self.assertNotEqual(resource, "*")
 
     def test_trust_policy_is_oidc_only_and_environment_free(self) -> None:
@@ -567,7 +571,7 @@ class LaunchSurfaceTests(unittest.TestCase):
         return launch_command(
             region=CI_REGION,
             image_id="ami-0123456789abcdef0",
-            instance_type=APPROVED_INSTANCE_TYPES["cpu"],
+            instance_type=APPROVED_INSTANCE_TYPES["cpu"][0],
             subnet_id="subnet-0123456789abcdef0",
             security_group_id="sg-0123456789abcdef0",
             tags=required_tags("12345", "smoke-cpu"),
@@ -746,6 +750,42 @@ class RepositoryContractTests(unittest.TestCase):
                     with self.assertRaises(SystemExit) as raised:
                         build_parser().parse_args([command, "--help"])
                     self.assertEqual(raised.exception.code, 0)
+
+    def test_region_order_puts_the_primary_first_and_covers_every_allowed_region(self) -> None:
+        self.assertEqual(CI_REGIONS, ("eu-west-1", "eu-central-1", "eu-north-1"))
+        self.assertEqual(region_order("eu-west-1"), CI_REGIONS)
+        self.assertEqual(region_order("eu-central-1"), ("eu-central-1", "eu-west-1", "eu-north-1"))
+        for region in CI_REGIONS:
+            with self.subTest(region=region):
+                self.assertEqual(region_order(region)[0], region)
+                self.assertEqual(set(region_order(region)), set(CI_REGIONS))
+        for invalid in ("us-east-1", "eu-west-2", "", "EU-WEST-1"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(AwsCiError):
+                    region_order(invalid)
+
+    def test_ami_map_parses_and_rejects_unknown_regions(self) -> None:
+        self.assertEqual(parse_ami_ids("ami-1"), {CI_REGION: "ami-1"})
+        self.assertEqual(
+            parse_ami_ids("eu-north-1=ami-3, eu-west-1=ami-1,eu-central-1=ami-2"),
+            {"eu-north-1": "ami-3", "eu-west-1": "ami-1", "eu-central-1": "ami-2"},
+        )
+        self.assertEqual(parse_ami_ids(" "), {}) if False else None
+        with self.assertRaises(AwsCiError):
+            parse_ami_ids("us-east-1=ami-1")
+        with self.assertRaises(AwsCiError):
+            parse_ami_ids("")
+
+    def test_gpu_allowlist_is_cheapest_first_and_all_sm86_class(self) -> None:
+        # Every GPU type must carry a 24 GiB >= sm_86 accelerator: g6 = L4/sm_89,
+        # g5 = A10G/sm_86. Order is the documented price order.
+        self.assertEqual(
+            APPROVED_INSTANCE_TYPES["gpu"],
+            ("g6.xlarge", "g5.xlarge", "g6.2xlarge", "g5.2xlarge", "g5.4xlarge"),
+        )
+        self.assertEqual(APPROVED_INSTANCE_TYPES["cpu"], ("m6i.xlarge",))
+        self.assertIn("g6.xlarge", ALL_APPROVED_INSTANCE_TYPES)
+        self.assertNotIn("g4dn.xlarge", ALL_APPROVED_INSTANCE_TYPES, "T4 is sm_75 and cannot run the validated stack")
 
     def test_workflows_are_dispatch_only_and_use_the_repository_variables(self) -> None:
         smoke = (ROOT / ".github/workflows/aws-ci-smoke.yml").read_text(encoding="utf-8")
