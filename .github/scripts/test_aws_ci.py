@@ -131,10 +131,15 @@ class HostTrustTests(unittest.TestCase):
         self.assertEqual(openssh_sha256_fingerprint(TEST_PUBLIC_KEY), TEST_FINGERPRINT)
 
     def test_known_hosts_entry_binds_address_port_and_key(self) -> None:
+        entry = host_trust_entry("203.0.113.7", TEST_PUBLIC_KEY)
         self.assertEqual(
-            host_trust_entry("203.0.113.7", TEST_PUBLIC_KEY),
-            "[203.0.113.7]:22 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8Yq1rY7oP4bJ0Vq0QKkRzZCkCgCkYcCq2Qq7r5jL0K",
+            entry,
+            "203.0.113.7 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8Yq1rY7oP4bJ0Vq0QKkRzZCkCgCkYcCq2Qq7r5jL0K",
         )
+        # The bare host form is required for the default port: a bracketed `[host]:22`
+        # entry never matches and produced "No ED25519 host key is known" in a real
+        # smoke dispatch (verified against github.com too).
+        self.assertNotIn("[", entry)
         with self.assertRaises(AwsCiError):
             host_trust_entry("host name", TEST_PUBLIC_KEY)
 
