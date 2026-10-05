@@ -71,6 +71,8 @@ jobs:
           python3 .github/scripts/remote_content.py validate
       - name: Test cache invalidation and exclusions
         run: python3 .github/scripts/test_cache_contract.py
+      - name: Test the AWS CI substrate contract
+        run: python3 .github/scripts/test_aws_ci.py
       - name: Test source-authority workflow boundary
         run: .github/scripts/test_source_authority.sh
       - name: Collect changed paths
