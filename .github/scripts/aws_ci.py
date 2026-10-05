@@ -67,6 +67,7 @@ DESCRIBE_ACTIONS = [
     "ec2:DescribeImages",
     "ec2:DescribeVolumes",
     "ec2:DescribeSnapshots",
+    "ec2:DescribeInstanceAttribute",
     "ec2:DescribeInstanceTypeOfferings",
     "ec2:DescribeAvailabilityZones",
     "ec2:DescribeVpcs",
