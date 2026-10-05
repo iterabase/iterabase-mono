@@ -104,14 +104,23 @@ class CacheContractTests(unittest.TestCase):
         self.assertNotIn("node20", REVIEWED_EXTERNAL_ACTION_RUNTIMES.values())
 
     def test_forbidden_mutable_state_is_not_cached(self) -> None:
-        # Only an action that caches can cache mutable state. Scanning every
-        # composite action also matched actions that merely name a credential
-        # provider: `setup-aws-ci` references `aws-actions/configure-aws-credentials`
-        # (HOR-591) and raises no cache at all.
+        # Every composite action is scanned, including ones that cache through a
+        # mechanism other than `actions/cache@`. `setup-aws-ci` only assumes a role
+        # through OIDC and raises no cache at all (HOR-591), so it is named here
+        # explicitly instead of narrowing the scan to actions that happen to
+        # mention `actions/cache@`.
+        actions = sorted((ROOT / ".github/actions").glob("*/action.yml"))
+        self.assertTrue(actions)
+        exempt = {"setup-aws-ci"}
+        names = {action.parent.name for action in actions}
+        self.assertTrue(exempt <= names, f"stale cache-scan exemption: {sorted(exempt - names)}")
+        for action in actions:
+            if action.parent.name in exempt:
+                text = action.read_text()
+                self.assertNotIn("actions/cache@", text)
+                self.assertNotIn("cache-to", text)
         cache_actions = "\n".join(
-            action.read_text()
-            for action in (ROOT / ".github/actions").glob("*/action.yml")
-            if "actions/cache@" in action.read_text()
+            action.read_text() for action in actions if action.parent.name not in exempt
         )
         self.assertTrue(cache_actions)
         for forbidden in (

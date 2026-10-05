@@ -8,7 +8,9 @@ surface, and the reaper decisions that the smoke and reaper workflows execute.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import io
 import json
 from pathlib import Path
 import re
@@ -30,8 +32,10 @@ from aws_ci import (
     RUN_TAG,
     SCENARIO_TAG,
     SSHD_DELIMITER,
+    SSH_USER,
     AwsCiError,
     access_denied_action,
+    build_parser,
     by_id_glob,
     data_volume_id_from_instance,
     denied_case_command,
@@ -52,6 +56,7 @@ from aws_ci import (
     required_tags,
     ssh_command,
     tag_specifications,
+    verify_required_tags,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -227,6 +232,24 @@ class HostTrustTests(unittest.TestCase):
         self.assertIn("test ! -e /etc/ssh/ssh_host_ecdsa_key", probe)
         self.assertIn("per-run-identity", probe)
 
+    def test_required_tags_helper_rejects_a_launch_without_them(self) -> None:
+        tags = required_tags("12345", "smoke-cpu")
+        self.assertEqual(
+            verify_required_tags(tags, run_id="12345", scenario="smoke-cpu"),
+            "iterabase-ci=true,iterabase-ci-run=12345,iterabase-ci-scenario=smoke-cpu,"
+            "Name=iterabase-ci-12345-smoke-cpu",
+        )
+        for broken in (
+            None,
+            [],
+            [tag for tag in tags if tag["Key"] != MARKER_TAG],
+            [tag for tag in tags if tag["Key"] != RUN_TAG],
+            tags + [{"Key": MARKER_TAG, "Value": "false"}],
+        ):
+            with self.subTest(broken=broken):
+                with self.assertRaises(AwsCiError):
+                    verify_required_tags(broken, run_id="12345", scenario="smoke-cpu")  # type: ignore[arg-type]
+
     def test_ssh_command_pins_the_host_key_and_forbids_interaction(self) -> None:
         command = ssh_command(
             key_path="/tmp/key",
@@ -238,6 +261,11 @@ class HostTrustTests(unittest.TestCase):
             self.assertIn(expected, command)
         self.assertNotIn("StrictHostKeyChecking=no", command)
         self.assertNotIn("UserKnownHostsFile=/dev/null", command)
+        # `--` only terminates options before the destination; after it the argument
+        # would join the remote command on a non-permuting getopt (BSD or musl).
+        self.assertNotIn("--", command)
+        self.assertEqual(command[-2], f"{SSH_USER}@203.0.113.7")
+        self.assertEqual(command[-1], "true")
 
 
 class PolicyContractTests(unittest.TestCase):
@@ -255,7 +283,7 @@ class PolicyContractTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(self.document, separators=(",", ":"))), MAX_POLICY_CHARACTERS)
 
     def test_every_statement_is_rendered_and_well_formed(self) -> None:
-        self.assertEqual(len(self.document["Statement"]), 16)
+        self.assertEqual(len(self.document["Statement"]), 17)
         for statement in self.document["Statement"]:
             self.assertIn(statement["Effect"], {"Allow", "Deny"})
             self.assertTrue(statement["Action"])
@@ -337,7 +365,15 @@ class PolicyContractTests(unittest.TestCase):
                 "DenyInstanceProfile",
                 "DenyUnapprovedInstanceType",
                 "DenyNonCiOwnedAmi",
+                "DenyMissingMandatoryTags",
                 "DenyPrivilegeAndDataSurface",
+            },
+        )
+        self.assertEqual(
+            denied["DenyMissingMandatoryTags"]["Condition"],
+            {
+                "Null": {f"aws:RequestTag/{RUN_TAG}": "true"},
+                "StringNotEquals": {f"aws:RequestTag/{MARKER_TAG}": "true"},
             },
         )
         self.assertEqual(denied["DenyInstanceProfile"]["Condition"], {"Null": {"ec2:InstanceProfile": "false"}})
@@ -547,6 +583,25 @@ class ReaperTests(unittest.TestCase):
 
 
 class RepositoryContractTests(unittest.TestCase):
+    def test_cli_exposes_only_used_subcommands(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(["resolve-ami"])
+            for command in (
+                "render-policy",
+                "render-trust-policy",
+                "verify-identity",
+                "bootstrap-ami",
+                "run-host",
+                "denied-cases",
+                "cleanup-run",
+                "reap",
+            ):
+                with self.subTest(command=command):
+                    with self.assertRaises(SystemExit) as raised:
+                        build_parser().parse_args([command, "--help"])
+                    self.assertEqual(raised.exception.code, 0)
+
     def test_workflows_are_dispatch_only_and_use_the_repository_variables(self) -> None:
         smoke = (ROOT / ".github/workflows/aws-ci-smoke.yml").read_text(encoding="utf-8")
         reaper = (ROOT / ".github/workflows/aws-ci-reaper.yml").read_text(encoding="utf-8")
