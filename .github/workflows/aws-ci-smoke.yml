@@ -1,10 +1,12 @@
 # Dispatchable end-to-end proof of the `iterabase-ci` fixture account
-# (DES-HOR-591-01, docs/runbooks/aws-ci.md). It launches real m6i.xlarge and
-# g5.xlarge fixtures, proves the per-run pinned host key and EBS by-id device
-# identity, proves instance-initiated-shutdown termination, and proves the
-# denied launch cases fail closed with access-denied. The current
-# Canonical Ubuntu 24.04 AMI is copied into the CI account for the run and
-# removed again by the cleanup job.
+# (DES-HOR-591-01/02, docs/runbooks/aws-ci.md). It launches real m6i.xlarge and
+# GPU fixtures from the approved type allowlist (g6.xlarge, g5.xlarge, g6.2xlarge,
+# g5.2xlarge, g5.4xlarge), searching eu-west-1, eu-central-1, and eu-north-1 so a
+# dry region cannot block the GPU leg. It proves the per-run pinned host key and EBS
+# by-id device identity, proves instance-initiated-shutdown termination, and proves
+# the denied launch cases fail closed with access-denied. The current Canonical
+# Ubuntu 24.04 AMI is copied into every allowed region for the run and removed again
+# by the cleanup job.
 #
 # `workflow_dispatch` only: this workflow never runs on a pull request, a push,
 # or a schedule, so no pull request can create AWS resources.
