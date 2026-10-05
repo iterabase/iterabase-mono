@@ -37,6 +37,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       ami_id: ${{ steps.bootstrap.outputs.ami_id }}
+      ami_ids: ${{ steps.bootstrap.outputs.ami_ids }}
       public_ami_id: ${{ steps.bootstrap.outputs.public_ami_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,7 +80,7 @@ jobs:
             --region '${{ vars.AWS_CI_REGION }}' \
             --run-id '${{ github.run_id }}' \
             --capacity '${{ matrix.capacity }}' \
-            --ami-id '${{ needs.preflight.outputs.ami_id }}'
+            --ami-ids '${{ needs.preflight.outputs.ami_ids }}'
 
   denied:
     name: denied launches
@@ -122,4 +123,4 @@ jobs:
           python3 .github/scripts/aws_ci.py cleanup-run \
             --region '${{ vars.AWS_CI_REGION }}' \
             --run-id '${{ github.run_id }}' \
-            --ami-id '${{ needs.preflight.outputs.ami_id }}'
+            --ami-ids '${{ needs.preflight.outputs.ami_ids }}'

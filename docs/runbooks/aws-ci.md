@@ -21,7 +21,7 @@ workflow is the executable proof that the account is still correct.
 | Lifecycle | Terminate, volume, snapshot, and AMI actions are scoped to resources carrying `iterabase-ci=true`; tag-on-create is bound to the creating action. |
 | Reaper | `iterabase-ci-deadline` when present, otherwise `LaunchTime + 180 minutes`. Untagged or foreign instances are reported and never touched; the role cannot terminate them. |
 | Unreachable by the role | `iam:*`, `organizations:*`, `s3:*`, `ssm:*`, and `sts:AssumeRole` (no `iam:PassRole`, so no instance profile can ever be attached). |
-| Region | `eu-west-1` only; the policy and the workflows refuse anything else. |
+| Region | Three allowed regions in preference order: `eu-west-1` (primary: default VPC, bootstrap AMI, CPU fixtures, cheapest `g5`), `eu-central-1`, `eu-north-1`. A GPU fixture walks regions, then approved types, then offered AZs, because `eu-west-1` offers `g5` without live capacity and does not offer the `g6`/L4 family at all. The policy's ARNs carry a wildcard region (listing three regions would exceed the 6144-character managed-policy limit), so the region set is a service contract, and cost misuse in another region is bounded by the budget alarm. |
 | Budget | `$250/month` cost budget `iterabase-ci-monthly` on the member account, forecast alert at 80% and actual alert at 100%. The budget measures gross usage cost (`IncludeCredit=false`), so startup credits cannot hide runaway spend. |
 
 `Describe*` actions cannot be resource-scoped by AWS design; the policy grants
@@ -46,11 +46,14 @@ observed outcomes on the ticket. Do not record secret material here.
 | OIDC provider ARN | `aws iam list-open-id-connect-providers --query 'OpenIDConnectProviderList[].Arn' --output text` | `arn:aws:iam::024378233802:oidc-provider/token.actions.githubusercontent.com` |
 | CI role ARN | `arn:aws:iam::<CI account ID>:role/iterabase-ci-role` | `arn:aws:iam::024378233802:role/iterabase-ci-role` (one attached policy, no inline policy) |
 | CI policy ARN | `aws iam list-policies --scope Local --query "Policies[?PolicyName=='iterabase-ci-role-policy'].Arn" --output text` | `arn:aws:iam::024378233802:policy/iterabase-ci-role-policy` (default version `v3`, identical to the committed renderer) |
-| Security group ID | `aws ec2 describe-security-groups --filters Name=group-name,Values=iterabase-ci-ssh --query 'SecurityGroups[0].GroupId' --output text` | `sg-0c1c48f5483c349bb` (`iterabase-ci-ssh`, tcp/22 from `0.0.0.0/0`) |
-| Default VPC ID | `aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text` | `vpc-0cedec86f4a3d5022` (IGW `igw-05e32f993a7978aab`, subnets `subnet-05087e89ffe206577`/1a, `subnet-09132b1b93f433ee2`/1b, `subnet-00be394acf0f860c9`/1c) |
+| Security group IDs | `aws ec2 describe-security-groups --filters Name=group-name,Values=iterabase-ci-ssh --query 'SecurityGroups[0].GroupId' --output text`, per region | `eu-west-1`: `sg-0c1c48f5483c349bb`; `eu-central-1`: *pending*; `eu-north-1`: *pending* (same `iterabase-ci-ssh` rule in each region's default VPC) |
+| Default VPC IDs | `aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text`, per region | `eu-west-1`: `vpc-0cedec86f4a3d5022` (IGW `igw-05e32f993a7978aab`, subnets `subnet-05087e89ffe206577`/1a, `subnet-09132b1b93f433ee2`/1b, `subnet-00be394acf0f860c9`/1c); `eu-central-1`: `vpc-0cd6e9809118b596d`; `eu-north-1`: `vpc-07688f0d38e7944a9` |
 | G/VT quota | `aws service-quotas get-service-quota --service-code ec2 --quota-code L-DB2E81BA --query 'Quota.Value' --output text` | `0.0` -> `16.0` **approved** 2026-10-05 (request `f1b9e4046ac34aec8be6679c1c3f85d324nx64fO`, case `179053976300776`, resolved `CASE_CLOSED` after the appeal): four concurrent `g5.xlarge` hosts |
+| G/VT quota `eu-central-1` / `eu-north-1` | same command with `--region` | *pending*: requested `0` -> `16` for both, so a GPU fixture can land where capacity exists |
+| Standard quota `eu-central-1` / `eu-north-1` | same command with `--region` | *pending*: requested `0` -> `32` for both, so a relocating fixture is never CPU-starved |
 | Standard quota | `aws service-quotas get-service-quota --service-code ec2 --quota-code L-1216C47A --query 'Quota.Value' --output text` | `5.0` -> `32.0` **approved** 2026-09-27 (request `fe65c092e8c8414b81e2b927ce38b50cpJbBVGkh`, case `179053976300908`; the request status stayed `CASE_CLOSED`) |
-| AZs offering `g5.xlarge` | step 13 below | `eu-west-1a`, `eu-west-1b`, `eu-west-1c` |
+| AZs offering `g5.xlarge` | step 13 below | `eu-west-1a`, `eu-west-1b`, `eu-west-1c` (offered, but live probes found no capacity in any of them) |
+| AZs offering `g6.xlarge` (L4) | step 13 below | not offered in `eu-west-1`; offered in `eu-central-1` and `eu-north-1` |
 | AZs offering `m6i.xlarge` | step 13 below | `eu-west-1a`, `eu-west-1b`, `eu-west-1c` |
 | Budget name | `iterabase-ci-monthly` | `iterabase-ci-monthly` — $250/month, forecast >80%, actual >100%, subscribers `nuno+ci@iterabase.com` (email) and the SNS topic below |
 | SNS alerts topic | `aws sns list-topics --region us-east-1 --query 'Topics[].TopicArn' --output text` | `arn:aws:sns:us-east-1:024378233802:iterabase-ci-budget-alerts` (display name `iterabase-ci budget`; Budgets publish allowed by the topic policy; `nuno+ci@iterabase.com` confirmed as `arn:aws:sns:us-east-1:024378233802:iterabase-ci-budget-alerts:96796240-e89e-4cb7-bdbe-78fde1fa8493`; delivery proven 2026-09-27 by test message `5e578566-6a21-546c-86dc-e655f25b0d4d`: delivered 1, failed 0) |
@@ -358,8 +361,9 @@ aws organizations describe-organization \
    so treat the topic as the primary channel and the budget's email subscriber as
    a convenience. Budgets allows one SNS subscriber alongside up to ten email
    subscribers per notification.
-7. **Request the quota increases in `eu-west-1`** (member account; quota requests
-   are per region). Confirm the quota codes first, then request and verify. A
+7. **Request the quota increases in every allowed region** (member account; quota
+   requests are per region, and a new region starts at `0` vCPU for both families, so
+   the fallback regions need their own requests before they can host anything). Confirm the quota codes first, then request and verify. A
    brand-new account starts at `0` vCPU for G/VT and `5` vCPU for Standard, so
    both requests are real increases. AWS decides these cases asynchronously: the
    request moves from `PENDING` to `CASE_OPENED` with a support case id and the
@@ -461,7 +465,8 @@ aws organizations describe-organization \
      --quota-code L-1216C47A --region eu-west-1 --output table
    ```
    - `L-DB2E81BA` — *Running On-Demand G and VT instances*. 16 vCPUs cover four
-     concurrent `g5.xlarge` hosts (4 vCPU each).
+     concurrent GPU hosts (4 vCPU each) and were granted in `eu-west-1`; the same
+     request is submitted for `eu-central-1` and `eu-north-1`.
    - `L-1216C47A` — *Running On-Demand Standard (A, C, D, H, I, M, R, T, Z)
      instances*. 32 vCPUs cover eight concurrent `m6i.xlarge` hosts.
    Wait until both requests show `APPROVED` and re-read the quotas. Until then
@@ -506,9 +511,10 @@ export CI_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text
 printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
 ```
 
-8. **Confirm the default VPC is usable.** The fixtures need a public IPv4
-   address, so the default VPC must have an internet gateway and at least one
-   subnet in every AZ you intend to use:
+8. **Confirm the default VPC is usable, in every allowed region.** The fixtures need a
+   public IPv4 address, so each region's default VPC must have an internet gateway and
+   at least one subnet in every AZ you intend to use (run the commands below with
+   `--region eu-west-1`, `--region eu-central-1`, and `--region eu-north-1`):
    ```bash
    aws ec2 describe-internet-gateways --region eu-west-1 \
      --filters Name=attachment.vpc-id,Values="$VPC_ID" \
@@ -550,6 +556,13 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
 
     - Read-only describes; the approved launch surface; tag-scoped lifecycle
       actions; and a deny for the privilege and data surface.
+    - Regions. Resource ARNs carry a wildcard region (`arn:aws:ec2:*:<account>:…`)
+      because three regions are allowed and listing each would exceed the 6144-character
+      managed-policy limit; the allowed set is enforced by the driver (`CI_REGIONS`) and
+      covered by the budget alarm.
+    - Types. The launch allow lists every approved type — `m6i.xlarge` for CPU and
+      `g6.xlarge`, `g5.xlarge`, `g6.2xlarge`, `g5.2xlarge`, `g5.4xlarge` for GPU (all
+      24 GiB and at least sm_86; `g4dn`/T4 is sm_75 and cannot run the validated stack).
     - Launch constraints. `ec2:InstanceType` and the absence of an instance profile
       are allow conditions on the launch statement, with `DenyUnapprovedInstanceType`
       and `DenyInstanceProfile` as explicit denies. `DenyNonCiOwnedAmi` is scoped to
@@ -596,7 +609,9 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
     ```
     Exactly one attached policy and zero inline policies must be listed. No
     instance profile is created for this role and none may ever be created.
-12. **Create the tagged CI security group** in the default VPC. SSH is open to
+12. **Create the tagged CI security group** in each allowed region's default VPC
+    (`--region eu-west-1`, `--region eu-central-1`, `--region eu-north-1`); the launch
+    logic resolves it per region by name and marker tag. SSH is open to
     the internet by design; authentication is the per-run key and the host key is
     pinned by the runner, so there is no CIDR allowlist to maintain:
     ```bash
@@ -614,7 +629,9 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
     ```
     The `iterabase-ci=true` tag on the group is required: the role may only
     launch with a security group carrying the marker.
-13. **Record the AZ offerings** the launch logic will try, in order:
+13. **Record the AZ offerings** the launch logic will try, per region and in order
+    (repeat with `--region` for each allowed region; `g6.xlarge` is absent from
+    `eu-west-1`, which is why the search spans regions):
     ```bash
     aws ec2 describe-instance-type-offerings --region eu-west-1 --location-type availability-zone \
       --filters Name=instance-type,Values=g5.xlarge,m6i.xlarge \

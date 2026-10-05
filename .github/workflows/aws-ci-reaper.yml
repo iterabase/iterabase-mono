@@ -1,8 +1,8 @@
 # Scheduled reaper for the `iterabase-ci` fixture account (DES-HOR-591-01,
 # docs/runbooks/aws-ci.md). It terminates instances that carry the
 # `iterabase-ci=true` marker once their `iterabase-ci-deadline` has passed, or
-# once they exceed the maximum host age. Instances without the marker are only
-# reported: the role cannot terminate them, and this workflow never tries.
+# once they exceed the maximum host age, in every allowed region. Instances without
+# the marker are only reported: the role cannot terminate them, and this workflow never tries.
 name: AWS CI host reaper
 
 on:

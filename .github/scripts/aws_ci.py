@@ -27,8 +27,24 @@ import tempfile
 import time
 from typing import Any
 
-CI_REGION = "eu-west-1"
-APPROVED_INSTANCE_TYPES = {"cpu": "m6i.xlarge", "gpu": "g5.xlarge"}
+# Regions the substrate may use, in preference order. eu-west-1 is primary: it holds
+# the default VPC, the bootstrap AMI and the cheapest g5 GPU when it has capacity.
+# The others exist so a GPU fixture is never unavailable because one region is dry
+# (eu-west-1 offers g5 but has no capacity, and the g6/L4 family is not offered there
+# at all, so a single region cannot satisfy "always have a GPU").
+CI_REGIONS = ("eu-west-1", "eu-central-1", "eu-north-1")
+CI_REGION = CI_REGIONS[0]
+
+# Approved instance types per capacity. GPU types are ordered cheapest-first and all
+# provide >= sm_86 with 24 GiB (g6 = L4/sm_89, g5 = A10G/sm_86), which the validated
+# inference stack requires; the launch loop tries each type and each offered AZ.
+APPROVED_INSTANCE_TYPES: dict[str, tuple[str, ...]] = {
+    "cpu": ("m6i.xlarge",),
+    "gpu": ("g6.xlarge", "g5.xlarge", "g6.2xlarge", "g5.2xlarge", "g5.4xlarge"),
+}
+ALL_APPROVED_INSTANCE_TYPES: tuple[str, ...] = tuple(
+    dict.fromkeys(instance_type for types in APPROVED_INSTANCE_TYPES.values() for instance_type in types)
+)
 SECURITY_GROUP_NAME = "iterabase-ci-ssh"
 MARKER_TAG = "iterabase-ci"
 MARKER_VALUE = "true"
@@ -223,11 +239,19 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
     """
     if not re.fullmatch(r"\d{12}", account_id):
         raise AwsCiError(f"account id is not a 12-digit identifier: {account_id!r}")
-    if region != CI_REGION:
-        raise AwsCiError(f"CI region must be {CI_REGION}, not {region!r}")
+    if region not in CI_REGIONS:
+        raise AwsCiError(f"CI region must be one of {CI_REGIONS}, not {region!r}")
 
+    # ARNs carry a wildcard region: the service spans three regions, and listing each
+    # one would push the document past the 6144-character managed-policy limit. The
+    # boundary that matters is unchanged (approved types, CI-owned AMIs, no instance
+    # profile, mandatory tags); the region set is a service contract, and cost abuse
+    # in another region is bounded by the budget alarm.
     def arn(resource: str) -> str:
-        return f"arn:aws:ec2:{region}:{account_id}:{resource}/*"
+        return f"arn:aws:ec2:*:{account_id}:{resource}/*"
+
+    def public_arn(resource: str) -> str:
+        return f"arn:aws:ec2:*::{resource}/*"
 
     def request_tag_condition(
         *,
@@ -262,7 +286,7 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             # (`arn:aws:ec2:<region>::image/ami-...`, decoded from a real launch
             # denial), so both ARN forms are allowed and `ec2:Owner` keeps the allow
             # to AMIs this account owns.
-            "Resource": [f"arn:aws:ec2:{region}::image/*", arn("image")],
+            "Resource": [public_arn("image"), arn("image")],
             "Condition": {"StringEquals": {"ec2:Owner": account_id}},
         },
         {
@@ -279,7 +303,7 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Resource": arn("instance"),
             "Condition": {
                 "StringEquals": {
-                    "ec2:InstanceType": sorted(APPROVED_INSTANCE_TYPES.values()),
+                    "ec2:InstanceType": list(ALL_APPROVED_INSTANCE_TYPES),
                     "aws:RequestTag/" + MARKER_TAG: MARKER_VALUE,
                 },
                 "Null": {"ec2:InstanceProfile": "true", "aws:RequestTag/" + RUN_TAG: "false"},
@@ -331,7 +355,7 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Sid": "TagCopiedImagesOnCreate",
             "Effect": "Allow",
             "Action": "ec2:CreateTags",
-            "Resource": [f"arn:aws:ec2:{region}::image/*", f"arn:aws:ec2:{region}::snapshot/*"],
+            "Resource": [public_arn("image"), public_arn("snapshot")],
             "Condition": request_tag_condition(extra_string_equals={"ec2:CreateAction": ["CopyImage"]}),
         },
         {
@@ -383,8 +407,8 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Effect": "Allow",
             "Action": "ec2:CopyImage",
             "Resource": [
-                f"arn:aws:ec2:{region}::image/*",
-                f"arn:aws:ec2:{region}::snapshot/*",
+                public_arn("image"),
+                public_arn("snapshot"),
                 arn("image"),
                 arn("snapshot"),
             ],
@@ -406,8 +430,8 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             # ec2:ResourceTag keys were present), so both account forms are allowed
             # and the tag condition still scopes the action to CI resources.
             "Resource": [
-                f"arn:aws:ec2:{region}::image/*",
-                f"arn:aws:ec2:{region}::snapshot/*",
+                public_arn("image"),
+                public_arn("snapshot"),
                 arn("image"),
                 arn("snapshot"),
             ],
@@ -430,13 +454,13 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Effect": "Deny",
             "Action": "ec2:RunInstances",
             "Resource": arn("instance"),
-            "Condition": {"StringNotEquals": {"ec2:InstanceType": sorted(APPROVED_INSTANCE_TYPES.values())}},
+            "Condition": {"StringNotEquals": {"ec2:InstanceType": list(ALL_APPROVED_INSTANCE_TYPES)}},
         },
         {
             "Sid": "DenyNonCiOwnedAmi",
             "Effect": "Deny",
             "Action": "ec2:RunInstances",
-            "Resource": [f"arn:aws:ec2:{region}::image/*", arn("image")],
+            "Resource": [public_arn("image"), arn("image")],
             "Condition": {"StringNotEquals": {"ec2:Owner": account_id}},
         },
         {
@@ -693,7 +717,7 @@ def denied_launch_cases(
     instance_profile: str,
 ) -> list[dict[str, Any]]:
     """Return the denied launch cases that must fail closed with access-denied."""
-    approved = APPROVED_INSTANCE_TYPES["cpu"]
+    approved = APPROVED_INSTANCE_TYPES["cpu"][0]
     return [
         {
             "name": "non-approved-instance-type",
@@ -822,10 +846,22 @@ def aws_json(args: list[str]) -> Any:
 
 
 def require_region(region: str | None) -> str:
+    """Validate one CI region, and return the region order to search.
+
+    The primary region always comes first, then the remaining allowed regions in
+    their declared order, so a fixture that cannot be placed in the primary region
+    (GPU capacity in eu-west-1 is intermittent and g6 is not offered there) still
+    has somewhere to go.
+    """
     resolved = region or os.environ.get("AWS_REGION") or os.environ.get("AWS_CI_REGION") or ""
-    if resolved != CI_REGION:
-        raise AwsCiError(f"AWS CI region must be {CI_REGION}, not {resolved or '<unset>'!r}")
+    if resolved not in CI_REGIONS:
+        raise AwsCiError(f"AWS CI region must be one of {CI_REGIONS}, not {resolved or '<unset>'!r}")
     return resolved
+
+
+def region_order(primary: str | None) -> tuple[str, ...]:
+    resolved = require_region(primary)
+    return (resolved, *(region for region in CI_REGIONS if region != resolved))
 
 
 def write_outputs(values: dict[str, str]) -> None:
@@ -1042,40 +1078,54 @@ def resolve_canonical_ami(region: str) -> dict[str, str]:
 
 
 def command_bootstrap_ami(args: argparse.Namespace) -> int:
-    region = require_region(args.region)
-    if args.source_ami_id:
-        source = {"source_ami_id": args.source_ami_id, "source_ami_name": "operator override"}
-    else:
-        source = resolve_canonical_ami(region)
+    """Copy the tagged CI-owned bootstrap AMI into every allowed region.
+
+    A fixture may only launch from an AMI this account owns, so each region that can
+    host a fixture needs its own copy: the GPU search spans regions because capacity
+    and even the g6 offering differ between them.
+    """
+    primary = require_region(args.region)
     tags = required_tags(args.run_id, "bootstrap-ami")
-    copied = aws_json(
-        [
-            "ec2",
-            "copy-image",
-            "--region",
-            region,
-            "--source-region",
-            region,
-            "--source-image-id",
-            source["source_ami_id"],
-            "--name",
-            f"{TAG_PREFIX}-ubuntu-24.04-{args.run_id}",
-            "--description",
-            f"iterabase CI bootstrap AMI for run {args.run_id} (DES-HOR-591-01)",
-            "--tag-specifications",
-            tag_specifications("image", tags),
-            tag_specifications("snapshot", tags),
-        ]
-    )
-    image_id = str(copied["ImageId"])
-    wait_for_image(region, image_id)
-    print(json.dumps({"ami_id": image_id, **source}))
-    write_outputs({"ami_id": image_id, "public_ami_id": source["source_ami_id"]})
+    copies: dict[str, str] = {}
+    sources: dict[str, str] = {}
+    for region in region_order(primary):
+        if args.source_ami_id:
+            source = {"source_ami_id": args.source_ami_id, "source_ami_name": "operator override"}
+        else:
+            source = resolve_canonical_ami(region)
+        sources[region] = source["source_ami_id"]
+        copied = aws_json(
+            [
+                "ec2",
+                "copy-image",
+                "--region",
+                region,
+                "--source-region",
+                region,
+                "--source-image-id",
+                source["source_ami_id"],
+                "--name",
+                f"{TAG_PREFIX}-ubuntu-24.04-{args.run_id}",
+                "--description",
+                f"iterabase CI bootstrap AMI for run {args.run_id} (DES-HOR-591-01)",
+                "--tag-specifications",
+                tag_specifications("image", tags),
+                tag_specifications("snapshot", tags),
+            ]
+        )
+        image_id = str(copied["ImageId"])
+        copies[region] = image_id
+        print(json.dumps({"region": region, "ami_id": image_id, **source}))
+    for region, image_id in copies.items():
+        wait_for_image(region, image_id)
+    rendered_map = ",".join(f"{region}={image_id}" for region, image_id in copies.items())
+    write_outputs({"ami_id": copies[primary], "ami_ids": rendered_map, "public_ami_id": sources[primary]})
     write_summary(
         "### Bootstrap AMI\n\n"
-        f"- source: `{source['source_ami_id']}` ({source.get('source_ami_name', '-')})\n"
-        f"- CI-owned copy: `{image_id}`\n"
-        f"- tags: {', '.join(f'`{tag['Key']}={tag['Value']}`' for tag in tags)}\n"
+        + "\n".join(f"- `{region}`: source `{sources[region]}`, CI-owned copy `{copies[region]}`" for region in copies)
+        + "\n- tags: "
+        + ", ".join(f"`{tag['Key']}={tag['Value']}`" for tag in tags)
+        + "\n"
     )
     return 0
 
@@ -1094,24 +1144,93 @@ def wait_for_image(region: str, image_id: str, timeout_seconds: int = 900) -> No
         time.sleep(15)
 
 
+def parse_ami_ids(value: str) -> dict[str, str]:
+    """Parse `region=ami-...,region=ami-...` (or a bare AMI id for the primary)."""
+    mapping: dict[str, str] = {}
+    for entry in value.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "=" in entry:
+            region, ami = (part.strip() for part in entry.split("=", 1))
+            if region not in CI_REGIONS:
+                raise AwsCiError(f"AMI map names an unknown region: {region!r}")
+            mapping[region] = ami
+        else:
+            mapping[CI_REGION] = entry
+    if not mapping:
+        raise AwsCiError("no AMI ids were supplied")
+    return mapping
+
+
+def place_fixture(
+    *,
+    capacity: str,
+    run_id: str,
+    ami_ids: dict[str, str],
+    user_data_path: str,
+    regions: tuple[str, ...],
+    attempts: int = 2,
+) -> tuple[str, str, str, str, list[str]]:
+    """Find somewhere the fixture can actually launch: region, type, AZ, instance id.
+
+    Capacity decides, not configuration: eu-west-1 offers g5 but has had no live GPU
+    capacity, the g6/L4 family is not offered there at all, and another region may
+    lack quota. The search therefore walks regions, then approved types, then offered
+    AZs, and a pass with only capacity/quota failures waits briefly and runs again.
+    """
+    scenario = f"smoke-{capacity}"
+    failures: list[str] = []
+    for attempt in range(1, max(1, attempts) + 1):
+        for region in regions:
+            ami_id = ami_ids.get(region)
+            if not ami_id:
+                continue
+            vpc = default_vpc(region)
+            security_group = ci_security_group(region)
+            for instance_type in APPROVED_INSTANCE_TYPES[capacity]:
+                azs = offered_azs(region, instance_type)
+                if not azs:
+                    continue
+                for az, subnet_id in sorted(subnets_by_az(region, vpc, azs).items()):
+                    command = launch_command(
+                        region=region,
+                        image_id=ami_id,
+                        instance_type=instance_type,
+                        subnet_id=subnet_id,
+                        security_group_id=security_group,
+                        tags=required_tags(run_id, scenario),
+                        user_data_path=user_data_path,
+                    )
+                    completed = aws(command[1:], check=False)
+                    if completed.returncode == 0:
+                        return region, instance_type, az, completed.stdout.strip().strip('"'), failures
+                    error = error_class(completed.stderr)
+                    if "InsufficientInstanceCapacity" in completed.stderr or "VcpuLimitExceeded" in completed.stderr:
+                        failures.append(f"{region}/{instance_type}/{az}: {error}")
+                        continue
+                    raise AwsCiError(
+                        f"launching the {capacity} fixture failed in {region}/{az}:\n{completed.stderr.strip()}"
+                    )
+        if attempt < max(1, attempts):
+            time.sleep(60)
+    return "", "", "", "", failures
+
+
 def command_run_host(args: argparse.Namespace) -> int:
-    region = require_region(args.region)
+    primary = require_region(args.region)
     if args.capacity not in APPROVED_INSTANCE_TYPES:
         raise AwsCiError(f"capacity must be one of {sorted(APPROVED_INSTANCE_TYPES)}")
-    instance_type = APPROVED_INSTANCE_TYPES[args.capacity]
-    scenario = f"smoke-{args.capacity}"
-    vpc_id = default_vpc(region)
-    security_group_id = ci_security_group(region)
-    azs = offered_azs(region, instance_type)
-    subnets = subnets_by_az(region, vpc_id, azs)
-    if not subnets:
-        raise AwsCiError("no usable default-VPC subnet in an offered availability zone")
+    ami_ids = parse_ami_ids(args.ami_ids)
+    # CPU capacity is not scarce, so it stays in the primary region; the GPU family
+    # walks the whole allowed region order.
+    regions = region_order(primary) if args.capacity == "gpu" else (primary,)
     workdir = Path(tempfile.mkdtemp(prefix=f"iterabase-ci-{args.capacity}-"))
     ssh_key = workdir / "id_ed25519"
     host_key = workdir / "host_ed25519"
     wrong_host_key = workdir / "wrong_host_ed25519"
     for path in (ssh_key, host_key, wrong_host_key):
-        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"iterabase-ci-{scenario}", "-f", str(path)])
+        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"iterabase-ci-smoke-{args.capacity}", "-f", str(path)])
     host_public = (host_key.with_suffix(".pub")).read_text(encoding="utf-8").strip()
     authorized = (ssh_key.with_suffix(".pub")).read_text(encoding="utf-8").strip()
     user_data = render_user_data(
@@ -1122,42 +1241,26 @@ def command_run_host(args: argparse.Namespace) -> int:
     user_data_path = workdir / "user-data.sh"
     user_data_path.write_text(user_data, encoding="utf-8")
 
-    instance_id = ""
-    capacity_failures: list[str] = []
-    launched_az = ""
-    for az in azs:
-        subnet_id = subnets.get(az)
-        if subnet_id is None:
-            continue
-        command = launch_command(
-            region=region,
-            image_id=args.ami_id,
-            instance_type=instance_type,
-            subnet_id=subnet_id,
-            security_group_id=security_group_id,
-            tags=required_tags(args.run_id, scenario),
-            user_data_path=str(user_data_path),
-        )
-        completed = aws(command[1:], check=False)
-        if completed.returncode == 0:
-            instance_id = completed.stdout.strip().strip('"')
-            launched_az = az
-            break
-        if "InsufficientInstanceCapacity" in completed.stderr:
-            capacity_failures.append(f"{az}: InsufficientInstanceCapacity")
-            continue
-        raise AwsCiError(f"launching the {args.capacity} fixture failed in {az}:\n{completed.stderr.strip()}")
+    region, instance_type, launched_az, instance_id, capacity_failures = place_fixture(
+        capacity=args.capacity,
+        run_id=args.run_id,
+        ami_ids=ami_ids,
+        user_data_path=str(user_data_path),
+        regions=regions,
+    )
     if not instance_id:
         raise AwsCiError(
-            "no offered availability zone could launch the fixture: " + "; ".join(capacity_failures or ["no subnets"])
+            "no allowed region, approved type, or offered availability zone could launch the fixture: "
+            + "; ".join(capacity_failures or ["no candidates"])
         )
 
     evidence: dict[str, str] = {
         "capacity": args.capacity,
+        "region": region,
         "instance_type": instance_type,
         "instance_id": instance_id,
         "availability_zone": launched_az,
-        "ami_id": args.ami_id,
+        "ami_id": ami_ids[region],
         "host_key_fingerprint": openssh_sha256_fingerprint(host_public),
     }
     try:
@@ -1245,6 +1348,7 @@ def command_run_host(args: argparse.Namespace) -> int:
 def host_summary(evidence: dict[str, str]) -> str:
     rows = [
         ("capacity", evidence.get("capacity", "-")),
+        ("region", evidence.get("region", "-")),
         ("instance type", evidence.get("instance_type", "-")),
         ("instance id", evidence.get("instance_id", "-")),
         ("mandatory tags", evidence.get("tags", "-")),
@@ -1462,65 +1566,70 @@ def command_denied_cases(args: argparse.Namespace) -> int:
 
 
 def command_cleanup_run(args: argparse.Namespace) -> int:
-    region = require_region(args.region)
+    """Remove everything one run created, in every allowed region."""
+    primary = require_region(args.region)
+    ami_ids = parse_ami_ids(args.ami_ids) if args.ami_ids else {}
     removed: list[str] = []
-    reservations = as_list(
-        aws_json(
-            [
-                "ec2",
-                "describe-instances",
-                "--region",
-                region,
-                "--filters",
-                f"Name=tag:{RUN_TAG},Values={args.run_id}",
-                "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down",
-            ]
-        )["Reservations"],
-        what="reservations",
-    )
-    leftover_instances = [str(instance["InstanceId"]) for reservation in reservations for instance in reservation["Instances"]]
-    if leftover_instances:
-        aws(["ec2", "terminate-instances", "--region", region, "--instance-ids", *leftover_instances])
-        removed.extend(f"instance `{instance_id}`" for instance_id in leftover_instances)
-    volumes = as_list(
-        aws_json(
-            [
-                "ec2",
-                "describe-volumes",
-                "--region",
-                region,
-                "--filters",
-                f"Name=tag:{RUN_TAG},Values={args.run_id}",
-                "Name=status,Values=available",
-            ]
-        )["Volumes"],
-        what="volumes",
-    )
-    leftover_volumes = [str(volume["VolumeId"]) for volume in volumes]
-    for volume_id in leftover_volumes:
-        aws(["ec2", "delete-volume", "--region", region, "--volume-id", volume_id])
-        removed.append(f"volume `{volume_id}`")
-    snapshots = as_list(
-        aws_json(
-            [
-                "ec2",
-                "describe-snapshots",
-                "--region",
-                region,
-                "--owner-ids",
-                "self",
-                "--filters",
-                f"Name=tag:{RUN_TAG},Values={args.run_id}",
-            ]
-        )["Snapshots"],
-        what="snapshots",
-    )
-    if args.ami_id:
-        aws(["ec2", "deregister-image", "--region", region, "--image-id", args.ami_id])
-        removed.append(f"AMI `{args.ami_id}`")
-    for snapshot in snapshots:
-        aws(["ec2", "delete-snapshot", "--region", region, "--snapshot-id", str(snapshot["SnapshotId"])])
-        removed.append(f"snapshot `{snapshot['SnapshotId']}`")
+    for region in region_order(primary):
+        reservations = as_list(
+            aws_json(
+                [
+                    "ec2",
+                    "describe-instances",
+                    "--region",
+                    region,
+                    "--filters",
+                    f"Name=tag:{RUN_TAG},Values={args.run_id}",
+                    "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down",
+                ]
+            )["Reservations"],
+            what="reservations",
+        )
+        leftover_instances = [
+            str(instance["InstanceId"]) for reservation in reservations for instance in reservation["Instances"]
+        ]
+        if leftover_instances:
+            aws(["ec2", "terminate-instances", "--region", region, "--instance-ids", *leftover_instances])
+            removed.extend(f"instance `{instance_id}` ({region})" for instance_id in leftover_instances)
+        volumes = as_list(
+            aws_json(
+                [
+                    "ec2",
+                    "describe-volumes",
+                    "--region",
+                    region,
+                    "--filters",
+                    f"Name=tag:{RUN_TAG},Values={args.run_id}",
+                    "Name=status,Values=available",
+                ]
+            )["Volumes"],
+            what="volumes",
+        )
+        for volume in volumes:
+            aws(["ec2", "delete-volume", "--region", region, "--volume-id", str(volume["VolumeId"])])
+            removed.append(f"volume `{volume['VolumeId']}` ({region})")
+        snapshots = as_list(
+            aws_json(
+                [
+                    "ec2",
+                    "describe-snapshots",
+                    "--region",
+                    region,
+                    "--owner-ids",
+                    "self",
+                    "--filters",
+                    f"Name=tag:{RUN_TAG},Values={args.run_id}",
+                ]
+            )["Snapshots"],
+            what="snapshots",
+        )
+        ami_id = ami_ids.get(region)
+        if ami_id:
+            aws(["ec2", "deregister-image", "--region", region, "--image-id", ami_id])
+            removed.append(f"AMI `{ami_id}` ({region})")
+        for snapshot in snapshots:
+            aws(["ec2", "delete-snapshot", "--region", region, "--snapshot-id", str(snapshot["SnapshotId"])])
+            removed.append(f"snapshot `{snapshot['SnapshotId']}` ({region})")
     for resource in removed:
         print(f"removed {resource}")
     write_summary(
@@ -1532,76 +1641,83 @@ def command_cleanup_run(args: argparse.Namespace) -> int:
 
 
 def command_reap(args: argparse.Namespace) -> int:
-    region = require_region(args.region)
+    """Terminate aged tag-marked CI instances in every allowed region."""
+    primary = require_region(args.region)
     if args.max_age_minutes < 0:
         raise AwsCiError("max age minutes must not be negative")
-    reservations = as_list(
-        aws_json(
-            [
-                "ec2",
-                "describe-instances",
-                "--region",
-                region,
-                "--filters",
-                "Name=instance-state-name,Values=pending,running,stopping,stopped",
-            ]
-        )["Reservations"],
-        what="reservations",
-    )
-    instances = [instance for reservation in reservations for instance in reservation["Instances"]]
     now = dt.datetime.now(dt.timezone.utc)
-    plan = reap_plan(instances, now=now, max_age_minutes=args.max_age_minutes)
-
-    control_evidence = "-"
-    if args.control_instance_id and not args.dry_run:
-        control = [instance for instance in instances if instance.get("InstanceId") == args.control_instance_id]
-        if len(control) != 1:
-            raise AwsCiError(f"control instance {args.control_instance_id} was not found in {region}")
-        if instance_marker(control[0].get("Tags")) == MARKER_VALUE:
-            raise AwsCiError(f"control instance {args.control_instance_id} is tag-marked; it is not a foreign control")
-        if any(entry["instance_id"] == args.control_instance_id for entry in plan["terminate"]):
-            raise AwsCiError(f"reaper selected the untagged control instance {args.control_instance_id}")
-        attempt = aws(
-            ["ec2", "terminate-instances", "--region", region, "--instance-ids", args.control_instance_id],
-            check=False,
-        )
-        denied = attempt.returncode != 0 and "UnauthorizedOperation" in attempt.stderr
-        if not denied:
-            raise AwsCiError(
-                "the CI role was able to terminate the untagged control instance; "
-                f"expected access-denied, got: {attempt.stderr.strip() or attempt.stdout.strip()}"
-            )
-        control_evidence = f"denied `{access_denied_action(attempt.stderr) or 'ec2:TerminateInstances'}`"
-
     terminated: list[str] = []
-    for decision in plan["terminate"]:
-        if args.dry_run:
-            terminated.append(f"{decision['instance_id']} (dry run)")
-            continue
-        aws(["ec2", "terminate-instances", "--region", region, "--instance-ids", decision["instance_id"]])
-        terminated.append(decision["instance_id"])
+    pending: list[dict[str, str]] = []
+    foreign: list[dict[str, str]] = []
+    errors: list[str] = []
+    control_evidence = "-"
+    for region in region_order(primary):
+        reservations = as_list(
+            aws_json(
+                [
+                    "ec2",
+                    "describe-instances",
+                    "--region",
+                    region,
+                    "--filters",
+                    "Name=instance-state-name,Values=pending,running,stopping,stopped",
+                ]
+            )["Reservations"],
+            what="reservations",
+        )
+        instances = [instance for reservation in reservations for instance in reservation["Instances"]]
+        plan = reap_plan(instances, now=now, max_age_minutes=args.max_age_minutes)
+        pending.extend(plan["pending"])
+        foreign.extend(plan["foreign"])
+        errors.extend(f"{region}: {error}" for error in plan["errors"])
+        if args.control_instance_id and not args.dry_run:
+            control = [instance for instance in instances if instance.get("InstanceId") == args.control_instance_id]
+            if control:
+                if instance_marker(control[0].get("Tags")) == MARKER_VALUE:
+                    raise AwsCiError(f"control instance {args.control_instance_id} is tag-marked, not foreign")
+                if any(entry["instance_id"] == args.control_instance_id for entry in plan["terminate"]):
+                    raise AwsCiError(f"reaper selected the untagged control instance {args.control_instance_id}")
+                attempt = aws(
+                    ["ec2", "terminate-instances", "--region", region, "--instance-ids", args.control_instance_id],
+                    check=False,
+                )
+                denied = attempt.returncode != 0 and "UnauthorizedOperation" in attempt.stderr
+                if not denied:
+                    raise AwsCiError(
+                        "the CI role was able to terminate the untagged control instance; expected access-denied, "
+                        f"got: {attempt.stderr.strip() or attempt.stdout.strip()}"
+                    )
+                control_evidence = f"denied `{access_denied_action(attempt.stderr) or 'ec2:TerminateInstances'}`"
+        for decision in plan["terminate"]:
+            if args.dry_run:
+                terminated.append(f"{decision['instance_id']} ({region}, dry run)")
+                continue
+            aws(["ec2", "terminate-instances", "--region", region, "--instance-ids", decision["instance_id"]])
+            terminated.append(f"{decision['instance_id']} ({region})")
+    if args.control_instance_id and not args.dry_run and control_evidence == "-":
+        raise AwsCiError(f"control instance {args.control_instance_id} was not found in any CI region")
 
     lines = [
         "### CI host reaper",
         "",
-        f"- region: `{region}`",
+        f"- regions: {', '.join(f'`{region}`' for region in region_order(primary))}",
         f"- max age: {args.max_age_minutes} minutes ({DEADLINE_TAG} takes precedence)",
         f"- dry run: `{str(args.dry_run).lower()}`",
         f"- terminated: {', '.join(f'`{item}`' for item in terminated) if terminated else 'none'}",
-        f"- not yet due: {len(plan['pending'])}",
-        f"- foreign (untagged) left alone: {len(plan['foreign'])}",
+        f"- not yet due: {len(pending)}",
+        f"- foreign (untagged) left alone: {len(foreign)}",
         f"- untagged control denial: {control_evidence}",
     ]
-    if plan["pending"]:
+    if pending:
         lines += ["", "| not yet due | deadline |", "| --- | --- |"]
-        lines += [f"| `{item['instance_id']}` | {item['deadline']} |" for item in plan["pending"]]
-    if plan["foreign"]:
+        lines += [f"| `{item['instance_id']}` | {item['deadline']} |" for item in pending]
+    if foreign:
         lines += ["", "| foreign instance | state | name |", "| --- | --- | --- |"]
-        lines += [f"| `{item['instance_id']}` | {item['state']} | {item['name']} |" for item in plan["foreign"]]
+        lines += [f"| `{item['instance_id']}` | {item['state']} | {item['name']} |" for item in foreign]
     write_summary("\n".join(lines) + "\n")
-    write_outputs({"terminated": str(len(terminated)), "foreign": str(len(plan["foreign"]))})
-    if plan["errors"]:
-        raise AwsCiError("reaper could not evaluate: " + "; ".join(plan["errors"]))
+    write_outputs({"terminated": str(len(terminated)), "foreign": str(len(foreign))})
+    if errors:
+        raise AwsCiError("reaper could not evaluate: " + "; ".join(errors))
     return 0
 
 
@@ -1614,7 +1730,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--region", default=os.environ.get("AWS_CI_REGION"), help=f"CI region (fixed: {CI_REGION})")
+    common.add_argument(
+        "--region",
+        default=os.environ.get("AWS_CI_REGION"),
+        help=f"CI primary region, one of {CI_REGIONS} (default {CI_REGION})",
+    )
 
     render = subparsers.add_parser("render-policy", help="render the least-privilege CI role policy", parents=[common])
     render.add_argument("--account-id", required=True)
@@ -1643,7 +1763,7 @@ def build_parser() -> argparse.ArgumentParser:
     host = subparsers.add_parser("run-host", help="launch, prove, and terminate one smoke fixture", parents=[common])
     host.add_argument("--run-id", required=True)
     host.add_argument("--capacity", required=True, choices=sorted(APPROVED_INSTANCE_TYPES))
-    host.add_argument("--ami-id", required=True)
+    host.add_argument("--ami-ids", required=True, help="region=ami-... map covering every CI region")
     host.set_defaults(handler=command_run_host)
 
     denied = subparsers.add_parser("denied-cases", help="prove the denied launch cases fail closed", parents=[common])
@@ -1655,7 +1775,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     cleanup = subparsers.add_parser("cleanup-run", help="remove everything the smoke run created", parents=[common])
     cleanup.add_argument("--run-id", required=True)
-    cleanup.add_argument("--ami-id", default="")
+    cleanup.add_argument("--ami-ids", default="", help="region=ami-... map from the same run")
     cleanup.set_defaults(handler=command_cleanup_run)
 
     reap = subparsers.add_parser("reap", help="terminate aged tag-marked CI instances", parents=[common])
