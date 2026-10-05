@@ -45,6 +45,16 @@ APPROVED_INSTANCE_TYPES: dict[str, tuple[str, ...]] = {
 ALL_APPROVED_INSTANCE_TYPES: tuple[str, ...] = tuple(
     dict.fromkeys(instance_type for types in APPROVED_INSTANCE_TYPES.values() for instance_type in types)
 )
+
+
+def cpu_instance_type() -> str:
+    """The single approved CPU type (a tuple entry, so callers never pass the tuple)."""
+    return APPROVED_INSTANCE_TYPES["cpu"][0]
+
+
+def gpu_instance_types() -> tuple[str, ...]:
+    """Approved GPU types in the documented cheapest-first order."""
+    return APPROVED_INSTANCE_TYPES["gpu"]
 SECURITY_GROUP_NAME = "iterabase-ci-ssh"
 MARKER_TAG = "iterabase-ci"
 MARKER_VALUE = "true"
@@ -717,7 +727,7 @@ def denied_launch_cases(
     instance_profile: str,
 ) -> list[dict[str, Any]]:
     """Return the denied launch cases that must fail closed with access-denied."""
-    approved = APPROVED_INSTANCE_TYPES["cpu"][0]
+    approved = cpu_instance_type()
     return [
         {
             "name": "non-approved-instance-type",
@@ -986,10 +996,10 @@ def offered_azs(region: str, instance_type: str) -> list[str]:
         what="availability zones",
     )
     available = {str(zone["ZoneName"]) for zone in zones if zone.get("State") == "available"}
-    ordered = sorted({str(offering["Location"]) for offering in offerings} & available)
-    if not ordered:
-        raise AwsCiError(f"no available {region} availability zone offers {instance_type}")
-    return ordered
+    # An empty result means "this type is not offered here", which the placement
+    # search treats as a reason to try the next type or region; callers that need the
+    # type (the denied cases) check for emptiness themselves.
+    return sorted({str(offering["Location"]) for offering in offerings} & available)
 
 
 def subnets_by_az(region: str, vpc_id: str, azs: list[str]) -> dict[str, str]:
@@ -1222,6 +1232,7 @@ def command_run_host(args: argparse.Namespace) -> int:
     if args.capacity not in APPROVED_INSTANCE_TYPES:
         raise AwsCiError(f"capacity must be one of {sorted(APPROVED_INSTANCE_TYPES)}")
     ami_ids = parse_ami_ids(args.ami_ids)
+    scenario = f"smoke-{args.capacity}"
     # CPU capacity is not scarce, so it stays in the primary region; the GPU family
     # walks the whole allowed region order.
     regions = region_order(primary) if args.capacity == "gpu" else (primary,)
@@ -1510,7 +1521,9 @@ def command_denied_cases(args: argparse.Namespace) -> int:
     region = require_region(args.region)
     vpc_id = default_vpc(region)
     security_group_id = ci_security_group(region)
-    azs = offered_azs(region, APPROVED_INSTANCE_TYPES["cpu"])
+    azs = offered_azs(region, cpu_instance_type())
+    if not azs:
+        raise AwsCiError(f"no available {region} availability zone offers {cpu_instance_type()}")
     subnets = subnets_by_az(region, vpc_id, azs)
     if not subnets:
         raise AwsCiError("no usable default-VPC subnet in an offered availability zone")

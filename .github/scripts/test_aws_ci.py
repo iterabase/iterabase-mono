@@ -41,11 +41,13 @@ from aws_ci import (
     access_denied_action,
     build_parser,
     by_id_glob,
+    cpu_instance_type,
     data_volume_id_from_instance,
     denied_case_command,
     denied_launch_cases,
     device_probe_command,
     error_class,
+    gpu_instance_types,
     host_trust_entry,
     identity_probe_command,
     instance_deadline,
@@ -750,6 +752,16 @@ class RepositoryContractTests(unittest.TestCase):
                     with self.assertRaises(SystemExit) as raised:
                         build_parser().parse_args([command, "--help"])
                     self.assertEqual(raised.exception.code, 0)
+
+    def test_capacity_helpers_return_single_types_not_tuples(self) -> None:
+        # A tuple passed where one instance type is expected produced a live
+        # ParamValidation failure ("Values=('m6i.xlarge',)") in the denied-cases job.
+        self.assertEqual(cpu_instance_type(), "m6i.xlarge")
+        self.assertIsInstance(cpu_instance_type(), str)
+        self.assertEqual(gpu_instance_types()[0], "g6.xlarge")
+        for instance_type in gpu_instance_types():
+            with self.subTest(instance_type=instance_type):
+                self.assertIsInstance(instance_type, str)
 
     def test_region_order_puts_the_primary_first_and_covers_every_allowed_region(self) -> None:
         self.assertEqual(CI_REGIONS, ("eu-west-1", "eu-central-1", "eu-north-1"))
