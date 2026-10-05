@@ -1351,6 +1351,25 @@ def wait_for_termination(region: str, instance_id: str, timeout_seconds: int = T
         time.sleep(15)
 
 
+def ssh_keyscan_fingerprints(address: str) -> str:
+    """Return the fingerprints of the host keys a fixture currently offers.
+
+    Diagnostic only, and it runs after a pinned failure: the connection path itself
+    stays pinned, so this tells an absent known_hosts entry apart from a real host
+    swap, and records which key type the fixture is actually presenting.
+    """
+    completed = run(["ssh-keyscan", "-T", "10", address], check=False)
+    offered = [line for line in completed.stdout.splitlines() if line and not line.startswith("#")]
+    if not offered:
+        return f"(no host key from ssh-keyscan: {completed.stderr.strip() or 'no output'})"
+    fingerprints = []
+    for line in offered:
+        fields = line.split()
+        if len(fields) >= 3:
+            fingerprints.append(f"{fields[1]} {openssh_sha256_fingerprint(' '.join(fields[1:3]))}")
+    return "\n".join(fingerprints) if fingerprints else "(host keys were not parsable)"
+
+
 def wait_for_pinned_ssh(pinned: dict[str, str], timeout_seconds: int = SSH_TIMEOUT_SECONDS) -> None:
     """Wait for the fixture to answer with the exact pinned host key.
 
@@ -1372,7 +1391,9 @@ def wait_for_pinned_ssh(pinned: dict[str, str], timeout_seconds: int = SSH_TIMEO
         if time.monotonic() > deadline:
             raise AwsCiError(
                 f"pinned SSH did not become available within {timeout_seconds}s; the runner never accepted a "
-                f"different host key: {last_error}"
+                f"different host key: {last_error}\n"
+                f"--- host keys {pinned['address']} currently offers ---\n"
+                f"{ssh_keyscan_fingerprints(pinned['address'])}"
             )
         time.sleep(SSH_POLL_SECONDS)
 
