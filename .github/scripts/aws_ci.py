@@ -360,6 +360,16 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Condition": {"StringNotEquals": {"ec2:Owner": account_id}},
         },
         {
+            "Sid": "DenyMissingMandatoryTags",
+            "Effect": "Deny",
+            "Action": "ec2:RunInstances",
+            "Resource": "*",
+            "Condition": {
+                "Null": {"aws:RequestTag/" + RUN_TAG: "true"},
+                "StringNotEquals": {"aws:RequestTag/" + MARKER_TAG: MARKER_VALUE},
+            },
+        },
+        {
             "Sid": "DenyPrivilegeAndDataSurface",
             "Effect": "Deny",
             "Action": ["iam:*", "organizations:*", "s3:*", "ssm:*", "sts:AssumeRole"],
@@ -478,7 +488,6 @@ def ssh_command(
         "-o",
         f"UserKnownHostsFile={known_hosts_path}",
         f"{SSH_USER}@{address}",
-        "--",
         remote_command,
     ]
 
@@ -512,6 +521,23 @@ def identity_probe_command() -> str:
         f"test -f {SSHD_CONFIG_PATH}\n"
         "echo per-run-identity\n"
     )
+
+
+def verify_required_tags(tags: list[dict[str, str]] | None, *, run_id: str, scenario: str) -> str:
+    """Assert a launched instance carries exactly the mandatory CI tags.
+
+    Returns the tag set as `key=value` pairs for the run summary, so the positive
+    launch evidence shows the tags the acceptance criterion asks for.
+    """
+    mandatory = required_tags(run_id, scenario)
+    present = {str(tag.get("Key")): str(tag.get("Value")) for tag in tags or []}
+    for tag in mandatory:
+        if present.get(tag["Key"]) != tag["Value"]:
+            raise AwsCiError(
+                f"instance is missing the mandatory tag {tag['Key']}={tag['Value']}; "
+                f"found {sorted(present)}"
+            )
+    return ",".join(f"{tag['Key']}={tag['Value']}" for tag in mandatory)
 
 
 def instance_marker(tags: list[dict[str, str]] | None) -> str | None:
@@ -898,8 +924,12 @@ def command_verify_identity(args: argparse.Namespace) -> int:
     return 0
 
 
-def command_resolve_ami(args: argparse.Namespace) -> int:
-    region = require_region(args.region)
+def resolve_canonical_ami(region: str) -> dict[str, str]:
+    """Return the newest Canonical Ubuntu 24.04 AMD64 EBS image in one region.
+
+    The single source of the image-selection contract: both the bootstrap copy and
+    any operator lookup resolve through this filter set.
+    """
     images = as_list(
         aws_json(
             [
@@ -922,14 +952,11 @@ def command_resolve_ami(args: argparse.Namespace) -> int:
     if not images:
         raise AwsCiError("no Canonical Ubuntu 24.04 AMD64 image is available")
     latest = sorted(images, key=lambda image: str(image.get("CreationDate")))[-1]
-    payload = {
+    return {
         "source_ami_id": str(latest["ImageId"]),
         "source_ami_name": str(latest.get("Name", "")),
         "source_ami_created": str(latest.get("CreationDate", "")),
     }
-    print(json.dumps(payload))
-    write_outputs({"public_ami_id": payload["source_ami_id"]})
-    return 0
 
 
 def command_bootstrap_ami(args: argparse.Namespace) -> int:
@@ -937,27 +964,7 @@ def command_bootstrap_ami(args: argparse.Namespace) -> int:
     if args.source_ami_id:
         source = {"source_ami_id": args.source_ami_id, "source_ami_name": "operator override"}
     else:
-        images = as_list(
-            aws_json(
-                [
-                    "ec2",
-                    "describe-images",
-                    "--region",
-                    region,
-                    "--owners",
-                    CANONICAL_OWNER,
-                    "--filters",
-                    f"Name=name,Values={UBUNTU_IMAGE_NAME}",
-                    "Name=state,Values=available",
-                    "Name=architecture,Values=x86_64",
-                ]
-            )["Images"],
-            what="images",
-        )
-        if not images:
-            raise AwsCiError("no Canonical Ubuntu 24.04 AMD64 image is available")
-        latest = sorted(images, key=lambda image: str(image.get("CreationDate")))[-1]
-        source = {"source_ami_id": str(latest["ImageId"]), "source_ami_name": str(latest.get("Name", ""))}
+        source = resolve_canonical_ami(region)
     tags = required_tags(args.run_id, "bootstrap-ami")
     copied = aws_json(
         [
@@ -1077,6 +1084,7 @@ def command_run_host(args: argparse.Namespace) -> int:
         if not public_ip:
             raise AwsCiError(f"instance {instance_id} has no public address")
         evidence["public_ip"] = public_ip
+        evidence["tags"] = verify_required_tags(instance.get("Tags"), run_id=args.run_id, scenario=scenario)
         behavior = str(instance.get("InstanceInitiatedShutdownBehavior") or "")
         if behavior != "terminate":
             raise AwsCiError(f"instance {instance_id} shutdown behavior is {behavior!r}, expected 'terminate'")
@@ -1160,6 +1168,7 @@ def host_summary(evidence: dict[str, str]) -> str:
         ("capacity", evidence.get("capacity", "-")),
         ("instance type", evidence.get("instance_type", "-")),
         ("instance id", evidence.get("instance_id", "-")),
+        ("mandatory tags", evidence.get("tags", "-")),
         ("availability zone", evidence.get("availability_zone", "-")),
         ("pinned host key", evidence.get("host_key_fingerprint", "-")),
         ("remote host key", evidence.get("remote_host_key_fingerprint", "-")),
@@ -1499,9 +1508,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "verify-identity", help="prove the assumed OIDC role", parents=[common]
     ).set_defaults(handler=command_verify_identity)
-    subparsers.add_parser(
-        "resolve-ami", help="resolve the current Canonical Ubuntu 24.04 AMD64 AMI", parents=[common]
-    ).set_defaults(handler=command_resolve_ami)
 
     bootstrap = subparsers.add_parser("bootstrap-ami", help="copy the tagged CI-owned bootstrap AMI", parents=[common])
     bootstrap.add_argument("--run-id", required=True)

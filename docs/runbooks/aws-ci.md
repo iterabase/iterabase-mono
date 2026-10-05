@@ -45,7 +45,7 @@ observed outcomes on the ticket. Do not record secret material here.
 | Root MFA and root access keys | `aws iam get-account-summary --query 'SummaryMap.{RootMFAEnabled:AccountMFAEnabled,RootAccessKeysPresent:AccountAccessKeysPresent,RootPasswordPresent:AccountPasswordPresent}'` (1 = yes, 0 = no; console is authoritative) | RootMFAEnabled `1`, RootAccessKeysPresent `0` |
 | OIDC provider ARN | `aws iam list-open-id-connect-providers --query 'OpenIDConnectProviderList[].Arn' --output text` | `arn:aws:iam::024378233802:oidc-provider/token.actions.githubusercontent.com` |
 | CI role ARN | `arn:aws:iam::<CI account ID>:role/iterabase-ci-role` | `arn:aws:iam::024378233802:role/iterabase-ci-role` (one attached policy, no inline policy) |
-| CI policy ARN | `aws iam list-policies --scope Local --query "Policies[?PolicyName=='iterabase-ci-role-policy'].Arn" --output text` | `arn:aws:iam::024378233802:policy/iterabase-ci-role-policy` (v1, identical to the committed renderer) |
+| CI policy ARN | `aws iam list-policies --scope Local --query "Policies[?PolicyName=='iterabase-ci-role-policy'].Arn" --output text` | `arn:aws:iam::024378233802:policy/iterabase-ci-role-policy` (default version `v2`, identical to the committed renderer) |
 | Security group ID | `aws ec2 describe-security-groups --filters Name=group-name,Values=iterabase-ci-ssh --query 'SecurityGroups[0].GroupId' --output text` | `sg-0c1c48f5483c349bb` (`iterabase-ci-ssh`, tcp/22 from `0.0.0.0/0`) |
 | Default VPC ID | `aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text` | `vpc-0cedec86f4a3d5022` (IGW `igw-05e32f993a7978aab`, subnets `subnet-05087e89ffe206577`/1a, `subnet-09132b1b93f433ee2`/1b, `subnet-00be394acf0f860c9`/1c) |
 | G/VT quota | `aws service-quotas get-service-quota --service-code ec2 --quota-code L-DB2E81BA --query 'Quota.Value' --output text` | `0.0` -> `16.0` **approved** 2026-10-05 (request `f1b9e4046ac34aec8be6679c1c3f85d324nx64fO`, case `179053976300776`, resolved `CASE_CLOSED` after the appeal): four concurrent `g5.xlarge` hosts |
@@ -544,10 +544,11 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
     printf '%s\n' "$POLICY_ARN"
     ```
     The renderer refuses any region other than `eu-west-1` and any account id
-    that is not twelve digits. The policy is 16 statements: read-only describes,
+    that is not twelve digits. The policy is 17 statements: read-only describes,
     the approved launch surface, tag-on-create, tag-scoped lifecycle actions,
-    three explicit denies (instance profile, unapproved instance type,
-    non-CI-account AMI), and a deny for the privilege and data surface
+    four explicit denies (instance profile, unapproved instance type,
+    non-CI-account AMI, missing mandatory tags), and a deny for the privilege and
+    data surface
     (`iam:*`, `organizations:*`, `s3:*`, `ssm:*`, `sts:AssumeRole`).
 11. **Create the CI role** with the GitHub OIDC trust policy:
     ```bash
