@@ -38,6 +38,11 @@ DEADLINE_TAG = "iterabase-ci-deadline"
 NAME_TAG = "Name"
 TAG_PREFIX = "iterabase-ci"
 CANONICAL_OWNER = "099720109477"
+# GitHub issues immutable subject claims for repositories created after 2026-07-15,
+# so the OIDC sub claim pins these IDs: `repo:OWNER@OWNER_ID/REPO@REPO_ID:*`.
+# They are immutable, so a rename or a recreated repository cannot inherit trust.
+GITHUB_OWNER_ID = "64640406"
+GITHUB_REPOSITORY_ID = "1330311216"
 UBUNTU_IMAGE_NAME = "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
 SSH_USER = "ubuntu"
 DATA_VOLUME_DEVICE = "/dev/sdf"
@@ -325,6 +330,17 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Condition": request_tag_condition(),
         },
         {
+            # A copy's source is authorized against the source image ARN, which for a
+            # public image is an empty-account ARN (`arn:aws:ec2:<region>::image/*`)
+            # and cannot match the account-scoped pattern above. The copy still lands
+            # in this account and still carries the mandatory tags.
+            "Sid": "CopyImagesIntoTheCiAccount",
+            "Effect": "Allow",
+            "Action": "ec2:CopyImage",
+            "Resource": f"arn:aws:ec2:{region}::image/*",
+            "Condition": request_tag_condition(),
+        },
+        {
             "Sid": "CreateCiSnapshots",
             "Effect": "Allow",
             "Action": "ec2:CreateSnapshot",
@@ -387,16 +403,28 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
     return document
 
 
-def render_role_trust_policy(account_id: str = "", repository: str = "nunocgoncalves/iterabase-mono") -> dict[str, Any]:
+def render_role_trust_policy(
+    account_id: str = "",
+    repository: str = "nunocgoncalves/iterabase-mono",
+    owner_id: str = GITHUB_OWNER_ID,
+    repository_id: str = GITHUB_REPOSITORY_ID,
+) -> dict[str, Any]:
     """Render the GitHub OIDC trust policy (no environment, no static keys).
 
     The provider ARN carries the management-account id supplied by the operator;
     the placeholder is only used to show the shape before the account exists.
+    GitHub emits immutable subject claims for this repository, so the sub claim
+    pins the owner and repository IDs instead of matching the classic name form.
     """
     if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
         raise AwsCiError(f"repository is not owner/name: {repository!r}")
     if account_id and not re.fullmatch(r"\d{12}", account_id):
         raise AwsCiError(f"account id is not a 12-digit identifier: {account_id!r}")
+    for name, value in (("owner id", owner_id), ("repository id", repository_id)):
+        if not re.fullmatch(r"\d+", str(value)):
+            raise AwsCiError(f"GitHub {name} is not numeric: {value!r}")
+    owner, repository_name = repository.split("/", 1)
+    subject = f"repo:{owner}@{owner_id}/{repository_name}@{repository_id}:*"
     provider_account = account_id or "ACCOUNT_ID"
     return {
         "Version": "2012-10-17",
@@ -410,7 +438,7 @@ def render_role_trust_policy(account_id: str = "", repository: str = "nunocgonca
                 "Action": "sts:AssumeRoleWithWebIdentity",
                 "Condition": {
                     "StringEquals": {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com"},
-                    "StringLike": {"token.actions.githubusercontent.com:sub": f"repo:{repository}:*"},
+                    "StringLike": {"token.actions.githubusercontent.com:sub": subject},
                 },
             }
         ],
@@ -913,7 +941,7 @@ def command_render_policy(args: argparse.Namespace) -> int:
 
 
 def command_render_trust_policy(args: argparse.Namespace) -> int:
-    document = render_role_trust_policy(args.account_id, args.repository)
+    document = render_role_trust_policy(args.account_id, args.repository, args.owner_id, args.repository_id)
     rendered = json.dumps(document, indent=2) + "\n"
     if args.output:
         Path(args.output).write_text(rendered, encoding="utf-8")
@@ -1506,6 +1534,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     trust.add_argument("--account-id", default="")
     trust.add_argument("--repository", default="nunocgoncalves/iterabase-mono")
+    trust.add_argument("--owner-id", default=GITHUB_OWNER_ID)
+    trust.add_argument("--repository-id", default=GITHUB_REPOSITORY_ID)
     trust.add_argument("--output")
     trust.set_defaults(handler=command_render_trust_policy)
 

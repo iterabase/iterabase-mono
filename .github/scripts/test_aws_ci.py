@@ -26,6 +26,8 @@ from aws_ci import (
     DESCRIBE_ACTIONS,
     HOST_KEY_DELIMITER,
     HOST_KEY_PUB_DELIMITER,
+    GITHUB_OWNER_ID,
+    GITHUB_REPOSITORY_ID,
     MARKER_TAG,
     MAX_POLICY_CHARACTERS,
     NAME_TAG,
@@ -283,7 +285,7 @@ class PolicyContractTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(self.document, separators=(",", ":"))), MAX_POLICY_CHARACTERS)
 
     def test_every_statement_is_rendered_and_well_formed(self) -> None:
-        self.assertEqual(len(self.document["Statement"]), 18)
+        self.assertEqual(len(self.document["Statement"]), 19)
         for statement in self.document["Statement"]:
             self.assertIn(statement["Effect"], {"Allow", "Deny"})
             self.assertTrue(statement["Action"])
@@ -411,9 +413,26 @@ class PolicyContractTests(unittest.TestCase):
                 keys = [key for block in statement["Condition"].values() for key in block]
                 self.assertEqual(len(keys), 1, "a mandatory-tag deny must guard exactly one tag key")
 
-    def test_only_the_describe_and_deny_statements_are_unscoped(self) -> None:
+    def test_copy_image_is_allowed_against_a_public_source_arn(self) -> None:
+        # The smoke workflow's bootstrap copies a public Canonical image, and EC2
+        # authorizes the copy against the source image ARN (empty account), so the
+        # account-scoped pattern alone produced UnauthorizedOperation on CopyImage.
+        statement = self.statements["CopyImagesIntoTheCiAccount"]
+        self.assertEqual(statement["Action"], "ec2:CopyImage")
+        self.assertEqual(statement["Resource"], f"arn:aws:ec2:{CI_REGION}::image/*")
+        self.assertEqual(statement["Condition"], self.statements["BuildCiImagesAndSnapshots"]["Condition"])
+        self.assertEqual(
+            statement["Condition"]["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"],
+            "true",
+        )
+
+    def test_only_documented_statements_leave_the_ci_account(self) -> None:
+        # Every allow is scoped to this account and region except the describe list
+        # and the copy-source statement, whose public-image ARN is necessarily
+        # empty-account; the deny statements are scoped separately by design.
+        exempt = {"DescribeCiState", "CopyImagesIntoTheCiAccount"}
         for sid, statement in self.statements.items():
-            if sid in {"DescribeCiState"} or statement["Effect"] == "Deny":
+            if sid in exempt or statement["Effect"] == "Deny":
                 continue
             resources = statement["Resource"]
             resources = [resources] if isinstance(resources, str) else resources
@@ -433,9 +452,35 @@ class PolicyContractTests(unittest.TestCase):
         self.assertEqual(statement["Condition"]["StringEquals"]["token.actions.githubusercontent.com:aud"], "sts.amazonaws.com")
         self.assertEqual(
             statement["Condition"]["StringLike"]["token.actions.githubusercontent.com:sub"],
+            "repo:nunocgoncalves@64640406/iterabase-mono@1330311216:*",
+        )
+        self.assertNotIn(
             "repo:nunocgoncalves/iterabase-mono:*",
+            json.dumps(document),
+            "the classic subject form never matches an immutable-claim repository",
         )
         self.assertNotIn("environment", json.dumps(document))
+
+    def test_trust_policy_pins_the_repository_and_owner_ids(self) -> None:
+        statement = render_role_trust_policy(ACCOUNT_ID)["Statement"][0]
+        subject = statement["Condition"]["StringLike"]["token.actions.githubusercontent.com:sub"]
+        # GitHub's immutable subject claims carry the owner and repository IDs; the
+        # rendered condition must pin them rather than trust a re-creatable name.
+        self.assertIn(f"nunocgoncalves@{GITHUB_OWNER_ID}", subject)
+        self.assertIn(f"iterabase-mono@{GITHUB_REPOSITORY_ID}", subject)
+        self.assertTrue(subject.endswith(":*"))
+        for overrides in (
+            {"owner_id": "nuno"},
+            {"repository_id": "main"},
+        ):
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(AwsCiError):
+                    render_role_trust_policy(ACCOUNT_ID, **overrides)
+        rendered = render_role_trust_policy(ACCOUNT_ID, owner_id="1", repository_id="2")
+        self.assertIn(
+            "repo:nunocgoncalves@1/iterabase-mono@2:*",
+            json.dumps(rendered),
+        )
 
 
 class LaunchSurfaceTests(unittest.TestCase):
