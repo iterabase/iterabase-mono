@@ -1616,7 +1616,7 @@ def command_denied_cases(args: argparse.Namespace) -> int:
 def command_cleanup_run(args: argparse.Namespace) -> int:
     """Remove everything one run created, in every allowed region."""
     primary = require_region(args.region)
-    ami_ids = parse_ami_ids(args.ami_ids) if args.ami_ids else {}
+    ami_ids = parse_ami_ids(args.ami_ids, primary) if args.ami_ids else {}
     removed: list[str] = []
     for region in region_order(primary):
         reservations = as_list(

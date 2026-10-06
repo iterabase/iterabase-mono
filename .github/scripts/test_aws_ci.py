@@ -780,6 +780,18 @@ class RepositoryContractTests(unittest.TestCase):
                         build_parser().parse_args([command, "--help"])
                     self.assertEqual(raised.exception.code, 0)
 
+    def test_every_ami_map_parse_threads_the_resolved_primary(self) -> None:
+        # The bare-AMI form must never fall back to the module constant: cleanup-run
+        # shipped that bug once, so every call site in the module is pinned here.
+        source = (ROOT / ".github/scripts/aws_ci.py").read_text(encoding="utf-8")
+        calls = re.findall(r"parse_ami_ids\((.*?)\)", source)
+        self.assertGreaterEqual(len(calls), 3, "the parser and its call sites should be present")
+        for call in calls:
+            with self.subTest(call=call):
+                if call.startswith("value: str"):
+                    continue  # the definition itself
+                self.assertIn(",", call, "parse_ami_ids must be called with an explicit primary region")
+
     def test_capacity_helpers_return_single_types_not_tuples(self) -> None:
         # A tuple passed where one instance type is expected produced a live
         # ParamValidation failure ("Values=('m6i.xlarge',)") in the denied-cases job.
