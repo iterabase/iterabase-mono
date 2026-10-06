@@ -418,13 +418,14 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
         {
             # EC2 authorizes a copy against two image resources: the source image
             # ARN (a public image is an empty-account ARN, so the account-scoped
-            # pattern above cannot match it) and a destination wildcard ARN whose
-            # authorization context carries no aws:RequestTag keys at all (verified
-            # by decoding an UnauthorizedOperation on CopyImage). A tag condition
-            # here would therefore silently deny every copy, so this statement is
-            # unconditional; a copy always lands in this account, and the copied
-            # AMI's mandatory tags are enforced by TagCiResourcesOnCreate, whose
-            # ec2:CreateAction list includes CopyImage.
+            # pattern above cannot match it) and a destination wildcard ARN. Neither
+            # `aws:RequestTag` (absent from both contexts) nor the image attribute
+            # keys (absent from the destination) can discriminate between them, but
+            # `ec2:Owner` is present in both — `amazon` for the public Canonical
+            # source, this account for the destination wildcard — so the owner
+            # condition below is what pins the source while still letting the copy
+            # land here. The copied AMI's mandatory tags are enforced by
+            # TagCopiedImagesOnCreate, whose ec2:CreateAction list includes CopyImage.
             "Sid": "CopyImagesIntoTheCiAccount",
             "Effect": "Allow",
             "Action": "ec2:CopyImage",

@@ -584,11 +584,17 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
       tag conditions apply": `aws:RequestTag` is absent from the *plumbing*
       resources' contexts (subnet, network interface, key pair), which is why the
       conditions were split per resource rather than removed.
-    - `ec2:CopyImage` carries its own unconditional allow: EC2 authorizes a copy
-      against the **source image and its source snapshot** — for a public Canonical
-      image both are empty-account ARNs that the account-scoped patterns cannot match
-      — and against destination wildcard ARNs whose context carries no request-tag
-      keys. A copy always lands in the CI account, and its tags are enforced by
+    - `ec2:CopyImage` carries its own allow, pinned by **source owner**: EC2
+      authorizes a copy against the **source image and its source snapshot** — for a
+      public Canonical image both are empty-account ARNs that the account-scoped
+      patterns cannot match — and against destination wildcard ARNs. `aws:RequestTag`
+      is absent from both of those contexts and the image attribute keys are absent
+      from the destination, so neither can discriminate; `ec2:Owner` is present in
+      both (`amazon` for the public Canonical source, this account for the
+      destination wildcard), which is why the statement carries
+      `StringEquals: {ec2:Owner: ["amazon", <account id>]}`. That admits
+      Amazon/Canonical public images and our own account only, so a third-party or
+      marketplace image cannot be copied in. The copied AMI's tags are enforced by
       `TagCopiedImagesOnCreate`, whose `ec2:CreateAction` list is `CopyImage`.
     - Copies carry the empty-account ARN form, so both forms are allowed wherever a
       copied AMI is evaluated: `RemoveCiImagesAndSnapshots` (EC2 reports the copied

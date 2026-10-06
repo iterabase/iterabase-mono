@@ -489,8 +489,9 @@ class PolicyContractTests(unittest.TestCase):
         # authorizes the copy against the source image ARN (empty account), so the
         # account-scoped pattern alone produced UnauthorizedOperation on CopyImage.
         # The decoded failures showed that neither evaluation carries
-        # aws:RequestTag keys, so this statement must stay unconditional while the
-        # copied AMI's tags are enforced at ec2:CreateTags.
+        # aws:RequestTag keys and the destination lacks the image attribute keys, so
+        # the owner condition is the discriminator that pins the source while still
+        # allowing the copy; the copied AMI's tags are enforced at ec2:CreateTags.
         statement = self.statements["CopyImagesIntoTheCiAccount"]
         self.assertEqual(statement["Action"], "ec2:CopyImage")
         self.assertEqual(
