@@ -331,7 +331,7 @@ jobs:
           GOMODCACHE="$(go env GOMODCACHE)"
           sudo env "HOME=/tmp/forge-fx" "PATH=$PATH" "GOMODCACHE=$GOMODCACHE" \
             FORGE_FAULT_MATRIX_REQUIRED=1 go test -count=1 \
-            -run 'TestDataStorageFaultStageMatrixExecutable|TestDataStorageReapplyReceiptMonotonicExecutable|TestDataStoragePurgeFaultStageMatrixExecutable|TestDataStorageLoopDevicesRejectedWithoutFixtureFlag' \
+            -run 'TestDataStorageFaultStageMatrixExecutable|TestDataStorageReapplyReceiptMonotonicExecutable|TestDataStorageReapplyAfterKernelNameReorderExecutable|TestDataStoragePurgeFaultStageMatrixExecutable|TestDataStorageLoopDevicesRejectedWithoutFixtureFlag' \
             ./internal/sshprovisioner/
 
   charts:
