@@ -44,7 +44,8 @@ CATALOGUE = {"schema_version": 2, "suites": [
     {"suite": {"name": "forge", "owner": "forge"}, "scenarios": [
         scenario("forge/cpu", "F3", FORGE, smoke=True, selected_by=["forge-binary"]),
         scenario("forge/cpu-workspace", "F3", FORGE + ["runtime-fixture-image"], selected_by=["forge-binary"]),
-        scenario("forge/gpu", "F3", FORGE, selected_by=["forge-binary"]),
+        dict(scenario("forge/gpu", "F3", FORGE, selected_by=["forge-binary"]),
+             stages=[{"name": "serve"}, {"name": "driver-upgrade", "optional": True}]),
     ]},
 ]}
 ALL_RUNNABLE = sorted(s["id"] for suite in CATALOGUE["suites"] for s in suite["scenarios"] if s["metadata"]["tier"] != "F0")
@@ -192,10 +193,19 @@ class RealDiffTests(unittest.TestCase):
         self.assertEqual(selection.jobs, list(affected.ALL_JOBS))
         self.assertEqual(selection.scenarios, sorted(set(SMOKE + CHART_SCENARIOS + CP_SCENARIOS)))
 
-    def test_gpu_driver_inputs_select_the_driver_upgrade_stage(self) -> None:
-        self.assertEqual(run([Change(".github/inputs/remote-content.json", driver_input=True)]).stages, ["driver-upgrade"])
+    def test_gpu_driver_inputs_select_the_stage_and_its_scenario(self) -> None:
+        driver = run([Change(".github/inputs/remote-content.json", driver_input=True)])
+        self.assertEqual(driver.stages, ["driver-upgrade"])
+        self.assertIn("forge/gpu", driver.scenarios)
+        self.assertIn("forge/gpu", run(["forge/internal/gpu/driver.go"]).scenarios)
         self.assertEqual(run([".github/inputs/remote-content.json"]).stages, [])
-        self.assertEqual(run(["forge/internal/gpu/driver.go"]).stages, ["driver-upgrade"])
+
+    def test_remote_content_is_also_a_product_input(self) -> None:
+        # It pins the LVM substrate's images, so it affects that chart recipe too.
+        selection = run([".github/inputs/remote-content.json"])
+        self.assertEqual(selection.classification, "selected")
+        self.assertIn("lvm-storage-substrate-chart", selection.artifacts)
+        self.assertEqual(selection.jobs, list(affected.ALL_JOBS))
 
     def test_unknown_path_selects_everything(self) -> None:
         selection = run(["docs/x.md", "tools/new-thing.sh"])
