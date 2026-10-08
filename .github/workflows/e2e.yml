@@ -52,6 +52,7 @@ jobs:
       kind: ${{ steps.plan.outputs.kind }}
       real: ${{ steps.plan.outputs.real }}
       capacities: ${{ steps.plan.outputs.capacities }}
+      pr_scenarios: ${{ steps.escapes.outputs.pr_scenarios }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,6 +82,19 @@ jobs:
             echo "real=$(jq -c .real <<<"$plan")"
             echo "capacities=$(jq -c '[.real[].capacity] | unique' <<<"$plan")"
           } >> "$GITHUB_OUTPUT"
+      - name: Record what pull-request selection would have run
+        id: escapes
+        if: github.event_name == 'merge_group'
+        env:
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          QUEUE_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          # DES-HOR-590-02: a queue failure in a scenario this would have skipped
+          # is a selection escape.
+          python3 .github/scripts/affected.py --catalogue "$RUNNER_TEMP/catalogue.json" \
+            --base "$QUEUE_BASE" --head "$QUEUE_HEAD" --output "$RUNNER_TEMP/selection-pr.json" > /dev/null
+          echo "pr_scenarios=$(jq -c .scenarios "$RUNNER_TEMP/selection-pr.json")" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-selection
@@ -419,6 +433,9 @@ jobs:
     if: always()
     needs: [select, build, images, kind, bake, real-machine]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Require the selection and every job that had work
         env:
@@ -446,3 +463,23 @@ jobs:
           expect bake "$(has "$REAL")" || status=1
           expect real-machine "$(has "$REAL")" || status=1
           exit "$status"
+      - name: Report selection escapes
+        if: always() && github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_SCENARIOS: ${{ needs.select.outputs.pr_scenarios }}
+        run: |
+          set -euo pipefail
+          failed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
+            --jq '.jobs[] | select(.conclusion == "failure") | .name')
+          escapes=$(jq -rn --argjson pr "${PR_SCENARIOS:-[]}" --arg failed "$failed" \
+            '$failed | split("\n") | map(select(test("^[a-z0-9-]+/[a-z0-9-]+$") and (. as $id | $pr | index($id) | not))) | .[]')
+          if [[ -n "$escapes" ]]; then
+            {
+              echo "### Selection escapes (DES-HOR-590-02)"
+              echo
+              echo "Failed in the merge queue but skipped by pull-request selection:"
+              while IFS= read -r escape; do echo "- $escape"; done <<<"$escapes"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::selection escape: $(tr '\n' ' ' <<<"$escapes")"
+          fi
