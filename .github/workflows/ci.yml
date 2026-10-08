@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+  merge_group:
   push:
     branches: [master]
   workflow_dispatch:
@@ -10,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -28,71 +29,44 @@ env:
     .github/tools/control-plane/go.sum
 
 jobs:
-  changes:
+  # One deterministic affected-graph selection (C2) gates every job below.
+  select:
     name: select
     runs-on: ubuntu-latest
     outputs:
-      control_plane: ${{ steps.select.outputs.control_plane }}
-      ui: ${{ steps.select.outputs.ui }}
-      harness: ${{ steps.select.outputs.harness }}
-      tool_runner: ${{ steps.select.outputs.tool_runner }}
-      proto: ${{ steps.select.outputs.proto }}
-      inference_gateway: ${{ steps.select.outputs.inference_gateway }}
-      forge: ${{ steps.select.outputs.forge }}
-      forge_e2e: ${{ steps.select.outputs.forge_e2e }}
-      forge_real_e2e: ${{ steps.select.outputs.forge_real_e2e }}
-      charts: ${{ steps.select.outputs.charts }}
-      nested_go_lint: ${{ steps.select.outputs.nested_go_lint }}
-      images: ${{ steps.select.outputs.images }}
-      image_matrix: ${{ steps.select.outputs.image_matrix }}
+      jobs: ${{ steps.select.outputs.jobs }}
       classification: ${{ steps.select.outputs.classification }}
-      selection: ${{ steps.select.outputs.selection }}
-      path_record: ${{ steps.select.outputs.path_record }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - id: select
+        uses: ./.github/actions/select
+
+  # CI, testkit and release-contract changes: the selector, release, remote
+  # content, AWS substrate and shared E2E mechanics.
+  ci-contract:
+    name: ci-contract
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'ci-contract')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
           cache-dependency-path: ${{ env.GO_CACHE_DEPENDENCIES }}
           cache-scope: shared-testkit
-      - name: Test shared E2E mechanics and compiled catalogue
+      - uses: ./.github/actions/setup-kubernetes-tools
+      - name: Shared E2E mechanics and compiled catalogue
         run: make testkit-test
-      - name: Test path-selection and Go lint-owner contracts
-        run: |
-          python3 .github/scripts/test_select_ci.py
-          python3 .github/scripts/test_lint_parity.py
-      - name: Test protected release and remote-content contracts
-        run: |
-          python3 .github/scripts/test_release.py
-          python3 .github/scripts/test_remote_content.py
-          python3 .github/scripts/release.py validate
-          python3 .github/scripts/remote_content.py validate
-      - name: Test cache invalidation and exclusions
-        run: python3 .github/scripts/test_cache_contract.py
-      - name: Test the AWS CI substrate contract
-        run: python3 .github/scripts/test_aws_ci.py
-      - name: Test source-authority workflow boundary
-        run: .github/scripts/test_source_authority.sh
-      - name: Collect changed paths
-        id: paths
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python3 .github/scripts/collect_changed_paths.py --all-event workflow_dispatch
-      - name: Select CI owners from the typed path record
-        id: select
-        run: >-
-          python3 .github/scripts/select_ci.py
-          --selection-file /tmp/changed-path-selection.json
-          --expected-head '${{ github.event.pull_request.head.sha || github.sha }}'
+      - name: Selector, release, remote-content and AWS substrate contracts
+        run: make release-check
 
   control-plane:
     name: control-plane
-    needs: changes
-    if: needs.changes.outputs.control_plane == 'true'
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'control-plane')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -131,8 +105,8 @@ jobs:
 
   ui:
     name: dashboard
-    needs: changes
-    if: needs.changes.outputs.ui == 'true'
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'ui')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -156,8 +130,8 @@ jobs:
 
   harness:
     name: harness
-    needs: changes
-    if: needs.changes.outputs.harness == 'true'
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'harness')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -186,8 +160,8 @@ jobs:
 
   tool-runner:
     name: tool-runner
-    needs: changes
-    if: needs.changes.outputs.tool_runner == 'true'
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'tool-runner')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -211,8 +185,8 @@ jobs:
 
   proto:
     name: protobuf
-    needs: changes
-    if: needs.changes.outputs.proto == 'true'
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'proto')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -238,8 +212,8 @@ jobs:
 
   inference-gateway:
     name: inference-gateway
-    needs: changes
-    if: needs.changes.outputs.inference_gateway == 'true'
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'inference-gateway')
     runs-on: ubuntu-latest
     env:
       GOWORK: "off"
@@ -272,8 +246,8 @@ jobs:
 
   forge:
     name: forge
-    needs: changes
-    if: needs.changes.outputs.forge == 'true'
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'forge')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -313,8 +287,8 @@ jobs:
   # apply never sets it and rejects loop devices unchanged.
   forge-fault-matrix:
     name: forge-fault-matrix
-    needs: changes
-    if: needs.changes.outputs.forge == 'true'
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'forge')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -336,8 +310,8 @@ jobs:
 
   charts:
     name: charts-static
-    needs: changes
-    if: needs.changes.outputs.charts == 'true'
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'charts')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -363,8 +337,8 @@ jobs:
   # that ownership or this wiring drifts.
   nested-go-lint:
     name: nested-go-lint
-    needs: changes
-    if: needs.changes.outputs.nested_go_lint == 'true'
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'e2e-modules')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -394,43 +368,12 @@ jobs:
         working-directory: testkit/e2e
         run: golangci-lint run ./...
 
-  images:
-    name: image-${{ matrix.name }}
-    needs: changes
-    if: needs.changes.outputs.images == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.changes.outputs.image_matrix) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify exact builder source
-        env:
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-      - name: Report BuildKit cache source and invalidation boundary
-        run: |
-          echo "BuildKit cache source: GHA scope ci-${{ matrix.name }}"
-          echo "BuildKit content digests include context ${{ matrix.context }} and Dockerfile ${{ matrix.dockerfile }}."
-      - uses: ./.github/actions/setup-buildx
-      - name: Build ${{ matrix.name }}
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          push: false
-          tags: ${{ matrix.name }}:ci
-          cache-from: type=gha,scope=ci-${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=ci-${{ matrix.name }}
-
   required:
     name: CI / required
     if: always()
     needs:
-      - changes
+      - select
+      - ci-contract
       - control-plane
       - ui
       - harness
@@ -441,19 +384,26 @@ jobs:
       - forge-fault-matrix
       - charts
       - nested-go-lint
-      - images
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Require the exact typed selection and every selected owner
+      - name: Require the selection and every selected job
         env:
           NEEDS: ${{ toJSON(needs) }}
-          PATH_RECORD: ${{ needs.changes.outputs.path_record }}
+          SELECTED: ${{ needs.select.outputs.jobs }}
         run: |
-          printf '%s\n' "$PATH_RECORD" > '${{ runner.temp }}/path-record.json'
-          python3 .github/scripts/select_ci.py \
-            --selection-file '${{ runner.temp }}/path-record.json' \
-            --expected-head '${{ github.event.pull_request.head.sha || github.sha }}' \
-            --validate-needs-env NEEDS
+          set -euo pipefail
+          test "$(jq -r .select.result <<<"$NEEDS")" = success || { echo "selection did not succeed"; exit 1; }
+          # Job ids whose selector name differs; forge-fault-matrix follows forge.
+          declare -A selector=([charts]=charts [nested-go-lint]=e2e-modules [forge-fault-matrix]=forge)
+          status=0
+          for job in $(jq -r 'keys[] | select(. != "select")' <<<"$NEEDS"); do
+            result=$(jq -r --arg job "$job" '.[$job].result' <<<"$NEEDS")
+            name=${selector[$job]:-$job}
+            if jq -e --arg name "$name" 'index($name) != null' <<<"$SELECTED" >/dev/null; then
+              [[ "$result" == success ]] || { echo "::error::selected job $job finished $result"; status=1; }
+            else
+              [[ "$result" == skipped ]] || { echo "::error::unselected job $job finished $result"; status=1; }
+            fi
+            echo "$job: $result"
+          done
+          exit "$status"
