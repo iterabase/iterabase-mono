@@ -8,7 +8,10 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        digest=$(python3 "$GITHUB_WORKSPACE/.github/scripts/content_digest.py" "$GITHUB_WORKSPACE/.github/inputs/remote-content.json")
+        # Keyed by only the entries this action installs (C3), so an unrelated
+        # remote-content change keeps the tool archives warm.
+        digest=$(python3 -c 'import hashlib, json, sys; tools = json.load(open(sys.argv[1]))["tools"]; print(hashlib.sha256(json.dumps(tools, sort_keys=True).encode()).hexdigest())' \
+          "$GITHUB_WORKSPACE/.github/inputs/remote-content.json")
         key="${{ runner.os }}-${{ runner.arch }}-kubernetes-tools-${digest}"
         echo "key=$key" >> "$GITHUB_OUTPUT"
         echo "tool cache key: $key"
