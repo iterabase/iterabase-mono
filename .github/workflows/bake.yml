@@ -37,7 +37,7 @@ jobs:
   ami:
     name: bake ${{ matrix.capacity }} AMI
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -53,11 +53,31 @@ jobs:
           role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
           region: ${{ vars.AWS_CI_REGION }}
           session-name: iterabase-bake-${{ matrix.capacity }}-${{ github.run_id }}
-      - name: Bake the ${{ matrix.capacity }} fixture AMI
+      - name: Build, seed and seal the ${{ matrix.capacity }} builder
+        id: build
         run: |
-          python3 .github/scripts/aws_ci.py bake-ami --region '${{ vars.AWS_CI_REGION }}' \
+          python3 .github/scripts/aws_ci.py bake-ami --phase build --region '${{ vars.AWS_CI_REGION }}' \
             --run-id "$BAKE_RUN_ID" --capacity '${{ matrix.capacity }}' --crane "$(command -v crane)" \
             ${{ inputs.force && '--force' || '' }}
+      # The CI role's sessions last an hour; seeding the GPU cache can take most
+      # of one, so each later phase assumes the role afresh.
+      - uses: ./.github/actions/setup-aws-ci
+        if: steps.build.outputs.builder != ''
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-bake-${{ matrix.capacity }}-image-${{ github.run_id }}
+      - name: Image the builder and start the regional copies
+        if: steps.build.outputs.builder != ''
+        run: |
+          python3 .github/scripts/aws_ci.py bake-ami --phase image --region '${{ vars.AWS_CI_REGION }}' \
+            --run-id "$BAKE_RUN_ID" --capacity '${{ matrix.capacity }}' --builder '${{ steps.build.outputs.builder }}'
+      - uses: ./.github/actions/setup-aws-ci
+        if: always()
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-bake-${{ matrix.capacity }}-cleanup-${{ github.run_id }}
       - name: Remove the builder and its transient source image
         if: always()
         run: python3 .github/scripts/aws_ci.py cleanup-run --region '${{ vars.AWS_CI_REGION }}' --run-id "$BAKE_RUN_ID"

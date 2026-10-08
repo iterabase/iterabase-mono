@@ -1495,12 +1495,17 @@ def probe_by_id(host: PinnedHost, volume_id: str) -> dict[str, str]:
     return fields
 
 
-def tagged_ids(region: str, kind: str, tags: dict[str, str]) -> list[dict[str, Any]]:
-    """CI-owned images or snapshots in one region carrying every given tag, newest first."""
+def tagged_ids(region: str, kind: str, tags: dict[str, str], *, include_pending: bool = False) -> list[dict[str, Any]]:
+    """CI-owned images or snapshots in one region carrying every given tag, newest first.
+
+    Only usable (available) images by default; a bake also counts copies still in
+    progress, so it never starts a duplicate copy.
+    """
     filters = [f"Name=tag:{key},Values={value}" for key, value in sorted(tags.items())]
     if kind == "image":
+        states = "available,pending" if include_pending else "available"
         items = aws_json(["ec2", "describe-images", "--region", region, "--owners", "self", "--filters", *filters,
-                          "Name=state,Values=available"])["Images"]
+                          f"Name=state,Values={states}"])["Images"]
         return sorted(as_list(items, what="images"), key=lambda item: str(item.get("CreationDate")), reverse=True)
     items = aws_json(["ec2", "describe-snapshots", "--region", region, "--owner-ids", "self", "--filters", *filters,
                       "Name=status,Values=completed"])["Snapshots"]
@@ -1722,53 +1727,78 @@ def product_tags(run_id: str, scenario: str, extra: dict[str, str]) -> list[dict
 
 
 def command_bake_ami(args: argparse.Namespace) -> int:
-    """Bake one capacity's fixture AMI for this tree's pinned images (C1, DES-HOR-590-03)."""
+    """Bake one capacity's fixture AMI for this tree's pinned images (C1, DES-HOR-590-03).
+
+    Two phases, each within one OIDC session (the CI role's sessions last an
+    hour and the GPU image cache alone can take most of one): `build` launches,
+    seeds and seals the builder; `image` images it, waits for the primary
+    region's AMI and starts the copies to the other regions. A fixture launch
+    only ever uses an available AMI, so the copies need no waiting here.
+    """
     primary = require_region(args.region)
     regions = region_order(primary)
     manifest = image_cache_manifest(args.capacity)
     generation = str(manifest["generation"])
     marker = {AMI_ROLE_TAG: f"fixture-{args.capacity}", IMAGE_CACHE_TAG: generation}
-    present = {region for region in regions if tagged_ids(region, "image", marker)}
-    if present == set(regions) and not args.force:
-        write_summary(f"### {args.capacity.upper()} fixture AMI\n\n- generation `{generation}` already baked in every region\n")
-        return 0
-    source = transient_source_ami(primary, args.run_id)
-    host = launch_pinned_host(
-        capacity="cpu", run_id=args.run_id, scenario=f"bake-{args.capacity}", ami_ids={primary: source},
-        regions=(primary,), deadline=dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=3),
-        launch_options={"root_gib": FIXTURE_ROOT_GIB[args.capacity]},
-    )
-    host.ssh(BAKE_PACKAGES_SCRIPT)
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import fixture_image_cache  # noqa: PLC0415
+    if args.phase == "build":
+        present = {region for region in regions if tagged_ids(region, "image", marker, include_pending=True)}
+        if present == set(regions) and not args.force:
+            write_outputs({"builder": ""})
+            write_summary(f"### {args.capacity.upper()} fixture AMI\n\n- generation `{generation}` already baked in every region\n")
+            return 0
+        if primary in present and not args.force:
+            # Only regional copies are missing: start them from the primary image.
+            source_image = str(tagged_ids(primary, "image", marker)[0]["ImageId"])
+            copy_fixture_ami(primary, source_image, args.capacity, generation, marker,
+                             tuple(region for region in regions if region not in present))
+            write_outputs({"builder": ""})
+            return 0
+        source = transient_source_ami(primary, args.run_id)
+        host = launch_pinned_host(
+            capacity="cpu", run_id=args.run_id, scenario=f"bake-{args.capacity}", ami_ids={primary: source},
+            regions=(primary,), deadline=dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=4),
+            launch_options={"root_gib": FIXTURE_ROOT_GIB[args.capacity]},
+        )
+        host.ssh(BAKE_PACKAGES_SCRIPT)
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import fixture_image_cache  # noqa: PLC0415
 
-    fixture_image_cache.seed_fixture_image_cache(
-        manifest=manifest, address=host.public_ip, user=SSH_USER, key=host.ssh_key, host_key=host.known_hosts,
-        crane=Path(args.crane),
-    )
-    host.ssh(BAKE_SEAL_SCRIPT)
+        fixture_image_cache.seed_fixture_image_cache(
+            manifest=manifest, address=host.public_ip, user=SSH_USER, key=host.ssh_key, host_key=host.known_hosts,
+            crane=Path(args.crane),
+        )
+        host.ssh(BAKE_SEAL_SCRIPT)
+        write_outputs({"builder": host.instance_id})
+        return 0
+
+    if not args.builder:
+        return 0  # nothing was built: this generation already existed
     tags = product_tags(f"fixture-ami-{generation}", f"fixture-{args.capacity}", marker)
     name = f"{TAG_PREFIX}-fixture-{args.capacity}-{generation}"
     image_id = str(aws_json([
-        "ec2", "create-image", "--region", primary, "--instance-id", host.instance_id, "--name", name,
+        "ec2", "create-image", "--region", primary, "--instance-id", args.builder, "--name", name,
         "--description", f"iterabase CI {args.capacity} fixture, image cache {generation} (DES-HOR-590-03)",
         "--tag-specifications", tag_specifications("image", tags), tag_specifications("snapshot", tags),
     ])["ImageId"])
-    wait_for_image(primary, image_id, timeout_seconds=3600)
-    images = {primary: image_id}
-    for region in regions:
-        if region != primary:
-            images[region] = str(aws_json([
-                "ec2", "copy-image", "--region", region, "--source-region", primary, "--source-image-id", image_id,
-                "--name", name, "--tag-specifications", tag_specifications("image", tags), tag_specifications("snapshot", tags),
-            ])["ImageId"])
-    for region, copied in images.items():
-        wait_for_image(region, copied, timeout_seconds=3600)
+    wait_for_image(primary, image_id, timeout_seconds=3000)
+    copies = copy_fixture_ami(primary, image_id, args.capacity, generation, marker,
+                              tuple(region for region in regions if region != primary))
     write_summary(
-        f"### {args.capacity.upper()} fixture AMI\n\n- image cache generation `{generation}`\n"
-        + "".join(f"- `{region}`: `{copied}`\n" for region, copied in images.items())
+        f"### {args.capacity.upper()} fixture AMI\n\n- image cache generation `{generation}`\n- `{primary}`: `{image_id}`\n"
+        + "".join(f"- `{region}`: `{copied}` (copying)\n" for region, copied in copies.items())
     )
     return 0
+
+
+def copy_fixture_ami(primary: str, image_id: str, capacity: str, generation: str, marker: dict[str, str],
+                     regions: tuple[str, ...]) -> dict[str, str]:
+    """Start copying a baked fixture AMI to other regions; a launch uses each copy once it is available."""
+    tags = product_tags(f"fixture-ami-{generation}", f"fixture-{capacity}", marker)
+    name = f"{TAG_PREFIX}-fixture-{capacity}-{generation}"
+    return {region: str(aws_json([
+        "ec2", "copy-image", "--region", region, "--source-region", primary, "--source-image-id", image_id,
+        "--name", name, "--tag-specifications", tag_specifications("image", tags), tag_specifications("snapshot", tags),
+    ])["ImageId"]) for region in regions}
 
 
 def command_bake_model_cache(args: argparse.Namespace) -> int:
@@ -2407,7 +2437,9 @@ def build_parser() -> argparse.ArgumentParser:
     bake = subparsers.add_parser("bake-ami", help="bake one capacity's fixture AMI (DES-HOR-590-03)", parents=[common])
     bake.add_argument("--run-id", required=True)
     bake.add_argument("--capacity", required=True, choices=sorted(APPROVED_INSTANCE_TYPES))
-    bake.add_argument("--crane", required=True, help="the reviewed crane binary used to pull the pinned images")
+    bake.add_argument("--phase", required=True, choices=("build", "image"))
+    bake.add_argument("--crane", default="", help="build phase: the reviewed crane binary used to pull the pinned images")
+    bake.add_argument("--builder", default="", help="image phase: the sealed builder instance from the build phase")
     bake.add_argument("--force", action="store_true")
     bake.set_defaults(handler=command_bake_ami)
 
