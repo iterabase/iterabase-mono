@@ -4,7 +4,7 @@
 - **Approval date:** 2026-09-24
 - **Architecture ticket:** [HOR-521](https://linear.app/horizonshift/issue/HOR-521/forge-verify-pinned-ssh-host-keys-before-privileged-commands-and)
 - **Decision:** `DES-HOR-521-01`
-- **Publication classification:** Required — the `forge` semantic release is validated through the protected candidate/promotion flow and the resulting immutable version is deployed to OPO1. Merge is not acceptance.
+- **Publication classification:** Required — the `forge` semantic release is published through the founder-approved `release.yml` flow (`docs/release.md`) and the resulting immutable version is deployed to OPO1. Merge is not acceptance.
 
 This record is the repository authority for how Forge authenticates an SSH host's identity before user authentication, session creation, privileged bootstrap, remote command execution, or stdin transport. It replaces the optional inline `sshHostKey` Git pin and its insecure empty-value fallback (`ssh.InsecureIgnoreHostKey`) removed by HOR-521. A different trust source, representation, enrollment, algorithm policy, rotation model, or verification-timing contract requires a new approved architecture decision.
 
@@ -80,7 +80,7 @@ The mismatch/unknown diagnostic reports: the address, the key-exchange stage, th
 - `spec.hosts[].sshHostKey` is removed. Configs that set it fail validation with a migration error that names `sshTrustFile` and this record; the legacy value is never echoed.
 - `spec.hosts[].sshTrustFile` is required. A missing value fails validation; a missing file fails provisioning before dialing.
 - `forge init --ssh-host-key` now writes the verified key to the trust file instead of `forge.yaml`. `--ssh-trust-file` selects the path; the default is `~/.forge/trust/<install-name>/<address>`.
-- Test-only seams: `WithSSHConfig` remains for fake-SSH unit tests; the permanent fixture E2E writes its env-supplied key into a per-run trust file. No test-only insecure callback exists in any non-test build path.
+- Test-only seams: `WithSSHConfig` remains for fake-SSH unit tests; the real-machine E2E writes the host key pinned at launch (`FORGE_E2E_FIXTURE_SSH_HOST_KEY`) into a per-run trust file. No test-only insecure callback exists in any non-test build path.
 
 ## 4. Operator procedures
 
@@ -111,7 +111,7 @@ OPO1 runs `forge apply --config forge.yaml` from the OPO1 overlay checkout. The 
 - Unit tests cover file loading, permissions/ownership/symlink rejection, known_hosts strict-subset parsing, exact address binding, key-type allowlist, algorithm derivation, key-set bounds, duplicate rejection, and diagnostics content.
 - Fake-SSH integration tests cover matching, missing, unknown, and mismatched trust, and assert zero authentication attempts, exec requests, and stdin bytes on failure, including sentinel overlay-credential and Secret payloads on `runStdin`.
 - A scan of the built-module source must show no `ssh.InsecureIgnoreHostKey` in non-test paths.
-- `make test`, `make lint`, `make fmt-check`, and `make test-e2e-unit` must pass; any affected Release-candidate-only behavior requires an exact-head candidate rehearsal per `docs/release.md`.
+- `make test`, `make lint`, `make fmt-check`, and `make test-e2e-unit` must pass; CI changes additionally pass full validation through the `full-validation` label per `docs/ci.md`.
 - OPO1 migration evidence is sanitized: version, fingerprints, outcomes, and counts only — never key material or secret payloads.
 
 ## 6. Traceability
@@ -122,5 +122,5 @@ OPO1 runs `forge apply --config forge.yaml` from the OPO1 overlay checkout. The 
 | `forge/internal/sshprovisioner` | Single verified connection seam for commands, privileged bootstrap, overlay credentials, and Secret manifests. |
 | `forge/internal/config` | Legacy `sshHostKey` rejected with migration error; `sshTrustFile` required. |
 | `forge init` | Enrollment writes trust material outside Git with 0700/0600 permissions. |
-| Permanent fixture E2E | Founder-verified key through `FORGE_E2E_FIXTURE_SSH_HOST_KEY` into a generated trust file; no Git material. |
-| Release | `forge` candidate validation and protected promotion; OPO1 deployment of the immutable version. |
+| Real-machine E2E (fresh per-run hosts) | Host key generated at launch, read back through the authenticated EC2 API, and passed as `FORGE_E2E_FIXTURE_SSH_HOST_KEY` into a generated trust file; no Git material. |
+| Release | `forge` full validation and founder-approved publication through `release.yml`; OPO1 deployment of the immutable version. |

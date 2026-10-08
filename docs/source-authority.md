@@ -1,6 +1,7 @@
 # Product source authority and legacy archives
 
-`nunocgoncalves/iterabase-mono` is the sole writable public source for the
+`iterabase/iterabase-mono` (moved from `nunocgoncalves/iterabase-mono` under
+HOR-590 C13) is the sole writable public source for the
 Iterabase control plane, inference gateway, Forge, and Helm charts. Product
 changes, pull requests, CI, and semantic releases start here. Deployment
 overlays and the marketing site remain independently owned repositories.
@@ -15,23 +16,26 @@ standalone component repository.
 | --- | --- |
 | Control-plane source | [`control-plane/`](../control-plane/) |
 | Inference-gateway source | [`inference-gateway/`](../inference-gateway/) |
-| Forge source and permanent-fixture lifecycle | [`forge/`](../forge/) and [fixture runbook](runbooks/permanent-e2e-fixtures.md) |
+| Forge source | [`forge/`](../forge/) |
+| CI fixture account (fresh per-run E2E hosts and previews) | [AWS CI runbook](runbooks/aws-ci.md) |
 | Chart source | [`charts/`](../charts/) |
-| Pull-request CI | [root CI and E2E workflows](ci.md) |
-| Candidate and promotion | [root release workflows](release.md) |
+| Pull-request CI, previews, and full validation | [root CI and E2E workflows](ci.md) |
+| Official releases | [`release.yml`](release.md) |
 | Deployment/customer intent | Independent overlay repositories |
 
 Clone one source tree and branch from `master`:
 
 ```bash
-git clone https://github.com/nunocgoncalves/iterabase-mono.git
+git clone https://github.com/iterabase/iterabase-mono.git
 cd iterabase-mono
 git switch -c HOR-123-short-description origin/master
 ```
 
-Do not clone a legacy component repository to make a product change. Published
-image names and the `ghcr.io/nunocgoncalves/iterabase-charts` OCI namespace are
-artifact identities, not source-authority links, and remain unchanged.
+Do not clone a legacy component repository to make a product change. Official
+artifacts publish to `ghcr.io/iterabase/*` and charts to the
+`ghcr.io/iterabase/iterabase-charts` OCI namespace (C13). Artifacts published
+earlier under `ghcr.io/nunocgoncalves/*` stay published. These are artifact
+identities, not source-authority links.
 
 ## Frozen legacy repositories
 
@@ -101,21 +105,21 @@ HOR-474 change merged to `master` and its required checks passed.
 
 At cutover, the root scheduled reaper was the only post-cutover cleanup
 authority and supplied the historical archive guard above. HOR-540 later
-replaced ephemeral provider resources with permanent capacity-scoped fixtures and
-removed that reaper/provider credential path. Current cleanup authority is
-`forge destroy --purge-data-storage --reboot --yes` over fixture-scoped, pinned
-SSH; provider-side quarantine/recovery is founder-operated outside Actions.
+replaced it with permanent fixtures, and HOR-590 (C1) replaced those with fresh
+per-run AWS hosts. Current CI cleanup authority is `reaper.yml` and the AWS CI
+substrate in [`runbooks/aws-ci.md`](runbooks/aws-ci.md).
 The final archive audit continues to prove that Dependabot version updates are
 unconfigured, Dependabot security updates and repository Actions are disabled,
 and custom repository Actions secrets are absent from every legacy archive. Dependency alerts and the read-only dependency graph may remain
 available as historical security evidence.
-Existing GHCR image and chart names remain unchanged, so overlays continue
-consuming the same immutable artifact identities.
+Artifacts published before C13 remain at their original GHCR identities, so
+overlays pinned to them keep resolving.
 
 ## Commissioning evidence before archive
 
 The release foundation was commissioned from exact master SHA
-`a9bd171a1d3f63d361846edf86fa5eab049720b0` before archival:
+`a9bd171a1d3f63d361846edf86fa5eab049720b0` before archival. These runs used the
+release workflows of that time, which HOR-590 replaced with `release.yml`:
 
 - release-system rehearsal run `31727406655` passed;
 - all-six-target candidate run `31727479627` passed;

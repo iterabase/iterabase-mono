@@ -136,8 +136,9 @@ See `forge.example.yaml` for the full substrate config schema.
 
 ```sh
 make test           # unit + fake-SSH integration tests
-make test-e2e       # composed bundle on the configured permanent CPU fixture
-make test-e2e-workspace # permanent-fixture PV/VG/OpenEBS thick-XFS RWO gate
+make test-e2e       # forge/cpu on a fresh per-run CPU host (CI supplies the environment)
+make test-e2e-workspace # forge/cpu-workspace: PV/VG/OpenEBS thick-XFS RWO gate on a fresh CPU host
+make test-e2e-gpu   # forge/gpu on a fresh per-run GPU host
 make test-e2e-unit  # compile + unit-test the separate E2E harness module
 make lint           # golangci-lint
 make fmt-check      # gofmt check
@@ -158,7 +159,7 @@ Architecture invariants and v1 boundaries are documented in `AGENTS.md`.
 - `internal/lifecycle/` — phase orchestration + reconcile
 - `internal/artifacts/` — local state dir (`~/.forge/<install>/`)
 - `internal/version/` — build version
-- `test/e2e/` — permanent CPU/GPU fixture runner (separate module; see `DESIGN.md`)
+- `test/e2e/` — real-machine CPU/GPU runner on fresh per-run EC2 hosts (separate module; see `test/e2e/DESIGN.md`)
 
 ## License
 

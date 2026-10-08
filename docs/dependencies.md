@@ -45,7 +45,7 @@ ecosystem label; the values in the config preserve the repository's existing
 
 | Ecosystem | Reason |
 | --- | --- |
-| `docker` | Dockerfile base-image digests are governed by `.github/inputs/remote-content.json` and enforced bi-directionally by `python3 .github/scripts/remote_content.py validate` in `ci.yml` and `release-candidate.yml`. The `docker` ecosystem has no Dependabot alert coverage, so an entry would open pull requests that fail the authority check with no security gain. |
+| `docker` | Dockerfile base-image digests are governed by `.github/inputs/remote-content.json` and enforced bi-directionally by `python3 .github/scripts/remote_content.py validate`, which `make release-check` runs in the `ci-contract` job of `ci.yml`. The `docker` ecosystem has no Dependabot alert coverage, so an entry would open pull requests that fail the authority check with no security gain. |
 | `helm`, `docker-compose`, `devcontainers` | Manifests exist but none has Dependabot alert coverage, so entries would be version-update-only, which the posture forbids. |
 | `pip`, `cargo`, `bundler`, `terraform`, `deno` | No such manifests exist. |
 

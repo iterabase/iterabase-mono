@@ -19,7 +19,7 @@ This is the sole writable public source for the four product components. Clone
 and branch from this repository for every product change:
 
 ```bash
-git clone https://github.com/nunocgoncalves/iterabase-mono.git
+git clone https://github.com/iterabase/iterabase-mono.git
 cd iterabase-mono
 git switch -c HOR-123-short-description origin/master
 ```
@@ -68,13 +68,14 @@ Docker builds retain their runtime identities and use component-scoped contexts:
 make docker-build  # control-plane, harness, isolation, tool-runner, and inference-gateway
 ```
 
-Required E2E uses one generated exact-source/candidate plan and one verified
-runtime composer across owner suites. Cross-repository matching-branch checkouts
-and owner-local artifact builds are not part of monorepo validation. Published artifact names, semantic versions, charts, and images remain unchanged.
+Required E2E builds each image once per commit and runs the scenarios the
+affected-graph selector chooses: Kind scenarios on GitHub-hosted runners and
+real-machine scenarios on fresh per-run AWS hosts. Cross-repository
+matching-branch checkouts and owner-local artifact builds are not part of
+monorepo validation. See [`docs/ci.md`](docs/ci.md).
 Forge additionally exposes an explicit, fail-closed workspace purge/reboot
-lifecycle for dedicated fixture/decommission use; ordinary destroy remains
-data-preserving.
+lifecycle for decommissioning; ordinary destroy remains data-preserving.
 
 A merge to `master` does not release. If ticket acceptance requires semantic
-publication, use the explicit affected-target candidate and founder-approved
-promotion flow documented in [`docs/release.md`](docs/release.md).
+publication, the founder publishes after merge through the `release.yml`
+workflow documented in [`docs/release.md`](docs/release.md).

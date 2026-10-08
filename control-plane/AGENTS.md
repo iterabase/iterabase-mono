@@ -22,7 +22,12 @@ make harness-test
 make harness-isolation-test # required Linux setpriv/UID/filesystem gate; needs Docker
 make tool-runner-test
 make docker-build       # control-plane image
+make test-e2e-unit      # compile the owner E2E suite and run its hermetic tests
+make test-e2e-deployed  # deployed-control-plane on fresh Kind; needs the CI-supplied image environment
+make test-e2e-execution # deployed-execution-contracts on fresh Kind
 ```
+
+CI builds every image once per commit and supplies the E2E environment; owner stages never build artifacts. Scenario selection, the environment contract, and the merge-queue rules are in [`../docs/ci.md`](../docs/ci.md).
 
 Run `make proto` after changing `proto/`, and commit all generated Go and TypeScript stubs. Run `make manifests generate` after changing kubebuilder API types and commit generated CRDs/deep-copy code.
 

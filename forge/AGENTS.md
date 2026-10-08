@@ -9,13 +9,17 @@ Read the root [`AGENTS.md`](../AGENTS.md) first. Its context, Git, ticket, valid
 ```bash
 make build          # -> bin/forge
 make test           # unit + fake-SSH integration tests
-make test-e2e       # permanent CPU fixture E2E; needs the pinned fixture environment
-make test-e2e-unit  # compile/test the nested E2E module without infrastructure
+make test-e2e           # forge/cpu on a fresh CPU host; needs the fixture environment
+make test-e2e-workspace # forge/cpu-workspace on a fresh CPU host
+make test-e2e-gpu       # forge/gpu on a fresh GPU host
+make test-e2e-unit      # compile/test the nested E2E module without infrastructure
 make lint
 make fmt-check
 ```
 
 The separate E2E module is `github.com/nunocgoncalves/iterabase-mono/forge/test/e2e`. Monorepo source-composed runs use local `../control-plane` and `../charts` directories; do not coordinate matching branches or check out those legacy repositories.
+
+The F3 targets run against a host CI launches for that one run: a fresh AWS EC2 instance booted from the baked fixture AMI (C1, `DES-HOR-590-03`), reached over SSH with a host key pinned at launch, and terminated afterwards. `aws_ci.py launch-fixture` exports the host contract (`FORGE_E2E_FIXTURE*`, `FORGE_E2E_IMAGE_CACHE_*`, and on GPU `FORGE_E2E_MODEL_CACHE_*`) and `e2e_inputs.py prepare` exports the artifacts (`FORGE_E2E_BINARY`, chart and image archives). There are no permanent fixtures. See [`../docs/ci.md`](../docs/ci.md#scenario-environment) and [`test/e2e/DESIGN.md`](test/e2e/DESIGN.md).
 
 ## Architecture invariants
 
