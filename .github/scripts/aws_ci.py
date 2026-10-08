@@ -2246,8 +2246,13 @@ def command_cleanup_run(args: argparse.Namespace) -> int:
             )["Snapshots"],
             what="snapshots",
         )
-        ami_id = ami_ids.get(region)
-        if ami_id:
+        # Images first: a snapshot cannot go while a registered image uses it. The
+        # run's own images (a bake's transient source) carry its run tag.
+        run_images = as_list(aws_json([
+            "ec2", "describe-images", "--region", region, "--owners", "self",
+            "--filters", f"Name=tag:{RUN_TAG},Values={args.run_id}",
+        ])["Images"], what="images")
+        for ami_id in sorted({str(image["ImageId"]) for image in run_images} | ({ami_ids[region]} if region in ami_ids else set())):
             aws(["ec2", "deregister-image", "--region", region, "--image-id", ami_id])
             removed.append(f"AMI `{ami_id}` ({region})")
         for snapshot in snapshots:
