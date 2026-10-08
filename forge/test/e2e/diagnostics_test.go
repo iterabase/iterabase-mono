@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	failureDomainFixtureReset   = "permanent-fixture-reset"
+	failureDomainFixturePrepare = "fixture-prepare"
 	failureDomainSubstrate      = "forge-substrate"
 	failureDomainForgeReconcile = "forge-reconciliation"
 	failureDomainForgeHandoff   = "forge-artifact-handoff"
@@ -45,7 +45,7 @@ func newForgeDiagnostics(t *testing.T, scenario string) forgeDiagnostics {
 	if err := os.MkdirAll(absolute, 0o700); err != nil {
 		t.Fatalf("create Forge diagnostics directory: %v", err)
 	}
-	return forgeDiagnostics{domain: failureDomainFixtureReset, outputDir: absolute, redactor: redact.New()}
+	return forgeDiagnostics{domain: failureDomainFixturePrepare, outputDir: absolute, redactor: redact.New()}
 }
 
 func (diagnostics *forgeDiagnostics) setDomain(domain string) {
@@ -234,15 +234,15 @@ func (diagnostics *forgeDiagnostics) collectSharedCluster(t *testing.T, kubeconf
 	}
 }
 
-func cpuDiagnosticStage(domain string, run func(*testing.T, *permanentCPUFixtureState)) func(*testing.T, *permanentCPUFixtureState) {
-	return func(t *testing.T, state *permanentCPUFixtureState) {
+func cpuDiagnosticStage(domain string, run func(*testing.T, *cpuFixtureState)) func(*testing.T, *cpuFixtureState) {
+	return func(t *testing.T, state *cpuFixtureState) {
 		state.diagnostics.setDomain(domain)
 		run(t, state)
 	}
 }
 
-func gpuDiagnosticStage(domain string, run func(*testing.T, *permanentGPUFixtureState)) func(*testing.T, *permanentGPUFixtureState) {
-	return func(t *testing.T, state *permanentGPUFixtureState) {
+func gpuDiagnosticStage(domain string, run func(*testing.T, *gpuFixtureState)) func(*testing.T, *gpuFixtureState) {
+	return func(t *testing.T, state *gpuFixtureState) {
 		state.diagnostics.setDomain(domain)
 		run(t, state)
 	}
@@ -275,7 +275,7 @@ lvs --noheadings --separator "|" -o lv_name,lv_uuid,lv_attr,vg_name --select "vg
 '`, candidateShellQuote(device))
 }
 
-func collectCPUDiagnostics(t *testing.T, state *permanentCPUFixtureState) {
+func collectCPUDiagnostics(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	state.diagnostics.recordDomain(t)
 	safeClusterLogs := state.diagnostics.registerBootstrapSecrets(t, state.ip, state.privKeyPath)
@@ -290,7 +290,7 @@ func collectCPUDiagnostics(t *testing.T, state *permanentCPUFixtureState) {
 	}
 }
 
-func collectGPUDiagnostics(t *testing.T, state *permanentGPUFixtureState) {
+func collectGPUDiagnostics(t *testing.T, state *gpuFixtureState) {
 	t.Helper()
 	state.diagnostics.recordDomain(t)
 	if state.host == nil {
@@ -309,20 +309,21 @@ func collectGPUDiagnostics(t *testing.T, state *permanentGPUFixtureState) {
 	}
 }
 
-func cpuScenarioDiagnostics() []sharede2e.Hook[*permanentCPUFixtureState] {
-	return []sharede2e.Hook[*permanentCPUFixtureState]{{Name: "shared-failure-evidence", Run: collectCPUDiagnostics}}
+func cpuScenarioDiagnostics() []sharede2e.Hook[*cpuFixtureState] {
+	return []sharede2e.Hook[*cpuFixtureState]{{Name: "shared-failure-evidence", Run: collectCPUDiagnostics}}
 }
 
-func cpuScenarioCleanup() []sharede2e.Hook[*permanentCPUFixtureState] {
-	return []sharede2e.Hook[*permanentCPUFixtureState]{{Name: "reset-permanent-cpu-fixture", Run: func(t *testing.T, state *permanentCPUFixtureState) { state.resetAfterScenario(t) }}}
+// cpuScenarioCleanup is empty: the workflow terminates the per-run host (C1).
+func cpuScenarioCleanup() []sharede2e.Hook[*cpuFixtureState] { return nil }
+
+func gpuScenarioDiagnostics() []sharede2e.Hook[*gpuFixtureState] {
+	return []sharede2e.Hook[*gpuFixtureState]{{Name: "shared-failure-evidence", Run: collectGPUDiagnostics}}
 }
 
-func gpuScenarioDiagnostics() []sharede2e.Hook[*permanentGPUFixtureState] {
-	return []sharede2e.Hook[*permanentGPUFixtureState]{{Name: "shared-failure-evidence", Run: collectGPUDiagnostics}}
-}
-
-func gpuScenarioCleanup() []sharede2e.Hook[*permanentGPUFixtureState] {
-	return []sharede2e.Hook[*permanentGPUFixtureState]{{Name: "reset-permanent-gpu-fixture", Run: func(t *testing.T, state *permanentGPUFixtureState) { state.resetAfterScenario(t) }}}
+// gpuScenarioCleanup stops the local API tunnel; the workflow terminates the
+// per-run host (C1).
+func gpuScenarioCleanup() []sharede2e.Hook[*gpuFixtureState] {
+	return []sharede2e.Hook[*gpuFixtureState]{{Name: "stop-api-tunnel", Run: func(_ *testing.T, state *gpuFixtureState) { state.stopAPITunnel() }}}
 }
 
 func TestForgeDiagnosticsRecordsFailureDomain(t *testing.T) {

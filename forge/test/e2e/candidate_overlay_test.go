@@ -130,7 +130,7 @@ func candidateOverlayValues(t *testing.T) string {
 	// Forge reconciles the fixed receipt-bound LVM storage substrate before Helm.
 	var values strings.Builder
 	values.WriteString("\n# Forge real-machine fixture values.\n")
-	// The smallest permanent data VG is 25 GiB. Keep both real thick XFS
+	// The fixture data VG is at least 25 GiB. Keep both real thick XFS
 	// platform claims enabled while leaving headroom for AgentPool/lifecycle proof.
 	values.WriteString("control-plane:\n  dispatch:\n    enabled: true\n    defaultModel:\n      id: forge-workspace-model\n      api: openai-completions\n  postgresql:\n    persistence:\n      size: 5Gi\n")
 	if controlPlane != "" {

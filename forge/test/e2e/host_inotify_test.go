@@ -11,7 +11,7 @@ import (
 const hostInotifyDropInPath = "/etc/sysctl.d/90-iterabase-k3s-inotify.conf"
 
 // hostInotifyEvidenceScript proves the released Forge artifact persisted and
-// applied the exact canonical value on the permanent fixture, then prints the
+// applied the exact canonical value on the fixture host, then prints the
 // live value and the drop-in's device/inode/mtime identity so the reapply
 // stage can prove Forge did not rewrite it.
 const hostInotifyEvidenceScript = `sudo bash -ceu '
@@ -50,7 +50,7 @@ printf "followed-lines=%s\n" "$count"
 // canonical persistent and live inotify instance ceiling and that followed pod
 // logs stream without the fsnotify EMFILE failure. It records the drop-in
 // identity for the post-reapply proof.
-func assertHostInotifyCapacityStage(t *testing.T, state *permanentCPUFixtureState) {
+func assertHostInotifyCapacityStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	sc, err := sshDial(state.ip, state.privKeyPath)
 	if err != nil {
@@ -73,7 +73,7 @@ func assertHostInotifyCapacityStage(t *testing.T, state *permanentCPUFixtureStat
 // assertHostInotifyReapplyStage proves a repeated Forge apply left the
 // canonical drop-in byte-for-byte and inode-for-inode untouched while the live
 // value remained the required 8192.
-func assertHostInotifyReapplyStage(t *testing.T, state *permanentCPUFixtureState) {
+func assertHostInotifyReapplyStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	if state.inotifyDropInIdentity == "" {
 		t.Fatal("host inotify drop-in identity was not recorded before reapply")

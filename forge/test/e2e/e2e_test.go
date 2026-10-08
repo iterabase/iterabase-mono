@@ -1,5 +1,5 @@
-// Package e2e runs Forge's composed scenarios against fixed, pinned permanent
-// fixtures. The separate module keeps client-go and harness-only dependencies
+// Package e2e runs Forge's composed scenarios against a fresh, pinned host per
+// run (C1). The separate module keeps client-go and harness-only dependencies
 // out of Forge's production module.
 package e2e
 
@@ -28,14 +28,14 @@ import (
 )
 
 const (
-	k3sPort                           = 6443
-	permanentCPUScenarioName          = "permanent-fixture-cpu"
-	permanentCPUWorkspaceScenarioName = "permanent-fixture-cpu-workspace"
-	permanentGPUScenarioName          = "permanent-fixture-gpu"
+	k3sPort                  = 6443
+	cpuScenarioName          = "cpu"
+	cpuWorkspaceScenarioName = "cpu-workspace"
+	gpuScenarioName          = "gpu"
 )
 
-type permanentCPUFixtureState struct {
-	fixture               *permanentFixture
+type cpuFixtureState struct {
+	fixture               *hostFixture
 	runID                 string
 	privKeyPath           string
 	ip                    string
@@ -55,18 +55,18 @@ type permanentCPUFixtureState struct {
 	diagnostics           forgeDiagnostics
 }
 
-func newPermanentCPUFixtureState(t *testing.T) *permanentCPUFixtureState {
-	return newPermanentCPUFixtureStateForScenario(t, permanentCPUScenarioName)
+func newCPUFixtureState(t *testing.T) *cpuFixtureState {
+	return newCPUFixtureStateForScenario(t, cpuScenarioName)
 }
 
-func newPermanentCPUWorkspaceFixtureState(t *testing.T) *permanentCPUFixtureState {
+func newCPUWorkspaceFixtureState(t *testing.T) *cpuFixtureState {
 	t.Setenv(workspaceBehaviorEnv, "true")
-	return newPermanentCPUFixtureStateForScenario(t, permanentCPUWorkspaceScenarioName)
+	return newCPUFixtureStateForScenario(t, cpuWorkspaceScenarioName)
 }
 
-func newPermanentCPUFixtureStateForScenario(t *testing.T, scenario string) *permanentCPUFixtureState {
-	fixture := requirePermanentFixture(t, "cpu")
-	state := &permanentCPUFixtureState{
+func newCPUFixtureStateForScenario(t *testing.T, scenario string) *cpuFixtureState {
+	fixture := requireHostFixture(t, "cpu")
+	state := &cpuFixtureState{
 		fixture:             fixture,
 		runID:               fixture.installName(),
 		privKeyPath:         fixture.sshKeyPath,
@@ -82,20 +82,19 @@ func newPermanentCPUFixtureStateForScenario(t *testing.T, scenario string) *perm
 	}
 	state.forgeBin = buildForge(t)
 	state.chartVersion = platformChartVersion(t, "")
-	t.Logf("run %s on the permanent CPU fixture", state.runID)
+	t.Logf("run %s on a fresh CPU host", state.runID)
 	return state
 }
 
-func resetPermanentCPUFixtureStage(t *testing.T, state *permanentCPUFixtureState) {
+func prepareCPUFixtureStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
-	if err := state.fixture.reset(t, state.forgeBin, state.forgeHome); err != nil {
+	if err := state.fixture.prepare(t); err != nil {
 		t.Fatal(err)
 	}
 	rememberDataStorageDevice(state.ip, state.dataStorageDevice)
-	t.Logf("permanent CPU fixture %s data-storage=%s", state.ip, state.dataStorageDevice)
 }
 
-func rejectGPUOnCPUStage(t *testing.T, state *permanentCPUFixtureState) {
+func rejectGPUOnCPUStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	cfgPath := writeForgeConfigGPU(t, state.runID, state.ip, state.privKeyPath)
 	out, err := runForgeE(state.forgeBin, state.forgeHome, "apply", "--config", cfgPath)
@@ -111,7 +110,7 @@ func rejectGPUOnCPUStage(t *testing.T, state *permanentCPUFixtureState) {
 // source artifact to a minimally healthy dependent layer. Chart ownership,
 // rollout, certificate, gateway, and tool-runner correctness remains in the
 // chart/control-plane owner suites.
-func assertCurrentPlatformStage(t *testing.T, state *permanentCPUFixtureState) {
+func assertCurrentPlatformStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	sc, err := sshDial(state.ip, state.privKeyPath)
 	if err != nil {
@@ -229,7 +228,7 @@ printf "%%s|%%s\n" "$pv" "$vg"
 	checkGatewayNodePortHealth(t, kcPath, state.ip)
 }
 
-func seedLVMReapplyStage(t *testing.T, state *permanentCPUFixtureState) {
+func seedLVMReapplyStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	sc, err := sshDial(state.ip, state.privKeyPath)
 	if err != nil {
@@ -288,7 +287,7 @@ YAML`
 	}
 }
 
-func growGeneralLVMClaimStage(t *testing.T, state *permanentCPUFixtureState) {
+func growGeneralLVMClaimStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	sc, err := sshDial(state.ip, state.privKeyPath)
 	if err != nil {
@@ -350,7 +349,7 @@ func assertLVMVolumeCapacity(t *testing.T, observed, wanted string) {
 	}
 }
 
-func assertLVMReapplyStage(t *testing.T, state *permanentCPUFixtureState) {
+func assertLVMReapplyStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	sc, err := sshDial(state.ip, state.privKeyPath)
 	if err != nil {
@@ -390,7 +389,7 @@ YAML`
 	}
 }
 
-func deleteLVMClaimStage(t *testing.T, state *permanentCPUFixtureState) {
+func deleteLVMClaimStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	sc, err := sshDial(state.ip, state.privKeyPath)
 	if err != nil {
@@ -415,7 +414,7 @@ exit 1`, state.storagePV, handle, candidateShellQuote(handle))
 	}
 }
 
-func destroyPreservesDataStorageStage(t *testing.T, state *permanentCPUFixtureState) {
+func destroyPreservesDataStorageStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	if err := state.fixture.releaseDataStorageConsumers(); err != nil {
 		t.Fatalf("release claims through Kubernetes before ordinary Forge destroy: %v", err)
@@ -444,7 +443,7 @@ printf ordinary-destroy-vg-preserved=pass
 	}
 }
 
-func setupLVMSharedAgentPoolStage(t *testing.T, state *permanentCPUFixtureState) {
+func setupLVMSharedAgentPoolStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	repository, tag := os.Getenv("HARNESS_IMAGE_REPO"), os.Getenv("HARNESS_IMAGE_TAG")
 	if repository == "" || tag == "" {
@@ -529,46 +528,7 @@ func waitForLVMSharedAgentPoolReady(t *testing.T, client *ssh.Client, timeout ti
 	t.Fatalf("OpenEBS shared-LVM AgentPool did not become Ready within %s: %v\n%s\n%s", timeout, err, output, diagnostics)
 }
 
-func replaceWorkspaceWorkerStage(t *testing.T, state *permanentCPUFixtureState) {
-	t.Helper()
-	if os.Getenv("HARNESS_IMAGE_REPO") == "" {
-		t.Fatal("worker replacement stage requires the composed harness image")
-	}
-	sc, err := sshDial(state.ip, state.privKeyPath)
-	if err != nil {
-		t.Fatalf("ssh dial %s: %v", state.ip, err)
-	}
-	defer sc.Close()
-	pod := strings.Fields(mustSSHOutput(t, sc, `sudo k3s kubectl get pods -n iterabase-system -l platform.iterabase.com/agentpool=forge-storage-pool -o name`))[0]
-	mustSSHOutput(t, sc, "sudo k3s kubectl delete -n iterabase-system "+pod+" --wait=true --timeout=5m")
-	waitForReplacement := fmt.Sprintf(`before=%s
-for i in $(seq 1 300); do
-  workers=$(k3s kubectl get pods -n iterabase-system -l platform.iterabase.com/agentpool=forge-storage-pool -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}')
-  count=$(printf "%%s\n" "$workers" | awk 'NF {n++} END {print n+0}')
-  fresh=$(printf "%%s\n" "$workers" | grep -Fvx -f <(printf "%%s\n" "$before") || true)
-  replicas=$(k3s kubectl get agentpool forge-storage-pool -n iterabase-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)
-  if test "$count" = 2 && test -n "$fresh" && test "$replicas" = 2 && k3s kubectl wait -n iterabase-system --for=condition=Ready pods -l platform.iterabase.com/agentpool=forge-storage-pool --timeout=1s >/dev/null 2>&1; then
-    printf "%%s\n" "$workers"
-    exit 0
-  fi
-  sleep 2
-done
-exit 1`, candidateShellQuote(state.initialWorkerPodUID))
-	workers, err := sshOutput(sc, "sudo bash -ceu "+candidateShellQuote(waitForReplacement))
-	if err != nil {
-		t.Fatalf("worker replacement did not produce a fresh Ready two-worker set: before=%q: %v\n%s", state.initialWorkerPodUID, err, workers)
-	}
-	workers = strings.TrimSpace(workers)
-	identity := strings.TrimSpace(mustSSHOutput(t, sc, `sudo k3s kubectl get pvc forge-storage-pool-sandbox -n iterabase-system -o jsonpath='{.metadata.uid}'`))
-	if identity != state.agentPoolPVCUID {
-		t.Fatalf("worker replacement changed AgentPool PVC: before=%s after=%s", state.agentPoolPVCUID, identity)
-	}
-	if len(strings.Fields(workers)) != 2 {
-		t.Fatalf("worker replacement returned an invalid Ready worker set: %q", workers)
-	}
-}
-
-func rebootPreservesLVMStorageStage(t *testing.T, state *permanentCPUFixtureState) {
+func rebootPreservesLVMStorageStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	before, err := state.fixture.bootID()
 	if err != nil {
@@ -633,7 +593,7 @@ exit 1`, candidateShellQuote(state.storagePVCUID+"|"+state.storagePV))
 	t.Logf("storage reboot preserved and converged grow-only identity: boot %s -> %s", before, after)
 }
 
-func reapplyCurrentPlatformStage(t *testing.T, state *permanentCPUFixtureState) {
+func reapplyCurrentPlatformStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	prepareCandidateChart(t, state.ip, state.privKeyPath)
 	plan := prepareCandidateOverlay(t, state.runID, state.ip, state.privKeyPath)
@@ -671,16 +631,7 @@ func assertApplyMarkers(t *testing.T, out string, markers ...string) {
 	}
 }
 
-func (state *permanentCPUFixtureState) resetAfterScenario(t *testing.T) {
-	t.Helper()
-	state.diagnostics.setDomain(failureDomainFixtureReset)
-	dataStorageDevicesByAddress.Delete(state.ip)
-	if err := state.fixture.reset(t, state.forgeBin, state.forgeHome); err != nil {
-		t.Errorf("reset permanent CPU fixture after diagnostics: %v", err)
-	}
-}
-
-// waitForHostReady waits until the permanent fixture accepts SSH AND cloud-init
+// waitForHostReady waits until the fixture host accepts SSH AND cloud-init
 // has finished applying its baseline (the forge user, passwordless sudo, curl).
 // Returning only once cloud-init reports "done" prevents forge's preflight from
 // racing cloud-init — e.g. `sudo -n true` failing with "passwordless sudo
@@ -740,9 +691,9 @@ func sshDial(ip, keyPath string) (*ssh.Client, error) {
 	}
 	// E2E never connects without explicit host-key trust: the fixture-supplied
 	// founder-verified key is the only accepted host identity.
-	pin := strings.TrimSpace(os.Getenv(permanentFixtureHostKeyEnv))
+	pin := strings.TrimSpace(os.Getenv(hostFixtureHostKeyEnv))
 	if pin == "" {
-		return nil, fmt.Errorf("%s is required: E2E SSH refuses to connect without explicit host-key trust", permanentFixtureHostKeyEnv)
+		return nil, fmt.Errorf("%s is required: E2E SSH refuses to connect without explicit host-key trust", hostFixtureHostKeyEnv)
 	}
 	publicKey, _, _, rest, parseErr := ssh.ParseAuthorizedKey([]byte(pin + "\n"))
 	if parseErr != nil || len(strings.TrimSpace(string(rest))) != 0 {

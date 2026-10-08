@@ -1,6 +1,6 @@
 // Package e2e contains the composed CPU/GPU scenarios. The no-GPU preflight
-// runs on the fixed CPU fixture; GPU readiness and real inference run on the
-// fixed GPU fixture under the shared permanent-fixture lock.
+// runs on a fresh CPU host; GPU readiness and real inference run on a fresh
+// GPU host. Each run has its own EC2 instance, so there is no fixture lock.
 package e2e
 
 import (
@@ -26,8 +26,8 @@ type GPUFixtureHost struct {
 	DataStorageDevice string
 }
 
-type permanentGPUFixtureState struct {
-	fixture             *permanentFixture
+type gpuFixtureState struct {
+	fixture             *hostFixture
 	runID               string
 	privKeyPath         string
 	host                *GPUFixtureHost
@@ -41,9 +41,9 @@ type permanentGPUFixtureState struct {
 	diagnostics         forgeDiagnostics
 }
 
-func newPermanentGPUFixtureState(t *testing.T) *permanentGPUFixtureState {
-	fixture := requirePermanentFixture(t, "gpu")
-	state := &permanentGPUFixtureState{
+func newGPUFixtureState(t *testing.T) *gpuFixtureState {
+	fixture := requireHostFixture(t, "gpu")
+	state := &gpuFixtureState{
 		fixture:             fixture,
 		runID:               fixture.installName(),
 		privKeyPath:         fixture.sshKeyPath,
@@ -51,19 +51,18 @@ func newPermanentGPUFixtureState(t *testing.T) *permanentGPUFixtureState {
 		forgeHome:           t.TempDir(),
 		chartVersion:        platformChartVersion(t, ""),
 		runtimeImageDigests: make(map[string]importedRuntimeIdentity),
-		diagnostics:         newForgeDiagnostics(t, permanentGPUScenarioName),
+		diagnostics:         newForgeDiagnostics(t, gpuScenarioName),
 	}
 	state.forgeBin = buildForge(t)
 	return state
 }
 
-func resetPermanentGPUFixtureStage(t *testing.T, state *permanentGPUFixtureState) {
-	require.NoError(t, state.fixture.reset(t, state.forgeBin, state.forgeHome))
+func prepareGPUFixtureStage(t *testing.T, state *gpuFixtureState) {
+	require.NoError(t, state.fixture.prepare(t))
 	rememberDataStorageDevice(state.host.IP, state.host.DataStorageDevice)
-	t.Logf("permanent GPU fixture %s data-storage=%s", state.host.IP, state.host.DataStorageDevice)
 }
 
-func applyGPUSubstrateStage(t *testing.T, state *permanentGPUFixtureState) {
+func applyGPUSubstrateStage(t *testing.T, state *gpuFixtureState) {
 	cfgPath := writeForgeConfigGPUDriver(t, state.runID, state.host.IP, state.privKeyPath, gpuUpgradeBaselineDriver)
 	// Bring up K3s first so the pinned-image cache is imported and verified
 	// before the GPU operator (or any chart) can consult a public registry.
@@ -148,18 +147,8 @@ func TestValidatePinnedNFDRender(t *testing.T) {
 	require.ErrorContains(t, validatePinnedNFDRender(missingResync, worker), "omit")
 }
 
-func assertGPUSmokeStage(t *testing.T, state *permanentGPUFixtureState) {
+func assertGPUSmokeStage(t *testing.T, state *gpuFixtureState) {
 	checkGPUSmoke(t, filepath.Join(state.forgeHome, state.runID, "kubeconfig.yaml"))
-}
-
-func (state *permanentGPUFixtureState) resetAfterScenario(t *testing.T) {
-	t.Helper()
-	state.stopAPITunnel()
-	state.diagnostics.setDomain(failureDomainFixtureReset)
-	dataStorageDevicesByAddress.Delete(state.host.IP)
-	if err := state.fixture.reset(t, state.forgeBin, state.forgeHome); err != nil {
-		t.Errorf("reset permanent GPU fixture after diagnostics: %v", err)
-	}
 }
 
 // checkGPUSmoke schedules a one-off pod requesting nvidia.com/gpu that runs
@@ -223,7 +212,7 @@ func writeForgeConfigGPUDriver(t *testing.T, name, ip, keyPath, driverVersion st
 	})
 }
 
-// sshRun runs a command on the permanent fixture host over SSH and returns combined output.
+// sshRun runs a command on the fixture host host over SSH and returns combined output.
 func sshRun(t *testing.T, ip, keyPath, cmd string) (string, error) {
 	t.Helper()
 	client, err := sshDial(ip, keyPath)
@@ -240,7 +229,7 @@ func sshRun(t *testing.T, ip, keyPath, cmd string) (string, error) {
 	return string(out), err
 }
 
-// dumpGPUDiagnostics queries the GPU operator state on the permanent fixture
+// dumpGPUDiagnostics queries the GPU operator state on the fixture host
 // when the readiness gate fails, so the cause (driver/toolkit/device-plugin/validator)
 // is visible in the test log rather than just "gpu not ready after 15m".
 func dumpGPUDiagnostics(t *testing.T, ip, keyPath string) {

@@ -65,7 +65,7 @@ func writeForgeConfigSpec(t *testing.T, spec forgeConfigSpec) string {
 		spec.SSHUser = fixtureSSHUser()
 	}
 	if spec.SSHHostKey == "" {
-		spec.SSHHostKey = strings.TrimSpace(os.Getenv(permanentFixtureHostKeyEnv))
+		spec.SSHHostKey = strings.TrimSpace(os.Getenv(hostFixtureHostKeyEnv))
 	}
 	trustFile := writeForgeTrustFile(t, spec.Address, spec.SSHHostKey)
 	var cfg strings.Builder
