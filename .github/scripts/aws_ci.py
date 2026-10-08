@@ -107,7 +107,7 @@ STAGING_TTL_DAYS = 3650  # staging is never TTL-expired (C6); the deadline only 
 FIXTURE_DATA_GIB = 30
 MODEL_CACHE_GIB = 16
 HUGGINGFACE_HUB_VERSION = "0.30.2"
-FIXTURE_ROOT_GIB = {"cpu": 40, "gpu": 80}
+FIXTURE_ROOT_GIB = {"cpu": 40, "gpu": 160}  # the GPU image cache is ~46 GB plus its imported copy
 DEFAULT_MAX_AGE_MINUTES = 180
 SSH_POLL_SECONDS = 15
 SSH_TIMEOUT_SECONDS = 900
@@ -393,7 +393,9 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Effect": "Allow",
             "Action": "ec2:CreateTags",
             "Resource": [public_arn("image"), public_arn("snapshot")],
-            "Condition": request_tag_condition(extra_string_equals={"ec2:CreateAction": ["CopyImage"]}),
+            "Condition": request_tag_condition(
+                extra_string_equals={"ec2:CreateAction": ["CopyImage", "CreateImage", "CreateSnapshot", "CopySnapshot"]}
+            ),
         },
         {
             # Previews renew their reaper deadline on each deploy (C12); only that
@@ -435,11 +437,18 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
         },
 
         {
-            "Sid": "BuildCiImagesAndSnapshots",
+            # The image or snapshot being created is authorized against an
+            # empty-account wildcard ARN whose context carries neither the account
+            # nor aws:RequestTag (decoded from the bake's CreateImage and
+            # CreateSnapshot denials). It is allowed only as the not-yet-created
+            # target (id "*"); the source must be a CI instance, volume or snapshot
+            # (marker statements), and tag-on-create still requires the mandatory
+            # tags (DES-HOR-590-03).
+            "Sid": "CreateCiImageAndSnapshotTargets",
             "Effect": "Allow",
-            "Action": ["ec2:CreateImage", "ec2:RegisterImage"],
-            "Resource": [arn("image"), arn("snapshot")],
-            "Condition": request_tag_condition(),
+            "Action": ["ec2:CreateImage", "ec2:CreateSnapshot", "ec2:CopySnapshot"],
+            "Resource": [public_arn("image"), public_arn("snapshot")],
+            "Condition": {"StringEqualsIfExists": {"ec2:ImageID": "*", "ec2:SnapshotID": "*"}},
         },
         {
             # EC2 authorizes a copy against two image resources: the source image
@@ -472,10 +481,10 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
         {
             "Sid": "CreateCiSnapshots",
             "Effect": "Allow",
-            # A model-cache copy into another region is a tagged create (C1).
-            "Action": ["ec2:CreateSnapshot", "ec2:CopySnapshot"],
-            "Resource": [arn("snapshot"), arn("volume"), public_arn("snapshot")],
-            "Condition": request_tag_condition(),
+            # A snapshot may only be taken of a CI volume (the model cache, C1).
+            "Action": "ec2:CreateSnapshot",
+            "Resource": arn("volume"),
+            "Condition": marker_condition,
         },
         {
             "Sid": "RemoveCiImagesAndSnapshots",
@@ -1552,6 +1561,17 @@ def model_cache_mount_script(uuid: str) -> str:
     )
 
 
+def shutdown_backstop(minutes: int) -> str:
+    """User data that powers the host off at its maximum age; shutdown terminates it.
+
+    A backstop to cleanup-run and the reaper when both the runner and the
+    schedule fail; previews never use it, because staging runs continuously.
+    """
+    if minutes <= 0:
+        raise AwsCiError("a fixture's maximum age must be positive")
+    return f"\n# Backstop: terminate at the maximum age (C1).\nshutdown -h +{minutes}\n"
+
+
 def fixture_environment(host: PinnedHost, *, data_device: str, manifest: dict[str, Any],
                         model_device: str = "", model_uuid: str = "") -> dict[str, str]:
     """The environment contract the Forge F3 scenarios read (forge/test/e2e/host_fixture_test.go)."""
@@ -1598,7 +1618,8 @@ def command_launch_fixture(args: argparse.Namespace) -> int:
     else:
         host = launch_pinned_host(
             capacity="cpu", run_id=args.run_id, scenario=args.scenario, ami_ids=ami_ids, regions=regions,
-            deadline=deadline, launch_options={"data_gib": FIXTURE_DATA_GIB, "root_gib": FIXTURE_ROOT_GIB["cpu"]},
+            deadline=deadline, user_data_extra=shutdown_backstop(args.max_age_minutes),
+            launch_options={"data_gib": FIXTURE_DATA_GIB, "root_gib": FIXTURE_ROOT_GIB["cpu"]},
         )
     data_device = probe_by_id(host, host.data_volume_id)["by_id"]
     model_device = ""
@@ -1631,7 +1652,7 @@ def launch_gpu_fixture(args: argparse.Namespace, ami_ids: dict[str, str], region
         try:
             return launch_pinned_host(
                 capacity="gpu", run_id=args.run_id, scenario=args.scenario, ami_ids=ami_ids, regions=(region,),
-                deadline=deadline, user_data_extra=model_cache_mount_script(uuid),
+                deadline=deadline, user_data_extra=model_cache_mount_script(uuid) + shutdown_backstop(args.max_age_minutes),
                 launch_options={"data_gib": FIXTURE_DATA_GIB, "root_gib": FIXTURE_ROOT_GIB["gpu"],
                                 "snapshot_volumes": ((MODEL_CACHE_DEVICE, snapshots[region]),)},
             )

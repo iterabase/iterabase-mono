@@ -152,23 +152,15 @@ class FakeFixtureHost:
 
 
 class FixtureImageCacheTests(unittest.TestCase):
-    def test_capacities_cache_the_shared_platform_authority(self) -> None:
+    def test_gpu_ami_carries_everything_and_cpu_leaves_gpu_images_out(self) -> None:
+        # C1: the GPU AMI bakes the nvcr.io/NVIDIA/vLLM images as well.
         images = fixture_image_cache.load_runtime_images(ROOT)
-        cpu = fixture_image_cache.select_images(images, "cpu")
-        gpu = fixture_image_cache.select_images(images, "gpu")
-
-        self.assertEqual(len(gpu), len(cpu))
-        cpu_refs = {image["reference"] for image in cpu}
-        gpu_refs = {image["reference"] for image in gpu}
-        self.assertEqual(cpu_refs, gpu_refs)
-        self.assertFalse(any(fixture_image_cache.is_gpu_only(ref) for ref in gpu_refs))
-        gpu_only = [image["reference"] for image in images if fixture_image_cache.is_gpu_only(image["reference"])]
+        cpu = {image["reference"] for image in fixture_image_cache.select_images(images, "cpu")}
+        gpu = {image["reference"] for image in fixture_image_cache.select_images(images, "gpu")}
+        gpu_only = {image["reference"] for image in images if fixture_image_cache.is_gpu_only(image["reference"])}
         self.assertTrue(gpu_only)
-        for reference in gpu_only:
-            self.assertNotIn(reference, gpu_refs)
-        for image in images:
-            if not fixture_image_cache.is_gpu_only(image["reference"]):
-                self.assertIn(image["reference"], gpu_refs)
+        self.assertEqual(gpu, {image["reference"] for image in images})
+        self.assertEqual(cpu, gpu - gpu_only)
 
     def test_gpu_only_classification_matches_reviewed_authority(self) -> None:
         images = fixture_image_cache.load_runtime_images(ROOT)
