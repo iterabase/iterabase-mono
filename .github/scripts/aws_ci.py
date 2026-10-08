@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import dataclasses
 import datetime as dt
 import hashlib
 import json
@@ -87,6 +88,21 @@ DATA_VOLUME_DEVICE = "/dev/sdf"
 # EC2 returns the block-device name as requested, or in its Xen-compatible form.
 DATA_VOLUME_DEVICE_NAMES = ("/dev/sdf", "/dev/xvdf")
 DATA_VOLUME_GIB = 8
+ROOT_DEVICE = "/dev/sda1"
+MODEL_CACHE_DEVICE = "/dev/sdg"
+MODEL_CACHE_MOUNT = "/data/hf-cache"
+SPOT_MARKET_OPTIONS = "MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}"
+# Durable bake products (C1, DES-HOR-590-03). They carry their own run tag, so the
+# bake run's cleanup removes only the builder and its transient source image.
+AMI_ROLE_TAG = "iterabase-ci-ami"
+IMAGE_CACHE_TAG = "iterabase-ci-image-cache"
+MODEL_CACHE_TAG = "iterabase-ci-model-cache"
+MODEL_CACHE_UUID_TAG = "iterabase-ci-model-cache-uuid"
+KIND_TAG = "iterabase-ci-kind"
+FIXTURE_DATA_GIB = 30
+MODEL_CACHE_GIB = 16
+HUGGINGFACE_HUB_VERSION = "0.30.2"
+FIXTURE_ROOT_GIB = {"cpu": 40, "gpu": 80}
 DEFAULT_MAX_AGE_MINUTES = 180
 SSH_POLL_SECONDS = 15
 SSH_TIMEOUT_SECONDS = 900
@@ -99,19 +115,10 @@ SSHD_DELIMITER = "ITERABASE_CI_SSHD"
 SSHD_CONFIG_PATH = "/etc/ssh/sshd_config.d/60-iterabase-ci.conf"
 
 TAG_KEYS = (f"{TAG_PREFIX}*", NAME_TAG)
-TAG_CREATE_ACTIONS = ["RunInstances", "CreateVolume", "CreateImage", "CopyImage", "RegisterImage", "CreateSnapshot"]
-DESCRIBE_ACTIONS = [
-    "ec2:DescribeInstances",
-    "ec2:DescribeImages",
-    "ec2:DescribeVolumes",
-    "ec2:DescribeSnapshots",
-    "ec2:DescribeInstanceAttribute",
-    "ec2:DescribeInstanceTypeOfferings",
-    "ec2:DescribeAvailabilityZones",
-    "ec2:DescribeVpcs",
-    "ec2:DescribeSubnets",
-    "ec2:DescribeSecurityGroups",
-]
+TAG_CREATE_ACTIONS = ["RunInstances", "CreateVolume", "CreateImage", "CopyImage", "RegisterImage", "CreateSnapshot", "CopySnapshot"]
+# Read-only and scoped to the dedicated CI account; the wildcard keeps the one
+# managed policy under its size limit (DES-HOR-590-04).
+DESCRIBE_ACTIONS = "ec2:Describe*"
 
 
 class AwsCiError(RuntimeError):
@@ -192,7 +199,7 @@ def host_trust_entry(address: str, public_key: str) -> str:
     return f"{address} {fields[0]} {fields[1]}"
 
 
-def render_user_data(*, host_private_key: str, host_public_key: str, authorized_key: str) -> str:
+def render_user_data(*, host_private_key: str, host_public_key: str, authorized_key: str, extra: str = "") -> str:
     """Render the cloud-init user-data that installs the per-run SSH identities.
 
     The host private key is injected here and pinned out of band by the caller,
@@ -248,7 +255,7 @@ PubkeyAuthentication yes
 {SSHD_DELIMITER}
 
 systemctl restart ssh
-"""
+""" + extra
 
 
 def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
@@ -307,8 +314,9 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             # EC2 reports a copied AMI's ARN with an empty account segment
             # (`arn:aws:ec2:<region>::image/ami-...`, decoded from a real launch
             # denial), so both ARN forms are allowed and `ec2:Owner` keeps the allow
-            # to AMIs this account owns.
-            "Resource": [public_arn("image"), arn("image")],
+            # to AMIs this account owns. The GPU fixture's model-cache volume is restored
+            # from a CI-owned snapshot under the same owner condition (C1).
+            "Resource": [public_arn("image"), arn("image"), public_arn("snapshot")],
             "Condition": {"StringEquals": {"ec2:Owner": account_id}},
         },
         {
@@ -343,8 +351,10 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Sid": "RunInstanceDependencies",
             "Effect": "Allow",
             "Action": "ec2:RunInstances",
-            "Resource": [arn("network-interface"), arn("subnet"), arn("key-pair")],
+            # Spot previews (C6) add the spot request resource to the launch context.
+            "Resource": [arn("network-interface"), arn("subnet"), arn("key-pair"), arn("spot-instances-request")],
         },
+
         {
             "Sid": "UseOnlyCiSecurityGroup",
             "Effect": "Allow",
@@ -381,9 +391,19 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Condition": request_tag_condition(extra_string_equals={"ec2:CreateAction": ["CopyImage"]}),
         },
         {
+            # Previews renew their reaper deadline on each deploy (C12); only that
+            # one tag key may change on an existing CI instance.
+            "Sid": "RenewCiDeadline",
+            "Effect": "Allow",
+            "Action": "ec2:CreateTags",
+            "Resource": arn("instance"),
+            "Condition": {**marker_condition, "ForAllValues:StringEquals": {"aws:TagKeys": [DEADLINE_TAG]}},
+        },
+        {
             "Sid": "TerminateCiInstances",
             "Effect": "Allow",
-            "Action": "ec2:TerminateInstances",
+            # The bake images a CI builder instance (DES-HOR-590-03).
+            "Action": ["ec2:TerminateInstances", "ec2:CreateImage"],
             "Resource": arn("instance"),
             "Condition": marker_condition,
         },
@@ -408,6 +428,7 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             "Resource": arn("instance"),
             "Condition": marker_condition,
         },
+
         {
             "Sid": "BuildCiImagesAndSnapshots",
             "Effect": "Allow",
@@ -442,17 +463,20 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
             # pins the source to Amazon/Canonical images and still lets the copy land.
             "Condition": {"StringEquals": {"ec2:Owner": ["amazon", account_id]}},
         },
+
         {
             "Sid": "CreateCiSnapshots",
             "Effect": "Allow",
-            "Action": "ec2:CreateSnapshot",
-            "Resource": [arn("snapshot"), arn("volume")],
+            # A model-cache copy into another region is a tagged create (C1).
+            "Action": ["ec2:CreateSnapshot", "ec2:CopySnapshot"],
+            "Resource": [arn("snapshot"), arn("volume"), public_arn("snapshot")],
             "Condition": request_tag_condition(),
         },
         {
             "Sid": "RemoveCiImagesAndSnapshots",
             "Effect": "Allow",
-            "Action": ["ec2:DeregisterImage", "ec2:DeleteSnapshot"],
+            # A model-cache copy's source must itself be a CI snapshot (C1).
+            "Action": ["ec2:DeregisterImage", "ec2:DeleteSnapshot", "ec2:CopySnapshot"],
             # EC2 reports a copied image's own ARN with an empty account segment
             # (`arn:aws:ec2:<region>::image/ami-...`, proven by decoding
             # DeregisterImage of the CI-owned bootstrap copy while its
@@ -568,12 +592,26 @@ def launch_command(
     security_group_id: str,
     tags: list[dict[str, str]],
     user_data_path: str,
+    data_gib: int = DATA_VOLUME_GIB,
+    root_gib: int | None = None,
+    snapshot_volumes: tuple[tuple[str, str], ...] = (),
+    spot: bool = False,
 ) -> list[str]:
-    """Build the exact approved-instance launch command (never with a profile)."""
-    block_device = (
+    """Build the exact approved-instance launch command (never with a profile).
+
+    Fixtures add a larger data volume, a larger root for their image cache and,
+    on GPU, the model cache restored from its snapshot (C1); previews run on
+    spot capacity (C6).
+    """
+    block_devices = [
         f"DeviceName={DATA_VOLUME_DEVICE},"
-        f"Ebs={{VolumeSize={DATA_VOLUME_GIB},VolumeType=gp3,DeleteOnTermination=true}}"
-    )
+        f"Ebs={{VolumeSize={data_gib},VolumeType=gp3,DeleteOnTermination=true}}"
+    ]
+    if root_gib:
+        block_devices.insert(0, f"DeviceName={ROOT_DEVICE},Ebs={{VolumeSize={root_gib},VolumeType=gp3,DeleteOnTermination=true}}")
+    for device, snapshot_id in snapshot_volumes:
+        block_devices.append(f"DeviceName={device},Ebs={{SnapshotId={snapshot_id},VolumeType=gp3,DeleteOnTermination=true}}")
+    market = (["--instance-market-options", SPOT_MARKET_OPTIONS] if spot else [])
     return [
         "aws",
         "ec2",
@@ -596,7 +634,8 @@ def launch_command(
         "--metadata-options",
         "HttpTokens=required,HttpEndpoint=enabled",
         "--block-device-mappings",
-        block_device,
+        *block_devices,
+        *market,
         "--tag-specifications",
         tag_specifications("instance", tags),
         tag_specifications("volume", tags),
@@ -1217,6 +1256,10 @@ def place_fixture(
     user_data_path: str,
     regions: tuple[str, ...],
     attempts: int = 2,
+    scenario: str = "",
+    deadline: dt.datetime | None = None,
+    extra_tags: tuple[tuple[str, str], ...] = (),
+    launch_options: dict[str, Any] | None = None,
 ) -> tuple[str, str, str, str, list[str]]:
     """Find somewhere the fixture can actually launch: region, type, AZ, instance id.
 
@@ -1225,7 +1268,8 @@ def place_fixture(
     lack quota. The search therefore walks regions, then approved types, then offered
     AZs, and a pass with only capacity/quota failures waits briefly and runs again.
     """
-    scenario = f"smoke-{capacity}"
+    scenario = scenario or f"smoke-{capacity}"
+    tags = required_tags(run_id, scenario, deadline=deadline) + [{"Key": key, "Value": value} for key, value in extra_tags]
     failures: list[str] = []
     for attempt in range(1, max(1, attempts) + 1):
         for region in regions:
@@ -1245,8 +1289,9 @@ def place_fixture(
                         instance_type=instance_type,
                         subnet_id=subnet_id,
                         security_group_id=security_group,
-                        tags=required_tags(run_id, scenario),
+                        tags=tags,
                         user_data_path=user_data_path,
+                        **(launch_options or {}),
                     )
                     completed = aws(command[1:], check=False)
                     if completed.returncode == 0:
@@ -1263,6 +1308,98 @@ def place_fixture(
     return "", "", "", "", failures
 
 
+@dataclasses.dataclass
+class PinnedHost:
+    """A launched CI host whose per-run SSH host key is pinned and proven."""
+
+    capacity: str
+    region: str
+    instance_type: str
+    availability_zone: str
+    instance_id: str
+    ami_id: str
+    public_ip: str
+    workdir: Path
+    ssh_key: Path
+    known_hosts: Path
+    host_public: str
+    data_volume_id: str
+    capacity_failures: list[str]
+
+    @property
+    def pinned(self) -> dict[str, str]:
+        return {"key_path": str(self.ssh_key), "known_hosts_path": str(self.known_hosts), "address": self.public_ip}
+
+    def ssh(self, remote_command: str, *, check: bool = True, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+        return run(ssh_command(**self.pinned, remote_command=remote_command), check=check, timeout=timeout)
+
+
+def launch_pinned_host(
+    *,
+    capacity: str,
+    run_id: str,
+    scenario: str,
+    ami_ids: dict[str, str],
+    regions: tuple[str, ...],
+    deadline: dt.datetime | None = None,
+    extra_tags: tuple[tuple[str, str], ...] = (),
+    user_data_extra: str = "",
+    launch_options: dict[str, Any] | None = None,
+) -> PinnedHost:
+    """Launch one host with a per-run pinned host key and prove that identity.
+
+    The host key is generated here and installed by user data, so the very first
+    connection is already pinned (HOR-521, DES-HOR-591-01). The caller owns the
+    host afterwards: smoke terminates it, fixtures and previews keep it.
+    """
+    workdir = Path(tempfile.mkdtemp(prefix=f"iterabase-ci-{capacity}-"))
+    ssh_key, host_key = workdir / "id_ed25519", workdir / "host_ed25519"
+    for path in (ssh_key, host_key):
+        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"iterabase-ci-{scenario}", "-f", str(path)])
+    host_public = host_key.with_suffix(".pub").read_text(encoding="utf-8").strip()
+    user_data_path = workdir / "user-data.sh"
+    user_data_path.write_text(
+        render_user_data(
+            host_private_key=host_key.read_text(encoding="utf-8"),
+            host_public_key=host_public,
+            authorized_key=ssh_key.with_suffix(".pub").read_text(encoding="utf-8").strip(),
+            extra=user_data_extra,
+        ),
+        encoding="utf-8",
+    )
+    region, instance_type, az, instance_id, failures = place_fixture(
+        capacity=capacity, run_id=run_id, ami_ids=ami_ids, user_data_path=str(user_data_path), regions=regions,
+        scenario=scenario, deadline=deadline, extra_tags=extra_tags, launch_options=launch_options,
+    )
+    if not instance_id:
+        raise AwsCiError(
+            "no allowed region, approved type, or offered availability zone could launch the host: "
+            + "; ".join(failures or ["no candidates"])
+        )
+    instance = wait_for_running(region, instance_id)
+    public_ip = str(instance.get("PublicIpAddress") or "")
+    if not public_ip:
+        raise AwsCiError(f"instance {instance_id} has no public address")
+    verify_required_tags(instance.get("Tags"), run_id=run_id, scenario=scenario)
+    known_hosts = workdir / "known_hosts"
+    known_hosts.write_text(host_trust_entry(public_ip, host_public) + "\n", encoding="utf-8")
+    host = PinnedHost(
+        capacity=capacity, region=region, instance_type=instance_type, availability_zone=az, instance_id=instance_id,
+        ami_id=ami_ids[region], public_ip=public_ip, workdir=workdir, ssh_key=ssh_key, known_hosts=known_hosts,
+        host_public=host_public, data_volume_id=data_volume_id_from_instance(instance), capacity_failures=failures,
+    )
+    wait_for_pinned_ssh(host.pinned)
+    identity_lines = host.ssh(identity_probe_command()).stdout.strip().splitlines()
+    fingerprint = openssh_sha256_fingerprint(host_public)
+    if not identity_lines or identity_lines[0] != fingerprint:
+        raise AwsCiError(
+            f"remote host key fingerprint {identity_lines[0] if identity_lines else '<none>'} does not match the pinned {fingerprint}"
+        )
+    if identity_lines[-1] != "per-run-identity":
+        raise AwsCiError(f"the host kept stock host key material: {' '.join(identity_lines)}")
+    return host
+
+
 def command_run_host(args: argparse.Namespace) -> int:
     primary = require_region(args.region)
     approved_instance_types(args.capacity)
@@ -1271,87 +1408,30 @@ def command_run_host(args: argparse.Namespace) -> int:
     # CPU capacity is not scarce, so it stays in the primary region; the GPU family
     # walks the whole allowed region order.
     regions = region_order(primary) if args.capacity == "gpu" else (primary,)
-    workdir = Path(tempfile.mkdtemp(prefix=f"iterabase-ci-{args.capacity}-"))
-    ssh_key = workdir / "id_ed25519"
-    host_key = workdir / "host_ed25519"
-    wrong_host_key = workdir / "wrong_host_ed25519"
-    for path in (ssh_key, host_key, wrong_host_key):
-        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"iterabase-ci-smoke-{args.capacity}", "-f", str(path)])
-    host_public = (host_key.with_suffix(".pub")).read_text(encoding="utf-8").strip()
-    authorized = (ssh_key.with_suffix(".pub")).read_text(encoding="utf-8").strip()
-    user_data = render_user_data(
-        host_private_key=(host_key).read_text(encoding="utf-8"),
-        host_public_key=host_public,
-        authorized_key=authorized,
-    )
-    user_data_path = workdir / "user-data.sh"
-    user_data_path.write_text(user_data, encoding="utf-8")
-
-    region, instance_type, launched_az, instance_id, capacity_failures = place_fixture(
-        capacity=args.capacity,
-        run_id=args.run_id,
-        ami_ids=ami_ids,
-        user_data_path=str(user_data_path),
-        regions=regions,
-    )
-    if not instance_id:
-        raise AwsCiError(
-            "no allowed region, approved type, or offered availability zone could launch the fixture: "
-            + "; ".join(capacity_failures or ["no candidates"])
-        )
-
-    evidence: dict[str, str] = {
-        "capacity": args.capacity,
-        "region": region,
-        "instance_type": instance_type,
-        "instance_id": instance_id,
-        "availability_zone": launched_az,
-        "ami_id": ami_ids[region],
-        "host_key_fingerprint": openssh_sha256_fingerprint(host_public),
-    }
+    evidence: dict[str, str] = {"capacity": args.capacity}
+    host: PinnedHost | None = None
     try:
-        instance = wait_for_running(region, instance_id)
-        public_ip = str(instance.get("PublicIpAddress") or "")
-        if not public_ip:
-            raise AwsCiError(f"instance {instance_id} has no public address")
-        evidence["public_ip"] = public_ip
-        evidence["tags"] = verify_required_tags(instance.get("Tags"), run_id=args.run_id, scenario=scenario)
-        evidence["shutdown_behavior"] = instance_shutdown_behavior(region, instance_id)
-        volume_id = data_volume_id(region, instance_id)
-        evidence["data_volume_id"] = volume_id
+        host = launch_pinned_host(capacity=args.capacity, run_id=args.run_id, scenario=scenario, ami_ids=ami_ids, regions=regions)
+        instance = describe_instance(host.region, host.instance_id)
+        evidence.update({
+            "region": host.region, "instance_type": host.instance_type, "instance_id": host.instance_id,
+            "availability_zone": host.availability_zone, "ami_id": host.ami_id, "public_ip": host.public_ip,
+            "host_key_fingerprint": openssh_sha256_fingerprint(host.host_public),
+            "remote_host_key_fingerprint": openssh_sha256_fingerprint(host.host_public), "stock_host_keys": "absent",
+            "tags": verify_required_tags(instance.get("Tags"), run_id=args.run_id, scenario=scenario),
+            "shutdown_behavior": instance_shutdown_behavior(host.region, host.instance_id),
+            "data_volume_id": host.data_volume_id,
+        })
 
-        known_hosts = workdir / "known_hosts"
-        known_hosts.write_text(host_trust_entry(public_ip, host_public) + "\n", encoding="utf-8")
-        pinned = {
-            "key_path": str(ssh_key),
-            "known_hosts_path": str(known_hosts),
-            "address": public_ip,
-        }
-        wait_for_pinned_ssh(pinned)
-        identity_probe = run(ssh_command(**pinned, remote_command=identity_probe_command()))
-        identity_lines = identity_probe.stdout.strip().splitlines()
-        if not identity_lines or identity_lines[0] != evidence["host_key_fingerprint"]:
-            raise AwsCiError(
-                f"remote host key fingerprint {identity_lines[0] if identity_lines else '<none>'} does not match the pinned "
-                f"{evidence['host_key_fingerprint']}"
-            )
-        if identity_lines[-1] != "per-run-identity":
-            raise AwsCiError(f"the fixture kept stock host key material: {identity_probe.stdout.strip()}")
-        evidence["remote_host_key_fingerprint"] = identity_lines[0]
-        evidence["stock_host_keys"] = "absent"
-
-        wrong_hosts = workdir / "wrong_known_hosts"
+        wrong_host_key = host.workdir / "wrong_host_ed25519"
+        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "iterabase-ci-wrong", "-f", str(wrong_host_key)])
+        wrong_hosts = host.workdir / "wrong_known_hosts"
         wrong_hosts.write_text(
-            host_trust_entry(public_ip, (wrong_host_key.with_suffix(".pub")).read_text(encoding="utf-8")),
+            host_trust_entry(host.public_ip, wrong_host_key.with_suffix(".pub").read_text(encoding="utf-8")),
             encoding="utf-8",
         )
         mismatch = run(
-            ssh_command(
-                key_path=str(ssh_key),
-                known_hosts_path=str(wrong_hosts),
-                address=public_ip,
-                remote_command="true",
-            ),
+            ssh_command(key_path=str(host.ssh_key), known_hosts_path=str(wrong_hosts), address=host.public_ip, remote_command="true"),
             check=False,
         )
         if mismatch.returncode == 0 or "Host key verification failed" not in mismatch.stderr:
@@ -1361,34 +1441,359 @@ def command_run_host(args: argparse.Namespace) -> int:
             )
         evidence["wrong_host_key_rejected"] = "Host key verification failed"
 
-        probe = wait_for_device_probe(pinned, volume_id)
-        probe_fields = dict(
-            line.split("=", 1) for line in probe.strip().splitlines() if "=" in line
-        )
-        if not probe_fields.get("by_id", "").endswith(volume_id.replace("-", "")):
-            raise AwsCiError(f"by-id device does not match volume {volume_id}: {probe.stdout.strip()}")
-        volume = aws_json(["ec2", "describe-volumes", "--region", region, "--volume-ids", volume_id])["Volumes"][0]
-        expected_size = int(volume["Size"]) * 1024 * 1024 * 1024
-        if int(probe_fields.get("size_bytes", "0")) != expected_size:
-            raise AwsCiError(
-                f"by-id device size {probe_fields.get('size_bytes')} does not match volume size {expected_size}"
-            )
+        probe_fields = probe_by_id(host, host.data_volume_id)
         evidence["by_id_device"] = probe_fields["by_id"]
         evidence["device"] = probe_fields["device"]
         evidence["device_size_bytes"] = probe_fields["size_bytes"]
 
-        run(ssh_command(**pinned, remote_command="sudo shutdown -h now"), check=False)
-        terminated = wait_for_termination(region, instance_id)
+        host.ssh("sudo shutdown -h now", check=False)
+        terminated = wait_for_termination(host.region, host.instance_id)
         evidence["final_state"] = str((terminated.get("State") or {}).get("Name", ""))
         evidence["state_reason"] = str((terminated.get("StateReason") or {}).get("Code", ""))
         if evidence["final_state"] != "terminated":
-            raise AwsCiError(f"instance {instance_id} ended in state {evidence['final_state']!r}")
+            raise AwsCiError(f"instance {host.instance_id} ended in state {evidence['final_state']!r}")
     finally:
-        if capacity_failures:
-            evidence["insufficient_capacity"] = "; ".join(capacity_failures)
+        if host and host.capacity_failures:
+            evidence["insufficient_capacity"] = "; ".join(host.capacity_failures)
         write_summary(host_summary(evidence))
         write_outputs({key: value for key, value in evidence.items() if key in {"instance_id", "public_ip"}})
     return 0
+
+
+def probe_by_id(host: PinnedHost, volume_id: str) -> dict[str, str]:
+    """Prove a volume's stable by-id path on the host and that its size matches."""
+    probe = wait_for_device_probe(host.pinned, volume_id)
+    fields = dict(line.split("=", 1) for line in probe.strip().splitlines() if "=" in line)
+    if not fields.get("by_id", "").endswith(volume_id.replace("-", "")):
+        raise AwsCiError(f"by-id device does not match volume {volume_id}: {probe.strip()}")
+    volume = aws_json(["ec2", "describe-volumes", "--region", host.region, "--volume-ids", volume_id])["Volumes"][0]
+    expected = int(volume["Size"]) * 1024 * 1024 * 1024
+    if int(fields.get("size_bytes", "0")) != expected:
+        raise AwsCiError(f"by-id device size {fields.get('size_bytes')} does not match volume size {expected}")
+    return fields
+
+
+def tagged_ids(region: str, kind: str, tags: dict[str, str]) -> list[dict[str, Any]]:
+    """CI-owned images or snapshots in one region carrying every given tag, newest first."""
+    filters = [f"Name=tag:{key},Values={value}" for key, value in sorted(tags.items())]
+    if kind == "image":
+        items = aws_json(["ec2", "describe-images", "--region", region, "--owners", "self", "--filters", *filters,
+                          "Name=state,Values=available"])["Images"]
+        return sorted(as_list(items, what="images"), key=lambda item: str(item.get("CreationDate")), reverse=True)
+    items = aws_json(["ec2", "describe-snapshots", "--region", region, "--owner-ids", "self", "--filters", *filters,
+                      "Name=status,Values=completed"])["Snapshots"]
+    return sorted(as_list(items, what="snapshots"), key=lambda item: str(item.get("StartTime")), reverse=True)
+
+
+def image_cache_manifest(capacity: str) -> dict[str, Any]:
+    """The deterministic pinned-image cache a fixture AMI must carry for this source tree."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import fixture_image_cache  # noqa: PLC0415 - sibling script, loaded only by the commands that need it
+
+    return fixture_image_cache.build_manifest(Path(__file__).resolve().parents[2], capacity)
+
+
+def model_cache_generation() -> tuple[str, dict[str, Any]]:
+    """The model-cache snapshot generation: a hash of forge/test/e2e/model-cache.json."""
+    path = Path(__file__).resolve().parents[2] / "forge" / "test" / "e2e" / "model-cache.json"
+    data = path.read_bytes()
+    return hashlib.sha256(data).hexdigest()[:16], json.loads(data)
+
+
+def resolve_fixture_amis(capacity: str, generation: str, regions: tuple[str, ...]) -> dict[str, str]:
+    """The newest baked fixture AMI per region for exactly this image-cache generation."""
+    found: dict[str, str] = {}
+    for region in regions:
+        images = tagged_ids(region, "image", {AMI_ROLE_TAG: f"fixture-{capacity}", IMAGE_CACHE_TAG: generation})
+        if images:
+            found[region] = str(images[0]["ImageId"])
+    if not found:
+        raise AwsCiError(
+            f"no {capacity} fixture AMI carries image-cache generation {generation}; run bake.yml for this source tree"
+        )
+    return found
+
+
+def resolve_model_cache(regions: tuple[str, ...]) -> tuple[dict[str, str], str]:
+    """The model-cache snapshot per region for this model-cache.json, and its filesystem UUID."""
+    generation, _ = model_cache_generation()
+    snapshots: dict[str, str] = {}
+    uuid = ""
+    for region in regions:
+        found = tagged_ids(region, "snapshot", {MODEL_CACHE_TAG: generation})
+        if found:
+            snapshots[region] = str(found[0]["SnapshotId"])
+            uuid = tagged_value(found[0].get("Tags"), MODEL_CACHE_UUID_TAG) or uuid
+    if not snapshots or not uuid:
+        raise AwsCiError(f"no model-cache snapshot carries generation {generation}; run bake.yml for this source tree")
+    return snapshots, uuid
+
+
+def model_cache_mount_script(uuid: str) -> str:
+    """User data that mounts the restored model cache where the GPU fixture expects it."""
+    if not re.fullmatch(r"[0-9a-f-]{36}", uuid):
+        raise AwsCiError(f"model-cache filesystem UUID is malformed: {uuid!r}")
+    return (
+        "\n# Model cache restored from its snapshot (C1); mounted by filesystem UUID.\n"
+        f"install -d {MODEL_CACHE_MOUNT}\n"
+        f"for _ in $(seq 1 120); do blkid -U {uuid} >/dev/null && break; sleep 1; done\n"
+        f"mount -o ro UUID={uuid} {MODEL_CACHE_MOUNT}\n"
+    )
+
+
+def fixture_environment(host: PinnedHost, *, data_device: str, manifest: dict[str, Any],
+                        model_device: str = "", model_uuid: str = "") -> dict[str, str]:
+    """The environment contract the Forge F3 scenarios read (forge/test/e2e/host_fixture_test.go)."""
+    environment = {
+        "FORGE_E2E_FIXTURE": "true",
+        "FORGE_E2E_FIXTURE_ADDRESS": host.public_ip,
+        "FORGE_E2E_FIXTURE_SSH_USER": SSH_USER,
+        "FORGE_E2E_FIXTURE_SSH_KEY_PATH": str(host.ssh_key),
+        "FORGE_E2E_FIXTURE_SSH_HOST_KEY": " ".join(host.host_public.split()[:2]),
+        "FORGE_E2E_FIXTURE_DATA_STORAGE_DEVICES": data_device,
+        "FORGE_E2E_IMAGE_CACHE_ROOT": str(manifest["cache_root"]),
+        "FORGE_E2E_IMAGE_CACHE_GENERATION": str(manifest["generation"]),
+        "AWS_CI_FIXTURE_REGION": host.region,
+        "AWS_CI_FIXTURE_INSTANCE_ID": host.instance_id,
+    }
+    if host.capacity == "gpu":
+        environment["FORGE_E2E_MODEL_CACHE_DEVICE"] = model_device
+        environment["FORGE_E2E_MODEL_CACHE_UUID"] = model_uuid
+    for key, value in environment.items():
+        if not value or "\n" in value:
+            raise AwsCiError(f"fixture environment {key} is empty or multi-line")
+    return environment
+
+
+def command_launch_fixture(args: argparse.Namespace) -> int:
+    """Launch one fresh F3 fixture host and export its environment (C1).
+
+    The host comes from the AMI baked for exactly this tree's pinned images; the GPU
+    host also gets the model cache restored from its snapshot. It keeps running for
+    the scenario; `cleanup-run` (and the reaper, through the deadline tag) removes it.
+    """
+    primary = require_region(args.region)
+    manifest = image_cache_manifest(args.capacity)
+    regions = region_order(primary) if args.capacity == "gpu" else (primary,)
+    ami_ids = resolve_fixture_amis(args.capacity, str(manifest["generation"]), regions)
+    snapshots: dict[str, str] = {}
+    uuid = ""
+    if args.capacity == "gpu":
+        snapshots, uuid = resolve_model_cache(regions)
+        ami_ids = {region: ami for region, ami in ami_ids.items() if region in snapshots}
+    deadline = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=args.max_age_minutes)
+    if args.capacity == "gpu":
+        host = launch_gpu_fixture(args, ami_ids, regions, deadline, snapshots, uuid)
+    else:
+        host = launch_pinned_host(
+            capacity="cpu", run_id=args.run_id, scenario=args.scenario, ami_ids=ami_ids, regions=regions,
+            deadline=deadline, launch_options={"data_gib": FIXTURE_DATA_GIB, "root_gib": FIXTURE_ROOT_GIB["cpu"]},
+        )
+    data_device = probe_by_id(host, host.data_volume_id)["by_id"]
+    model_device = ""
+    if host.capacity == "gpu":
+        model_volume = model_cache_volume_id(describe_instance(host.region, host.instance_id))
+        model_device = probe_by_id(host, model_volume)["by_id"]
+    environment = fixture_environment(host, data_device=data_device, manifest=manifest,
+                                      model_device=model_device, model_uuid=uuid)
+    lines = "".join(f"{key}={value}\n" for key, value in environment.items())
+    if args.env_output:
+        with open(args.env_output, "a", encoding="utf-8") as handle:
+            handle.write(lines)
+    print(lines, end="")
+    write_summary(
+        f"### {args.capacity.upper()} fixture\n\n"
+        f"- `{host.instance_id}` ({host.instance_type}, {host.region}/{host.availability_zone}) from `{host.ami_id}`\n"
+        f"- host key `{openssh_sha256_fingerprint(host.host_public)}`, image cache `{manifest['generation']}`\n"
+        f"- deadline `{format_timestamp(deadline)}`\n"
+    )
+    return 0
+
+
+def launch_gpu_fixture(args: argparse.Namespace, ami_ids: dict[str, str], regions: tuple[str, ...],
+                       deadline: dt.datetime, snapshots: dict[str, str], uuid: str) -> PinnedHost:
+    """Walk the GPU regions that hold both the fixture AMI and the model-cache snapshot."""
+    failures: list[str] = []
+    for region in regions:
+        if region not in ami_ids or region not in snapshots:
+            continue
+        try:
+            return launch_pinned_host(
+                capacity="gpu", run_id=args.run_id, scenario=args.scenario, ami_ids=ami_ids, regions=(region,),
+                deadline=deadline, user_data_extra=model_cache_mount_script(uuid),
+                launch_options={"data_gib": FIXTURE_DATA_GIB, "root_gib": FIXTURE_ROOT_GIB["gpu"],
+                                "snapshot_volumes": ((MODEL_CACHE_DEVICE, snapshots[region]),)},
+            )
+        except AwsCiError as error:
+            if "could launch the host" not in str(error):
+                raise
+            failures.append(f"{region}: {error}")
+    raise AwsCiError("no GPU region could launch the fixture: " + "; ".join(failures or ["no region has the AMI and model cache"]))
+
+
+# Forge installs these on first apply; baking them saves every fixture the apt round trip.
+BAKE_PACKAGES_SCRIPT = (
+    "set -euo pipefail\n"
+    "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq\n"
+    "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq lvm2 xfsprogs psmisc git >/dev/null\n"
+)
+# Leave no builder identity in the image: every launch installs its own pinned
+# host key and authorized key from user data, and cloud-init runs afresh.
+BAKE_SEAL_SCRIPT = (
+    "set -euo pipefail\n"
+    "sudo rm -f /etc/ssh/ssh_host_* /home/ubuntu/.ssh/authorized_keys\n"
+    "sudo cloud-init clean --logs\n"
+    "sudo sync\n"
+)
+
+
+def model_cache_bake_script(authority: dict[str, Any], device: str) -> str:
+    """Format the cache volume, download the pinned revision, and prove the weight hash."""
+    weight = f"/mnt/hf-cache/{authority['weight_path']}"
+    download = (
+        "from huggingface_hub import snapshot_download\n"
+        f"snapshot_download({authority['model_id']!r}, revision={authority['revision']!r}, cache_dir='/mnt/hf-cache')\n"
+    )
+    return (
+        "set -euo pipefail\n"
+        f"device=$(readlink -f {shlex.quote(device)})\n"
+        "sudo mkfs.xfs -q -f -L hf-cache \"$device\"\n"
+        "sudo install -d /mnt/hf-cache && sudo mount \"$device\" /mnt/hf-cache && sudo chown ubuntu:ubuntu /mnt/hf-cache\n"
+        "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq\n"
+        "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv >/dev/null\n"
+        f"python3 -m venv /tmp/hf && /tmp/hf/bin/pip install -q huggingface_hub=={HUGGINGFACE_HUB_VERSION}\n"
+        f"/tmp/hf/bin/python -c {shlex.quote(download)}\n"
+        f"test \"$(sha256sum {shlex.quote(weight)} | awk '{{print $1}}')\" = {shlex.quote(authority['sha256'])}\n"
+        "sudo umount /mnt/hf-cache\n"
+        "echo uuid=$(sudo blkid -s UUID -o value \"$device\")\n"
+    )
+
+
+def transient_source_ami(region: str, run_id: str) -> str:
+    """Copy the newest Canonical image into the account; only CI-owned AMIs may launch."""
+    source = resolve_canonical_ami(region)["source_ami_id"]
+    copied = aws_json([
+        "ec2", "copy-image", "--region", region, "--source-region", region, "--source-image-id", source,
+        "--name", f"{TAG_PREFIX}-bake-source-{run_id}", "--description", f"iterabase CI bake source for run {run_id}",
+        "--tag-specifications", tag_specifications("image", required_tags(run_id, "bake-source")),
+        tag_specifications("snapshot", required_tags(run_id, "bake-source")),
+    ])
+    image_id = str(copied["ImageId"])
+    wait_for_image(region, image_id)
+    return image_id
+
+
+def product_tags(run_id: str, scenario: str, extra: dict[str, str]) -> list[dict[str, str]]:
+    return required_tags(run_id, scenario) + [{"Key": key, "Value": value} for key, value in sorted(extra.items())]
+
+
+def command_bake_ami(args: argparse.Namespace) -> int:
+    """Bake one capacity's fixture AMI for this tree's pinned images (C1, DES-HOR-590-03)."""
+    primary = require_region(args.region)
+    regions = region_order(primary)
+    manifest = image_cache_manifest(args.capacity)
+    generation = str(manifest["generation"])
+    marker = {AMI_ROLE_TAG: f"fixture-{args.capacity}", IMAGE_CACHE_TAG: generation}
+    present = {region for region in regions if tagged_ids(region, "image", marker)}
+    if present == set(regions) and not args.force:
+        write_summary(f"### {args.capacity.upper()} fixture AMI\n\n- generation `{generation}` already baked in every region\n")
+        return 0
+    source = transient_source_ami(primary, args.run_id)
+    host = launch_pinned_host(
+        capacity="cpu", run_id=args.run_id, scenario=f"bake-{args.capacity}", ami_ids={primary: source},
+        regions=(primary,), deadline=dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=3),
+        launch_options={"root_gib": FIXTURE_ROOT_GIB[args.capacity]},
+    )
+    host.ssh(BAKE_PACKAGES_SCRIPT)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import fixture_image_cache  # noqa: PLC0415
+
+    fixture_image_cache.seed_fixture_image_cache(
+        manifest=manifest, address=host.public_ip, user=SSH_USER, key=host.ssh_key, host_key=host.known_hosts,
+        crane=Path(args.crane),
+    )
+    host.ssh(BAKE_SEAL_SCRIPT)
+    tags = product_tags(f"fixture-ami-{generation}", f"fixture-{args.capacity}", marker)
+    name = f"{TAG_PREFIX}-fixture-{args.capacity}-{generation}"
+    image_id = str(aws_json([
+        "ec2", "create-image", "--region", primary, "--instance-id", host.instance_id, "--name", name,
+        "--description", f"iterabase CI {args.capacity} fixture, image cache {generation} (DES-HOR-590-03)",
+        "--tag-specifications", tag_specifications("image", tags), tag_specifications("snapshot", tags),
+    ])["ImageId"])
+    wait_for_image(primary, image_id, timeout_seconds=3600)
+    images = {primary: image_id}
+    for region in regions:
+        if region != primary:
+            images[region] = str(aws_json([
+                "ec2", "copy-image", "--region", region, "--source-region", primary, "--source-image-id", image_id,
+                "--name", name, "--tag-specifications", tag_specifications("image", tags), tag_specifications("snapshot", tags),
+            ])["ImageId"])
+    for region, copied in images.items():
+        wait_for_image(region, copied, timeout_seconds=3600)
+    write_summary(
+        f"### {args.capacity.upper()} fixture AMI\n\n- image cache generation `{generation}`\n"
+        + "".join(f"- `{region}`: `{copied}`\n" for region, copied in images.items())
+    )
+    return 0
+
+
+def command_bake_model_cache(args: argparse.Namespace) -> int:
+    """Bake the GPU model-cache snapshot for this tree's model-cache.json (C1, DES-HOR-590-03)."""
+    primary = require_region(args.region)
+    regions = region_order(primary)
+    generation, authority = model_cache_generation()
+    present = {region for region in regions if tagged_ids(region, "snapshot", {MODEL_CACHE_TAG: generation})}
+    if present == set(regions) and not args.force:
+        write_summary(f"### Model cache\n\n- generation `{generation}` already baked in every region\n")
+        return 0
+    source = transient_source_ami(primary, args.run_id)
+    host = launch_pinned_host(
+        capacity="cpu", run_id=args.run_id, scenario="bake-model-cache", ami_ids={primary: source}, regions=(primary,),
+        deadline=dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2), launch_options={"data_gib": MODEL_CACHE_GIB},
+    )
+    device = probe_by_id(host, host.data_volume_id)["by_id"]
+    output = host.ssh(model_cache_bake_script(authority, device), timeout=3600).stdout
+    uuid = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("uuid=")), "")
+    model_cache_mount_script(uuid)  # validates the UUID shape
+    tags = product_tags(f"model-cache-{generation}", "model-cache", {MODEL_CACHE_TAG: generation, MODEL_CACHE_UUID_TAG: uuid})
+    snapshot_id = str(aws_json([
+        "ec2", "create-snapshot", "--region", primary, "--volume-id", host.data_volume_id,
+        "--description", f"iterabase CI model cache {authority['model_id']}@{authority['revision']} (DES-HOR-590-03)",
+        "--tag-specifications", tag_specifications("snapshot", tags),
+    ])["SnapshotId"])
+    wait_for_snapshot(primary, snapshot_id)
+    snapshots = {primary: snapshot_id}
+    for region in regions:
+        if region != primary:
+            snapshots[region] = str(aws_json([
+                "ec2", "copy-snapshot", "--region", region, "--source-region", primary, "--source-snapshot-id", snapshot_id,
+                "--description", f"iterabase CI model cache {generation}", "--tag-specifications", tag_specifications("snapshot", tags),
+            ])["SnapshotId"])
+    for region, copied in snapshots.items():
+        wait_for_snapshot(region, copied)
+    write_summary(
+        f"### Model cache\n\n- `{authority['model_id']}@{authority['revision']}`, generation `{generation}`, UUID `{uuid}`\n"
+        + "".join(f"- `{region}`: `{copied}`\n" for region, copied in snapshots.items())
+    )
+    return 0
+
+
+def wait_for_snapshot(region: str, snapshot_id: str, timeout_seconds: int = 3600) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        snapshot = aws_json(["ec2", "describe-snapshots", "--region", region, "--snapshot-ids", snapshot_id])["Snapshots"][0]
+        if snapshot.get("State") == "completed":
+            return
+        if snapshot.get("State") == "error" or time.monotonic() > deadline:
+            raise AwsCiError(f"snapshot {snapshot_id} in {region} ended {snapshot.get('State')!r}")
+        time.sleep(15)
+
+
+def model_cache_volume_id(instance: dict[str, Any]) -> str:
+    for mapping in instance.get("BlockDeviceMappings") or []:
+        if mapping.get("DeviceName") in {MODEL_CACHE_DEVICE, "/dev/xvdg"}:
+            return str(mapping["Ebs"]["VolumeId"])
+    raise AwsCiError("the GPU fixture has no model-cache volume")
 
 
 def host_summary(evidence: dict[str, str]) -> str:
@@ -1813,6 +2218,26 @@ def build_parser() -> argparse.ArgumentParser:
     host.add_argument("--capacity", required=True, choices=sorted(APPROVED_INSTANCE_TYPES))
     host.add_argument("--ami-ids", required=True, help="region=ami-... map covering every CI region")
     host.set_defaults(handler=command_run_host)
+
+    fixture = subparsers.add_parser("launch-fixture", help="launch one fresh F3 fixture host (C1)", parents=[common])
+    fixture.add_argument("--run-id", required=True)
+    fixture.add_argument("--scenario", required=True, help="scenario id, recorded in the scenario tag")
+    fixture.add_argument("--capacity", required=True, choices=sorted(APPROVED_INSTANCE_TYPES))
+    fixture.add_argument("--max-age-minutes", type=int, default=DEFAULT_MAX_AGE_MINUTES)
+    fixture.add_argument("--env-output", default=os.environ.get("GITHUB_ENV", ""))
+    fixture.set_defaults(handler=command_launch_fixture)
+
+    bake = subparsers.add_parser("bake-ami", help="bake one capacity's fixture AMI (DES-HOR-590-03)", parents=[common])
+    bake.add_argument("--run-id", required=True)
+    bake.add_argument("--capacity", required=True, choices=sorted(APPROVED_INSTANCE_TYPES))
+    bake.add_argument("--crane", required=True, help="the reviewed crane binary used to pull the pinned images")
+    bake.add_argument("--force", action="store_true")
+    bake.set_defaults(handler=command_bake_ami)
+
+    model = subparsers.add_parser("bake-model-cache", help="bake the GPU model-cache snapshot (DES-HOR-590-03)", parents=[common])
+    model.add_argument("--run-id", required=True)
+    model.add_argument("--force", action="store_true")
+    model.set_defaults(handler=command_bake_model_cache)
 
     denied = subparsers.add_parser("denied-cases", help="prove the denied launch cases fail closed", parents=[common])
     denied.add_argument("--run-id", required=True)
