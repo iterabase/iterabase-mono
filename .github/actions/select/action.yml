@@ -1,0 +1,94 @@
+name: Select affected jobs and scenarios
+description: >-
+  Run the deterministic affected-graph selector (C2) for this event. The caller
+  checks out with full history. Pull requests honour scenarios' selected_by; the
+  merge queue and the e2e-real-machine label select strictly (DES-HOR-590-02).
+inputs:
+  all:
+    description: Select everything (full validation).
+    default: "false"
+outputs:
+  selection:
+    description: The selection JSON document.
+    value: ${{ steps.select.outputs.selection }}
+  jobs:
+    description: JSON array of selected CI jobs.
+    value: ${{ steps.select.outputs.jobs }}
+  scenarios:
+    description: JSON array of selected E2E scenario ids.
+    value: ${{ steps.select.outputs.scenarios }}
+  artifacts:
+    description: JSON array of affected artifact recipes.
+    value: ${{ steps.select.outputs.artifacts }}
+  stages:
+    description: Comma-separated optional E2E stages to run.
+    value: ${{ steps.select.outputs.stages }}
+  classification:
+    description: docs, ci, version, selected or all.
+    value: ${{ steps.select.outputs.classification }}
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-go
+      with:
+        go-version: 1.26.5
+        cache-dependency-path: |
+          control-plane/go.sum
+          inference-gateway/go.sum
+          forge/go.sum
+          forge/test/e2e/go.sum
+          testkit/e2e/go.mod
+          control-plane/test/e2e/go.mod
+          charts/test/e2e/go.sum
+        cache-scope: select
+    - uses: ./.github/actions/setup-kubernetes-tools
+    - uses: ./.github/actions/cache-helm
+      with:
+        cache-scope: select
+    - name: Add external chart repositories for render diffs
+      shell: bash
+      run: .github/scripts/add_helm_repositories.sh
+    - name: Compile the scenario catalogue
+      shell: bash
+      run: go run ./testkit/e2e/cmd/e2e-catalogue --format json --output "$RUNNER_TEMP/catalogue.json"
+    - name: Select
+      id: select
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        ALL: ${{ inputs.all }}
+        PR_BASE: ${{ github.event.pull_request.base.sha }}
+        QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+        QUEUE_HEAD: ${{ github.event.merge_group.head_sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+        REAL_MACHINE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'e2e-real-machine') }}
+      run: |
+        set -euo pipefail
+        args=(--catalogue "$RUNNER_TEMP/catalogue.json" --output "$RUNNER_TEMP/selection.json")
+        case "$EVENT" in
+          pull_request) args+=(--base "$PR_BASE" --head HEAD) ;;
+          merge_group) args+=(--base "$QUEUE_BASE" --head "$QUEUE_HEAD" --strict) ;;
+          push)
+            if [[ "$PUSH_BEFORE" =~ ^0+$ || -z "$PUSH_BEFORE" ]]; then args+=(--all); else args+=(--base "$PUSH_BEFORE" --head HEAD); fi ;;
+          *) args+=(--all) ;;
+        esac
+        [[ "$ALL" == true ]] && args+=(--all)
+        [[ "$REAL_MACHINE_LABEL" == true ]] && args+=(--strict)
+        python3 .github/scripts/affected.py "${args[@]}" > /dev/null
+        selection="$RUNNER_TEMP/selection.json"
+        {
+          echo "selection=$(jq -c . "$selection")"
+          echo "jobs=$(jq -c .jobs "$selection")"
+          echo "scenarios=$(jq -c .scenarios "$selection")"
+          echo "artifacts=$(jq -c .artifacts "$selection")"
+          echo "stages=$(jq -r '.stages | join(",")' "$selection")"
+          echo "classification=$(jq -r .classification "$selection")"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo "### Affected selection ($(jq -r .classification "$selection"), strict=$(jq -r .strict "$selection"))"
+          echo
+          echo "- jobs: $(jq -r '.jobs | join(", ")' "$selection")"
+          echo "- artifacts: $(jq -r '.artifacts | join(", ")' "$selection")"
+          echo "- scenarios: $(jq -r '.scenarios | join(", ")' "$selection")"
+          echo "- optional stages: $(jq -r '.stages | join(", ")' "$selection")"
+        } >> "$GITHUB_STEP_SUMMARY"

@@ -210,6 +210,15 @@ class RealDiffTests(unittest.TestCase):
         self.assertEqual(selection.classification, "docs")
 
 
+class RenderDiffTests(unittest.TestCase):
+    def test_a_failed_render_counts_as_changed(self) -> None:
+        self.assertFalse(affected.renders_differ("same", "same"))
+        self.assertTrue(affected.renders_differ("a", "b"))
+        for base, head in ((None, None), (None, "x"), ("x", None)):
+            with self.subTest(base=base, head=head):
+                self.assertTrue(affected.renders_differ(base, head))
+
+
 class VersionLineTests(unittest.TestCase):
     def test_version_line_pattern(self) -> None:
         for line, expected in (('+version: 0.4.7', True), ('-appVersion: "0.0.40"', True), ('+    version: 0.5.5', True),

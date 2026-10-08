@@ -283,16 +283,23 @@ def go_build_inputs(recipe: dict[str, Any]) -> dict[str, set[str]]:
     return {"dirs": dirs, "embeds": embeds}
 
 
-def render(tree: pathlib.Path, spec: dict[str, Any]) -> str:
+def render(tree: pathlib.Path, spec: dict[str, Any]) -> str | None:
+    """Render one declared chart input, or None when it cannot be rendered."""
     chart = tree / spec["chart"]
-    subprocess.run(["helm", "dependency", "build", "--skip-refresh", str(chart)], check=True, capture_output=True)
+    if subprocess.run(["helm", "dependency", "build", "--skip-refresh", str(chart)], capture_output=True).returncode != 0:
+        return None
     args = ["helm", "template", "render-check", str(chart)]
     for values in spec.get("values", ()):
         args += ["--values", str(tree / values)]
     for key, value in sorted(spec.get("set", {}).items()):
         args += ["--set-string", f"{key}={value}"]
     result = subprocess.run(args, capture_output=True, text=True)
-    return result.stdout if result.returncode == 0 else f"render failed: {result.stderr}"
+    return result.stdout if result.returncode == 0 else None
+
+
+def renders_differ(base: str | None, head: str | None) -> bool:
+    """A render that fails on either side counts as changed: selection never fails open."""
+    return base is None or head is None or base != head
 
 
 def render_diff(base: str, catalogue: dict[str, Any]) -> dict[str, bool]:
@@ -305,7 +312,7 @@ def render_diff(base: str, catalogue: dict[str, Any]) -> dict[str, bool]:
         base_tree = pathlib.Path(directory) / "base"
         git("worktree", "add", "--detach", str(base_tree), base)
         try:
-            return {sid: any(render(base_tree, spec) != render(ROOT, spec) for spec in renders)
+            return {sid: any(renders_differ(render(base_tree, spec), render(ROOT, spec)) for spec in renders)
                     for sid, renders in specs.items()}
         finally:
             git("worktree", "remove", "--force", str(base_tree))
