@@ -705,8 +705,10 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
     gh variable set AWS_CI_REGION --repo "$REPO" --body eu-west-1
     gh variable list --repo "$REPO"
     ```
-    These two variables are the complete GitHub-side configuration. No secrets
-    are stored, and there is no GitHub environment.
+    These two variables are the complete GitHub-side configuration for the
+    AWS substrate itself: no AWS secret is stored, and there is no GitHub
+    environment. Previews (HOR-590 C6, C12) add their own configuration, listed
+    in [Preview configuration](#preview-configuration-hor-590).
 
 ## Part 3 — Validation
 
@@ -835,14 +837,16 @@ pull request merges to `master`. Later dispatches may target a branch ref
   aws iam create-policy-version --policy-arn "$POLICY_ARN" \
     --policy-document file:///tmp/iterabase-ci-policy.json --set-as-default
   ```
-- **What HOR-590 inherits.** The tag scheme, the rendered policy, the security
-  group, the reaper, and this runbook. HOR-590 replaces the throwaway bootstrap
-  AMI with Packer-built `cpu-base`/`gpu-base`/`cpu-baseline`/`gpu-baseline` AMIs,
-  moves E2E execution onto these hosts, and rewrites `docs/ci.md`. It also owns
-  the on-host `shutdown -h` timer at the scenario timeout plus margin: this
-  ticket proves that instance-initiated shutdown terminates the instance, and
-  HOR-590 installs the per-stage timer that triggers it. The smoke workflow stays
-  the substrate proof.
+- **What HOR-590 built on this substrate.** E2E real-machine scenarios run on
+  fresh per-run hosts here (C1). Fixture AMIs (`fixture-cpu`, `fixture-gpu`)
+  and the model-cache snapshot are baked by `aws_ci.py bake-ami` and
+  `bake-model-cache` from `bake.yml`, not by Packer (`DES-HOR-590-03`), and the
+  reaper's `images` job keeps the two newest generations. Fixture hosts carry an
+  `iterabase-ci-deadline` at the scenario timeout plus 10 minutes and are
+  removed by `cleanup-run` or, failing that, the reaper; no on-host shutdown
+  timer is installed. Previews are spot hosts tagged `iterabase-ci-kind=preview`
+  whose deadline is renewed on each deploy. The smoke workflow stays the
+  substrate proof. See [`../ci.md`](../ci.md).
 - **Residual risks.** Instance user-data carries the per-run host private key and
   is readable by anything holding `ec2:DescribeInstanceAttribute` in the account,
   so an in-account attacker could impersonate a running fixture; user
@@ -851,3 +855,26 @@ pull request merges to `master`. Later dispatches may target a branch ref
   against a host that is not the one the runner launched, not against a
   compromised account principal. `Describe*` is account-wide read-only by AWS
   design. The budget is an alarm, not a hard spend cap.
+
+## Preview configuration (HOR-590)
+
+Previews (C6, C9, C12) need the following beyond Part 1 and Part 2:
+
+- **Spot service-linked role.** The CI role cannot create IAM roles, so create
+  `AWSServiceRoleForEC2Spot` once with an administrator identity before the
+  first preview:
+  ```bash
+  aws iam create-service-linked-role --aws-service-name spot.amazonaws.com
+  ```
+  An `InvalidInput` error saying the role already exists is success.
+- **Repository secrets:** `PREVIEW_SSH_KEY` (the one runner key authorized on
+  preview hosts), `TAILSCALE_OAUTH_CLIENT_ID` and `TAILSCALE_OAUTH_SECRET` (an
+  OAuth client allowed to mint `tag:preview` auth keys), and
+  `PREVIEW_LLM_API_KEY` (the capped hosted-LLM key; cap spend at the provider).
+- **Repository variables:** `PREVIEW_LLM_BASE_URL` and `PREVIEW_LLM_MODEL`.
+- **Tailnet policy:** a `tag:preview` tag owned by the OAuth client. Preview
+  hosts join as ephemeral nodes and are reachable only on the tailnet.
+- **Teardown.** `preview.yml` terminates a `pr-<N>` host when its pull request
+  closes. A preview idle for 72 hours is removed by the reaper through its
+  deadline. `staging` carries a far-future deadline and is removed only by
+  hand: `python3 .github/scripts/aws_ci.py preview-down --region eu-west-1 --name staging`.

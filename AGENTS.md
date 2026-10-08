@@ -24,7 +24,7 @@ The Go modules remain independently buildable. The root `go.work` is for atomic 
 
 - This monorepo is the sole writable public source for the product components above. The former `control-plane`, `inference-gateway`, `forge`, and `iterabase-charts` repositories are historical archives; never target them for changes, pull requests, CI, or releases.
 - Official artifacts publish to `ghcr.io/iterabase/*`, with charts under the `ghcr.io/iterabase/iterabase-charts` OCI namespace. These are stable artifact identities, not source repository links. Do not rename them during source maintenance. Artifacts published earlier under `ghcr.io/nunocgoncalves/*` remain published and are never deleted or republished.
-- A merge to `master` is integration, not a semantic release. Ticket acceptance must state whether publication is required. When it is, use the manual affected-target candidate and protected promotion flow in [`docs/release.md`](docs/release.md); never publish implicitly from merge or acceptance.
+- A merge to `master` is integration, not a semantic release. Ticket acceptance must state whether publication is required (required, deferred, or none). When it is, publish only through the manual, founder-approved `release.yml` workflow described in [`docs/release.md`](docs/release.md); never publish implicitly from merge or acceptance.
 - Deployment overlays continue to reconcile independently against immutable published artifacts. Do not couple overlay changes to a source ticket unless the ticket explicitly names that external contract.
 
 See [`docs/source-authority.md`](docs/source-authority.md) for the cutover audit and catastrophic-only unarchive boundary.
@@ -47,10 +47,10 @@ See [`docs/source-authority.md`](docs/source-authority.md) for the cutover audit
 - Open a pull request when validation is complete; only the user may approve and merge it.
 - Pull request bodies use `## Summary`, `## Validation`, `## Production impact`, and `## Ticket state`, with real Markdown line breaks and `None`/`N/A` where appropriate.
 - After pushing, watch required CI to completion. A review is not addressable-complete and a ticket is not complete while required CI is failing.
-- Required PR CI is the baseline gate, but it does not exercise Release candidate-only behavior equivalently. A change that affects Release candidate execution, planning, artifact custody, published-baseline resolution, composition, reconciliation, or retention behavior beyond what required PR CI actually exercises must additionally pass an exact-head `Release candidate` rehearsal before review is requested or the ticket is moved to In Review.
-- Dispatch the rehearsal from the ticket branch with `rehearsal: true`, `master_sha` equal to the exact current branch/PR head SHA, and the explicit affected release-target set. Link the successful rehearsal run in the pull request before requesting review or moving the ticket to In Review. A later source commit that still affects the candidate-only boundary invalidates that proof and requires a new rehearsal at the new exact head.
-- A failed rehearsal is fail-closed: the work remains in, or returns to, In Progress until the failure is triaged, corrected where necessary, and successful exact-head rehearsal evidence exists. PR CI alone does not satisfy this gate.
-- These rules preserve the existing contract: only the user approves and merges, required CI must pass, merge is not publication, and architecture decisions still require explicit approval. See `docs/release.md` and `.github/workflows/release-candidate.yml` for the dispatch contract.
+- The required checks are `CI / required` and `E2E / required`. Pull requests run the deterministic affected-graph selection; the merge queue re-runs it strictly on the exact merge commit. See [`docs/ci.md`](docs/ci.md).
+- A change to CI (`.github/**`, `testkit/**`, `release/**`, the root `Makefile`, `go.work`) must also pass full validation at the pull request's head before review is requested: add the `full-validation` label. Add the same label whenever the user or the ticket asks for full validation. The label triggers one run when it is added; remove and re-add it to validate a later head.
+- Add the `e2e-real-machine` label to run the real-machine (F3) scenarios strictly on the pull request for AgentPool, LVM, storage, or bootstrap work, instead of first meeting them in the merge queue.
+- Publication is never part of a pull request. It happens after merge, only through `release.yml`, only with founder approval in the protected `release` environment. Bump versions with `make bump TARGET=<target> VERSION=<x.y.z>` in the ticket that needs the release.
 - The repository is the source of truth for non-secret infrastructure intent and architecture. Linear is the source of truth for ticket state, ownership, sequencing, and completion.
 
 ## Architecture decisions
@@ -68,8 +68,9 @@ make test             # component tests + required Linux harness isolation + For
 make lint             # all Go modules, including Forge E2E
 make codegen-check    # protobuf freshness
 make charts-check     # Helm/static chart validation
-make release-check    # artifact authority, compiled suite selection, and release request contracts
-make release-security-audit # authenticated GitHub environment, deploy-key, and tag-ruleset audit
+make release-check    # selector, release plan, version bump, AWS substrate, remote-content and cache contracts
+make release-security-audit # authenticated GitHub environment, deploy-key, tag-ruleset, and workflow-permission audit
+make bump TARGET=<target> VERSION=<x.y.z> # move every version field linked to one release target
 make docker-build     # control-plane and inference-gateway images
 make check            # complete local matrix above
 make install-hooks    # shared monorepo pre-commit hook

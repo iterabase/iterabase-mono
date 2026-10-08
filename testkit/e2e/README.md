@@ -12,6 +12,19 @@ and its stage DAG. `make e2e-catalogue` compiles the real owner `TestE2E`
 registrations. A missing artifact, target, fixture mode, timeout, or stage fails
 catalogue validation.
 
+Three fields drive selection by `.github/scripts/affected.py` (C2):
+
+- `smoke` marks the one scenario per suite that CI-only changes run;
+- `selected_by` optionally narrows which changed artifacts select the scenario
+  on pull requests; the merge queue and the `e2e-real-machine` label ignore it
+  (`DES-HOR-590-02`);
+- `renders` lists the chart, values files, and `--set-string` values the
+  scenario installs, so a chart change selects it only when its rendered
+  manifests change.
+
+A stage marked `Optional` runs only when `ITERABASE_E2E_OPTIONAL_STAGES` names
+it, and no stage may depend on it. See [`../../docs/ci.md`](../../docs/ci.md#adding-a-scenario).
+
 ## Required execution
 
 CI runs one scenario per job and judges it by the job result. It sets:

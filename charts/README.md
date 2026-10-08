@@ -614,11 +614,11 @@ label and named serving port. GPU panels require the optional DCGM target.
 
 ## Release
 
-Raw tags do not publish. `Chart.yaml` is the chart version authority. Dispatch
-the root **Release candidate** workflow with an explicit affected-target set
-and an exact master SHA. It packages the selected chart archives once, builds
-any selected component/Forge artifacts, and validates the coherent bundle
-before retaining it as Actions artifacts. Then dispatch **Promote release**
-with that successful run ID.
-After founder approval in the protected `release` environment, the unchanged
-archive is published. See [`../docs/release.md`](../docs/release.md).
+Raw tags do not publish. `Chart.yaml` is the chart version authority, and each
+component chart's `appVersion` must equal its component `VERSION` file
+(`make check-version-links`, part of `make check`). Move linked versions with
+`make bump TARGET=<target> VERSION=<x.y.z>` from the repository root. After
+merge, the founder publishes with the root `release.yml` workflow: it fully
+validates the exact composition, then packages the selected charts at the
+release SHA as-is and pushes them to `oci://ghcr.io/iterabase/iterabase-charts`.
+See [`../docs/release.md`](../docs/release.md).

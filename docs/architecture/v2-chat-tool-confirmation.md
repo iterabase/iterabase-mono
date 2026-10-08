@@ -1063,7 +1063,7 @@ Fail enablement when any of the following is absent/ambiguous:
 - Disabling customer routes may stop new messages while preserving read-only data/recovery, but it must not expose legacy Chat or discard DB transcript/context.
 - Catastrophic full restore accepts post-backup data/effect uncertainty and follows section 17; it is not a license to replay.
 
-HOR-456 itself has no migration, runtime, customer-data, or semantic publication impact. Follow-on implementation uses the repository's manual affected-target candidate/protected promotion flow.
+HOR-456 itself has no migration, runtime, customer-data, or semantic publication impact. Follow-on implementation publishes only through the repository's founder-approved `release.yml` flow (`docs/release.md`).
 
 ## 19. Validation and test strategy
 
@@ -1171,5 +1171,5 @@ HOR-456 is design/documentation only:
 - no runtime behavior, schema, CRD, route, customer data, chart, image, or deployment changes;
 - no migration or rollback is executed;
 - no semantic artifact publication is required or produced;
-- follow-on tickets implement and publish only through their approved manual affected-target candidate and protected promotion flow;
+- follow-on tickets implement and publish only through the founder-approved `release.yml` flow;
 - customer production acceptance remains separate from repository design acceptance.

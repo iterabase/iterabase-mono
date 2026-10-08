@@ -822,4 +822,4 @@ There is no interval with two customer-authority writers.
 
 ## 18. Production and release classification
 
-HOR-451 is design-only and has no runtime/data impact. Follow-on implementation changes authentication/authorization authority, customer credentials, gateway database access, rate behavior, usage evidence, and a one-way migration. Their semantic publication is deferred to the manual affected-target V2 release candidate and protected promotion flow in `docs/release.md`; merge alone is not a release.
+HOR-451 is design-only and has no runtime/data impact. Follow-on implementation changes authentication/authorization authority, customer credentials, gateway database access, rate behavior, usage evidence, and a one-way migration. Their semantic publication is deferred to the founder-approved `release.yml` flow in `docs/release.md`; merge alone is not a release.
