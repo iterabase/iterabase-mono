@@ -86,6 +86,39 @@ func TestSuiteValidatesSelectionMetadata(t *testing.T) {
 	}
 }
 
+func TestOptionalStageRunsOnlyWhenSelected(t *testing.T) {
+	for _, selected := range []string{"", "driver-upgrade", "other, driver-upgrade"} {
+		t.Run("selected="+selected, func(t *testing.T) {
+			t.Setenv(OptionalStagesEnv, selected)
+			ran := false
+			scenario := Scenario[struct{}]{
+				Metadata: ScenarioMetadata{Name: "gpu", Description: "gpu", Tier: TierF0, FixtureModes: []FixtureMode{FixtureSource}},
+				Stages: []Stage[struct{}]{
+					{Name: "serve", Run: func(*testing.T, struct{}) {}},
+					{Name: "driver-upgrade", DependsOn: []string{"serve"}, Optional: true, Run: func(*testing.T, struct{}) { ran = true }},
+				},
+			}
+			runScenario(t, scenario, scenarioExecution{})
+			if want := selected != ""; ran != want {
+				t.Fatalf("optional stage ran=%v with %s=%q", ran, OptionalStagesEnv, selected)
+			}
+		})
+	}
+
+	dependent := Define(Scenario[struct{}]{
+		Metadata: ScenarioMetadata{Name: "gpu", Description: "gpu", Tier: TierF0, FixtureModes: []FixtureMode{FixtureSource}},
+		Stages: []Stage[struct{}]{
+			{Name: "driver-upgrade", Optional: true, Run: func(*testing.T, struct{}) {}},
+			{Name: "after", DependsOn: []string{"driver-upgrade"}, Run: func(*testing.T, struct{}) {}},
+		},
+	})
+	suite := NewSuite(SuiteMetadata{Name: "owner", Owner: "owner", Entrypoint: "owner/test/e2e"}, nil)
+	suite.Add(dependent)
+	if err := suite.validate(); err == nil || !strings.Contains(err.Error(), "depends on optional stage") {
+		t.Fatalf("dependency on an optional stage error = %v", err)
+	}
+}
+
 func TestStageFailureKeepsIndependentWorkAndLifecycleHooks(t *testing.T) {
 	if os.Getenv("ITERABASE_E2E_FAILURE_HELPER") == "1" {
 		runFailureHelper(t)

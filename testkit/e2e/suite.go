@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -147,7 +148,7 @@ func (suite *Suite) catalogue() CatalogueSuite {
 func cloneStages(stages []StageMetadata) []StageMetadata {
 	cloned := make([]StageMetadata, 0, len(stages))
 	for _, stage := range stages {
-		cloned = append(cloned, StageMetadata{Name: stage.Name, DependsOn: slices.Clone(stage.DependsOn)})
+		cloned = append(cloned, StageMetadata{Name: stage.Name, DependsOn: slices.Clone(stage.DependsOn), Optional: stage.Optional})
 	}
 	return cloned
 }
@@ -160,6 +161,9 @@ const (
 	stageSkipped stageStatus = "skipped"
 	stageBlocked stageStatus = "blocked"
 	stageNotRun  stageStatus = "not-run"
+	// stageNotSelected is an optional stage the affected selector did not choose;
+	// it is complete, not skipped.
+	stageNotSelected stageStatus = "not-selected"
 )
 
 type scenarioExecution struct {
@@ -267,7 +271,16 @@ func runScenario[S any](t *testing.T, scenario Scenario[S], execution scenarioEx
 		state = scenario.NewState(t)
 	}
 	initialized = true
+	selectedOptional := map[string]bool{}
+	for _, name := range strings.Split(os.Getenv(OptionalStagesEnv), ",") {
+		selectedOptional[strings.TrimSpace(name)] = true
+	}
 	for _, stage := range scenario.Stages {
+		if stage.Optional && !selectedOptional[stage.Name] {
+			t.Run(stage.Name, func(t *testing.T) { t.Skipf("optional stage not selected (%s)", OptionalStagesEnv) })
+			statuses[stage.Name] = stageNotSelected
+			continue
+		}
 		blockedBy := make([]string, 0, len(stage.DependsOn))
 		for _, dependency := range stage.DependsOn {
 			if statuses[dependency] != stagePassed {
@@ -307,7 +320,7 @@ func runScenario[S any](t *testing.T, scenario Scenario[S], execution scenarioEx
 func cloneStagesFromScenario[S any](stages []Stage[S]) []StageMetadata {
 	metadata := make([]StageMetadata, 0, len(stages))
 	for _, stage := range stages {
-		metadata = append(metadata, StageMetadata{Name: stage.Name, DependsOn: slices.Clone(stage.DependsOn)})
+		metadata = append(metadata, StageMetadata{Name: stage.Name, DependsOn: slices.Clone(stage.DependsOn), Optional: stage.Optional})
 	}
 	return metadata
 }
