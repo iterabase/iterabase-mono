@@ -23,7 +23,7 @@ type importedRuntimeIdentity struct {
 }
 
 // prepareCandidateChart transfers the exact Actions-retained platform and
-// companion archives to the permanent fixture. Forge then gives remote Helm those
+// companion archives to the fixture host. Forge then gives remote Helm those
 // extracted directories, so real-machine validation consumes the candidate
 // bytes without publishing a persistent candidate package.
 func prepareCandidateImages(t *testing.T, ip, keyPath string) map[string]importedRuntimeIdentity {

@@ -21,16 +21,15 @@ import (
 )
 
 const (
-	permanentFixtureEnabledEnv           = "FORGE_E2E_PERMANENT_FIXTURE"
-	permanentFixtureAddressEnv           = "FORGE_E2E_FIXTURE_ADDRESS"
-	permanentFixtureSSHUserEnv           = "FORGE_E2E_FIXTURE_SSH_USER"
-	permanentFixtureSSHKeyPathEnv        = "FORGE_E2E_FIXTURE_SSH_KEY_PATH"
-	permanentFixtureHostKeyEnv           = "FORGE_E2E_FIXTURE_SSH_HOST_KEY"
-	permanentFixtureDataStorageDeviceEnv = "FORGE_E2E_FIXTURE_DATA_STORAGE_DEVICES"
-	permanentFixtureModelDeviceEnv       = "FORGE_E2E_MODEL_CACHE_DEVICE"
-	permanentFixtureModelUUIDEnv         = "FORGE_E2E_MODEL_CACHE_UUID"
-	permanentFixtureModelMount           = "/data/hf-cache"
-	permanentFixtureHarnessStatePaths    = "/tmp/edge-overlay /tmp/forge-secrets-overlay /tmp/iterabase-release-overlay-* /tmp/iterabase-release-charts-* /tmp/control-plane-image.tar /tmp/harness-image.tar /tmp/tool-runner-image.tar /tmp/inference-gateway-image.tar /tmp/runtime-fixture-image.tar /tmp/forge-e2e-data-storage-consumer.pid /tmp/forge-e2e-data-storage-consumer.log /tmp/forge-e2e-consumer-release.*"
+	hostFixtureEnabledEnv           = "FORGE_E2E_FIXTURE"
+	hostFixtureAddressEnv           = "FORGE_E2E_FIXTURE_ADDRESS"
+	hostFixtureSSHUserEnv           = "FORGE_E2E_FIXTURE_SSH_USER"
+	hostFixtureSSHKeyPathEnv        = "FORGE_E2E_FIXTURE_SSH_KEY_PATH"
+	hostFixtureHostKeyEnv           = "FORGE_E2E_FIXTURE_SSH_HOST_KEY"
+	hostFixtureDataStorageDeviceEnv = "FORGE_E2E_FIXTURE_DATA_STORAGE_DEVICES"
+	hostFixtureModelDeviceEnv       = "FORGE_E2E_MODEL_CACHE_DEVICE"
+	hostFixtureModelUUIDEnv         = "FORGE_E2E_MODEL_CACHE_UUID"
+	hostFixtureModelMount           = "/data/hf-cache"
 )
 
 var bootIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -46,7 +45,7 @@ type modelCacheAuthority struct {
 	SHA256        string `json:"sha256"`
 }
 
-type permanentFixture struct {
+type hostFixture struct {
 	capacity          string
 	address           string
 	sshUser           string
@@ -58,48 +57,48 @@ type permanentFixture struct {
 }
 
 func fixtureSSHUser() string {
-	if user := strings.TrimSpace(os.Getenv(permanentFixtureSSHUserEnv)); user != "" {
+	if user := strings.TrimSpace(os.Getenv(hostFixtureSSHUserEnv)); user != "" {
 		return user
 	}
 	return "forge"
 }
 
-func requirePermanentFixture(t *testing.T, capacity string) *permanentFixture {
+func requireHostFixture(t *testing.T, capacity string) *hostFixture {
 	t.Helper()
-	if os.Getenv(permanentFixtureEnabledEnv) != "true" {
-		t.Fatalf("mandatory permanent %s fixture is disabled — %s must be true", capacity, permanentFixtureEnabledEnv)
+	if os.Getenv(hostFixtureEnabledEnv) != "true" {
+		t.Fatalf("mandatory %s fixture is disabled — %s must be true", capacity, hostFixtureEnabledEnv)
 	}
 	values := map[string]string{
-		permanentFixtureAddressEnv:           strings.TrimSpace(os.Getenv(permanentFixtureAddressEnv)),
-		permanentFixtureSSHUserEnv:           strings.TrimSpace(os.Getenv(permanentFixtureSSHUserEnv)),
-		permanentFixtureSSHKeyPathEnv:        strings.TrimSpace(os.Getenv(permanentFixtureSSHKeyPathEnv)),
-		permanentFixtureHostKeyEnv:           strings.TrimSpace(os.Getenv(permanentFixtureHostKeyEnv)),
-		permanentFixtureDataStorageDeviceEnv: strings.TrimSpace(os.Getenv(permanentFixtureDataStorageDeviceEnv)),
+		hostFixtureAddressEnv:           strings.TrimSpace(os.Getenv(hostFixtureAddressEnv)),
+		hostFixtureSSHUserEnv:           strings.TrimSpace(os.Getenv(hostFixtureSSHUserEnv)),
+		hostFixtureSSHKeyPathEnv:        strings.TrimSpace(os.Getenv(hostFixtureSSHKeyPathEnv)),
+		hostFixtureHostKeyEnv:           strings.TrimSpace(os.Getenv(hostFixtureHostKeyEnv)),
+		hostFixtureDataStorageDeviceEnv: strings.TrimSpace(os.Getenv(hostFixtureDataStorageDeviceEnv)),
 	}
 	for name, value := range values {
 		if value == "" {
-			t.Fatalf("mandatory permanent %s fixture is incomplete — %s is empty", capacity, name)
+			t.Fatalf("mandatory %s fixture is incomplete — %s is empty", capacity, name)
 		}
 	}
-	if !strings.HasPrefix(values[permanentFixtureDataStorageDeviceEnv], "/dev/disk/by-id/") {
-		t.Fatalf("%s must be a fixed /dev/disk/by-id data-storage identity", permanentFixtureDataStorageDeviceEnv)
+	if !strings.HasPrefix(values[hostFixtureDataStorageDeviceEnv], "/dev/disk/by-id/") {
+		t.Fatalf("%s must be a fixed /dev/disk/by-id data-storage identity", hostFixtureDataStorageDeviceEnv)
 	}
-	if _, _, _, rest, err := ssh.ParseAuthorizedKey([]byte(values[permanentFixtureHostKeyEnv] + "\n")); err != nil || len(strings.TrimSpace(string(rest))) != 0 {
-		t.Fatalf("%s is not exactly one pinned OpenSSH host public key", permanentFixtureHostKeyEnv)
+	if _, _, _, rest, err := ssh.ParseAuthorizedKey([]byte(values[hostFixtureHostKeyEnv] + "\n")); err != nil || len(strings.TrimSpace(string(rest))) != 0 {
+		t.Fatalf("%s is not exactly one pinned OpenSSH host public key", hostFixtureHostKeyEnv)
 	}
-	if info, err := os.Stat(values[permanentFixtureSSHKeyPathEnv]); err != nil {
+	if info, err := os.Stat(values[hostFixtureSSHKeyPathEnv]); err != nil {
 		t.Fatalf("fixture-scoped SSH private key is unavailable: %v", err)
 	} else if info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("fixture-scoped SSH private key mode is %o, want 0600", info.Mode().Perm())
 	}
-	fixture := &permanentFixture{
-		capacity: capacity, address: values[permanentFixtureAddressEnv], sshUser: values[permanentFixtureSSHUserEnv],
-		sshKeyPath: values[permanentFixtureSSHKeyPathEnv], sshHostKey: values[permanentFixtureHostKeyEnv],
-		dataStorageDevice: values[permanentFixtureDataStorageDeviceEnv],
+	fixture := &hostFixture{
+		capacity: capacity, address: values[hostFixtureAddressEnv], sshUser: values[hostFixtureSSHUserEnv],
+		sshKeyPath: values[hostFixtureSSHKeyPathEnv], sshHostKey: values[hostFixtureHostKeyEnv],
+		dataStorageDevice: values[hostFixtureDataStorageDeviceEnv],
 	}
 	if capacity == "gpu" {
-		fixture.modelDevice = strings.TrimSpace(os.Getenv(permanentFixtureModelDeviceEnv))
-		fixture.modelUUID = strings.TrimSpace(os.Getenv(permanentFixtureModelUUIDEnv))
+		fixture.modelDevice = strings.TrimSpace(os.Getenv(hostFixtureModelDeviceEnv))
+		fixture.modelUUID = strings.TrimSpace(os.Getenv(hostFixtureModelUUIDEnv))
 		if err := validatePermanentGPUStorage(fixture.dataStorageDevice, fixture.modelDevice, fixture.modelUUID); err != nil {
 			t.Fatal(err)
 		}
@@ -109,7 +108,7 @@ func requirePermanentFixture(t *testing.T, capacity string) *permanentFixture {
 
 func validatePermanentGPUStorage(dataStorageDevice, modelDevice, modelUUID string) error {
 	if !strings.HasPrefix(modelDevice, "/dev/disk/by-id/") || modelUUID == "" {
-		return fmt.Errorf("permanent GPU model cache requires fixed %s and %s", permanentFixtureModelDeviceEnv, permanentFixtureModelUUIDEnv)
+		return fmt.Errorf("GPU model cache requires fixed %s and %s", hostFixtureModelDeviceEnv, hostFixtureModelUUIDEnv)
 	}
 	if modelDevice == dataStorageDevice {
 		return fmt.Errorf("GPU model-cache device must be distinct from the Forge data-storage device")
@@ -117,50 +116,32 @@ func validatePermanentGPUStorage(dataStorageDevice, modelDevice, modelUUID strin
 	return nil
 }
 
-func (fixture *permanentFixture) installName() string {
+func (fixture *hostFixture) installName() string {
 	return "forge-e2e-" + fixture.capacity
 }
 
-func (fixture *permanentFixture) reset(t *testing.T, forgeBin, forgeHome string) error {
+// prepare hands a freshly launched host to the scenario. Every run gets its own
+// EC2 instance (C1), so there is nothing to destroy or reboot: it waits for the
+// host baseline, proves the data device is blank and nothing is installed, and
+// records the host and model-cache evidence.
+func (fixture *hostFixture) prepare(t *testing.T) error {
 	t.Helper()
-	before, err := fixture.bootID()
+	client, err := waitForHostReady(context.Background(), fixture.address, fixture.sshKeyPath)
 	if err != nil {
-		return fmt.Errorf("read pre-cleanup boot ID: %w", err)
-	}
-	configPath := writeForgeConfigSpec(t, forgeConfigSpec{
-		Name: fixture.installName(), Address: fixture.address, SSHUser: fixture.sshUser,
-		SSHKeyPath: fixture.sshKeyPath, SSHHostKey: fixture.sshHostKey, DataStorageDevice: fixture.dataStorageDevice,
-		GPU: fixture.capacity == "gpu",
-	})
-	if err := fixture.releaseDataStorageConsumers(); err != nil {
-		return err
-	}
-	output, err := runForgeE(forgeBin, forgeHome, "destroy", "--config", configPath, "--purge-data-storage", "--reboot", "--yes")
-	if err != nil {
-		return fmt.Errorf("forge destroy --purge-data-storage --reboot --yes failed: %w\n%s", err, output)
-	}
-	after, client, err := fixture.waitForReboot(before)
-	if err != nil {
-		return err
-	}
-	client.Close()
-	// SSH can become available before cloud-final has completed after a reboot.
-	// Preserve the lifecycle's readiness boundary so Forge preflight never races
-	// provider boot configuration on a permanent fixture. Continue on the exact
-	// connection that proved readiness instead of opening a race-prone follow-up
-	// handshake while the public SSH frontend is still converging.
-	client, err = waitForHostReady(context.Background(), fixture.address, fixture.sshKeyPath)
-	if err != nil {
-		return fmt.Errorf("wait for post-reboot host readiness: %w", err)
+		return fmt.Errorf("wait for fresh host readiness: %w", err)
 	}
 	defer client.Close()
+	bootID, err := bootIDFromClient(client)
+	if err != nil {
+		return fmt.Errorf("read boot ID: %w", err)
+	}
 	if err := fixture.waitForDataStorageDevice(client); err != nil {
 		return err
 	}
-	if err := fixture.cleanHarnessState(client); err != nil {
+	if err := fixture.assertFreshBaseline(client); err != nil {
 		return err
 	}
-	if err := fixture.recordEvidence("lifecycle", before, after, modelCacheAuthority{}); err != nil {
+	if err := fixture.recordEvidence("lifecycle", bootID, bootID, modelCacheAuthority{}); err != nil {
 		return err
 	}
 	if fixture.capacity == "gpu" {
@@ -168,76 +149,28 @@ func (fixture *permanentFixture) reset(t *testing.T, forgeBin, forgeHome string)
 		if err != nil {
 			return err
 		}
-		if err := fixture.recordEvidence("model-cache", before, after, authority); err != nil {
+		if err := fixture.recordEvidence("model-cache", bootID, bootID, authority); err != nil {
 			return err
 		}
 	}
-	// Close the readiness session and hand the fixture to Forge only once the
-	// post-reboot public SSH frontend has demonstrably settled. A single
-	// successful readiness session is not a reliable handoff: the very next
-	// handshake can still be reset while the LB frontend converges after reboot
-	// (seen as apply-gpu-substrate failing with `ssh handshake failed ... reset`
-	// immediately after a passing reset). Establish bounded stability evidence
-	// instead of a fixed sleep before returning control to Forge.
-	_ = client.Close()
-	if err := fixture.waitForSSHStable(); err != nil {
-		return err
-	}
-	t.Logf("permanent %s fixture reset: boot %s -> %s data-storage=%s", fixture.capacity, before, after, fixture.dataStorageDevice)
+	t.Logf("fresh %s fixture ready: boot %s data-storage=%s", fixture.capacity, bootID, fixture.dataStorageDevice)
 	return nil
 }
 
-// waitForSSHStable proves bounded post-reboot SSH stability before handing the
-// fixture to Forge. It requires several consecutive fresh read-only handshakes
-// (each servable end to end) spread over a short window to all succeed; any
-// reset while the frontend is still converging resets the counter and re-probes
-// until stability is observed or a bounded deadline expires. This is
-// evidence-based (not a fixed sleep) and read-only (opens/closes idle sessions),
-// so it can never double-apply a mutation.
-func (fixture *permanentFixture) waitForSSHStable() error {
-	const (
-		window     = 90 * time.Second
-		interval   = 3 * time.Second
-		minSuccess = 3
-	)
-	deadline := time.Now().Add(window)
-	consecutive := 0
-	for {
-		client, err := sshDial(fixture.address, fixture.sshKeyPath)
-		if err == nil {
-			if _, rerr := sshOutput(client, "true"); rerr == nil {
-				consecutive++
-				client.Close()
-				if consecutive >= minSuccess {
-					return nil
-				}
-				time.Sleep(interval)
-				continue
-			}
-			client.Close()
-		}
-		consecutive = 0
-		if time.Now().After(deadline) {
-			return fmt.Errorf("post-reboot SSH frontend did not reach %d consecutive stable handshakes within %s (last dial err=%v)", minSuccess, window, err)
-		}
-		time.Sleep(2 * time.Second)
-	}
-}
-
-func (fixture *permanentFixture) releaseDataStorageConsumers() error {
+func (fixture *hostFixture) releaseDataStorageConsumers() error {
 	client, err := sshDial(fixture.address, fixture.sshKeyPath)
 	if err != nil {
 		return fmt.Errorf("connect for pre-purge claim release: %w", err)
 	}
 	defer client.Close()
-	script := permanentFixtureConsumerReleaseScript(fixture.dataStorageDevice)
+	script := hostFixtureConsumerReleaseScript(fixture.dataStorageDevice)
 	if output, err := sshOutput(client, script); err != nil {
 		return fmt.Errorf("release platform consumers/claims before explicit data-storage purge: %w\n%s", err, output)
 	}
 	return nil
 }
 
-// permanentFixtureConsumerReleaseFailureReporting makes a silent `set -e`
+// hostFixtureConsumerReleaseFailureReporting makes a silent `set -e`
 // abort in the consumer-release purge observable. It replays a bounded tail of
 // the purge output and names the exact failing command with its step, exit
 // status, source line, and function, so a candidate is never red from
@@ -245,7 +178,7 @@ func (fixture *permanentFixture) releaseDataStorageConsumers() error {
 // are reported by the enclosing assignment instead of leaking duplicate
 // reports; a process substitution stays as silent as its reader, which is
 // unchanged for the `helm list` and pod-list loops.
-const permanentFixtureConsumerReleaseFailureReporting = `teardown_evidence_lines=20
+const hostFixtureConsumerReleaseFailureReporting = `teardown_evidence_lines=20
 teardown_step="initialize consumer release"
 teardown_reason=""
 teardown_log=$(mktemp "${TMPDIR:-/tmp}/forge-e2e-consumer-release.XXXXXX")
@@ -257,7 +190,7 @@ report_teardown_failure() {
     return 0
   fi
   set +e
-  printf 'permanent-fixture consumer release failed: step=%s exit_status=%d line=%d function=%s command=%s\n' \
+  printf 'fixture consumer release failed: step=%s exit_status=%d line=%d function=%s command=%s\n' \
     "$teardown_step" "$status" "${BASH_LINENO[0]:-0}" "${FUNCNAME[1]:-main}" "$BASH_COMMAND" >&3
   exit "$status"
 }
@@ -267,9 +200,9 @@ finish_teardown_report() {
   set +e
   if test "$status" -ne 0; then
     if test -n "$teardown_reason"; then
-      printf 'permanent-fixture consumer release failed: step=%s exit_status=%d reason=%s\n' "$teardown_step" "$status" "$teardown_reason" >&3
+      printf 'fixture consumer release failed: step=%s exit_status=%d reason=%s\n' "$teardown_step" "$status" "$teardown_reason" >&3
     fi
-    printf 'permanent-fixture consumer release evidence (last %s output lines):\n' "$teardown_evidence_lines" >&3
+    printf 'fixture consumer release evidence (last %s output lines):\n' "$teardown_evidence_lines" >&3
     tail -n "$teardown_evidence_lines" "$teardown_log" >&3
   else
     cat "$teardown_log" >&3
@@ -280,10 +213,10 @@ trap report_teardown_failure ERR
 trap finish_teardown_report EXIT
 `
 
-const permanentFixtureConsumerHelmUninstallFunctions = `report_helm_uninstall_evidence() {
+const hostFixtureConsumerHelmUninstallFunctions = `report_helm_uninstall_evidence() {
   local release="$1" reason="$2" output="$3" evidence_lines=10
-  printf 'permanent-fixture consumer release diagnostic: step=helm-uninstall release=%s reason=%s\n' "$release" "$reason" >&2
-  printf 'permanent-fixture consumer release evidence: helm uninstall output (last %s lines)\n' "$evidence_lines" >&2
+  printf 'fixture consumer release diagnostic: step=helm-uninstall release=%s reason=%s\n' "$release" "$reason" >&2
+  printf 'fixture consumer release evidence: helm uninstall output (last %s lines)\n' "$evidence_lines" >&2
   printf '%s\n' "$output" | tail -n "$evidence_lines" >&2
 }
 
@@ -333,7 +266,7 @@ context deadline exceeded"
   echo "helm uninstall reported CRD $scheduled_crd scheduled for deletion; authoritative absence/ownership/deletion/zero-instance checks passed"
 }`
 
-func permanentFixtureConsumerReleaseBody(dataStorageDevice string) string {
+func hostFixtureConsumerReleaseBody(dataStorageDevice string) string {
 	return fmt.Sprintf(`data_storage_device=%s
 %s
 %s
@@ -384,17 +317,17 @@ for i in $(seq 1 150); do
 done
 teardown_reason="data-storage consumers did not converge after 150 attempts"
 exit 42
-`, candidateShellQuote(dataStorageDevice), permanentFixtureConsumerReleaseFailureReporting, permanentFixtureConsumerHelmUninstallFunctions)
+`, candidateShellQuote(dataStorageDevice), hostFixtureConsumerReleaseFailureReporting, hostFixtureConsumerHelmUninstallFunctions)
 }
 
-// permanentFixtureConsumerReleaseScript runs the purge through `bash -cEeu`.
+// hostFixtureConsumerReleaseScript runs the purge through `bash -cEeu`.
 // -E is required so the ERR reporter also names failures inside the Helm
 // uninstall function instead of a bare `Process exited with status 1`.
-func permanentFixtureConsumerReleaseScript(dataStorageDevice string) string {
-	return "sudo bash -cEeu " + candidateShellQuote(permanentFixtureConsumerReleaseBody(dataStorageDevice))
+func hostFixtureConsumerReleaseScript(dataStorageDevice string) string {
+	return "sudo bash -cEeu " + candidateShellQuote(hostFixtureConsumerReleaseBody(dataStorageDevice))
 }
 
-func (fixture *permanentFixture) bootID() (string, error) {
+func (fixture *hostFixture) bootID() (string, error) {
 	client, err := sshDial(fixture.address, fixture.sshKeyPath)
 	if err != nil {
 		return "", err
@@ -403,7 +336,7 @@ func (fixture *permanentFixture) bootID() (string, error) {
 	return bootIDFromClient(client)
 }
 
-func (fixture *permanentFixture) waitForReboot(before string) (string, *ssh.Client, error) {
+func (fixture *hostFixture) waitForReboot(before string) (string, *ssh.Client, error) {
 	deadline := time.Now().Add(8 * time.Minute)
 	disconnected := false
 	for time.Now().Before(deadline) {
@@ -420,7 +353,7 @@ func (fixture *permanentFixture) waitForReboot(before string) (string, *ssh.Clie
 		client.Close()
 		time.Sleep(2 * time.Second)
 	}
-	return "", nil, fmt.Errorf("permanent %s fixture did not prove SSH disconnect, reconnect, and a changed boot ID", fixture.capacity)
+	return "", nil, fmt.Errorf("%s fixture did not prove SSH disconnect, reconnect, and a changed boot ID", fixture.capacity)
 }
 
 func bootIDFromClient(client *ssh.Client) (string, error) {
@@ -435,7 +368,7 @@ func bootIDFromClient(client *ssh.Client) (string, error) {
 	return bootID, nil
 }
 
-func (fixture *permanentFixture) waitForDataStorageDevice(client *ssh.Client) error {
+func (fixture *hostFixture) waitForDataStorageDevice(client *ssh.Client) error {
 	deadline := time.Now().Add(2 * time.Minute)
 	command := "test -L " + candidateShellQuote(fixture.dataStorageDevice) + " && test -b \"$(readlink -f " + candidateShellQuote(fixture.dataStorageDevice) + ")\""
 	var lastErr error
@@ -448,9 +381,8 @@ func (fixture *permanentFixture) waitForDataStorageDevice(client *ssh.Client) er
 	return fmt.Errorf("dedicated data-storage device %s did not appear on %s: %w", fixture.dataStorageDevice, fixture.address, lastErr)
 }
 
-func (fixture *permanentFixture) cleanHarnessState(client *ssh.Client) error {
+func (fixture *hostFixture) assertFreshBaseline(client *ssh.Client) error {
 	script := fmt.Sprintf(`
-rm -rf -- %s %s
 ! command -v k3s >/dev/null 2>&1
 test ! -e /var/lib/iterabase/data-storage.receipt
 ! vgs iterabase-data >/dev/null 2>&1
@@ -459,9 +391,9 @@ data_device=$(readlink -f -- %s)
 test -b "$data_device"
 test -z "$(wipefs -n --noheadings --output TYPE -- "$data_device" | awk 'NF')"
 test ! -e /var/lib/rancher/k3s
-`, permanentFixtureHarnessStatePaths, candidateShellQuote("/var/lib/forge/overlay/"+fixture.installName()), candidateShellQuote(fixture.dataStorageDevice), candidateShellQuote(fixture.dataStorageDevice))
+`, candidateShellQuote(fixture.dataStorageDevice), candidateShellQuote(fixture.dataStorageDevice))
 	if output, err := sshOutput(client, "sudo bash -ceu "+candidateShellQuote(script)); err != nil {
-		return fmt.Errorf("permanent fixture clean-baseline assertion failed: %w\n%s", err, output)
+		return fmt.Errorf("fresh fixture baseline assertion failed: %w\n%s", err, output)
 	}
 	return nil
 }
@@ -483,12 +415,12 @@ func decodeModelCacheAuthority(data []byte) (modelCacheAuthority, error) {
 	return authority, nil
 }
 
-func (fixture *permanentFixture) validateModelCache(client *ssh.Client) (modelCacheAuthority, error) {
+func (fixture *hostFixture) validateModelCache(client *ssh.Client) (modelCacheAuthority, error) {
 	authority, err := loadModelCacheAuthority()
 	if err != nil {
 		return authority, err
 	}
-	weightPath := filepath.Join(permanentFixtureModelMount, authority.WeightPath)
+	weightPath := filepath.Join(hostFixtureModelMount, authority.WeightPath)
 	script := fmt.Sprintf(`
 data_device=$(readlink -f -- %s)
 cache=$(readlink -f -- %s)
@@ -503,14 +435,14 @@ weight_source=$(findmnt -n -o SOURCE --target "$weight")
 weight_source=${weight_source%%%%[*}
 test "$(readlink -f -- "$weight_source")" = "$cache"
 test "$(sha256sum -- "$weight" | awk '{print $1}')" = %s
-`, candidateShellQuote(fixture.dataStorageDevice), candidateShellQuote(fixture.modelDevice), candidateShellQuote(permanentFixtureModelMount), candidateShellQuote(fixture.modelUUID), candidateShellQuote(weightPath), candidateShellQuote(permanentFixtureModelMount), candidateShellQuote(authority.SHA256))
+`, candidateShellQuote(fixture.dataStorageDevice), candidateShellQuote(fixture.modelDevice), candidateShellQuote(hostFixtureModelMount), candidateShellQuote(fixture.modelUUID), candidateShellQuote(weightPath), candidateShellQuote(hostFixtureModelMount), candidateShellQuote(authority.SHA256))
 	if output, err := sshOutput(client, "sudo bash -ceu "+candidateShellQuote(script)); err != nil {
 		return authority, fmt.Errorf("GPU model-cache identity/revision/hash validation failed: %w\n%s", err, output)
 	}
 	return authority, nil
 }
 
-func (fixture *permanentFixture) recordEvidence(name, before, after string, authority modelCacheAuthority) error {
+func (fixture *hostFixture) recordEvidence(name, before, after string, authority modelCacheAuthority) error {
 	hostKeyHash := sha256.Sum256([]byte(fixture.sshHostKey))
 	evidence := sharede2e.FixtureEvidence{
 		Name: name, Capacity: fixture.capacity, HostKeySHA256: hex.EncodeToString(hostKeyHash[:]),
@@ -518,7 +450,7 @@ func (fixture *permanentFixture) recordEvidence(name, before, after string, auth
 	}
 	if name == "model-cache" {
 		evidence.ModelCacheDevice = fixture.modelDevice
-		evidence.ModelCacheMount = permanentFixtureModelMount
+		evidence.ModelCacheMount = hostFixtureModelMount
 		evidence.ModelCacheUUID = fixture.modelUUID
 		evidence.ModelID = authority.ModelID
 		evidence.ModelRevision = authority.Revision
@@ -527,8 +459,8 @@ func (fixture *permanentFixture) recordEvidence(name, before, after string, auth
 	return sharede2e.RecordFixtureEvidence(evidence)
 }
 
-func TestPermanentFixtureConsumerReleaseScriptIsValid(t *testing.T) {
-	script := permanentFixtureConsumerReleaseScript("/dev/disk/by-id/test-data-storage")
+func TestHostFixtureConsumerReleaseScriptIsValid(t *testing.T) {
+	script := hostFixtureConsumerReleaseScript("/dev/disk/by-id/test-data-storage")
 	command := exec.Command("bash", "-n")
 	command.Stdin = strings.NewReader(script)
 	if output, err := command.CombinedOutput(); err != nil {
@@ -542,7 +474,7 @@ func TestPermanentFixtureConsumerReleaseScriptIsValid(t *testing.T) {
 	}
 }
 
-func TestPermanentFixtureConsumerReleaseReportsFailingCommand(t *testing.T) {
+func TestHostFixtureConsumerReleaseReportsFailingCommand(t *testing.T) {
 	for _, test := range []struct {
 		name             string
 		k3s              string
@@ -585,8 +517,8 @@ fi
 exit 90
 `,
 			wantReports: []string{
-				`permanent-fixture consumer release diagnostic: step=helm-uninstall release=test-release`,
-				`permanent-fixture consumer release failed: step=helm uninstall test-release`,
+				`fixture consumer release diagnostic: step=helm-uninstall release=test-release`,
+				`fixture consumer release failed: step=helm uninstall test-release`,
 				`exit_status=1`,
 				`command=test -n "$scheduled_crd"`,
 				`unexpected helm error line 40`,
@@ -627,7 +559,7 @@ exit 92
 `,
 			helm: "exit 90\n",
 			wantReports: []string{
-				`permanent-fixture consumer release failed: step=delete AgentPool resources`,
+				`fixture consumer release failed: step=delete AgentPool resources`,
 				`exit_status=1`,
 				`command=k3s kubectl delete agentpools.platform.iterabase.com`,
 				`agentpool delete failure 40`,
@@ -639,9 +571,9 @@ exit 92
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fakeBin := t.TempDir()
-			writePermanentFixtureFakeCommand(t, fakeBin, "k3s", test.k3s)
-			writePermanentFixtureFakeCommand(t, fakeBin, "helm", test.helm)
-			command := exec.Command("bash", "-cEeu", permanentFixtureConsumerReleaseBody("/dev/disk/by-id/test-data-storage"))
+			writeHostFixtureFakeCommand(t, fakeBin, "k3s", test.k3s)
+			writeHostFixtureFakeCommand(t, fakeBin, "helm", test.helm)
+			command := exec.Command("bash", "-cEeu", hostFixtureConsumerReleaseBody("/dev/disk/by-id/test-data-storage"))
 			command.Env = []string{"PATH=" + fakeBin + ":" + os.Getenv("PATH")}
 			output, err := command.CombinedOutput()
 			if err == nil {
@@ -662,9 +594,9 @@ exit 92
 	}
 }
 
-func TestPermanentFixtureConsumerReleaseSucceedsWithFailureReporting(t *testing.T) {
+func TestHostFixtureConsumerReleaseSucceedsWithFailureReporting(t *testing.T) {
 	fakeBin := t.TempDir()
-	writePermanentFixtureFakeCommand(t, fakeBin, "k3s", `
+	writeHostFixtureFakeCommand(t, fakeBin, "k3s", `
 if test "$1" != kubectl; then exit 90; fi
 shift
 case "$1" in
@@ -681,12 +613,12 @@ case "$1" in
 esac
 exit 92
 `)
-	writePermanentFixtureFakeCommand(t, fakeBin, "helm", `
+	writeHostFixtureFakeCommand(t, fakeBin, "helm", `
 if test "$1" = list; then exit 0; fi
 exit 90
 `)
-	writePermanentFixtureFakeHostTools(t, fakeBin)
-	command := exec.Command("bash", "-cEeu", permanentFixtureConsumerReleaseBody("/dev/disk/by-id/test-data-storage"))
+	writeHostFixtureFakeHostTools(t, fakeBin)
+	command := exec.Command("bash", "-cEeu", hostFixtureConsumerReleaseBody("/dev/disk/by-id/test-data-storage"))
 	command.Env = []string{"PATH=" + fakeBin + ":" + os.Getenv("PATH")}
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -695,14 +627,14 @@ exit 90
 	if !strings.Contains(string(output), "k3s-teardown-step") {
 		t.Fatalf("successful teardown dropped its output:\n%s", output)
 	}
-	if strings.Contains(string(output), "permanent-fixture consumer release failed:") {
+	if strings.Contains(string(output), "fixture consumer release failed:") {
 		t.Fatalf("successful teardown reported a failure:\n%s", output)
 	}
 }
 
-func TestPermanentFixtureConsumerReleaseReportsNonConvergence(t *testing.T) {
+func TestHostFixtureConsumerReleaseReportsNonConvergence(t *testing.T) {
 	fakeBin := t.TempDir()
-	writePermanentFixtureFakeCommand(t, fakeBin, "k3s", `
+	writeHostFixtureFakeCommand(t, fakeBin, "k3s", `
 if test "$1" != kubectl; then exit 90; fi
 shift
 case "$1" in
@@ -723,12 +655,12 @@ case "$1" in
 esac
 exit 92
 `)
-	writePermanentFixtureFakeCommand(t, fakeBin, "helm", `
+	writeHostFixtureFakeCommand(t, fakeBin, "helm", `
 if test "$1" = list; then exit 0; fi
 exit 90
 `)
-	writePermanentFixtureFakeHostTools(t, fakeBin)
-	command := exec.Command("bash", "-cEeu", permanentFixtureConsumerReleaseBody("/dev/disk/by-id/test-data-storage"))
+	writeHostFixtureFakeHostTools(t, fakeBin)
+	command := exec.Command("bash", "-cEeu", hostFixtureConsumerReleaseBody("/dev/disk/by-id/test-data-storage"))
 	command.Env = []string{"PATH=" + fakeBin + ":" + os.Getenv("PATH")}
 	output, err := command.CombinedOutput()
 	var exitError *exec.ExitError
@@ -736,9 +668,9 @@ exit 90
 		t.Fatalf("non-converging teardown err = %v, want exit status 42:\n%s", err, output)
 	}
 	for _, want := range []string{
-		"permanent-fixture consumer release failed: step=wait for data-storage convergence exit_status=42",
+		"fixture consumer release failed: step=wait for data-storage convergence exit_status=42",
 		"data-storage consumers did not converge after 150 attempts",
-		"permanent-fixture consumer release evidence (last 20 output lines):",
+		"fixture consumer release evidence (last 20 output lines):",
 	} {
 		if !strings.Contains(string(output), want) {
 			t.Fatalf("non-convergence report lacks %q:\n%s", want, output)
@@ -746,7 +678,7 @@ exit 90
 	}
 }
 
-func TestPermanentFixtureConsumerHelmUninstallIsAuthoritative(t *testing.T) {
+func TestHostFixtureConsumerHelmUninstallIsAuthoritative(t *testing.T) {
 	const (
 		release = "test-release"
 		crd     = "widgets.platform.iterabase.com"
@@ -777,12 +709,12 @@ func TestPermanentFixtureConsumerHelmUninstallIsAuthoritative(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fakeBin := t.TempDir()
-			writePermanentFixtureFakeCommand(t, fakeBin, "helm", `
+			writeHostFixtureFakeCommand(t, fakeBin, "helm", `
 if test "$1" != uninstall; then exit 90; fi
 printf "%s" "${HOR545_FAKE_HELM_OUTPUT:-}"
 exit "${HOR545_FAKE_HELM_STATUS:-0}"
 `)
-			writePermanentFixtureFakeCommand(t, fakeBin, "k3s", `
+			writeHostFixtureFakeCommand(t, fakeBin, "k3s", `
 if test "$1" != kubectl; then exit 90; fi
 shift
 if test "$1" != get; then exit 91; fi
@@ -809,7 +741,7 @@ test "$1" = name
 printf "%s" "${HOR545_FAKE_INSTANCE_OBSERVATION:-}"
 exit "${HOR545_FAKE_INSTANCE_STATUS:-0}"
 `)
-			command := exec.Command("bash", "-ceu", permanentFixtureConsumerHelmUninstallFunctions+"\nuninstall_consumer_release "+release)
+			command := exec.Command("bash", "-ceu", hostFixtureConsumerHelmUninstallFunctions+"\nuninstall_consumer_release "+release)
 			command.Env = []string{
 				"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
 				"HOR545_FAKE_HELM_STATUS=" + fmt.Sprint(test.helmStatus),
@@ -832,40 +764,21 @@ exit "${HOR545_FAKE_INSTANCE_STATUS:-0}"
 	}
 }
 
-func writePermanentFixtureFakeHostTools(t *testing.T, fakeBin string) {
+func writeHostFixtureFakeHostTools(t *testing.T, fakeBin string) {
 	t.Helper()
-	writePermanentFixtureFakeCommand(t, fakeBin, "vgs", "exit 1\n")
-	writePermanentFixtureFakeCommand(t, fakeBin, "lvs", "exit 1\n")
-	writePermanentFixtureFakeCommand(t, fakeBin, "lsblk", "printf 'forge-e2e-fake-kernel\\n'\n")
-	writePermanentFixtureFakeCommand(t, fakeBin, "readlink", "printf '/dev/disk/by-id/test-data-storage\\n'\n")
-	writePermanentFixtureFakeCommand(t, fakeBin, "seq", "printf '1\\n'\n")
-	writePermanentFixtureFakeCommand(t, fakeBin, "sleep", "exit 0\n")
+	writeHostFixtureFakeCommand(t, fakeBin, "vgs", "exit 1\n")
+	writeHostFixtureFakeCommand(t, fakeBin, "lvs", "exit 1\n")
+	writeHostFixtureFakeCommand(t, fakeBin, "lsblk", "printf 'forge-e2e-fake-kernel\\n'\n")
+	writeHostFixtureFakeCommand(t, fakeBin, "readlink", "printf '/dev/disk/by-id/test-data-storage\\n'\n")
+	writeHostFixtureFakeCommand(t, fakeBin, "seq", "printf '1\\n'\n")
+	writeHostFixtureFakeCommand(t, fakeBin, "sleep", "exit 0\n")
 }
 
-func writePermanentFixtureFakeCommand(t *testing.T, dir, name, body string) {
+func writeHostFixtureFakeCommand(t *testing.T, dir, name, body string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte("#!/usr/bin/env bash\nset -eu\n"+body), 0o755); err != nil {
 		t.Fatalf("write fake %s: %v", name, err)
-	}
-}
-
-func TestPermanentFixtureCleanupCoversTransferredRunState(t *testing.T) {
-	for _, path := range []string{
-		"/tmp/iterabase-release-overlay-*",
-		"/tmp/iterabase-release-charts-*",
-		"/tmp/control-plane-image.tar",
-		"/tmp/runtime-fixture-image.tar",
-		"/tmp/forge-e2e-data-storage-consumer.pid",
-		"/tmp/forge-e2e-data-storage-consumer.log",
-		"/tmp/forge-e2e-consumer-release.*",
-	} {
-		if !strings.Contains(permanentFixtureHarnessStatePaths, path) {
-			t.Fatalf("permanent fixture cleanup does not cover %s", path)
-		}
-	}
-	if strings.Contains(permanentFixtureHarnessStatePaths, "workspace"+"-consumer") {
-		t.Fatal("raw data-storage consumer cleanup still uses superseded host-device terminology")
 	}
 }
 

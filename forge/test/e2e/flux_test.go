@@ -22,7 +22,7 @@ import (
 // No explicit FORGE_OVERLAY_TOKEN is accepted. The E2E process maps the
 // workflow's ephemeral GITHUB_TOKEN into each Forge subprocess; tokenless and
 // prompt behavior remains covered by unit + fake-SSH tests.
-func runFluxStage(t *testing.T, state *permanentCPUFixtureState) {
+func runFluxStage(t *testing.T, state *cpuFixtureState) {
 	if _, ok := os.LookupEnv("FORGE_OVERLAY_TOKEN"); ok {
 		t.Fatal("FORGE_OVERLAY_TOKEN must be unset; E2E supplies only the ephemeral workflow token")
 	}

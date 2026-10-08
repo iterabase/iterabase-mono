@@ -14,7 +14,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-// sshAPITunnel keeps the permanent GPU fixture's Kubernetes API private. The
+// sshAPITunnel keeps the GPU fixture's Kubernetes API private. The
 // fixture exposes only pinned SSH; all client-go and kubectl traffic traverses
 // one fixture-scoped direct-tcpip tunnel to the host-local K3s API.
 type sshAPITunnel struct {
@@ -24,7 +24,7 @@ type sshAPITunnel struct {
 	stopOnce sync.Once
 }
 
-func (state *permanentGPUFixtureState) bindKubeconfigTunnel(t *testing.T) {
+func (state *gpuFixtureState) bindKubeconfigTunnel(t *testing.T) {
 	t.Helper()
 	if state.fixture == nil {
 		return // legacy non-fixture qualification paths retain their existing public API path
@@ -32,14 +32,14 @@ func (state *permanentGPUFixtureState) bindKubeconfigTunnel(t *testing.T) {
 	if state.apiTunnel == nil {
 		tunnel, err := startSSHAPITunnel(state.host.IP, state.privKeyPath)
 		if err != nil {
-			t.Fatalf("open pinned SSH tunnel to permanent GPU Kubernetes API: %v", err)
+			t.Fatalf("open pinned SSH tunnel to GPU fixture Kubernetes API: %v", err)
 		}
 		state.apiTunnel = tunnel
 	}
 	path := filepath.Join(state.forgeHome, state.runID, "kubeconfig.yaml")
 	serverName, err := rewriteKubeconfigForAPITunnel(path, state.apiTunnel.listener.Addr().String(), state.apiServerName)
 	if err != nil {
-		t.Fatalf("bind permanent GPU kubeconfig to pinned SSH tunnel: %v", err)
+		t.Fatalf("bind GPU fixture kubeconfig to pinned SSH tunnel: %v", err)
 	}
 	state.apiServerName = serverName
 }
@@ -98,7 +98,7 @@ func proxyTunnelConnection(local, remote net.Conn) {
 	closeOnce.Do(closeBoth)
 }
 
-func (state *permanentGPUFixtureState) stopAPITunnel() {
+func (state *gpuFixtureState) stopAPITunnel() {
 	if state.apiTunnel == nil {
 		return
 	}

@@ -41,7 +41,7 @@ type workspaceModelStats struct {
 	CapacityWaiting int64 `json:"capacity_waiting"`
 }
 
-func refuseProcessHeldDataStorageDiskStage(t *testing.T, state *permanentCPUFixtureState) {
+func refuseProcessHeldDataStorageDiskStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	client, err := sshDial(state.ip, state.privKeyPath)
 	if err != nil {
@@ -95,7 +95,7 @@ printf raw-consumer-refusal=pass
 	stop()
 }
 
-func setupWorkspaceExecutionFixtureStage(t *testing.T, state *permanentCPUFixtureState) {
+func setupWorkspaceExecutionFixtureStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	repository := os.Getenv("FORGE_E2E_RUNTIME_IMAGE_REPO")
 	tag := os.Getenv("FORGE_E2E_RUNTIME_IMAGE_TAG")
@@ -204,7 +204,7 @@ spec:
 	state.diagnostics.redactor.Add(state.workspaceWorkKey)
 }
 
-func exerciseConcurrentWorkspaceWorkStage(t *testing.T, state *permanentCPUFixtureState) {
+func exerciseConcurrentWorkspaceWorkStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	cluster := workspaceCluster(t, state)
 	baseURL, stopAPI := openWorkspaceAPI(t, cluster, state)
@@ -253,7 +253,7 @@ func exerciseConcurrentWorkspaceWorkStage(t *testing.T, state *permanentCPUFixtu
 	_ = waitWorkspaceWorkState(t, baseURL, state.workspaceWorkKey, second.ID, "done", 2*time.Minute)
 }
 
-func exerciseActiveWorkspaceCapacityStage(t *testing.T, state *permanentCPUFixtureState) {
+func exerciseActiveWorkspaceCapacityStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	cluster := workspaceCluster(t, state)
 	baseURL, stopAPI := openWorkspaceAPI(t, cluster, state)
@@ -320,7 +320,7 @@ func exerciseActiveWorkspaceCapacityStage(t *testing.T, state *permanentCPUFixtu
 	_ = waitWorkspaceWorkState(t, baseURL, state.workspaceWorkKey, queued.ID, "done", 4*time.Minute)
 }
 
-func growAgentPoolDuringActiveTurn(t *testing.T, cluster *remotecluster.Cluster, state *permanentCPUFixtureState, client *ssh.Client, active workspaceWorkItem) {
+func growAgentPoolDuringActiveTurn(t *testing.T, cluster *remotecluster.Cluster, state *cpuFixtureState, client *ssh.Client, active workspaceWorkItem) {
 	t.Helper()
 	const (
 		pool  = "forge-storage-pool"
@@ -389,7 +389,7 @@ func growAgentPoolDuringActiveTurn(t *testing.T, cluster *remotecluster.Cluster,
 	}
 }
 
-func exerciseAggregateVGCapacityStage(t *testing.T, state *permanentCPUFixtureState) {
+func exerciseAggregateVGCapacityStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	client, err := sshDial(state.ip, state.privKeyPath)
 	if err != nil {
@@ -590,7 +590,7 @@ func resizeFailureActionable(events string) bool {
 		(strings.Contains(events, "ExternalExpanding") && strings.Contains(strings.ToLower(events), "capacity"))
 }
 
-func exerciseHumanGateWorkspaceReplacementStage(t *testing.T, state *permanentCPUFixtureState) {
+func exerciseHumanGateWorkspaceReplacementStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	cluster := workspaceCluster(t, state)
 	cluster.Kubectl(t, "patch", "agentpool/forge-storage-pool", "-n", workspaceNamespace, "--type=merge", "-p", `{"spec":{"replicas":1}}`)
@@ -643,7 +643,7 @@ const (
 	storageReasonWorkspaceCapacityHealthyE2E = "WorkspaceCapacityHealthy"
 )
 
-func workspaceCluster(t *testing.T, state *permanentCPUFixtureState) *remotecluster.Cluster {
+func workspaceCluster(t *testing.T, state *cpuFixtureState) *remotecluster.Cluster {
 	t.Helper()
 	return remotecluster.Use(t, filepath.Join(state.forgeHome, state.runID, "kubeconfig.yaml"))
 }
@@ -657,7 +657,7 @@ func applyWorkspaceManifest(t *testing.T, cluster *remotecluster.Cluster, name, 
 	cluster.Kubectl(t, "apply", "-f", path)
 }
 
-func openWorkspaceAPI(t *testing.T, cluster *remotecluster.Cluster, state *permanentCPUFixtureState) (string, func()) {
+func openWorkspaceAPI(t *testing.T, cluster *remotecluster.Cluster, state *cpuFixtureState) (string, func()) {
 	t.Helper()
 	return openWorkspaceService(t, cluster, "svc/"+state.runID+"-control-plane-api", 8080)
 }
@@ -787,7 +787,7 @@ func waitWorkspaceWorkState(t *testing.T, baseURL, key, id, wanted string, timeo
 	return workspaceWorkItem{}
 }
 
-func workspaceDatabaseQueryResult(cluster *remotecluster.Cluster, state *permanentCPUFixtureState, query string) (string, error) {
+func workspaceDatabaseQueryResult(cluster *remotecluster.Cluster, state *cpuFixtureState, query string) (string, error) {
 	stdout, _, err := cluster.KubectlSeparated("exec", "-n", workspaceNamespace,
 		"statefulset/"+state.runID+"-postgresql", "-c", "postgresql", "--",
 		"psql", "-U", "controlplane", "-d", "controlplane", "-Atc", query)
@@ -797,7 +797,7 @@ func workspaceDatabaseQueryResult(cluster *remotecluster.Cluster, state *permane
 	return strings.TrimSpace(stdout), nil
 }
 
-func workspaceDatabaseQuery(t *testing.T, cluster *remotecluster.Cluster, state *permanentCPUFixtureState, query string) string {
+func workspaceDatabaseQuery(t *testing.T, cluster *remotecluster.Cluster, state *cpuFixtureState, query string) string {
 	t.Helper()
 	result, err := workspaceDatabaseQueryResult(cluster, state, query)
 	if err != nil {
@@ -806,7 +806,7 @@ func workspaceDatabaseQuery(t *testing.T, cluster *remotecluster.Cluster, state 
 	return result
 }
 
-func waitWorkspaceConcurrencyRows(t *testing.T, cluster *remotecluster.Cluster, state *permanentCPUFixtureState, firstWorkID, secondWorkID string, requireChild bool, timeout time.Duration) []workspaceConcurrencyRow {
+func waitWorkspaceConcurrencyRows(t *testing.T, cluster *remotecluster.Cluster, state *cpuFixtureState, firstWorkID, secondWorkID string, requireChild bool, timeout time.Duration) []workspaceConcurrencyRow {
 	t.Helper()
 	query := fmt.Sprintf(`
 SELECT json_build_object(
@@ -952,7 +952,7 @@ func waitWorkspaceModelBarrier(t *testing.T, baseURL string, timeout time.Durati
 	return workspaceBarrierStatus{}
 }
 
-func waitWorkspaceDatabaseValue(t *testing.T, cluster *remotecluster.Cluster, state *permanentCPUFixtureState, query, wanted string, timeout time.Duration) {
+func waitWorkspaceDatabaseValue(t *testing.T, cluster *remotecluster.Cluster, state *cpuFixtureState, query, wanted string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	last := ""
@@ -1167,7 +1167,7 @@ func waitWorkspaceProofJob(t *testing.T, cluster *remotecluster.Cluster, name st
 	t.Fatalf("workspace proof Job %s did not complete in %s (last=%q)", name, timeout, last)
 }
 
-func replaceIdleWorkspaceWorkerAtGate(t *testing.T, cluster *remotecluster.Cluster, state *permanentCPUFixtureState) {
+func replaceIdleWorkspaceWorkerAtGate(t *testing.T, cluster *remotecluster.Cluster, state *cpuFixtureState) {
 	t.Helper()
 	pod := strings.Fields(cluster.Kubectl(t, "get", "pods", "-n", workspaceNamespace, "-l", "platform.iterabase.com/agentpool=forge-storage-pool", "-o", "name"))[0]
 	name := strings.TrimPrefix(pod, "pod/")

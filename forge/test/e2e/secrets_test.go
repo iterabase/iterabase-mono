@@ -20,7 +20,7 @@ import (
 // git-init'd) and referenced via file:// so this test is self-contained (no
 // external overlay repo required). A real install points overlay.repo at the
 // client-fork overlay git URL instead.
-func runSecretsStage(t *testing.T, state *permanentCPUFixtureState) {
+func runSecretsStage(t *testing.T, state *cpuFixtureState) {
 	const (
 		secretName  = "e2e-test-secret"
 		secretNs    = "forge-e2e-secrets"
