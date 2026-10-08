@@ -2,7 +2,7 @@ enabled: true
 
 image:
   repository: ghcr.io/iterabase/inference-gateway
-  tag: "0.2.7"
+  tag: "" # default: the chart appVersion, which equals inference-gateway/VERSION
   pullPolicy: IfNotPresent
 
 replicaCount: 1
