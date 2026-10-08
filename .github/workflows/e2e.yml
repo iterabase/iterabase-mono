@@ -1,18 +1,21 @@
 name: E2E
 
+# Build once (C3), then run the selected scenarios (C2): Kind on GitHub-hosted
+# runners and real-machine scenarios on fresh per-run EC2 hosts (C1). The merge
+# queue selects strictly (DES-HOR-590-02). A push to master only builds, reusing
+# the merge-queue images for the same commit; it runs no scenarios again.
 on:
   pull_request:
+  merge_group:
   push:
     branches: [master]
 
 permissions:
   contents: read
-  actions: read
-  packages: read
 
-# Each permanent fixture has one non-canceling lock shared by PR, master, and
-# candidate execution. Pending contenders queue FIFO instead of being canceled.
-# Independent CPU and GPU hosts may run concurrently.
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
+  cancel-in-progress: true
 
 env:
   GO_CACHE_DEPENDENCIES: |
@@ -22,411 +25,279 @@ env:
     forge/test/e2e/go.sum
     testkit/e2e/go.mod
     control-plane/test/e2e/go.mod
-    charts/test/e2e/go.mod
     charts/test/e2e/go.sum
-    .github/tools/go.sum
-    .github/tools/control-plane/go.sum
 
 jobs:
-  plan:
-    name: Plan
+  select:
+    name: select
     runs-on: ubuntu-latest
-    concurrency:
-      group: e2e-plan-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     outputs:
-      artifact_build_matrix: ${{ steps.plan.outputs.artifact_build_matrix }}
-      scenario_matrix: ${{ steps.plan.outputs.scenario_matrix }}
-      kind_matrix: ${{ steps.plan.outputs.kind_matrix }}
-      real_machine_matrix: ${{ steps.plan.outputs.real_machine_matrix }}
-      has_artifacts: ${{ steps.plan.outputs.has_artifacts }}
-      has_scenarios: ${{ steps.plan.outputs.has_scenarios }}
-      has_kind: ${{ steps.plan.outputs.has_kind }}
-      has_real_machine: ${{ steps.plan.outputs.has_real_machine }}
-      scenario_total: ${{ steps.plan.outputs.scenario_total }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      stages: ${{ steps.select.outputs.stages }}
+      build: ${{ steps.plan.outputs.build }}
+      kind: ${{ steps.plan.outputs.kind }}
+      real: ${{ steps.plan.outputs.real }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-      - name: Verify the exact selected source
+      - id: select
+        uses: ./.github/actions/select
+      - name: Plan builds and scenario matrices
+        id: plan
         env:
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-      - uses: ./.github/actions/setup-go
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          source_sha=$(git rev-parse HEAD)
+          plan=$(python3 .github/scripts/e2e_inputs.py plan --selection "$RUNNER_TEMP/selection.json" \
+            --catalogue "$RUNNER_TEMP/catalogue.json" --source-sha "$source_sha")
+          if [[ "$EVENT" == push ]]; then
+            # The merge queue already validated this exact commit.
+            plan=$(jq -c '.kind = [] | .real = []' <<<"$plan")
+          fi
+          {
+            echo "source_sha=$source_sha"
+            echo "build=$(jq -c .build <<<"$plan")"
+            echo "kind=$(jq -c .kind <<<"$plan")"
+            echo "real=$(jq -c .real <<<"$plan")"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          go-version: 1.26.5
-          cache-dependency-path: ${{ env.GO_CACHE_DEPENDENCIES }}
-          cache-scope: e2e-plan
-      - uses: ./.github/actions/setup-kubernetes-tools
-      - name: Install checksummed Buildx for complete baseline verification
-        uses: ./.github/actions/setup-ci-tool
-        with: {name: buildx, version: 0.36.1}
+          name: e2e-selection
+          path: |
+            ${{ runner.temp }}/selection.json
+            ${{ runner.temp }}/catalogue.json
+
+  build:
+    name: build ${{ matrix.image }}
+    needs: select
+    if: needs.select.outputs.build != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.build) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify the exact source
+        run: test "$(git rev-parse HEAD)" = '${{ needs.select.outputs.source_sha }}'
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Log in to the chart registry
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: echo "$GH_TOKEN" | helm registry login ghcr.io -u '${{ github.actor }}' --password-stdin
-      - name: Test the unified plan, recipe, composer, and result contracts
-        run: python3 .github/scripts/test_e2e.py
-      - name: Collect changed paths
-        id: paths
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python3 .github/scripts/collect_changed_paths.py
-      - name: Generate execution plan
-        id: plan
-        env:
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reuse an existing build of this commit
+        id: existing
         run: |
-          python3 .github/scripts/e2e.py plan \
-            --intent pr \
-            --source-sha "$SOURCE_SHA" \
-            --selection-file /tmp/changed-path-selection.json \
-            --output e2e-plan.json
-          python3 .github/scripts/e2e.py resolve-baselines \
-            --plan e2e-plan.json \
-            --github-output "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          if docker buildx imagetools inspect '${{ matrix.repository }}:${{ matrix.tag }}' >/dev/null 2>&1; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+            echo "reusing \`${{ matrix.repository }}:${{ matrix.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - if: steps.existing.outputs.reuse != 'true'
+        uses: ./.github/actions/setup-buildx
+      - name: Build and push ${{ matrix.image }} once
+        if: steps.existing.outputs.reuse != 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          name: e2e-plan
-          path: e2e-plan.json
-          retention-days: 30
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ matrix.repository }}:${{ matrix.tag }}
+          build-args: |
+            VERSION=${{ matrix.version }}
+            COMMIT=${{ needs.select.outputs.source_sha }}
+          labels: |
+            org.opencontainers.image.version=${{ matrix.version }}
+            org.opencontainers.image.revision=${{ needs.select.outputs.source_sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=image-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.name }}
 
-  runtime-contract:
-    name: Runner contract
-    needs: plan
-    if: needs.plan.outputs.has_scenarios == 'true'
+  images:
+    name: resolve images
+    needs: [select, build]
+    if: needs.select.outputs.build != '[]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      images: ${{ steps.resolve.outputs.images }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: ./.github/actions/setup-go
-        with:
-          go-version: 1.26.5
-          cache-dependency-path: ${{ env.GO_CACHE_DEPENDENCIES }}
-          cache-scope: e2e-runtime-contract
-      - run: make testkit-test
-
-  artifacts:
-    name: ${{ matrix.artifact }}
-    needs: plan
-    if: needs.plan.outputs.has_artifacts == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    concurrency:
-      group: e2e-artifact-${{ matrix.artifact }}-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.plan.outputs.artifact_build_matrix) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-      - name: Verify artifact source checkout
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve every sha tag to its registry digest
+        id: resolve
         env:
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: e2e-plan
-          path: ${{ runner.temp }}/plan
-      - uses: ./.github/actions/setup-go
-        with:
-          go-version: 1.26.5
-          cache-dependency-path: ${{ env.GO_CACHE_DEPENDENCIES }}
-          cache-scope: e2e-artifact-${{ matrix.artifact }}
-      - uses: ./.github/actions/setup-kubernetes-tools
-      - name: Install checksummed GoReleaser
-        if: matrix.kind == 'forge'
-        uses: ./.github/actions/setup-ci-tool
-        with: {name: goreleaser, version: 2.12.7}
-      - name: Add reviewed Helm repositories
-        if: matrix.kind == 'chart' || matrix.kind == 'chart-companion'
-        run: .github/scripts/add_helm_repositories.sh
-      - name: Build once from the reviewed production recipe
-        run: >-
-          python3 .github/scripts/e2e.py build-artifact
-          --plan '${{ runner.temp }}/plan/e2e-plan.json'
-          --artifact '${{ matrix.artifact }}'
-          --output '${{ runner.temp }}/artifact'
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-runtime-${{ matrix.artifact }}
-          path: ${{ runner.temp }}/artifact/
-          retention-days: 7
+          BUILD: ${{ needs.select.outputs.build }}
+        run: |
+          set -euo pipefail
+          images='{}'
+          while IFS= read -r entry; do
+            name=$(jq -r .name <<<"$entry"); repository=$(jq -r .repository <<<"$entry"); tag=$(jq -r .tag <<<"$entry")
+            digest=$(docker buildx imagetools inspect "$repository:$tag" --format '{{json .Manifest}}' | jq -r .digest)
+            images=$(jq -c --arg n "$name" --arg r "$repository" --arg t "$tag" --arg d "$digest" \
+              '.[$n] = {repository: $r, tag: $t, digest: $d}' <<<"$images")
+            echo "- \`$repository:$tag\` = \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -c '.[]' <<<"$BUILD")
+          echo "images=$images" >> "$GITHUB_OUTPUT"
 
   kind:
     name: ${{ matrix.id }}
-    needs: [plan, runtime-contract, artifacts]
-    if: >-
-      always() && needs.plan.result == 'success' &&
-      needs.plan.outputs.has_kind == 'true' &&
-      needs.runtime-contract.result == 'success' &&
-      (needs.artifacts.result == 'success' || needs.artifacts.result == 'skipped')
+    needs: [select, images]
+    if: needs.select.outputs.kind != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.timeout }}
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
-      max-parallel: 4
       matrix:
-        include: ${{ fromJSON(needs.plan.outputs.kind_matrix) }}
-    concurrency:
-      group: e2e-scenario-${{ matrix.artifact }}-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: true
+        include: ${{ fromJSON(needs.select.outputs.kind) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify scenario source checkout
-        env:
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: e2e-plan
-          path: ${{ runner.temp }}/plan
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: needs.plan.outputs.has_artifacts == 'true'
-        with:
-          pattern: e2e-runtime-*
-          path: ${{ runner.temp }}/artifacts
+          name: e2e-selection
+          path: ${{ runner.temp }}/selection
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
           cache-dependency-path: ${{ env.GO_CACHE_DEPENDENCIES }}
-          cache-scope: e2e-${{ matrix.artifact }}
+          cache-scope: e2e-${{ matrix.owner }}
       - uses: ./.github/actions/setup-kubernetes-tools
-      - uses: ./.github/actions/setup-node
-        if: matrix.target == 'test-e2e-browser'
+      - uses: ./.github/actions/cache-helm
+        with:
+          cache-scope: e2e
+      - name: Add external chart repositories
+        run: .github/scripts/add_helm_repositories.sh
+      - if: matrix.id == 'control-plane/deployed-control-plane'
+        uses: ./.github/actions/setup-node
         with:
           node-version: 24.19.0
           cache-dependency-path: control-plane/test/e2e/playwright/package-lock.json
           cache-scope: e2e-browser
-      - uses: ./.github/actions/setup-playwright
-        if: matrix.target == 'test-e2e-browser'
+      - if: matrix.id == 'control-plane/deployed-control-plane'
+        uses: ./.github/actions/setup-playwright
         with: {version: 1.62.1}
-      - name: Compose and verify the exact runtime bundle
-        run: >-
-          python3 .github/scripts/e2e.py compose
-          --plan '${{ runner.temp }}/plan/e2e-plan.json'
-          --scenario '${{ matrix.id }}'
-          --artifacts '${{ runner.temp }}/artifacts'
-          --output '${{ runner.temp }}/runtime'
-          --env-output "$GITHUB_ENV"
-      - name: Bind the required result artifact and retained runtime authority
-        run: |
-          mkdir -p '${{ runner.temp }}/result'
-          cp '${{ runner.temp }}/runtime/runtime-bundle.json' '${{ runner.temp }}/result/runtime-bundle.json'
-          echo 'ITERABASE_E2E_RESULT=${{ runner.temp }}/result/result.json' >> "$GITHUB_ENV"
-      - name: Run the compiled owner scenario once
-        working-directory: ${{ matrix.owner }}
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare inputs from the build-once images
         env:
-          ITERABASE_E2E_DIAGNOSTICS: ${{ runner.temp }}/diagnostics/${{ matrix.artifact }}
-          E2E_SKIP_BUILD_DEPS: "true"
-        run: make '${{ matrix.target }}'
-      - name: Retain strict scenario result
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-result-${{ matrix.artifact }}
-          path: ${{ runner.temp }}/result/
-          if-no-files-found: error
-          retention-days: 30
-      - name: Retain redacted diagnostics
-        if: failure() || cancelled()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-diagnostics-${{ matrix.artifact }}
-          path: ${{ runner.temp }}/diagnostics/${{ matrix.artifact }}
-          if-no-files-found: ignore
-          retention-days: 7
+          GH_TOKEN: ${{ github.token }}
+          IMAGES: ${{ needs.images.outputs.images }}
+        run: |
+          python3 .github/scripts/e2e_inputs.py prepare --scenario '${{ matrix.id }}' \
+            --catalogue "$RUNNER_TEMP/selection/catalogue.json" --images "$IMAGES" \
+            --source-sha '${{ needs.select.outputs.source_sha }}' \
+            --optional-stages '${{ needs.select.outputs.stages }}' --workdir "$RUNNER_TEMP/inputs"
+      - name: Run ${{ matrix.id }}
+        run: make -C '${{ matrix.owner }}' '${{ matrix.make_target }}'
 
   real-machine:
-    name: ${{ matrix.capacity }}
-    needs: [plan, runtime-contract, artifacts]
-    if: >-
-      always() && needs.plan.result == 'success' &&
-      needs.plan.outputs.has_real_machine == 'true' &&
-      needs.runtime-contract.result == 'success' &&
-      (needs.artifacts.result == 'success' || needs.artifacts.result == 'skipped')
+    name: ${{ matrix.id }}
+    needs: [select, images]
+    if: needs.select.outputs.real != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.timeout }}
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.plan.outputs.real_machine_matrix) }}
-    concurrency:
-      group: iterabase-permanent-fixture-${{ matrix.capacity }}
-      cancel-in-progress: false
-      queue: max
+        include: ${{ fromJSON(needs.select.outputs.real) }}
+    env:
+      FIXTURE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify capacity source checkout
-        env:
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: e2e-plan
-          path: ${{ runner.temp }}/plan
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: needs.plan.outputs.has_artifacts == 'true'
-        with:
-          pattern: e2e-runtime-*
-          path: ${{ runner.temp }}/artifacts
+          name: e2e-selection
+          path: ${{ runner.temp }}/selection
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
           cache-dependency-path: ${{ env.GO_CACHE_DEPENDENCIES }}
-          cache-scope: e2e-real-${{ matrix.capacity }}
+          cache-scope: e2e-forge
       - uses: ./.github/actions/setup-kubernetes-tools
-      - name: Authorize the founder-only fixture trust boundary
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-        run: .github/scripts/verify_fixture_trust.sh
-      - name: Bind the fixed permanent fixture
-        uses: ./.github/actions/setup-permanent-fixture
+      - uses: ./.github/actions/cache-helm
         with:
-          capacity: ${{ matrix.capacity }}
-          address: ${{ matrix.capacity == 'cpu' && vars.FORGE_E2E_CPU_ADDRESS || vars.FORGE_E2E_GPU_ADDRESS }}
-          ssh-user: ${{ matrix.capacity == 'cpu' && vars.FORGE_E2E_CPU_SSH_USER || vars.FORGE_E2E_GPU_SSH_USER }}
-          ssh-private-key: ${{ matrix.capacity == 'cpu' && secrets.FORGE_E2E_CPU_SSH_KEY || secrets.FORGE_E2E_GPU_SSH_KEY }}
-          ssh-host-key: ${{ matrix.capacity == 'cpu' && vars.FORGE_E2E_CPU_SSH_HOST_KEY || vars.FORGE_E2E_GPU_SSH_HOST_KEY }}
-          data-storage-device: ${{ matrix.capacity == 'cpu' && vars.FORGE_E2E_CPU_DATA_STORAGE_DEVICE || vars.FORGE_E2E_GPU_DATA_STORAGE_DEVICE }}
-          model-cache-device: ${{ matrix.capacity == 'gpu' && vars.FORGE_E2E_GPU_MODEL_CACHE_DEVICE || '' }}
-          model-cache-uuid: ${{ matrix.capacity == 'gpu' && vars.FORGE_E2E_GPU_MODEL_CACHE_UUID || '' }}
-      - name: Compute pinned image cache identity
-        env:
-          CAPACITY: ${{ matrix.capacity }}
+          cache-scope: e2e
+      - name: Add external chart repositories
+        run: .github/scripts/add_helm_repositories.sh
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/setup-aws-ci
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-e2e-${{ matrix.name }}-${{ github.run_id }}
+      - name: Launch a fresh ${{ matrix.capacity }} host
         run: |
-          set -euo pipefail
-          manifest="$(python3 .github/scripts/fixture_image_cache.py manifest --capacity "$CAPACITY")"
-          printf 'FORGE_E2E_IMAGE_CACHE_ROOT=%s\n' "$(jq -r '.cache_root' <<<"$manifest")" >> "$GITHUB_ENV"
-          printf 'FORGE_E2E_IMAGE_CACHE_GENERATION=%s\n' "$(jq -r '.generation' <<<"$manifest")" >> "$GITHUB_ENV"
-      - name: Compose and run every scenario for this fixture serially
+          python3 .github/scripts/aws_ci.py launch-fixture --region '${{ vars.AWS_CI_REGION }}' \
+            --run-id "$FIXTURE_RUN_ID" --scenario '${{ matrix.name }}' --capacity '${{ matrix.capacity }}' \
+            --max-age-minutes '${{ matrix.timeout }}'
+      - name: Prepare inputs from the build-once images
         env:
-          SCENARIOS: ${{ toJSON(matrix.scenarios) }}
-          GH_RUNTIME_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          IMAGES: ${{ needs.images.outputs.images }}
         run: |
-          mkdir -p '${{ runner.temp }}/results' '${{ runner.temp }}/diagnostics'
-          status=0
-          while IFS= read -r scenario; do
-            id=$(jq -r '.id' <<<"$scenario")
-            owner=$(jq -r '.owner' <<<"$scenario")
-            target=$(jq -r '.target' <<<"$scenario")
-            artifact=$(jq -r '.artifact' <<<"$scenario")
-            runtime='${{ runner.temp }}/runtime-'"$artifact"
-            envfile='${{ runner.temp }}/env-'"$artifact"
-            : > "$envfile"
-            python3 .github/scripts/e2e.py compose \
-              --plan '${{ runner.temp }}/plan/e2e-plan.json' \
-              --scenario "$id" \
-              --artifacts '${{ runner.temp }}/artifacts' \
-              --output "$runtime" \
-              --env-output "$envfile"
-            cp "$runtime/runtime-bundle.json" '${{ runner.temp }}/results/'"$artifact.runtime-bundle.json"
-            if ! (
-              set -a
-              source "$envfile"
-              set +a
-              export GITHUB_TOKEN="$GH_RUNTIME_TOKEN"
-              export FORGE_E2E_REQUIRE_CAPACITY=true
-              export ITERABASE_E2E_RESULT='${{ runner.temp }}/results/'"$artifact.json"
-              export ITERABASE_E2E_DIAGNOSTICS='${{ runner.temp }}/diagnostics/'"$artifact"
-              make -C "$owner" "$target"
-            ); then
-              status=1
-            fi
-          done < <(jq -c '.[]' <<<"$SCENARIOS")
-          exit "$status"
-      - name: Retain strict capacity results
+          python3 .github/scripts/e2e_inputs.py prepare --scenario '${{ matrix.id }}' \
+            --catalogue "$RUNNER_TEMP/selection/catalogue.json" --images "$IMAGES" \
+            --source-sha '${{ needs.select.outputs.source_sha }}' \
+            --optional-stages '${{ needs.select.outputs.stages }}' --workdir "$RUNNER_TEMP/inputs"
+      - name: Run ${{ matrix.id }}
+        run: make -C forge '${{ matrix.make_target }}'
+      - name: Remove the host
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-result-permanent-fixture-${{ matrix.capacity }}
-          path: ${{ runner.temp }}/results/*.json
-          if-no-files-found: error
-          retention-days: 30
-      - name: Retain redacted capacity diagnostics
-        if: failure() || cancelled()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-diagnostics-permanent-fixture-${{ matrix.capacity }}
-          path: ${{ runner.temp }}/diagnostics
-          if-no-files-found: ignore
-          retention-days: 7
+        run: python3 .github/scripts/aws_ci.py cleanup-run --region '${{ vars.AWS_CI_REGION }}' --run-id "$FIXTURE_RUN_ID"
 
   required:
     name: E2E / required
     if: always()
-    needs: [plan, runtime-contract, artifacts, kind, real-machine]
+    needs: [select, build, images, kind, real-machine]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: e2e-plan
-          path: ${{ runner.temp }}/plan
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: needs.plan.outputs.has_scenarios == 'true'
-        with:
-          pattern: e2e-result-*
-          path: ${{ runner.temp }}/results
-      - name: Reconcile the exact plan, result set, stages, and identities
+      - name: Require the selection and every job that had work
         env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          RUNTIME_CONTRACT_RESULT: ${{ needs.runtime-contract.result }}
-          ARTIFACTS_RESULT: ${{ needs.artifacts.result }}
-          KIND_RESULT: ${{ needs.kind.result }}
-          REAL_MACHINE_RESULT: ${{ needs.real-machine.result }}
-          PLAN_HAS_ARTIFACTS: ${{ needs.plan.outputs.has_artifacts }}
-          PLAN_HAS_SCENARIOS: ${{ needs.plan.outputs.has_scenarios }}
-          PLAN_HAS_KIND: ${{ needs.plan.outputs.has_kind }}
-          PLAN_HAS_REAL_MACHINE: ${{ needs.plan.outputs.has_real_machine }}
-          PLAN_SCENARIO_TOTAL: ${{ needs.plan.outputs.scenario_total }}
+          NEEDS: ${{ toJSON(needs) }}
+          BUILD: ${{ needs.select.outputs.build }}
+          KIND: ${{ needs.select.outputs.kind }}
+          REAL: ${{ needs.select.outputs.real }}
         run: |
-          jq -n \
-            --arg plan_result "$PLAN_RESULT" \
-            --arg runtime_contract_result "$RUNTIME_CONTRACT_RESULT" \
-            --arg artifacts_result "$ARTIFACTS_RESULT" \
-            --arg kind_result "$KIND_RESULT" \
-            --arg real_machine_result "$REAL_MACHINE_RESULT" \
-            --arg has_artifacts "$PLAN_HAS_ARTIFACTS" \
-            --arg has_scenarios "$PLAN_HAS_SCENARIOS" \
-            --arg has_kind "$PLAN_HAS_KIND" \
-            --arg has_real_machine "$PLAN_HAS_REAL_MACHINE" \
-            --arg scenario_total "$PLAN_SCENARIO_TOTAL" \
-            '{
-              plan: {result: $plan_result, outputs: {
-                has_artifacts: $has_artifacts,
-                has_scenarios: $has_scenarios,
-                has_kind: $has_kind,
-                has_real_machine: $has_real_machine,
-                scenario_total: $scenario_total
-              }},
-              "runtime-contract": {result: $runtime_contract_result},
-              artifacts: {result: $artifacts_result},
-              kind: {result: $kind_result},
-              "real-machine": {result: $real_machine_result}
-            }' > '${{ runner.temp }}/e2e-needs.json'
-          python3 .github/scripts/e2e.py validate-results \
-            --plan '${{ runner.temp }}/plan/e2e-plan.json' \
-            --results '${{ runner.temp }}/results' \
-            --needs-file '${{ runner.temp }}/e2e-needs.json'
+          set -euo pipefail
+          has() { if [[ -n "$1" && "$1" != "[]" ]]; then echo true; else echo false; fi; }
+          expect() {  # job, had-work
+            local result; result=$(jq -r --arg job "$1" '.[$job].result' <<<"$NEEDS")
+            if [[ "$2" == true ]]; then
+              [[ "$result" == success ]] || { echo "::error::$1 finished $result"; return 1; }
+            else
+              [[ "$result" == skipped ]] || { echo "::error::$1 had no work but finished $result"; return 1; }
+            fi
+            echo "$1: $result"
+          }
+          status=0
+          expect select true || status=1
+          expect build "$(has "$BUILD")" || status=1
+          expect images "$(has "$BUILD")" || status=1
+          expect kind "$(has "$KIND")" || status=1
+          expect real-machine "$(has "$REAL")" || status=1
+          exit "$status"
