@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repository="${1:-nunocgoncalves/iterabase-mono}"
+repository="${1:-iterabase/iterabase-mono}"
 expected_reviewer="${RELEASE_REVIEWER:-nunocgoncalves}"
 expected_write_key_title='iterabase protected release tags (validated)'
 expected_write_key_public='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBGpAToV5oV2LesN/Kqsim3Nn0OBUItH9TocZOzRd/rz'
@@ -98,54 +98,40 @@ fi
 
 collaborators="$(gh api --paginate "repos/$repository/collaborators?affiliation=all&per_page=100" | jq -s 'add')"
 writers="$(jq -c '[.[] | select(.permissions.admin == true or .permissions.maintain == true or .permissions.push == true) | .login] | unique | sort' <<<"$collaborators")"
-[[ "$writers" == '["nunocgoncalves"]' ]] || fail "fixture-root writer set must contain only nunocgoncalves"
+[[ "$writers" == '["nunocgoncalves"]' ]] || fail "repository writer set must contain only nunocgoncalves"
 
 if [[ "${AUDIT_REPOSITORY_SECRETS:-true}" == true ]]; then
   environment_secrets="$(gh api "repos/$repository/environments/release/secrets")"
   jq -e 'any(.secrets[]; .name == "RELEASE_TAG_SSH_KEY")' <<<"$environment_secrets" >/dev/null || \
     fail "release environment is missing RELEASE_TAG_SSH_KEY"
   repository_secrets="$(gh api "repos/$repository/actions/secrets")"
-  jq -e '([.secrets[].name] | sort) == (["FORGE_E2E_CPU_SSH_KEY", "FORGE_E2E_GPU_SSH_KEY"] | sort)' \
-    <<<"$repository_secrets" >/dev/null || fail "repository secret set is not the two fixture-scoped SSH keys"
+  jq -e 'all(.secrets[].name; test("^FORGE_E2E_") | not)' <<<"$repository_secrets" >/dev/null || \
+    fail "permanent-fixture secrets remain; decommission them (C1)"
   repository_variables="$(gh api --paginate "repos/$repository/actions/variables?per_page=100" | jq -s '{variables: [.[].variables[]]}')"
-  jq -e 'all(.variables[]; (.name | test("DIGITALOCEAN|PROVIDER|TOKEN|PRIVATE|CREDENTIAL")) | not)' \
-    <<<"$repository_variables" >/dev/null || fail "repository variables expose alternate provider or credential authority"
+  jq -e 'all(.variables[]; (.name | test("^FORGE_E2E_|DIGITALOCEAN|TOKEN|PRIVATE|CREDENTIAL")) | not)' \
+    <<<"$repository_variables" >/dev/null || fail "repository variables expose a credential or permanent-fixture authority"
 fi
 
+# One publication path (C10): only release.yml may use the protected release
+# environment or write repository contents; packages are written only by the
+# build-once preview job and the release.
 repo_root="$(git rev-parse --show-toplevel)"
-for workflow in "$repo_root/.github/workflows/e2e.yml" "$repo_root/.github/workflows/release-candidate.yml"; do
-  grep -q 'run: .github/scripts/verify_fixture_trust.sh' "$workflow" || fail "fixture caller lacks the live trust gate: $workflow"
-  grep -q 'uses: ./.github/actions/setup-permanent-fixture' "$workflow" || fail "expected fixture caller is absent: $workflow"
+workflows="$repo_root/.github/workflows"
+[[ "$(grep -l '^    environment: release$' "$workflows"/*.yml)" == "$workflows/release.yml" ]] || \
+  fail "only release.yml may use the protected release environment"
+[[ "$(grep -l 'contents: write' "$workflows"/*.yml)" == "$workflows/release.yml" ]] || \
+  fail "only release.yml may write repository contents"
+mapfile -t package_writers < <(grep -l 'packages: write' "$workflows"/*.yml | sort)
+expected_package_writers=("$workflows/e2e.yml" "$workflows/full-validation.yml" "$workflows/release.yml")
+[[ "${package_writers[*]}" == "${expected_package_writers[*]}" ]] || \
+  fail "packages are written outside the build-once preview job and the release: ${package_writers[*]}"
+for legacy in release-candidate release-promote release-rehearsal release-rollback fixture-image-cache; do
+  [[ ! -e "$workflows/$legacy.yml" ]] || fail "legacy workflow $legacy.yml remains"
 done
-! grep -RIE 'DIGITALOCEAN_TOKEN|digitalocean/(godo|droplet|volume)|FORGE_E2E_KEEP' \
-  "$repo_root/.github/workflows" "$repo_root/.github/actions" >/dev/null || fail "alternate workflow provider or retained-host authority remains"
-if find "$repo_root/forge/cmd" "$repo_root/forge/internal" -type f -name '*.go' ! -name '*_test.go' -print0 | \
-  xargs -0 grep -IE 'DIGITALOCEAN_TOKEN|digitalocean/(godo|droplet|volume)|FORGE_E2E_KEEP' >/dev/null; then
-  fail "alternate Forge provider or retained-host authority remains"
-fi
-! grep -q 'pull_request_target:' "$repo_root/.github/workflows/e2e.yml" || fail "fork fixture workflow must remain secretless"
-
-promotion_workflow="$repo_root/.github/workflows/release-promote.yml"
-rollback_workflow="$repo_root/.github/workflows/release-rollback.yml"
-for workflow in "$promotion_workflow" "$rollback_workflow"; do
-  grep -q '^  group: release-promotion$' "$workflow" || fail "promotion and rollback must share the literal release-promotion concurrency group"
-  grep -q '^  cancel-in-progress: false$' "$workflow" || fail "promotion and rollback concurrency must be non-canceling"
-  grep -q '^    environment: release$' "$workflow" || fail "Latest mutation workflow lacks protected release environment"
-done
-mapfile -t latest_writers < <(
-  grep -RIl --include='*.sh' --include='*.py' 'make_latest=true' "$repo_root/.github/scripts" |
-    grep -vE '/(audit_release_security|test_[^/]+)\.(sh|py)$' | sort
-)
-expected_latest_writers=(
-  "$repo_root/.github/scripts/publish_github_releases.sh"
-  "$repo_root/.github/scripts/release_baseline.py"
-)
-[[ "${latest_writers[*]}" == "${expected_latest_writers[*]}" ]] || fail "make_latest:true exists outside final promotion or protected rollback"
-[[ $(grep -c 'make_latest=true' "$repo_root/.github/scripts/publish_github_releases.sh") == 1 ]] || fail "promotion must have exactly one Latest handoff"
-[[ $(grep -c 'make_latest=true' "$repo_root/.github/scripts/release_baseline.py") == 1 ]] || fail "rollback must have exactly one Latest handoff"
+! grep -q 'pull_request_target:' "$workflows"/*.yml || fail "no workflow may run privileged code for fork pull requests"
 
 printf 'release security audit passed for %s\n' "$repository"
 printf 'write deploy key: %s\n' "$write_key_title"
 printf 'release ruleset id: %s\n' "$ruleset_id"
-printf 'fixture writers: %s\n' "$writers"
+printf 'repository writers: %s\n' "$writers"
 printf 'immutable releases setting: %s\n' "$immutable_release_setting"

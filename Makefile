@@ -88,19 +88,16 @@ codegen-check:
 charts-check:
 	$(MAKE) -C charts check
 
+# Selector, release planning, AWS substrate, remote-content and cache contracts.
 release-check:
-	python3 .github/scripts/test_e2e.py
-	python3 .github/scripts/test_fixture_image_cache.py
-	python3 .github/scripts/test_release_baseline.py
-	python3 .github/scripts/test_release.py
-	python3 .github/scripts/test_remote_content.py
+	python3 .github/scripts/test_affected.py
 	python3 .github/scripts/test_aws_ci.py
+	python3 .github/scripts/test_fixture_image_cache.py
+	python3 .github/scripts/test_remote_content.py
+	python3 .github/scripts/test_cache_contract.py
 	python3 release/test_bump.py
 	python3 release/test_release_plan.py
-	python3 .github/scripts/test_affected.py
 	python3 .github/scripts/remote_content.py validate
-	python3 .github/scripts/e2e.py validate-contract
-	python3 .github/scripts/release.py validate
 
 # Bump one release target and every linked version field: make bump TARGET=control-plane VERSION=0.0.41
 bump:

@@ -51,11 +51,11 @@ printf '\n'
 cat %s
 FILTER
 chmod 700 %s
-printf 'values.client.yaml filter=iterabase-release-candidates\n' > %s
+printf 'values.client.yaml filter=iterabase-fixture-values\n' > %s
 git config --global core.attributesFile %s
-git config --global filter.iterabase-release-candidates.clean cat
-git config --global filter.iterabase-release-candidates.smudge %s
-git config --global filter.iterabase-release-candidates.required true
+git config --global filter.iterabase-fixture-values.clean cat
+git config --global filter.iterabase-fixture-values.smudge %s
+git config --global filter.iterabase-fixture-values.required true
 `, candidateShellQuote(encoded), candidateShellQuote(valuesPath), candidateShellQuote(filterPath),
 		candidateShellQuote(valuesPath), candidateShellQuote(filterPath), candidateShellQuote(attributesPath),
 		candidateShellQuote(attributesPath), candidateShellQuote(filterPath))
@@ -97,7 +97,7 @@ func prepareCandidateOverlay(t *testing.T, runID, ip, keyPath string) candidateO
 		defer cleanupClient.Close()
 		cleanup := fmt.Sprintf(
 			"git config --global --unset-all core.attributesFile || true; "+
-				"git config --global --remove-section filter.iterabase-release-candidates || true; "+
+				"git config --global --remove-section filter.iterabase-fixture-values || true; "+
 				"rm -f %s %s %s",
 			candidateShellQuote(valuesPath), candidateShellQuote(filterPath), candidateShellQuote(attributesPath),
 		)
