@@ -122,6 +122,9 @@ jobs:
       - name: Install checksummed GoReleaser
         uses: ./.github/actions/setup-ci-tool
         with: {name: goreleaser, version: 2.12.7}
+      - name: Install checksummed syft for GoReleaser SBOMs
+        uses: ./.github/actions/setup-ci-tool
+        with: {name: syft, version: 1.51.0}
 
       - name: Promote the tested image digests (C8)
         id: images
