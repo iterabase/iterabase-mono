@@ -2,8 +2,10 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -13,16 +15,24 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/testkit/e2e/poll"
 )
 
+// freshInstallPlatform is the platform values the fresh-install scenario
+// installs, layered before the runtime image and Kind address overlay.
+var freshInstallPlatform = platformValues{platformValuesBase, "test/e2e/values/fresh-install.yaml"}
+
 func freshInstallScenario() sharede2e.Definition {
 	diagnostics, cleanup := scenarioHooks()
+	metadata := chartScenarioMetadata(
+		"fresh-install",
+		"Installs ordered certificate and pinned OpenEBS LVM volume-only substrates plus class-isolated public/private ingress planes, then proves exact classes, claims, the inert LVMSnapshot deletion-safety boundary, CSI/user snapshot absence, manager, issuer, workload identity, fixed private allocation, route isolation, and verified gateway readiness.",
+		"test-e2e-install", 45,
+		[]string{"HOR-408", "HOR-414", "HOR-416", "HOR-475", "HOR-545", "HOR-557", "HOR-590", "DES-HOR-545-01", "DES-HOR-545-05", "DES-HOR-545-07"},
+		[]string{"control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"},
+		append(substrateRenders("iterabase"), freshInstallPlatform.render()),
+	)
+	// The suite's single smoke scenario: CI-only changes run exactly this one.
+	metadata.Smoke = true
 	return sharede2e.Define(sharede2e.Scenario[*chartState]{
-		Metadata: chartScenarioMetadata(
-			"fresh-install",
-			"Installs ordered certificate and pinned OpenEBS LVM volume-only substrates plus class-isolated public/private ingress planes, then proves exact classes, claims, the inert LVMSnapshot deletion-safety boundary, CSI/user snapshot absence, manager, issuer, workload identity, fixed private allocation, route isolation, and verified gateway readiness.",
-			"test-e2e-install", 45,
-			[]string{"HOR-408", "HOR-414", "HOR-416", "HOR-475", "HOR-545", "HOR-557", "DES-HOR-545-01", "DES-HOR-545-05", "DES-HOR-545-07"},
-			[]string{"control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"},
-		),
+		Metadata: metadata,
 		NewState: newChartState,
 		Stages: []sharede2e.Stage[*chartState]{
 			{Name: "create-kind", Run: createKindStage},
@@ -120,24 +130,23 @@ func installMinimalPlatformEdgeStage(t *testing.T, state *chartState) {
 	pool := fmt.Sprintf("%s.%s.255.200-%s.%s.255.250", parts[0], parts[1], parts[0], parts[1])
 	state.internalIngressIP = fmt.Sprintf("%s.%s.255.180", parts[0], parts[1])
 	internalPool := fmt.Sprintf("%s-%s.%s.255.190", state.internalIngressIP, parts[0], parts[1])
-	values := basePlatformValues()
-	values["metallb"] = map[string]any{"enabled": true}
+	// Replace only the declared representative addresses with the observed Kind
+	// subnet. Helm replaces lists wholesale, so the pool entry is restated.
+	values := runtimeImageValues(t)
 	values["metallb-config"] = map[string]any{
-		"enabled":   true,
 		"addresses": []string{pool},
 		"additionalPools": []any{map[string]any{
 			"name": "internal", "addresses": []string{internalPool}, "autoAssign": false,
 		}},
 	}
 	values["internal-ingress-nginx"] = map[string]any{
-		"enabled": true,
 		"controller": map[string]any{"service": map[string]any{"annotations": map[string]any{
 			"metallb.io/address-pool":    testRelease + "-internal",
 			"metallb.io/loadBalancerIPs": state.internalIngressIP,
 		}}},
 	}
-	applyRuntimeImages(t, values)
-	state.installPlatform(t, 15*time.Minute, state.writeValues(t, "fresh-install", values))
+	files := append(freshInstallPlatform.files(state), state.writeValues(t, "fresh-install-runtime", values))
+	state.installPlatform(t, 15*time.Minute, files...)
 	assertCandidateImages(t, state)
 }
 
@@ -342,18 +351,113 @@ func assertManagerContractStage(t *testing.T, state *chartState) {
 		t.Fatalf("%s cannot get namespace Secrets", subject)
 	}
 	state.kubectl(t, 3*time.Minute, "rollout", "status", "deployment/"+deployment, "-n", testNamespace, "--timeout=2m")
-	// controller-runtime's cache-sync failure boundary is two minutes. Observe
-	// once beyond it; this is not a retry or a performance assertion.
-	time.Sleep(130 * time.Second)
+	// A controller whose informer lacks RBAC never syncs and the manager exits at
+	// controller-runtime's two-minute cache-sync boundary. Poll the real
+	// condition instead of sleeping past that boundary: every controller that
+	// started an event source has synced its cache and started workers.
+	var logs string
+	err := poll.Until(state.ctx, 3*time.Minute, 3*time.Second, func(context.Context) (bool, string, error) {
+		out, observeErr := state.kubectlOutput(30*time.Second, "logs", "deployment/"+deployment, "-n", testNamespace, "--all-containers", "--tail=2000")
+		if observeErr != nil {
+			return false, "read manager logs", observeErr
+		}
+		logs = out
+		synced, detail, syncErr := managerCachesSynced(logs, "agentpool", "workflow")
+		return synced, detail, syncErr
+	})
+	if err != nil {
+		t.Fatalf("control-plane manager caches did not sync: %v\n%s", err, stateSafeBody([]byte(logs)))
+	}
 	if got := state.kubectl(t, 30*time.Second, "get", "deployment", deployment, "-n", testNamespace, "-o", "jsonpath={.status.readyReplicas}"); got != "1" {
 		t.Fatalf("manager ready replicas=%q want=1", got)
 	}
 	if got := state.kubectl(t, 30*time.Second, "get", "pods", "-n", testNamespace, "-l", "app.kubernetes.io/component=manager", "-o", "jsonpath={.items[0].status.containerStatuses[0].restartCount}"); got != "0" {
 		t.Fatalf("manager restart count=%q want=0", got)
 	}
-	logs := state.kubectl(t, 30*time.Second, "logs", "deployment/"+deployment, "-n", testNamespace, "--all-containers", "--tail=500")
-	if strings.Contains(logs, "Failed to run manager") {
-		t.Fatal("control-plane manager exited after cache synchronization")
+}
+
+// managerCachesSynced reports whether the manager's controller-runtime log
+// shows every controller that started an event source (before its cache sync)
+// also starting workers (after its cache sync), including each required
+// controller. A cache-sync or manager failure is terminal.
+func managerCachesSynced(logs string, required ...string) (bool, string, error) {
+	started, synced := map[string]bool{}, map[string]bool{}
+	for _, line := range strings.Split(logs, "\n") {
+		message, controller := managerLogEntry(line)
+		switch {
+		case message == "Could not wait for Cache to sync" || message == "Failed to run manager":
+			return false, "", fmt.Errorf("manager logged %q for controller %q", message, controller)
+		case controller == "":
+		case message == "Starting EventSource":
+			started[controller] = true
+		case message == "Starting workers":
+			synced[controller] = true
+		}
+	}
+	for _, controller := range required {
+		if !synced[controller] {
+			return false, fmt.Sprintf("controller %s has not synced", controller), nil
+		}
+	}
+	for controller := range started {
+		if !synced[controller] {
+			return false, fmt.Sprintf("controller %s has not synced", controller), nil
+		}
+	}
+	return true, fmt.Sprintf("%d controllers synced", len(synced)), nil
+}
+
+// managerLogEntry extracts the message and controller of one structured JSON
+// (default) or logfmt manager log line.
+func managerLogEntry(line string) (string, string) {
+	var entry struct {
+		Message    string `json:"msg"`
+		Controller string `json:"controller"`
+	}
+	if json.Unmarshal([]byte(line), &entry) == nil {
+		return entry.Message, entry.Controller
+	}
+	message, controller := "", ""
+	if match := logfmtMessage.FindStringSubmatch(line); match != nil {
+		message = match[1]
+	}
+	if match := logfmtController.FindStringSubmatch(line); match != nil {
+		controller = match[1]
+	}
+	return message, controller
+}
+
+var (
+	logfmtMessage    = regexp.MustCompile(`\bmsg="([^"]*)"`)
+	logfmtController = regexp.MustCompile(`\bcontroller="?([^\s"]+)`)
+)
+
+func TestUnitManagerCacheSyncRequiresEveryStartedController(t *testing.T) {
+	const (
+		agentpoolStarted = `{"msg":"Starting EventSource","controller":"agentpool"}`
+		workflowStarted  = `{"msg":"Starting EventSource","controller":"workflow"}`
+		agentpoolSynced  = `{"msg":"Starting workers","controller":"agentpool","worker count":1}`
+		workflowSynced   = `{"msg":"Starting workers","controller":"workflow","worker count":1}`
+	)
+	for name, test := range map[string]struct {
+		logs   string
+		synced bool
+		failed bool
+	}{
+		"all synced":         {logs: strings.Join([]string{agentpoolStarted, workflowStarted, agentpoolSynced, workflowSynced}, "\n"), synced: true},
+		"one pending":        {logs: strings.Join([]string{agentpoolStarted, workflowStarted, agentpoolSynced}, "\n")},
+		"required missing":   {logs: strings.Join([]string{agentpoolStarted, agentpoolSynced}, "\n")},
+		"extra pending":      {logs: strings.Join([]string{agentpoolSynced, workflowSynced, `{"msg":"Starting EventSource","controller":"model"}`}, "\n")},
+		"cache sync failure": {logs: strings.Join([]string{agentpoolStarted, `{"msg":"Could not wait for Cache to sync","controller":"workflow"}`}, "\n"), failed: true},
+		"manager failure":    {logs: `{"msg":"Failed to run manager"}`, failed: true},
+		"logfmt":             {logs: `level=INFO msg="Starting workers" controller=agentpool` + "\n" + `level=INFO msg="Starting workers" controller=workflow`, synced: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			synced, _, err := managerCachesSynced(test.logs, "agentpool", "workflow")
+			if (err != nil) != test.failed || synced != test.synced {
+				t.Fatalf("synced=%t err=%v want synced=%t failed=%t", synced, err, test.synced, test.failed)
+			}
+		})
 	}
 }
 

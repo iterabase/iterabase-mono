@@ -26,12 +26,10 @@ E2E_SOURCE_SHA ?= $(shell git rev-parse HEAD)
 E2E_SOURCE_DIRTY ?= $(if $(shell git status --porcelain),true,false)
 ITERABASE_E2E_FIXTURE_MODE ?= source
 ITERABASE_E2E_PUBLISHED_FIXTURE ?= $(CURDIR)/test/e2e/published-fixture.json
-ITERABASE_E2E_TRANSITION_BASELINES ?= $(CURDIR)/test/e2e/transition-baselines.json
 E2E_ENV := ITERABASE_E2E_FIXTURE_MODE=$(ITERABASE_E2E_FIXTURE_MODE) \
 	ITERABASE_E2E_SOURCE_SHA=$(E2E_SOURCE_SHA) \
 	ITERABASE_E2E_SOURCE_DIRTY=$(E2E_SOURCE_DIRTY) \
 	ITERABASE_E2E_PUBLISHED_FIXTURE=$(ITERABASE_E2E_PUBLISHED_FIXTURE) \
-	ITERABASE_E2E_TRANSITION_BASELINES=$(ITERABASE_E2E_TRANSITION_BASELINES) \
 	ITERABASE_CHARTS_ROOT=$(CURDIR)
 ifeq ($(E2E_SKIP_BUILD_DEPS),true)
 E2E_BUILD_DEPS :=
@@ -39,7 +37,7 @@ else
 E2E_BUILD_DEPS := build-deps
 endif
 
-.PHONY: test-build-dependency-retry build-deps lint template kubeconform template-controlplane kubeconform-controlplane template-tls kubeconform-tls template-observability kubeconform-observability template-observability-tls kubeconform-observability-tls template-internal-observability kubeconform-internal-observability check-internal-observability template-private-control-plane kubeconform-private-control-plane check-private-control-plane check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-redis-exporter-auth check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-version-links check-alerts test-alert-rules check-dashboards check-observability-tls check check-tls check-observability test-e2e test-e2e-unit test-e2e-certificate-migration test-e2e-install test-e2e-upgrade test-e2e-feature-enable test-e2e-observability-ingress-recovery test-e2e-reapply-rollback test-e2e-metallb-transition test-e2e-observability test-e2e-observability-tls test-e2e-internal-tls clean
+.PHONY: test-build-dependency-retry build-deps lint template kubeconform template-controlplane kubeconform-controlplane template-tls kubeconform-tls template-observability kubeconform-observability template-observability-tls kubeconform-observability-tls template-internal-observability kubeconform-internal-observability check-internal-observability template-private-control-plane kubeconform-private-control-plane check-private-control-plane check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-redis-exporter-auth check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-version-links check-alerts test-alert-rules check-dashboards check-gateway-tls-client check-observability-tls check check-tls check-observability test-e2e test-e2e-unit test-e2e-install test-e2e-n-1-upgrade test-e2e-observability test-e2e-observability-tls clean
 
 # Compile the owner entrypoint and run hermetic mechanics plus intentional break
 # fixtures without provisioning infrastructure.
@@ -48,39 +46,21 @@ test-e2e-unit:
 	cd test/e2e && $(E2E_ENV) go test -race -count=1 -run '^TestUnit' .
 
 # Each target creates one fresh isolated Kind cluster and runs exactly once.
-# Current 0.4 release paths are clean-install/reapply only. Pre-0.4 transition
-# targets remain explicit historical evidence and are not part of this aggregate.
-test-e2e: test-e2e-install test-e2e-observability test-e2e-observability-tls test-e2e-internal-tls
-
-test-e2e-certificate-migration: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 35m -run '^TestE2E$$/^certificate-ownership-migration$$' .
+# The N-1 upgrade additionally requires the workflow-resolved published N-1
+# baseline (ITERABASE_E2E_N1_{CERT_MANAGER,LVM_STORAGE,PLATFORM}_{REFERENCE,SHA256}).
+test-e2e: test-e2e-install test-e2e-n-1-upgrade test-e2e-observability test-e2e-observability-tls
 
 test-e2e-install: $(E2E_BUILD_DEPS)
 	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 45m -run '^TestE2E$$/^fresh-install$$' .
 
-test-e2e-upgrade: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 40m -run '^TestE2E$$/^n-minus-one-upgrade$$' .
-
-test-e2e-feature-enable: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 50m -run '^TestE2E$$/^feature-enable-upgrade$$' .
-
-test-e2e-observability-ingress-recovery: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 60m -run '^TestE2E$$/^single-node-observability-ingress-recovery$$' .
-
-test-e2e-reapply-rollback: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 45m -run '^TestE2E$$/^reapply-rollback-recovery$$' .
-
-test-e2e-metallb-transition: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 55m -run '^TestE2E$$/^metallb-upgrade-reapply$$' .
+test-e2e-n-1-upgrade: $(E2E_BUILD_DEPS)
+	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 45m -run '^TestE2E$$/^n-1-upgrade$$' .
 
 test-e2e-observability: $(E2E_BUILD_DEPS)
 	cd test/e2e && ITERABASE_E2E_RELEASE=opo1 $(E2E_ENV) go test -v -race -count=1 -timeout 40m -run '^TestE2E$$/^observability$$' .
 
 test-e2e-observability-tls: $(E2E_BUILD_DEPS)
-	cd test/e2e && ITERABASE_E2E_RELEASE=opo1 $(E2E_ENV) go test -v -race -count=1 -timeout 45m -run '^TestE2E$$/^observability-tls$$' .
-
-test-e2e-internal-tls: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 30m -run '^TestE2E$$/^internal-tls$$' .
+	cd test/e2e && ITERABASE_E2E_RELEASE=opo1 $(E2E_ENV) go test -v -race -count=1 -timeout 50m -run '^TestE2E$$/^observability-tls$$' .
 
 # control-plane has its own file:// dep (postgresql) and observability has its
 # own upstream deps (kube-prometheus-stack + loki); build them first so the
@@ -178,7 +158,12 @@ test-alert-rules: build-deps
 check-dashboards: build-deps
 	./scripts/check-dashboards.sh
 
-check: test-build-dependency-retry lint kubeconform kubeconform-controlplane kubeconform-observability check-internal-observability check-private-control-plane check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-redis-exporter-auth check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-version-links check-alerts check-dashboards
+# Internal-TLS inference gateway clients render verify-full PostgreSQL and
+# CA-backed rediss:// Redis against the mounted internal CA root.
+check-gateway-tls-client: build-deps
+	./scripts/check-gateway-tls-client.sh
+
+check: test-build-dependency-retry lint kubeconform kubeconform-controlplane kubeconform-observability check-internal-observability check-private-control-plane check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-redis-exporter-auth check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-version-links check-alerts check-dashboards check-gateway-tls-client
 
 check-tls: kubeconform-tls kubeconform-observability-tls check-internal-observability check-private-control-plane check-redis-exporter-auth check-observability-tls
 

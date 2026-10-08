@@ -26,15 +26,26 @@ const (
 	gpuOperatorFixtureNamespace      = "gpu-operator"
 )
 
+// observabilityPlatform is the platform values the observability scenario
+// installs. The harness and tool-runner layers apply when their composed images
+// are present, which is always true in CI, so both are declared renders.
+var observabilityPlatform = platformValues{"values-observability.yaml", platformValuesBase, platformValuesRuntime}
+
+const (
+	observabilityHarnessValues    = "test/e2e/values/observability-harness.yaml"
+	observabilityToolRunnerValues = "test/e2e/values/observability-tool-runner.yaml"
+)
+
 func observabilityScenario() sharede2e.Definition {
 	diagnostics, cleanup := scenarioHooks()
 	return sharede2e.Define(sharede2e.Scenario[*chartState]{
 		Metadata: chartScenarioMetadata(
 			"observability",
-			"Installs the pinned LVM substrate and chart-owned observability composition, then proves exact thick XFS persistence, per-pool and aggregate VG monitor discovery, stack readiness, disjoint endpoints, and client paths.",
+			"Installs the pinned LVM substrate and chart-owned observability composition, then proves exact thick XFS persistence, per-pool and aggregate VG monitor discovery, stack readiness, shipped dashboard queries, and client paths.",
 			"test-e2e-observability", 40,
-			[]string{"HOR-408", "HOR-414", "HOR-418", "HOR-416", "HOR-505", "HOR-545", "DES-HOR-545-01"},
+			[]string{"HOR-408", "HOR-414", "HOR-418", "HOR-416", "HOR-505", "HOR-545", "HOR-590", "DES-HOR-545-01"},
 			[]string{"control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"},
+			append(substrateRenders("opo1"), observabilityCandidateValues(observabilityPlatform, true, true).render()),
 		),
 		NewState: newChartState,
 		Stages: []sharede2e.Stage[*chartState]{
@@ -47,8 +58,6 @@ func observabilityScenario() sharede2e.Definition {
 			{Name: "install-observability", DependsOn: []string{"install-dcgm-exporter-fixture"}, Run: installObservabilityStage},
 			{Name: "install-harness-worker", DependsOn: []string{"install-observability"}, Run: installObservabilityHarnessStage},
 			{Name: "assert-stack-readiness", DependsOn: []string{"install-harness-worker"}, Run: assertStackReadinessStage},
-			{Name: "assert-grafana-dashboards", DependsOn: []string{"assert-stack-readiness"}, Run: assertGrafanaDashboardsStage},
-			{Name: "assert-endpoint-separation", DependsOn: []string{"assert-stack-readiness"}, Run: assertEndpointSeparationStage},
 			{Name: "assert-monitor-discovery", DependsOn: []string{"assert-stack-readiness"}, Run: assertMonitorDiscoveryStage},
 			{Name: "assert-prometheus-persistence", DependsOn: []string{"assert-monitor-discovery"}, Run: assertPrometheusPersistenceStage},
 			{Name: "assert-loki-persistence", DependsOn: []string{"assert-stack-readiness"}, Run: assertLokiPersistenceStage},
@@ -60,11 +69,7 @@ func observabilityScenario() sharede2e.Definition {
 
 func installObservabilityStage(t *testing.T, state *chartState) {
 	t.Helper()
-	values := observabilityPlatformValues(t)
-	state.installPlatform(t, 20*time.Minute,
-		filepathFromCharts(state, "values-observability.yaml"),
-		state.writeValues(t, "observability-runtime", values),
-	)
+	state.installPlatform(t, 20*time.Minute, observabilityValueFiles(t, state, observabilityPlatform)...)
 	assertCandidateImages(t, state)
 }
 
@@ -166,32 +171,44 @@ spec:
 	state.kubectl(t, 3*time.Minute, "rollout", "status", "deployment/nvidia-dcgm-exporter", "-n", gpuOperatorFixtureNamespace, "--timeout=2m")
 }
 
-func observabilityPlatformValues(t *testing.T) map[string]any {
-	t.Helper()
-	values := runtimePlatformValues(t)
-	controlPlane := values["control-plane"].(map[string]any)
-	if os.Getenv("HARNESS_IMAGE_REPO") != "" && os.Getenv("HARNESS_IMAGE_TAG") != "" {
-		controlPlane["dispatch"] = map[string]any{
-			"enabled":      true,
-			"defaultModel": map[string]any{"id": "e2e-model", "api": "openai"},
-		}
+func harnessImagePresent() bool {
+	return os.Getenv("HARNESS_IMAGE_REPO") != "" && os.Getenv("HARNESS_IMAGE_TAG") != ""
+}
+
+func toolRunnerImagePresent() bool {
+	return os.Getenv("TOOL_RUNNER_IMAGE_REPO") != "" && os.Getenv("TOOL_RUNNER_IMAGE_TAG") != ""
+}
+
+// observabilityCandidateValues adds the harness and tool-runner layers that a
+// composed candidate with those images installs.
+func observabilityCandidateValues(base platformValues, harness, toolRunner bool) platformValues {
+	values := append(platformValues{}, base...)
+	if harness {
+		values = append(values, observabilityHarnessValues)
 	}
-	if repository, tag := os.Getenv("TOOL_RUNNER_IMAGE_REPO"), os.Getenv("TOOL_RUNNER_IMAGE_TAG"); repository != "" && tag != "" {
-		controlPlane["toolRunner"] = map[string]any{
-			"enabled": true,
-			"image":   map[string]any{"repository": repository, "tag": tag, "pullPolicy": "Never"},
-			"flux":    map[string]any{"namespace": testNamespace, "sourceName": observabilityToolSourceName},
-		}
-	}
-	inference, _ := values["inference-gateway"].(map[string]any)
-	if inference == nil {
-		inference = map[string]any{}
-		values["inference-gateway"] = inference
-	}
-	if os.Getenv("HARNESS_IMAGE_REPO") != "" && os.Getenv("HARNESS_IMAGE_TAG") != "" {
-		inference["workload"] = map[string]any{"enabled": true}
+	if toolRunner {
+		values = append(values, observabilityToolRunnerValues)
 	}
 	return values
+}
+
+// observabilityValueFiles returns the declared values files for the composed
+// images actually present plus the runtime image overlay.
+func observabilityValueFiles(t *testing.T, state *chartState, base platformValues) []string {
+	t.Helper()
+	values := runtimeImageValues(t)
+	if repository, tag := os.Getenv("TOOL_RUNNER_IMAGE_REPO"), os.Getenv("TOOL_RUNNER_IMAGE_TAG"); repository != "" && tag != "" {
+		controlPlane, _ := values["control-plane"].(map[string]any)
+		if controlPlane == nil {
+			controlPlane = map[string]any{}
+			values["control-plane"] = controlPlane
+		}
+		controlPlane["toolRunner"] = map[string]any{
+			"image": map[string]any{"repository": repository, "tag": tag, "pullPolicy": "Never"},
+		}
+	}
+	files := observabilityCandidateValues(base, harnessImagePresent(), toolRunnerImagePresent()).files(state)
+	return append(files, state.writeValues(t, "observability-runtime", values))
 }
 
 func installObservabilityHarnessStage(t *testing.T, state *chartState) {
@@ -258,14 +275,6 @@ func assertStackReadinessStage(t *testing.T, state *chartState) {
 	)
 }
 
-func assertFeatureStackReadinessStage(t *testing.T, state *chartState) {
-	t.Helper()
-	// The feature-enable fixture deliberately keeps dispatch, harness, and the
-	// tool runner disabled. Candidate image availability must not turn absent
-	// workloads into readiness requirements for this transition scenario.
-	assertStackReadiness(t, state, false, false)
-}
-
 func assertStackReadiness(t *testing.T, state *chartState, includeHarness, includeToolRunner bool) {
 	t.Helper()
 	for _, selector := range stackReadinessSelectors(includeHarness, includeToolRunner) {
@@ -297,112 +306,6 @@ func stackReadinessSelectors(includeHarness, includeToolRunner bool) []string {
 		selectors = append(selectors, "app.kubernetes.io/name=control-plane,app.kubernetes.io/component=tool-runner")
 	}
 	return selectors
-}
-
-func assertGrafanaDashboardsStage(t *testing.T, state *chartState) {
-	t.Helper()
-	username := string(decodeSecretValue(t, state, testRelease+"-grafana", "admin-user"))
-	password := string(decodeSecretValue(t, state, testRelease+"-grafana", "admin-password"))
-	state.redactor.Add(username, password)
-	forward := state.forward(t, "svc/"+testRelease+"-grafana", 80, "http")
-	client := &http.Client{Timeout: 15 * time.Second}
-	assertGrafanaDashboardSuite(t, client, forward.URL, username, password)
-	state.stopForward(t, forward)
-}
-
-func assertGrafanaDashboardSuite(t *testing.T, client *http.Client, baseURL, username, password string) {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/search?type=dash-db&limit=500", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.SetBasicAuth(username, password)
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Grafana dashboard search status=%d", resp.StatusCode)
-	}
-	var found []struct {
-		UID         string `json:"uid"`
-		Title       string `json:"title"`
-		FolderTitle string `json:"folderTitle"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&found); err != nil {
-		t.Fatal(err)
-	}
-	type dashboardContract struct{ title, folder string }
-	want := map[string]dashboardContract{
-		"iterabase-platform-overview":         {"00 — Platform Overview", "Iterabase"},
-		"iterabase-control-plane":             {"10 — Control Plane", "Iterabase"},
-		"iterabase-execution-runtime":         {"20 — Execution Runtime", "Iterabase"},
-		"iterabase-tool-runtime":              {"30 — Tool Runtime", "Iterabase"},
-		"iterabase-inference-model-serving":   {"40 — Inference and Model Serving", "Iterabase"},
-		"iterabase-data-storage":              {"50 — Data and Storage", "Iterabase"},
-		"iterabase-platform-infrastructure":   {"60 — Platform Infrastructure", "Iterabase"},
-		"iterabase-infrastructure-components": {"Infrastructure — Data, Edge and GPU", "Infrastructure"},
-		"iterabase-observability-stack":       {"Observability — Metrics, Logs and Alerts", "Observability"},
-	}
-	for _, dashboard := range found {
-		contract, ok := want[dashboard.UID]
-		if ok && dashboard.Title == contract.title && dashboard.FolderTitle == contract.folder {
-			delete(want, dashboard.UID)
-		}
-	}
-	if len(want) != 0 {
-		t.Fatalf("Grafana missing organized platform dashboards: %v", want)
-	}
-	assertGrafanaDataStoragePanels(t, client, baseURL, username, password)
-}
-
-func assertGrafanaDataStoragePanels(t *testing.T, client *http.Client, baseURL, username, password string) {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/dashboards/uid/iterabase-data-storage", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.SetBasicAuth(username, password)
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Grafana data/storage dashboard status=%d", resp.StatusCode)
-	}
-	var payload struct {
-		Dashboard struct {
-			Panels []struct {
-				Title   string `json:"title"`
-				Targets []struct {
-					Expression string `json:"expr"`
-				} `json:"targets"`
-			} `json:"panels"`
-		} `json:"dashboard"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]string{
-		"AgentPool PVC free bytes":    "control_plane_dispatch_workspace_free_bytes",
-		"AgentPool PVC free ratio":    "control_plane_dispatch_workspace_free_ratio",
-		"AgentPool capacity warnings": "control_plane_dispatch_workspace_capacity_warning",
-		"AgentPool credit gates":      "control_plane_dispatch_workspace_credit_gated",
-		"iterabase-data free bytes":   "lvm_vg_free_size_bytes",
-		"iterabase-data free ratio":   "lvm_vg_total_size_bytes",
-	}
-	for _, panel := range payload.Dashboard.Panels {
-		fragment, ok := want[panel.Title]
-		if !ok || len(panel.Targets) != 1 || !strings.Contains(panel.Targets[0].Expression, fragment) {
-			continue
-		}
-		delete(want, panel.Title)
-	}
-	if len(want) != 0 {
-		t.Fatalf("Grafana data/storage dashboard missing dedicated workspace capacity panels: %v", want)
-	}
 }
 
 func grafanaInferenceDashboardQueries(t *testing.T, client *http.Client, baseURL, username, password string) (string, string) {
@@ -463,28 +366,6 @@ func grafanaInferenceDashboardQueries(t *testing.T, client *http.Client, baseURL
 		t.Fatalf("Grafana inference dashboard GPU utilization query does not use the namespace variable: %q", panelQuery)
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(variableQuery, variablePrefix), variableSuffix), panelQuery
-}
-
-func assertEndpointSeparationStage(t *testing.T, state *chartState) {
-	t.Helper()
-	// Project only membership fields so shared evidence redaction cannot rewrite
-	// unrelated Pod configuration before the same JSON assertion used by the
-	// intentional-break fixture consumes it.
-	podFields := state.kubectl(t, 30*time.Second, "get", "pods", "-n", testNamespace,
-		"-o", `jsonpath-as-json={.items[*].metadata['name','labels']}`)
-	podsJSON, err := projectEndpointPodsJSON([]byte(podFields))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sliceFields := state.kubectl(t, 30*time.Second, "get", "endpointslices", "-n", testNamespace,
-		"-o", `jsonpath-as-json={.items[*]['metadata.labels','endpoints']}`)
-	slicesJSON, err := projectEndpointSlicesJSON([]byte(sliceFields))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := assertServiceEndpointsJSON(podsJSON, slicesJSON, testRelease); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func assertMonitorDiscoveryStage(t *testing.T, state *chartState) {

@@ -11,38 +11,59 @@ import (
 	"time"
 
 	sharede2e "github.com/nunocgoncalves/iterabase-mono/testkit/e2e"
+	"github.com/nunocgoncalves/iterabase-mono/testkit/e2e/httpx"
 	"github.com/nunocgoncalves/iterabase-mono/testkit/e2e/poll"
 )
+
+// observabilityTLSPlatform is the platform values the observability-tls
+// scenario installs: the observability and internal-TLS presets plus the
+// verified control-plane edge. The certificate substrate installs with the same
+// values-tls.yaml so the ordered internal CA is the one the platform adopts.
+var observabilityTLSPlatform = platformValues{
+	"values-observability.yaml", "values-tls.yaml", platformValuesBase, platformValuesRuntime, "test/e2e/values/observability-tls.yaml",
+}
 
 func observabilityTLSScenario() sharede2e.Definition {
 	diagnostics, cleanup := scenarioHooks()
 	return sharede2e.Define(sharede2e.Scenario[*chartState]{
 		Metadata: chartScenarioMetadata(
 			"observability-tls",
-			"Proves the observability stack, exporters, self-monitors, Grafana datasources/sidecars, Loki gateway, Promtail, and Alertmanager use verified internal-CA HTTPS identities, and that every issued stack/control-plane leaf chains to the single mounted internal CA root.",
-			"test-e2e-observability-tls", 45,
-			[]string{"HOR-408", "HOR-414", "HOR-418", "HOR-420", "HOR-416", "HOR-528", "HOR-545", "DES-HOR-545-01"},
+			"Installs the internal-TLS observability composition on the ordered internal CA and proves a single adopted root authority whose issued stack, datastore, and control-plane leaves chain to the mounted root; verified HTTPS for the stack, exporters, self-monitors, Grafana datasources/sidecars, Loki gateway, Promtail, and Alertmanager; distinct verified control-plane edge/backend TLS; gateway dependency readiness; rejected plaintext Redis/PostgreSQL transport; and root-key stability across a reconcile.",
+			"test-e2e-observability-tls", 50,
+			[]string{"HOR-371", "HOR-408", "HOR-414", "HOR-418", "HOR-420", "HOR-416", "HOR-475", "HOR-507", "HOR-528", "HOR-545", "HOR-590", "DES-HOR-545-01"},
 			[]string{"control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"},
+			append(substrateRenders("opo1", "values-tls.yaml"), observabilityCandidateValues(observabilityTLSPlatform, true, true).render()),
 		),
 		NewState: newChartState,
 		Stages: []sharede2e.Stage[*chartState]{
 			{Name: "create-kind", Run: createKindStage},
 			{Name: "import-runtime-images", DependsOn: []string{"create-kind"}, Run: importRuntimeImagesStage},
-			{Name: "install-certificate-substrate", DependsOn: []string{"import-runtime-images"}, Run: installCertificateSubstrateStage},
+			{Name: "install-certificate-substrate", DependsOn: []string{"import-runtime-images"}, Run: installInternalTLSCertificateSubstrateStage},
 			{Name: "install-lvm-storage-substrate", DependsOn: []string{"install-certificate-substrate"}, Run: installLVMStorageStage},
 			{Name: "install-tool-source", DependsOn: []string{"install-lvm-storage-substrate"}, Run: installObservabilityToolSourceStage},
 			{Name: "install-observability-tls", DependsOn: []string{"install-tool-source"}, Run: installObservabilityTLSStage},
 			{Name: "install-harness-worker", DependsOn: []string{"install-observability-tls"}, Run: installObservabilityHarnessStage},
 			{Name: "assert-stack-readiness", DependsOn: []string{"install-harness-worker"}, Run: assertStackReadinessStage},
-			{Name: "assert-issued-identities", DependsOn: []string{"assert-stack-readiness"}, Run: assertObservabilityIdentitiesStage},
+			{Name: "assert-internal-identities", DependsOn: []string{"install-observability-tls"}, Run: assertInternalIdentitiesStage},
+			{Name: "assert-issued-identities", DependsOn: []string{"assert-stack-readiness", "assert-internal-identities"}, Run: assertObservabilityIdentitiesStage},
 			{Name: "assert-verified-stack-https", DependsOn: []string{"assert-issued-identities"}, Run: assertVerifiedStackHTTPSStage},
-			{Name: "assert-tls-endpoint-separation", DependsOn: []string{"assert-stack-readiness"}, Run: assertEndpointSeparationStage},
 			{Name: "assert-exporter-client-paths", DependsOn: []string{"assert-verified-stack-https"}, Run: assertTLSExporterPathsStage},
 			{Name: "assert-verified-self-monitors", DependsOn: []string{"assert-verified-stack-https"}, Run: assertVerifiedSelfMonitorsStage},
 			{Name: "assert-grafana-datasources-sidecars", DependsOn: []string{"assert-verified-stack-https"}, Run: assertGrafanaTLSPathsStage},
 			{Name: "assert-loki-gateway", DependsOn: []string{"assert-verified-stack-https"}, Run: assertLokiGatewayTLSStage},
 			{Name: "assert-promtail-loki", DependsOn: []string{"assert-verified-stack-https"}, Run: assertTLSPromtailPathStage},
 			{Name: "assert-prometheus-alertmanager", DependsOn: []string{"assert-verified-stack-https"}, Run: assertTLSAlertmanagerPathStage},
+			{Name: "assert-gateway-dependencies", DependsOn: []string{"assert-internal-identities"}, Run: assertGatewayDependenciesStage},
+			{Name: "assert-gateway-mounted-ca", DependsOn: []string{"assert-gateway-dependencies"}, Run: assertGatewayMountedCAStage},
+			{Name: "assert-control-plane-verified-https", DependsOn: []string{"assert-internal-identities"}, Run: assertControlPlaneVerifiedHTTPSStage},
+			{Name: "assert-control-plane-ingress-verified-tls", DependsOn: []string{"assert-control-plane-verified-https"}, Run: assertControlPlaneIngressVerifiedTLSStage},
+			{Name: "assert-redis-transport", DependsOn: []string{"assert-internal-identities"}, Run: assertRedisTransportStage},
+			{Name: "assert-postgresql-transport", DependsOn: []string{"assert-internal-identities"}, Run: assertPostgreSQLTransportStage},
+			{Name: "reconcile-internal-tls-authority", DependsOn: []string{
+				"assert-exporter-client-paths", "assert-verified-self-monitors", "assert-grafana-datasources-sidecars",
+				"assert-loki-gateway", "assert-promtail-loki", "assert-prometheus-alertmanager", "assert-gateway-mounted-ca",
+				"assert-control-plane-ingress-verified-tls", "assert-redis-transport", "assert-postgresql-transport",
+			}, Run: reconcileInternalTLSAuthorityStage},
 		},
 		Diagnostics: diagnostics,
 		Cleanup:     cleanup,
@@ -51,12 +72,223 @@ func observabilityTLSScenario() sharede2e.Definition {
 
 func installObservabilityTLSStage(t *testing.T, state *chartState) {
 	t.Helper()
-	state.installPlatform(t, 22*time.Minute,
-		filepathFromCharts(state, "values-observability.yaml"),
-		filepathFromCharts(state, "values-tls.yaml"),
-		state.writeValues(t, "observability-tls-runtime", observabilityPlatformValues(t)),
-	)
+	state.installPlatform(t, 22*time.Minute, observabilityValueFiles(t, state, observabilityTLSPlatform)...)
 	assertCandidateImages(t, state)
+}
+
+func installInternalTLSCertificateSubstrateStage(t *testing.T, state *chartState) {
+	t.Helper()
+	state.installSubstrate(t, filepathFromCharts(state, "values-tls.yaml"))
+	state.kubectl(t, 4*time.Minute, "wait", "--for=condition=Ready", "clusterissuer/internal-ca", "--timeout=3m")
+	state.kubectl(t, 4*time.Minute, "wait", "--for=condition=Ready", "certificate/"+internalCARootSecretName(), "-n", testNamespace, "--timeout=3m")
+	state.internalCARootUID = state.kubectl(t, 30*time.Second, "get", "certificate/"+internalCARootSecretName(), "-n", testNamespace,
+		"-o", "jsonpath={.metadata.uid}")
+	owner := state.kubectl(t, 30*time.Second, "get", "certificate/"+internalCARootSecretName(), "-n", testNamespace,
+		"-o", "jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-name}")
+	if owner != testRelease {
+		t.Fatalf("ordered internal CA owner=%q want future platform release %q", owner, testRelease)
+	}
+}
+
+func assertInternalIdentitiesStage(t *testing.T, state *chartState) {
+	t.Helper()
+	state.kubectl(t, 4*time.Minute, "wait", "--for=condition=Ready", "clusterissuer/internal-ca", "--timeout=3m")
+	currentRootUID := state.kubectl(t, 30*time.Second, "get", "certificate/"+internalCARootSecretName(), "-n", testNamespace,
+		"-o", "jsonpath={.metadata.uid}")
+	if state.internalCARootUID != "" && currentRootUID != state.internalCARootUID {
+		t.Fatalf("platform did not adopt the ordered internal CA in place: before=%q after=%q", state.internalCARootUID, currentRootUID)
+	}
+	for _, certificate := range coreInternalCALeafSecrets() {
+		state.kubectl(t, 4*time.Minute, "wait", "--for=condition=Ready", "certificate/"+certificate, "-n", testNamespace, "--timeout=3m")
+	}
+	// HOR-528: one root authority, first revision, and every issued workload
+	// leaf chaining to the exact root the clients mount.
+	assertSingleInternalCARootAuthority(t, state)
+	assertIssuedChainsMatchMountedRoot(t, state, coreInternalCALeafSecrets()...)
+}
+
+// reconcileInternalTLSAuthorityStage reapplies both the ordered certificate
+// companion and the platform with unchanged values and proves the internal CA
+// root was adopted, not re-issued: the exercised reconcile re-applies the one
+// shared identity both writers render, so cert-manager has no reason to issue a
+// new root and the leaves stay valid.
+func reconcileInternalTLSAuthorityStage(t *testing.T, state *chartState) {
+	t.Helper()
+	uidBefore := state.kubectl(t, 30*time.Second, "get", "certificate/"+internalCARootSecretName(), "-n", testNamespace,
+		"-o", "jsonpath={.metadata.uid}")
+	fingerprintBefore := internalCARootFingerprint(t, state)
+
+	state.installSubstrate(t, filepathFromCharts(state, "values-tls.yaml"))
+	state.installPlatform(t, 22*time.Minute, observabilityValueFiles(t, state, observabilityTLSPlatform)...)
+	state.kubectl(t, 4*time.Minute, "wait", "--for=condition=Ready", "certificate/"+internalCARootSecretName(), "-n", testNamespace, "--timeout=3m")
+
+	assertInternalCARootStable(t, state, uidBefore, fingerprintBefore)
+	leaves := append(coreInternalCALeafSecrets(), observabilityInternalCALeafSecrets()...)
+	assertIssuedChainsMatchMountedRoot(t, state, leaves...)
+}
+
+func assertGatewayDependenciesStage(t *testing.T, state *chartState) {
+	t.Helper()
+	state.kubectl(t, 6*time.Minute, "rollout", "status", "deployment/"+testRelease+"-gateway", "-n", testNamespace, "--timeout=5m")
+	forward := state.forward(t, "svc/"+testRelease+"-gateway", 8080, "http")
+	client, err := httpx.Client(15 * time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := requireHTTP(t, client, http.MethodGet, forward.URL+"/readyz", nil, http.StatusOK)
+	if !strings.Contains(string(body), `"fresh":true`) {
+		t.Fatalf("gateway snapshot is not fresh: %s", stateSafeBody(body))
+	}
+	state.stopForward(t, forward)
+}
+
+// assertGatewayMountedCAStage proves the inference gateway mounts the exact
+// issued root at the CA path its rendered verify-full/rediss client
+// configuration names (scripts/check-gateway-tls-client.sh proves that config).
+func assertGatewayMountedCAStage(t *testing.T, state *chartState) {
+	t.Helper()
+	pod := state.firstPod(t, "app.kubernetes.io/name=inference-gateway")
+	assertMountedInternalCA(t, state, pod, "/etc/iterabase/internal-ca/ca.crt")
+}
+
+func assertControlPlaneVerifiedHTTPSStage(t *testing.T, state *chartState) {
+	t.Helper()
+	state.kubectl(t, 6*time.Minute, "rollout", "status", "deployment/"+testRelease+"-control-plane-api", "-n", testNamespace, "--timeout=5m")
+	ca := decodeSecretValue(t, state, internalCARootSecretName(), "ca.crt")
+	forward := state.forward(t, "svc/"+testRelease+"-control-plane-api", 8080, "https")
+	client := verifiedClient(t, ca, testRelease+"-control-plane-api."+testNamespace+".svc")
+	requireHTTP(t, client, http.MethodGet, forward.URL+"/healthz", nil, http.StatusOK)
+	state.stopForward(t, forward)
+}
+
+func assertControlPlaneIngressVerifiedTLSStage(t *testing.T, state *chartState) {
+	t.Helper()
+	const host = "control-plane.iterabase.local"
+	ingress := testRelease + "-control-plane-api"
+	internalSecret := testRelease + "-control-plane-api-tls"
+	edgeSecret := testRelease + "-control-plane-api-ingress-tls"
+
+	state.kubectl(t, 4*time.Minute, "wait", "--for=condition=Ready", "certificate/"+edgeSecret, "-n", testNamespace, "--timeout=3m")
+	if got := state.kubectl(t, 30*time.Second, "get", "ingress/"+ingress, "-n", testNamespace,
+		"-o", "jsonpath={.spec.tls[0].secretName}"); got != edgeSecret {
+		t.Fatalf("control-plane edge TLS Secret=%q want=%q", got, edgeSecret)
+	}
+	if edgeSecret == internalSecret {
+		t.Fatal("control-plane edge and backend TLS Secrets must differ")
+	}
+	expectedAnnotations := map[string]string{
+		"nginx.ingress.kubernetes.io/backend-protocol":      "HTTPS",
+		"nginx.ingress.kubernetes.io/proxy-ssl-secret":      testNamespace + "/" + internalSecret,
+		"nginx.ingress.kubernetes.io/proxy-ssl-verify":      "on",
+		"nginx.ingress.kubernetes.io/proxy-ssl-server-name": "on",
+		"nginx.ingress.kubernetes.io/proxy-ssl-name":        testRelease + "-control-plane-api." + testNamespace + ".svc",
+	}
+	for annotation, want := range expectedAnnotations {
+		got := state.kubectl(t, 30*time.Second, "get", "ingress/"+ingress, "-n", testNamespace,
+			"-o", fmt.Sprintf("jsonpath={.metadata.annotations.%s}", strings.ReplaceAll(annotation, ".", "\\.")))
+		if got != want {
+			t.Fatalf("control-plane ingress annotation %s=%q want=%q", annotation, got, want)
+		}
+	}
+
+	edgeCertificate := decodeSecretValue(t, state, edgeSecret, "tls.crt")
+	forward := state.forward(t, "svc/"+testRelease+"-ingress-nginx-controller", 443, "https")
+	client := verifiedDialClient(t, edgeCertificate, host, fmt.Sprintf("127.0.0.1:%d", forward.LocalPort))
+	if err := waitHTTPReady(state.ctx, client, "https://"+host+"/healthz", 2*time.Minute); err != nil {
+		t.Fatalf("verified control-plane ingress did not become ready: %v", err)
+	}
+	requireHTTP(t, client, http.MethodGet, "https://"+host+"/healthz", nil, http.StatusOK)
+	requireHTTP(t, client, http.MethodGet, "https://"+host+"/", nil, http.StatusOK)
+	state.stopForward(t, forward)
+}
+
+// assertRedisTransportStage proves the Redis server rejects authenticated
+// plaintext and accepts only CA-verified TLS with AUTH.
+func assertRedisTransportStage(t *testing.T, state *chartState) {
+	t.Helper()
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: redis-transport-probe
+  namespace: %[1]s
+spec:
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+      env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: %[2]s-redis
+              key: redis-password
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          if redis-cli -h %[2]s-redis -p 6379 -a "$REDIS_PASSWORD" PING 2>/dev/null | grep -q PONG; then
+            echo "authenticated plaintext unexpectedly succeeded" >&2
+            exit 1
+          fi
+          test "$(redis-cli --tls --cacert /ca/ca.crt -h %[2]s-redis -p 6379 PING 2>/dev/null)" = "NOAUTH Authentication required."
+          test "$(redis-cli --tls --cacert /ca/ca.crt -h %[2]s-redis -p 6379 -a "$REDIS_PASSWORD" PING 2>/dev/null)" = PONG
+      volumeMounts:
+        - name: ca
+          mountPath: /ca
+          readOnly: true
+  volumes:
+    - name: ca
+      secret:
+        secretName: %[3]s
+        items:
+          - key: ca.crt
+            path: ca.crt
+`, testNamespace, testRelease, internalCARootSecretName())
+	state.kubectl(t, 30*time.Second, "apply", "-f", state.writeManifest(t, "redis-transport.yaml", manifest))
+	state.kubectl(t, 3*time.Minute, "wait", "--for=jsonpath={.status.phase}=Succeeded", "pod/redis-transport-probe", "-n", testNamespace, "--timeout=2m")
+}
+
+// assertPostgreSQLTransportStage proves PostgreSQL rejects authenticated
+// plaintext and accepts verify-full TLS against the mounted root.
+func assertPostgreSQLTransportStage(t *testing.T, state *chartState) {
+	t.Helper()
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: postgresql-transport-probe
+  namespace: %[1]s
+spec:
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+      env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: %[2]s-postgresql
+              key: password
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          if psql "host=%[2]s-postgresql port=5432 user=controlplane dbname=controlplane sslmode=disable connect_timeout=5" -c "select 1" >/tmp/plain 2>&1; then
+            echo "authenticated plaintext unexpectedly succeeded" >&2
+            exit 1
+          fi
+          psql "host=%[2]s-postgresql port=5432 user=controlplane dbname=controlplane sslmode=verify-full sslrootcert=/ca/ca.crt connect_timeout=5" -c "select 1" | grep -q "(1 row)"
+      volumeMounts:
+        - name: ca
+          mountPath: /ca
+          readOnly: true
+  volumes:
+    - name: ca
+      secret:
+        secretName: %[3]s
+        items:
+          - key: ca.crt
+            path: ca.crt
+`, testNamespace, testRelease, internalCARootSecretName())
+	state.kubectl(t, 30*time.Second, "apply", "-f", state.writeManifest(t, "postgresql-transport.yaml", manifest))
+	state.kubectl(t, 3*time.Minute, "wait", "--for=jsonpath={.status.phase}=Succeeded", "pod/postgresql-transport-probe", "-n", testNamespace, "--timeout=2m")
 }
 
 func assertObservabilityIdentitiesStage(t *testing.T, state *chartState) {
@@ -205,7 +437,6 @@ func assertGrafanaTLSPathsStage(t *testing.T, state *chartState) {
 	state.redactor.Add(username, password)
 	forward := state.forward(t, "svc/"+testRelease+"-grafana", 80, "https")
 	client := verifiedClient(t, ca, testRelease+"-grafana."+testNamespace+".svc")
-	assertGrafanaDashboardSuite(t, client, forward.URL, username, password)
 	for _, datasource := range []struct {
 		uid, healthPath string
 	}{

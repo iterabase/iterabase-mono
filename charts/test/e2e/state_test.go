@@ -82,27 +82,24 @@ func kubePrometheusStackComponentNameForRelease(release, component string) strin
 }
 
 type chartState struct {
-	ctx                  context.Context
-	chartsRoot           string
-	outputDir            string
-	diagnosticsDir       string
-	redactor             *redact.Redactor
-	runner               process.Runner
-	cluster              *kindcluster.Cluster
-	client               kube.Client
-	forwards             []*kube.Forward
-	platform             kube.Chart
-	substrate            kube.Chart
-	lvmSubstrate         kube.Chart
-	lvmStorageReady      bool
-	transitionBaselines  map[string]transitionBaseline
-	runtimeImageDigests  map[string]string
-	snapshots            map[string]lifecycleSnapshot
-	internalIngressIP    string
-	internalPool         string
-	internalPoolInternal string
-	metalLB              *metalLBSnapshot
-	internalCARootUID    string
+	ctx                 context.Context
+	chartsRoot          string
+	outputDir           string
+	diagnosticsDir      string
+	redactor            *redact.Redactor
+	runner              process.Runner
+	cluster             *kindcluster.Cluster
+	client              kube.Client
+	forwards            []*kube.Forward
+	platform            kube.Chart
+	substrate           kube.Chart
+	lvmSubstrate        kube.Chart
+	lvmStorageReady     bool
+	baseline            *nMinusOneBaseline
+	runtimeImageDigests map[string]string
+	snapshots           map[string]lifecycleSnapshot
+	internalIngressIP   string
+	internalCARootUID   string
 }
 
 func newChartState(t *testing.T) *chartState {
@@ -382,24 +379,63 @@ func assertCandidateImages(t *testing.T, state *chartState) {
 	}
 }
 
-func basePlatformValues() map[string]any {
-	return map[string]any{
-		"external-dns": map[string]any{"enabled": false},
-		"minio":        map[string]any{"enabled": false},
-		"control-plane": map[string]any{
-			"artifact":   map[string]any{"enabled": false},
-			"dispatch":   map[string]any{"enabled": false},
-			"toolRunner": map[string]any{"enabled": false},
-		},
+// platformValues is one scenario's ordered platform values files, relative to
+// the charts root. The same list feeds the install and the scenario's catalogue
+// `renders`, so the CI selector templates exactly what the scenario installs.
+// Composed image identities and Kind-derived addresses are the only runtime
+// overlay layered after these files; they never change the rendered shape.
+type platformValues []string
+
+const (
+	platformValuesBase    = "test/e2e/values/platform-base.yaml"
+	platformValuesRuntime = "test/e2e/values/platform-runtime.yaml"
+	platformChartPath     = "charts/charts/iterabase-platform"
+	certificateChartPath  = "charts/charts/cert-manager-substrate"
+	lvmStorageChartPath   = "charts/charts/lvm-storage-substrate"
+	// kindKubeletDirectory mirrors the kubelet root testkit/e2e/kind passes to
+	// the LVM substrate on every Kind node.
+	kindKubeletDirectory = "/var/lib/kubelet"
+)
+
+func (values platformValues) files(state *chartState) []string {
+	files := make([]string, 0, len(values))
+	for _, name := range values {
+		files = append(files, filepathFromCharts(state, name))
+	}
+	return files
+}
+
+func repositoryChartsPaths(names []string) []string {
+	paths := make([]string, 0, len(names))
+	for _, name := range names {
+		paths = append(paths, "charts/"+name)
+	}
+	return paths
+}
+
+func (values platformValues) render() sharede2e.RenderInput {
+	return sharede2e.RenderInput{Chart: platformChartPath, Values: repositoryChartsPaths(values)}
+}
+
+// substrateRenders declares the two ordered substrate installs every runnable
+// chart scenario performs before the platform: the certificate substrate with
+// certificateValues and the LVM substrate with the exact strings testkit/e2e/kind
+// sets for the platform release.
+func substrateRenders(release string, certificateValues ...string) []sharede2e.RenderInput {
+	return []sharede2e.RenderInput{
+		{Chart: certificateChartPath, Values: repositoryChartsPaths(certificateValues)},
+		{Chart: lvmStorageChartPath, Set: map[string]string{
+			"lvm-localpv.global.kubeletDir":       kindKubeletDirectory,
+			"agentpool.authorizedManagerIdentity": "system:serviceaccount:" + testNamespace + ":" + release + "-control-plane-manager",
+		}},
 	}
 }
 
-func runtimePlatformValues(t *testing.T) map[string]any {
+// runtimeImageValues is the runtime overlay carrying the composed image
+// identities every scenario installs after its declared values files.
+func runtimeImageValues(t *testing.T) map[string]any {
 	t.Helper()
-	values := basePlatformValues()
-	values["ingress-nginx"] = map[string]any{"enabled": false}
-	values["metallb"] = map[string]any{"enabled": false}
-	values["metallb-config"] = map[string]any{"enabled": false}
+	values := map[string]any{}
 	applyRuntimeImages(t, values)
 	return values
 }
@@ -457,7 +493,7 @@ func TestUnitComposedRuntimeImagesRemainConstantAcrossChartTransitions(t *testin
 	t.Setenv("INFERENCE_GATEWAY_IMAGE_REPO", "registry.example/inference-gateway")
 	t.Setenv("INFERENCE_GATEWAY_IMAGE_TAG", "0.2.7")
 
-	values := runtimePlatformValues(t)
+	values := runtimeImageValues(t)
 	for component, want := range map[string]string{
 		"control-plane":     "0.0.30",
 		"inference-gateway": "0.2.7",
@@ -472,8 +508,13 @@ func TestUnitComposedRuntimeImagesRemainConstantAcrossChartTransitions(t *testin
 
 func (state *chartState) installSubstrate(t *testing.T, valueFiles ...string) {
 	t.Helper()
+	state.installSubstrateChart(t, state.substrate, valueFiles...)
+}
+
+func (state *chartState) installSubstrateChart(t *testing.T, chart kube.Chart, valueFiles ...string) {
+	t.Helper()
 	out, err := state.client.HelmUpgrade(state.ctx, kube.HelmOptions{
-		Release: testRelease + "-cert-manager", Namespace: testNamespace, Chart: state.substrate,
+		Release: testRelease + "-cert-manager", Namespace: testNamespace, Chart: chart,
 		CreateNamespace: true, Wait: true, Timeout: 8 * time.Minute, ValueFiles: valueFiles,
 	})
 	if err != nil {
@@ -486,8 +527,15 @@ func (state *chartState) installLVMStorage(t *testing.T) {
 	if state.lvmStorageReady {
 		return
 	}
-	if err := state.cluster.ConfigureLVMStorage(state.ctx, state.lvmSubstrate.LocalPath, testNamespace, testRelease+"-lvm-storage", lvmStorageContract()); err != nil {
-		t.Fatalf("install exact Kind OpenEBS LVM storage substrate: %v", err)
+	state.applyLVMStorage(t, state.lvmSubstrate)
+}
+
+// applyLVMStorage applies one exact LVM substrate chart (idempotent on the
+// already-prepared VG) and re-verifies the storage and RBAC contract.
+func (state *chartState) applyLVMStorage(t *testing.T, chart kube.Chart) {
+	t.Helper()
+	if err := state.cluster.ConfigureLVMStorage(state.ctx, chart.LocalPath, testNamespace, testRelease+"-lvm-storage", lvmStorageContract()); err != nil {
+		t.Fatalf("install exact Kind OpenEBS LVM storage substrate %s: %v", chart.LocalPath, err)
 	}
 	state.assertLVMSnapshotDependencyRBAC(t)
 	state.lvmStorageReady = true
@@ -541,12 +589,19 @@ if test "$6" = yes; then test "$rc" = 0; else test "$rc" = 1; fi
 
 func (state *chartState) installPlatform(t *testing.T, timeout time.Duration, valueFiles ...string) {
 	t.Helper()
+	state.installPlatformChart(t, state.platform, timeout, valueFiles...)
+}
+
+// installPlatformChart applies one exact platform chart the way Forge applies a
+// version, whether it is the composed head chart or a verified N-1 archive.
+func (state *chartState) installPlatformChart(t *testing.T, chart kube.Chart, timeout time.Duration, valueFiles ...string) {
+	t.Helper()
 	// Mirror Forge's pre-apply (DES-HOR-511-03): establish the exact chart's CRDs
 	// (from its `crds/` directories AND CRDs rendered as ordinary template
 	// resources, e.g. the MetalLB CRDs) and wait for Established before Helm, so
 	// ordinary custom resources can be mapped. Idempotent. Returns whether MetalLB
 	// is enabled (its rendered template CRDs are present).
-	metallb := state.preapplyAllCRDs(t, valueFiles...)
+	metallb := state.preapplyAllCRDs(t, chart, valueFiles...)
 	// Mirror Forge's DES-HOR-511 pre-apply: adopt any legacy hook-created MetalLB
 	// pools/advertisements into the release before Helm upgrades, so the transition
 	// from a hook-based predecessor preserves object UIDs instead of failing to
@@ -562,13 +617,13 @@ func (state *chartState) installPlatform(t *testing.T, timeout time.Duration, va
 		installed, _ := state.releaseInstalled(t)
 		policy := state.metalLBValidationPolicy(t)
 		if !installed || policy == metalLBPolicyIgnore {
-			state.helmUpgrade(t, timeout, valueFiles, map[string]string{
+			state.helmUpgrade(t, chart, timeout, valueFiles, map[string]string{
 				metalLBValidationPolicyValue: metalLBPolicyIgnore,
 			})
 			state.waitMetalLBAdmissionBackend(t, timeout)
 		}
 	}
-	state.helmUpgrade(t, timeout, valueFiles, nil)
+	state.helmUpgrade(t, chart, timeout, valueFiles, nil)
 	if metallb {
 		if final := state.metalLBValidationPolicy(t); final != metalLBPolicyFail {
 			t.Fatalf("metallb validation failurePolicy not converged to %s: got %q", metalLBPolicyFail, final)
@@ -577,12 +632,12 @@ func (state *chartState) installPlatform(t *testing.T, timeout time.Duration, va
 }
 
 // helmUpgrade is a thin helper wrapping client.HelmUpgrade with the platform
-// release/namespace and the given value files and --set-string overrides.
-func (state *chartState) helmUpgrade(t *testing.T, timeout time.Duration, valueFiles []string, values map[string]string) {
+// release/namespace and the given chart, value files, and --set-string overrides.
+func (state *chartState) helmUpgrade(t *testing.T, chart kube.Chart, timeout time.Duration, valueFiles []string, values map[string]string) {
 	t.Helper()
 	state.installLVMStorage(t)
 	out, err := state.client.HelmUpgrade(state.ctx, kube.HelmOptions{
-		Release: testRelease, Namespace: testNamespace, Chart: state.platform,
+		Release: testRelease, Namespace: testNamespace, Chart: chart,
 		ValueFiles: valueFiles, Values: values, Wait: true, Timeout: timeout,
 	})
 	if err != nil {
@@ -643,11 +698,11 @@ func (state *chartState) waitMetalLBAdmissionBackend(t *testing.T, timeout time.
 // template CRDs present). CRD schemas contain credential-shaped property names
 // that text redaction can corrupt, so the exact payload is written to a private
 // temp file and applied with `-f`.
-func (state *chartState) preapplyAllCRDs(t *testing.T, valueFiles ...string) bool {
+func (state *chartState) preapplyAllCRDs(t *testing.T, chart kube.Chart, valueFiles ...string) bool {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "platform-crds.yaml")
 	showArgs := []string{"-o", "pipefail", "-c", `helm show crds "$@" > "$CRD_OUTPUT"`, "--"}
-	showArgs = append(showArgs, helmChartArgs(state.platform)...)
+	showArgs = append(showArgs, helmChartArgs(chart)...)
 	if _, err := state.runner.Run(state.ctx, process.Command{
 		Name: "bash", Args: showArgs, Env: map[string]string{"CRD_OUTPUT": path}, Timeout: 2 * time.Minute,
 	}); err != nil {
@@ -666,7 +721,7 @@ func (state *chartState) preapplyAllCRDs(t *testing.T, valueFiles ...string) boo
 	// Helm adopts the pre-applied CRD.
 	renderedPath := filepath.Join(t.TempDir(), "platform-rendered-crds.yaml")
 	tmplArgs := []string{"-o", "pipefail", "-c", `helm template "$@" > "$TMPL_OUTPUT"`, "--"}
-	tmplArgs = append(tmplArgs, helmChartArgs(state.platform)...)
+	tmplArgs = append(tmplArgs, helmChartArgs(chart)...)
 	for _, f := range valueFiles {
 		tmplArgs = append(tmplArgs, "-f", f)
 	}
@@ -749,6 +804,13 @@ func (state *chartState) adoptMetalLBHookObjects(t *testing.T) {
 			t.Fatalf("adopt MetalLB %s ownership: %v", kind, err)
 		}
 	}
+}
+
+func helmChartArgs(chart kube.Chart) []string {
+	if chart.LocalPath != "" {
+		return []string{chart.LocalPath}
+	}
+	return []string{chart.Reference, "--version", chart.Version}
 }
 
 func (state *chartState) waitForPods(t *testing.T, selector string, timeout time.Duration) {

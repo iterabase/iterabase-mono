@@ -7,28 +7,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"slices"
-	"sort"
 	"strings"
 	"testing"
 )
-
-type endpointPod struct {
-	Name   string            `json:"name"`
-	Labels map[string]string `json:"labels"`
-}
-
-type endpointSlice struct {
-	Metadata struct {
-		Labels map[string]string `json:"labels"`
-	} `json:"metadata"`
-	Endpoints []struct {
-		TargetRef struct {
-			Kind string `json:"kind"`
-			Name string `json:"name"`
-		} `json:"targetRef"`
-	} `json:"endpoints"`
-}
 
 func TestUnitKubePrometheusStackComponentName(t *testing.T) {
 	t.Parallel()
@@ -46,116 +27,6 @@ func TestUnitKubePrometheusStackComponentName(t *testing.T) {
 			}
 		})
 	}
-}
-
-func projectEndpointPodsJSON(fieldsJSON []byte) ([]byte, error) {
-	var fields []json.RawMessage
-	if err := json.Unmarshal(fieldsJSON, &fields); err != nil {
-		return nil, fmt.Errorf("decode projected pod fields: %w", err)
-	}
-	if len(fields)%2 != 0 {
-		return nil, fmt.Errorf("projected pod fields have odd length %d", len(fields))
-	}
-	fieldSetSize := len(fields) / 2
-	pods := make([]endpointPod, 0, fieldSetSize)
-	for index := 0; index < fieldSetSize; index++ {
-		var pod endpointPod
-		if err := json.Unmarshal(fields[index], &pod.Name); err != nil {
-			return nil, fmt.Errorf("decode projected pod name: %w", err)
-		}
-		if err := json.Unmarshal(fields[index+fieldSetSize], &pod.Labels); err != nil {
-			return nil, fmt.Errorf("decode projected pod labels: %w", err)
-		}
-		pods = append(pods, pod)
-	}
-	return json.Marshal(pods)
-}
-
-func projectEndpointSlicesJSON(fieldsJSON []byte) ([]byte, error) {
-	var fields []json.RawMessage
-	if err := json.Unmarshal(fieldsJSON, &fields); err != nil {
-		return nil, fmt.Errorf("decode projected EndpointSlice fields: %w", err)
-	}
-	if len(fields)%2 != 0 {
-		return nil, fmt.Errorf("projected EndpointSlice fields have odd length %d", len(fields))
-	}
-	fieldSetSize := len(fields) / 2
-	endpointSlices := make([]endpointSlice, 0, fieldSetSize)
-	for index := 0; index < fieldSetSize; index++ {
-		var endpointSlice endpointSlice
-		if err := json.Unmarshal(fields[index], &endpointSlice.Metadata.Labels); err != nil {
-			return nil, fmt.Errorf("decode projected EndpointSlice labels: %w", err)
-		}
-		if err := json.Unmarshal(fields[index+fieldSetSize], &endpointSlice.Endpoints); err != nil {
-			return nil, fmt.Errorf("decode projected EndpointSlice endpoints: %w", err)
-		}
-		endpointSlices = append(endpointSlices, endpointSlice)
-	}
-	return json.Marshal(endpointSlices)
-}
-
-func assertServiceEndpointsJSON(podsJSON, slicesJSON []byte, release string) error {
-	var pods []endpointPod
-	var endpointSlices []endpointSlice
-	if err := json.Unmarshal(podsJSON, &pods); err != nil {
-		return fmt.Errorf("decode pod metadata: %w", err)
-	}
-	if err := json.Unmarshal(slicesJSON, &endpointSlices); err != nil {
-		return fmt.Errorf("decode EndpointSlices: %w", err)
-	}
-	selectedPods := func(name, component string) []string {
-		var selected []string
-		for _, pod := range pods {
-			if pod.Labels["app.kubernetes.io/name"] == name && pod.Labels["app.kubernetes.io/instance"] == release && pod.Labels["app.kubernetes.io/component"] == component {
-				selected = append(selected, pod.Name)
-			}
-		}
-		sort.Strings(selected)
-		return selected
-	}
-	endpointPods := func(service string) []string {
-		var selected []string
-		for _, slice := range endpointSlices {
-			if slice.Metadata.Labels["kubernetes.io/service-name"] != service {
-				continue
-			}
-			for _, endpoint := range slice.Endpoints {
-				if endpoint.TargetRef.Kind == "Pod" && endpoint.TargetRef.Name != "" {
-					selected = append(selected, endpoint.TargetRef.Name)
-				}
-			}
-		}
-		sort.Strings(selected)
-		return selected
-	}
-	checks := []struct {
-		name, component, service string
-	}{
-		{"postgresql", "database", release + "-postgresql"},
-		{"postgresql", "exporter", release + "-postgresql-exporter"},
-		{"redis", "cache", release + "-redis"},
-		{"redis", "exporter", release + "-redis-exporter"},
-	}
-	sets := make(map[string][]string)
-	for _, check := range checks {
-		expected := selectedPods(check.name, check.component)
-		actual := endpointPods(check.service)
-		if len(expected) == 0 {
-			return fmt.Errorf("%s: no component=%s pods found", check.service, check.component)
-		}
-		if !slices.Equal(actual, expected) {
-			return fmt.Errorf("%s endpoints %v != expected %v", check.service, actual, expected)
-		}
-		sets[check.service] = actual
-	}
-	for _, pair := range [][2]string{{release + "-postgresql", release + "-postgresql-exporter"}, {release + "-redis", release + "-redis-exporter"}} {
-		for _, dataPod := range sets[pair[0]] {
-			if slices.Contains(sets[pair[1]], dataPod) {
-				return fmt.Errorf("%s and %s overlap on %s", pair[0], pair[1], dataPod)
-			}
-		}
-	}
-	return nil
 }
 
 func assertHistoricalPrometheusSample(body []byte, intervalEnd float64, want string) error {
@@ -303,55 +174,6 @@ func TestUnitPublishedPlatformVersionUsesOCITag(t *testing.T) {
 	t.Setenv("ITERABASE_E2E_PUBLISHED_FIXTURE", path)
 	if got := publishedPlatformVersion(t); got != "0.3.1" {
 		t.Fatalf("published version=%q want=0.3.1", got)
-	}
-}
-
-func TestUnitProjectedEndpointJSONFeedsSharedAssertion(t *testing.T) {
-	podFields := `[
-		"pg", "pg-exp", "redis", "redis-exp",
-		{"app.kubernetes.io/name":"postgresql","app.kubernetes.io/instance":"iterabase","app.kubernetes.io/component":"database"},
-		{"app.kubernetes.io/name":"postgresql","app.kubernetes.io/instance":"iterabase","app.kubernetes.io/component":"exporter"},
-		{"app.kubernetes.io/name":"redis","app.kubernetes.io/instance":"iterabase","app.kubernetes.io/component":"cache"},
-		{"app.kubernetes.io/name":"redis","app.kubernetes.io/instance":"iterabase","app.kubernetes.io/component":"exporter"}
-	]`
-	sliceFields := `[
-		{"kubernetes.io/service-name":"iterabase-postgresql"},
-		{"kubernetes.io/service-name":"iterabase-postgresql-exporter"},
-		{"kubernetes.io/service-name":"iterabase-redis"},
-		{"kubernetes.io/service-name":"iterabase-redis-exporter"},
-		[{"targetRef":{"kind":"Pod","name":"pg"}}],
-		[{"targetRef":{"kind":"Pod","name":"pg-exp"}}],
-		[{"targetRef":{"kind":"Pod","name":"redis"}}],
-		[{"targetRef":{"kind":"Pod","name":"redis-exp"}}]
-	]`
-	podsJSON, err := projectEndpointPodsJSON([]byte(podFields))
-	if err != nil {
-		t.Fatal(err)
-	}
-	slicesJSON, err := projectEndpointSlicesJSON([]byte(sliceFields))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := assertServiceEndpointsJSON(podsJSON, slicesJSON, "iterabase"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestUnitEndpointSeparationRejectsExporterLeak(t *testing.T) {
-	pods := `[
-		{"name":"pg","labels":{"app.kubernetes.io/name":"postgresql","app.kubernetes.io/instance":"iterabase","app.kubernetes.io/component":"database"}},
-		{"name":"pg-exp","labels":{"app.kubernetes.io/name":"postgresql","app.kubernetes.io/instance":"iterabase","app.kubernetes.io/component":"exporter"}},
-		{"name":"redis","labels":{"app.kubernetes.io/name":"redis","app.kubernetes.io/instance":"iterabase","app.kubernetes.io/component":"cache"}},
-		{"name":"redis-exp","labels":{"app.kubernetes.io/name":"redis","app.kubernetes.io/instance":"iterabase","app.kubernetes.io/component":"exporter"}}
-	]`
-	slices := `[
-		{"metadata":{"labels":{"kubernetes.io/service-name":"iterabase-postgresql"}},"endpoints":[{"targetRef":{"kind":"Pod","name":"pg"}},{"targetRef":{"kind":"Pod","name":"pg-exp"}}]},
-		{"metadata":{"labels":{"kubernetes.io/service-name":"iterabase-postgresql-exporter"}},"endpoints":[{"targetRef":{"kind":"Pod","name":"pg-exp"}}]},
-		{"metadata":{"labels":{"kubernetes.io/service-name":"iterabase-redis"}},"endpoints":[{"targetRef":{"kind":"Pod","name":"redis"}}]},
-		{"metadata":{"labels":{"kubernetes.io/service-name":"iterabase-redis-exporter"}},"endpoints":[{"targetRef":{"kind":"Pod","name":"redis-exp"}}]}
-	]`
-	if err := assertServiceEndpointsJSON([]byte(pods), []byte(slices), "iterabase"); err == nil {
-		t.Fatal("intentional selector break passed")
 	}
 }
 

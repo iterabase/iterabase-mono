@@ -1,0 +1,11 @@
+# Lifecycle state for the N-1 upgrade: MinIO artifacts and the control-plane
+# artifact provisioner give the upgrade real persisted state and a Helm-owned
+# Job to retain.
+minio:
+  enabled: true
+  artifactService:
+    enabled: true
+    bucket: iterabase-artifacts
+control-plane:
+  artifact:
+    enabled: true

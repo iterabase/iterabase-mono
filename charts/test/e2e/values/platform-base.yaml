@@ -1,0 +1,15 @@
+# Platform values every chart E2E scenario installs. Scenario files layer on
+# top; composed image identities and Kind-derived addresses are the only
+# runtime overlay. Scenario metadata declares these files as `renders`, so the
+# CI selector templates exactly what the scenario installs.
+external-dns:
+  enabled: false
+minio:
+  enabled: false
+control-plane:
+  artifact:
+    enabled: false
+  dispatch:
+    enabled: false
+  toolRunner:
+    enabled: false

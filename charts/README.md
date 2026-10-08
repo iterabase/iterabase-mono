@@ -171,12 +171,6 @@ helm rollback <release> <platform-revision> -n <namespace> --wait
 helm rollback <release>-cert-manager <substrate-revision> -n <namespace> --wait
 ```
 
-`make test-e2e-observability-ingress-recovery` exercises the checksum-pinned
-`0.3.12` baseline, bypass of migration for an explicit `RollingUpdate` override,
-a changed one-replica gateway, an injected failure before admission post-hooks,
-fail-closed reapply, the explicit legacy rollback above, and current forward
-recovery.
-
 ### Production OpenEBS LVM LocalPV storage
 
 Platform V2 has no chart-selectable storage backend. Forge requires one or more
@@ -351,8 +345,8 @@ REST-map the pools:
 
 ### Historical pre-0.4 upgrade and rollback ownership procedures
 
-> These procedures preserve certificate/MetalLB history and test non-storage
-> transitions only. They do not authorize upgrading a local-path installation
+> These procedures preserve certificate/MetalLB history only; no current chart
+> E2E exercises them. They do not authorize upgrading a local-path installation
 > into platform `0.4.0`. `DES-HOR-545-01` requires a clean host/OPO1 rebuild,
 > explicit blank disks, a new receipt-bound VG, and fresh OpenEBS claims.
 
@@ -370,26 +364,17 @@ kubectl annotate --overwrite $pools \
   'helm.sh/hook-' 'helm.sh/hook-weight-'  # strip the hook metadata
 ```
 
-This ownership/hook-metadata transfer is exactly what the transition scenario
-asserts: the pools keep their `meta.helm.sh` owner and lose their `helm.sh/hook`
-markers, so a subsequent upgrade adopts them rather than recreating them.
+After the transfer the pools keep their `meta.helm.sh` owner and lose their
+`helm.sh/hook` markers, so a subsequent upgrade adopts them rather than
+recreating them.
 
 **Rollback to a hook-era predecessor.** A `helm rollback <release> <previous>
 -n <namespace> --wait` to a pre-DES-HOR-511 revision is safe and **does not tear
 down the pools or the LoadBalancer VIP**: because they carry
 `helm.sh/resource-policy: keep` and were Helm-adopted, the rollback leaves their
 UIDs, desired specs, and ownership/hook metadata intact and the wire route stays
-healthy. This predecessor-pool restoration is **proven** (not merely claimed) by
-the `metallb-upgrade-reapply` transition: it captures the predecessor desired
-specs before the rollback, then after the rollback **re-queries the live objects**
-and asserts their exact `meta.helm.sh/release-name` and
-`meta.helm.sh/release-namespace` ownership, `helm.sh/resource-policy: keep`, and
-the absence of **both** `helm.sh/hook` and `helm.sh/hook-weight` markers (plus
-UID, desired-spec, VIP, and route) — for the tested edge and internal pools and
-their advertisements — never asserting metadata cached before the rollback.
-During every blocking upgrade, exact reapply, rollback, and forward recovery, the blocking operation itself runs under a concurrent **fail-closed** observation
-of the Service LoadBalancer identity and route: any kubectl read error, empty or
-changed VIP, or route failure fails the scenario rather than being skipped.
+healthy. The hook-era (0.3.19) transition scenario that exercised this path was
+retired by HOR-590; current chart E2E covers only the LVM-era N-1 boundary.
 
 **Safe predecessor reapply / forward recovery.** The supported recovery after
 rolling back to a hook-era predecessor is a forward re-upgrade to the current
@@ -422,10 +407,9 @@ key. That guarantee is enforced by:
 must render identical CA specs, for the defaults, a global override, a legacy
 override, and both set (they must also agree that values are strings, not YAML
 scalars);
-- `make test-e2e-internal-tls` and `make test-e2e-observability-tls`: exactly one
-root authority on its first revision, every issued workload leaf chains to the
-mounted root, and (internal TLS) a substrate + platform reconcile leaves the root
-object identity and key material unchanged.
+- `make test-e2e-observability-tls`: exactly one root authority on its first
+revision, every issued workload leaf chains to the mounted root, and a substrate
++ platform reconcile leaves the root object identity and key material unchanged.
 
 **Changing the shared identity on a running installation is not a supported
 operation.** Cert-manager re-issues the root whenever its spec changes, and while
@@ -488,8 +472,7 @@ kubectl annotate --overwrite $cert_crds \
 helm rollback iterabase <pre-0.3-revision> -n iterabase-system --wait
 ```
 
-The chart-owned compiled Kind scenario exercises both directions against the
-released 0.2.2 chart via `make test-e2e-certificate-migration`.
+This historical hand-off is no longer exercised by a chart E2E scenario.
 
 ### Enabling an operator-backed dependency during upgrade
 
@@ -502,22 +485,15 @@ running `helm upgrade`. Forge performs this sequence automatically. Direct Helm
 operators must perform the same ordered operation; applying the regular custom
 resources first can fail during REST mapping before any chart hook executes.
 
-The chart-owned `test/e2e/transition-baselines.json` preserves local F0 fixture
-inputs only. Required planning obtains the exact platform/substrate `0.3.12` and
-MetalLB hook predecessor `0.3.19` OCI/archive identities from the one pinned
-complete release-baseline snapshot; the source file is not baseline authority.
-The DES-HOR-511 transition still covers the hook→ordinary pool/VIP preservation
-path through upgrade and reapply. The supported inverse boundary is current → the declared
-predecessor within the post-0.3 companion-ownership model, followed by a current
-forward recovery. Roll back the platform release before the companion substrate.
-CRDs, generated Secrets, and PVCs are retained. The separate pre-0.3 ownership
-handoff above remains mandatory; arbitrary-version rollback safety is not
-claimed.
-
-Run `make test-e2e-feature-enable` for the absent-CRD path,
-`make test-e2e-observability-ingress-recovery` for the interrupted single-node
-private-ingress path, and `make test-e2e-reapply-rollback` for idempotent reapply
-plus the general inverse/forward recovery evidence.
+`make test-e2e-n-1-upgrade` is the supported version-boundary evidence. It
+installs the newest published LVM-era chart trio (N-1), seeds persisted state,
+upgrades to the head charts, reapplies head idempotently, applies N-1 back the
+way Forge applies a version (substrates first, then the platform, each with the
+exact chart's CRDs pre-applied), and recovers forward to head. CRDs, generated
+Secrets, PVCs, and persisted PostgreSQL/MinIO state are retained throughout.
+The workflow supplies the N-1 baseline as exact `oci://…:<version>` references
+plus archive SHA-256 checksums; the scenario fails closed without them.
+Arbitrary-version rollback safety is not claimed.
 
 ## Flux-backed gateway tool runner
 
@@ -577,15 +553,9 @@ make check                  # Helm lint/template + kubeconform + static contract
 make check-tls              # TLS presets, including observability + TLS together
 make test-e2e-unit          # compiled suite + intentional break fixtures (no cluster)
 make test-e2e-install       # current clean OpenEBS LVM install + claim lifecycle
+make test-e2e-n-1-upgrade   # published N-1 → head upgrade, reapply, rollback, forward
 make test-e2e-observability
 make test-e2e-observability-tls
-make test-e2e-internal-tls
-# Historical 0.3-line non-storage transition evidence; never 0.4 migration authority:
-make test-e2e-certificate-migration
-make test-e2e-upgrade
-make test-e2e-feature-enable
-make test-e2e-observability-ingress-recovery
-make test-e2e-reapply-rollback
 ```
 
 The runtime targets are chart-owned typed Go scenarios built on `testkit/e2e`.
