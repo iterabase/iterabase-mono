@@ -222,7 +222,7 @@ type Chart struct {
 }
 
 const (
-	defaultChartRepository = "oci://ghcr.io/nunocgoncalves/iterabase-charts/iterabase-platform"
+	defaultChartRepository = "oci://ghcr.io/iterabase/iterabase-charts/iterabase-platform"
 	defaultChartNamespace  = "iterabase-system"
 )
 

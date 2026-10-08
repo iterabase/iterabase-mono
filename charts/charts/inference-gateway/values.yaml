@@ -1,7 +1,7 @@
 enabled: true
 
 image:
-  repository: ghcr.io/nunocgoncalves/inference-gateway
+  repository: ghcr.io/iterabase/inference-gateway
   tag: "0.2.7"
   pullPolicy: IfNotPresent
 

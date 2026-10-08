@@ -20,6 +20,6 @@ Stay inside `charts/` for Helm packaging and declarative install, upgrade, featu
 - Every subchart wraps resources in `{{- if .Values.enabled }}`; the umbrella controls it through `condition: <chart>.enabled`.
 - Chart-generated secrets must remain stable across upgrades through the Helm `lookup` pattern. Never commit real secrets.
 - Runtime image, chart, release, Service, and configuration names are external contracts and must not change during source/module migrations.
-- Per-chart tags remain `<chart>-<semver>` and publish to `oci://ghcr.io/nunocgoncalves/iterabase-charts/<chart>` according to the approved release contract; data dependency subcharts remain bundled only.
+- Per-chart tags remain `<chart>-<semver>` and publish to `oci://ghcr.io/iterabase/iterabase-charts/<chart>` according to the approved release contract; data dependency subcharts remain bundled only.
 
 Any change to ownership, release identity, secret lifecycle, or install/upgrade semantics is architectural and requires explicit user approval before implementation.

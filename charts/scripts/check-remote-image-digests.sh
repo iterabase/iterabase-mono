@@ -16,7 +16,7 @@ status=0
 while IFS= read -r image; do
   image=${image#\"}; image=${image%\"}; image=${image#\'}; image=${image%\'}
   [[ -z "$image" ]] && continue
-  [[ "$image" == ghcr.io/nunocgoncalves/* ]] && continue
+  [[ "$image" == ghcr.io/iterabase/* || "$image" == ghcr.io/nunocgoncalves/* ]] && continue
   if [[ "$image" != *@sha256:* ]]; then
     echo "remote runtime image is not digest-pinned: $image" >&2
     status=1
