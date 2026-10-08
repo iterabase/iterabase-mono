@@ -1,0 +1,8 @@
+# Applied when the composed tool-runner image is present (always in CI). The
+# scenario publishes the matching in-cluster GitRepository before install.
+control-plane:
+  toolRunner:
+    enabled: true
+    flux:
+      namespace: iterabase-system
+      sourceName: observability-e2e

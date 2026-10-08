@@ -1,0 +1,10 @@
+# Applied when the composed harness image is present (always in CI).
+control-plane:
+  dispatch:
+    enabled: true
+    defaultModel:
+      id: e2e-model
+      api: openai
+inference-gateway:
+  workload:
+    enabled: true

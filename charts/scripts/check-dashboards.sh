@@ -59,4 +59,43 @@ for query in \
     exit 1
   }
 done
-echo "OK: $labels provisioned dashboards are organized across Kubernetes, Iterabase, Infrastructure, and Observability; stable UIDs plus per-pool and aggregate LVM capacity panels are enforced"
+# Each organized dashboard is provisioned under its exact stable UID, title,
+# and Grafana folder. This replaces the live Grafana search assertion: the
+# sidecar loads exactly these ConfigMaps.
+identities=$(yq -o=json eval-all '[select(.kind == "ConfigMap" and .metadata.labels.grafana_dashboard == "1" and .metadata.annotations.grafana_folder != null and .metadata.annotations.grafana_folder != "Kubernetes") | {"folder": .metadata.annotations.grafana_folder, "json": (.data | to_entries | .[0].value)}]' - <<<"$rendered" \
+  | jq -r '.[] | (.json | fromjson) as $dashboard | "\($dashboard.uid)|\($dashboard.title)|\(.folder)"' | sort)
+expected=$(sort <<'IDENTITIES'
+iterabase-platform-overview|00 — Platform Overview|Iterabase
+iterabase-control-plane|10 — Control Plane|Iterabase
+iterabase-execution-runtime|20 — Execution Runtime|Iterabase
+iterabase-tool-runtime|30 — Tool Runtime|Iterabase
+iterabase-inference-model-serving|40 — Inference and Model Serving|Iterabase
+iterabase-data-storage|50 — Data and Storage|Iterabase
+iterabase-platform-infrastructure|60 — Platform Infrastructure|Iterabase
+iterabase-infrastructure-components|Infrastructure — Data, Edge and GPU|Infrastructure
+iterabase-observability-stack|Observability — Metrics, Logs and Alerts|Observability
+IDENTITIES
+)
+if [[ "$identities" != "$expected" ]]; then
+  echo "ERROR: organized dashboard uid|title|folder identities differ:" >&2
+  diff <(echo "$expected") <(echo "$identities") >&2 || true
+  exit 1
+fi
+# Each dedicated workspace capacity panel has exactly one query carrying its
+# own metric, not merely a title and a fragment somewhere in the dashboard.
+panels=$(yq -o=json eval-all 'select(.kind == "ConfigMap" and .data["iterabase-data-storage.json"] != null) | .data["iterabase-data-storage.json"]' - <<<"$rendered" \
+  | jq -r 'fromjson | .panels[] | select((.targets | length) == 1) | "\(.title)|\(.targets[0].expr)"')
+while IFS='|' read -r title fragment; do
+  grep -Fq "$title|" <<<"$panels" && grep -F "$title|" <<<"$panels" | grep -Fq "$fragment" || {
+    echo "ERROR: 50 — Data and Storage panel '$title' is not a single query over $fragment" >&2
+    exit 1
+  }
+done <<'PANELS'
+AgentPool PVC free bytes|control_plane_dispatch_workspace_free_bytes
+AgentPool PVC free ratio|control_plane_dispatch_workspace_free_ratio
+AgentPool capacity warnings|control_plane_dispatch_workspace_capacity_warning
+AgentPool credit gates|control_plane_dispatch_workspace_credit_gated
+iterabase-data free bytes|lvm_vg_free_size_bytes
+iterabase-data free ratio|lvm_vg_total_size_bytes
+PANELS
+echo "OK: $labels provisioned dashboards are organized across Kubernetes, Iterabase, Infrastructure, and Observability; stable UID/title/folder identities plus per-pool and aggregate LVM capacity panels are enforced"

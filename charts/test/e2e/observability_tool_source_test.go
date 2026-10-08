@@ -11,8 +11,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func installObservabilityToolSourceStage(t *testing.T, state *chartState) {
@@ -229,13 +233,30 @@ func TestUnitObservabilityToolFixturePublishesCanonicalArchive(t *testing.T) {
 }
 
 func TestUnitObservabilityCandidateUsesMaterializableToolSource(t *testing.T) {
-	t.Setenv("TOOL_RUNNER_IMAGE_REPO", "example.invalid/tool-runner")
-	t.Setenv("TOOL_RUNNER_IMAGE_TAG", "candidate")
-	values := observabilityPlatformValues(t)
-	controlPlane := values["control-plane"].(map[string]any)
-	toolRunner := controlPlane["toolRunner"].(map[string]any)
-	flux := toolRunner["flux"].(map[string]any)
-	if flux["namespace"] != testNamespace || flux["sourceName"] != observabilityToolSourceName {
-		t.Fatalf("candidate tool source=%v", flux)
+	data, err := os.ReadFile(strings.TrimPrefix(observabilityToolRunnerValues, "test/e2e/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values struct {
+		ControlPlane struct {
+			ToolRunner struct {
+				Enabled bool `yaml:"enabled"`
+				Flux    struct {
+					Namespace  string `yaml:"namespace"`
+					SourceName string `yaml:"sourceName"`
+				} `yaml:"flux"`
+			} `yaml:"toolRunner"`
+		} `yaml:"control-plane"`
+	}
+	if err := yaml.Unmarshal(data, &values); err != nil {
+		t.Fatal(err)
+	}
+	toolRunner := values.ControlPlane.ToolRunner
+	if !toolRunner.Enabled || toolRunner.Flux.Namespace != testNamespace || toolRunner.Flux.SourceName != observabilityToolSourceName {
+		t.Fatalf("candidate tool source=%+v", toolRunner)
+	}
+	declared := observabilityCandidateValues(observabilityPlatform, false, true)
+	if !slices.Contains(declared, observabilityToolRunnerValues) {
+		t.Fatalf("tool-runner candidate values do not include %s: %v", observabilityToolRunnerValues, declared)
 	}
 }

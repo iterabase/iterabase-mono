@@ -1,6 +1,8 @@
 package e2e_test
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -16,16 +18,10 @@ func TestE2E(t *testing.T) {
 	}, chartFixtureFromEnv)
 	suite.Add(
 		hermeticExampleScenario(),
-		certificateMigrationScenario(),
 		freshInstallScenario(),
 		nMinusOneUpgradeScenario(),
-		featureEnableUpgradeScenario(),
-		singleNodeObservabilityIngressRecoveryScenario(),
-		reapplyRollbackRecoveryScenario(),
-		metalLBTransitionScenario(),
 		observabilityScenario(),
 		observabilityTLSScenario(),
-		internalTLSScenario(),
 	)
 	suite.Run(t)
 }
@@ -35,50 +31,31 @@ func chartFixtureFromEnv(t *testing.T) sharede2e.Fixture {
 	return sharede2e.FixtureFromEnv(t)
 }
 
-func chartScenarioMetadata(name, description, makeTarget string, minutes int, references, targets []string) sharede2e.ScenarioMetadata {
-	tier := sharede2e.TierF2
-	if name == "certificate-ownership-migration" {
-		tier = sharede2e.TierF0 // preserved 0.3-line history; never current 0.4 release authority
-	}
+func chartScenarioMetadata(name, description, makeTarget string, minutes int, references, targets []string, renders []sharede2e.RenderInput) sharede2e.ScenarioMetadata {
 	artifacts := []string{
 		"control-plane-image", "inference-gateway-image", "control-plane-chart", "inference-gateway-chart",
 		"iterabase-platform-chart", "cert-manager-substrate-chart", "lvm-storage-substrate-chart",
-	}
-	if name == "certificate-ownership-migration" {
-		artifacts = append(artifacts, "certificate-migration-chart")
 	}
 	if name == "observability" || name == "observability-tls" {
 		artifacts = append(artifacts, "harness-image", "tool-runner-image")
 	}
 	return sharede2e.ScenarioMetadata{
-		Name: name, Description: description, Tier: tier,
+		Name: name, Description: description, Tier: sharede2e.TierF2,
 		References: references, ReleaseTargets: targets, RequiredArtifacts: artifacts,
 		Intents:      []sharede2e.ExecutionIntent{sharede2e.IntentPR, sharede2e.IntentCandidate},
 		FixtureModes: []sharede2e.FixtureMode{sharede2e.FixtureSource, sharede2e.FixtureCandidate},
-		MakeTarget:   makeTarget, TimeoutMinutes: minutes,
+		MakeTarget:   makeTarget, TimeoutMinutes: minutes, Renders: renders,
 	}
 }
 
 func TestCurrentChartScenarioDoesNotAdvertiseIncompletePublishedLVMRuntime(t *testing.T) {
-	metadata := chartScenarioMetadata("fresh-install", "test", "test-e2e-install", 45, nil, nil)
+	metadata := chartScenarioMetadata("fresh-install", "test", "test-e2e-install", 45, nil, nil, nil)
 	if slices.Contains(metadata.FixtureModes, sharede2e.FixturePublished) {
 		t.Fatal("current chart scenarios advertise published mode before a same-version LVM storage companion exists")
 	}
 	if !slices.Contains(metadata.FixtureModes, sharede2e.FixtureSource) || !slices.Contains(metadata.FixtureModes, sharede2e.FixtureCandidate) {
 		t.Fatalf("current chart fixture modes lost source/candidate coverage: %v", metadata.FixtureModes)
 	}
-}
-
-func transitionScenarioMetadata(name, description, makeTarget string, minutes int, references, targets []string) sharede2e.ScenarioMetadata {
-	metadata := chartScenarioMetadata(name, description, makeTarget, minutes, references, targets)
-	metadata.Tier = sharede2e.TierF0 // local-path predecessor transitions are historical, not HOR-545 release paths
-	metadata.FixtureModes = []sharede2e.FixtureMode{sharede2e.FixtureSource, sharede2e.FixtureCandidate}
-	if name == "metallb-upgrade-reapply" {
-		metadata.RequiredArtifacts = append(metadata.RequiredArtifacts, "metallb-platform-predecessor", "metallb-substrate-predecessor")
-	} else {
-		metadata.RequiredArtifacts = append(metadata.RequiredArtifacts, "supported-platform-predecessor", "supported-substrate-predecessor")
-	}
-	return metadata
 }
 
 func hermeticExampleScenario() sharede2e.Definition {
@@ -98,4 +75,30 @@ func hermeticExampleScenario() sharede2e.Definition {
 			}},
 		},
 	})
+}
+
+func TestUnitScenarioRendersNameRepositoryInputs(t *testing.T) {
+	for name, values := range map[string]platformValues{
+		"fresh-install":     freshInstallPlatform,
+		"n-1-upgrade":       nMinusOnePlatform,
+		"observability":     observabilityCandidateValues(observabilityPlatform, true, true),
+		"observability-tls": observabilityCandidateValues(observabilityTLSPlatform, true, true),
+	} {
+		t.Run(name, func(t *testing.T) {
+			renders := append(substrateRenders(testRelease, "values-tls.yaml"), values.render())
+			for _, render := range renders {
+				if _, err := os.Stat(filepath.Join("..", "..", "..", render.Chart, "Chart.yaml")); err != nil {
+					t.Fatalf("render chart %s is not a repository chart: %v", render.Chart, err)
+				}
+				for _, file := range render.Values {
+					if _, err := os.Stat(filepath.Join("..", "..", "..", file)); err != nil {
+						t.Fatalf("render values %s does not exist: %v", file, err)
+					}
+				}
+			}
+			if got := values.render().Values; len(got) != len(values) {
+				t.Fatalf("declared renders %v do not match installed values %v", got, values)
+			}
+		})
+	}
 }

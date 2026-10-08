@@ -1,0 +1,15 @@
+# Verified control-plane edge over the internal CA: a ClusterIP public ingress
+# plane and the control-plane Ingress with distinct edge/backend certificates.
+ingress-nginx:
+  enabled: true
+  controller:
+    service:
+      type: ClusterIP
+control-plane:
+  ingress:
+    enabled: true
+    className: nginx
+    host: control-plane.iterabase.local
+    tls:
+      enabled: true
+      clusterIssuer: selfsigned

@@ -1,0 +1,7 @@
+# Runtime-only composition: no edge ingress or LoadBalancer allocation.
+ingress-nginx:
+  enabled: false
+metallb:
+  enabled: false
+metallb-config:
+  enabled: false
