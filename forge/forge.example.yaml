@@ -43,7 +43,7 @@ spec:
     ref: master                # branch or tag (default master)
   chart:                       # platform umbrella chart (iterabase-platform); empty version => k3s-only
     version: 0.1.0             # chart version to install (semver)
-    # repository: oci://ghcr.io/nunocgoncalves/iterabase-charts/iterabase-platform  # default
+    # repository: oci://ghcr.io/iterabase/iterabase-charts/iterabase-platform  # default
     # release: opo1            # default: metadata.name
     # namespace: iterabase-system  # default
   # K8s Secrets are declared in the overlay repo's secrets.yaml (name/ns/key/

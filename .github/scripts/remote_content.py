@@ -33,6 +33,7 @@ QUOTED_IMAGE = re.compile(
 )
 YAML_KEY = re.compile(r"^(\s*)([A-Za-z0-9_.-]+):(?:\s*(.*))?$")
 PRODUCT_IMAGE_PREFIXES = (
+    "ghcr.io/iterabase/",
     "ghcr.io/nunocgoncalves/",
     "docker.io/iterabase-e2e/",
     "iterabase-e2e/",

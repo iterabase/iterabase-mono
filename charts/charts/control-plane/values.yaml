@@ -1,7 +1,7 @@
 enabled: true # standalone install renders everything; the umbrella toggles this via condition
 
 image:
-  repository: ghcr.io/nunocgoncalves/control-plane
+  repository: ghcr.io/iterabase/control-plane
   tag: "0.0.31"
   pullPolicy: IfNotPresent
 
@@ -63,7 +63,7 @@ dispatch:
 toolRunner:
   enabled: false # umbrella enables; requires gateway + Flux GitRepository
   image:
-    repository: ghcr.io/nunocgoncalves/control-plane-tool-runner
+    repository: ghcr.io/iterabase/control-plane-tool-runner
     tag: "0.0.31"
     pullPolicy: IfNotPresent
   runnerId: overlay-tools
