@@ -402,10 +402,14 @@ class PolicyContractTests(unittest.TestCase):
         self.assertEqual(terminate["Condition"], {"StringEquals": {f"ec2:ResourceTag/{MARKER_TAG}": "true"}})
         # Model cache: copy sources must be CI-marked, copies carry the mandatory tags.
         self.assertIn("ec2:CopySnapshot", self.statements["RemoveCiImagesAndSnapshots"]["Action"])
-        self.assertIn("ec2:CopySnapshot", self.statements["CreateCiSnapshots"]["Action"])
-        self.assertEqual(
-            self.statements["CreateCiSnapshots"]["Condition"]["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"], "true"
-        )
+        # A snapshot is only taken of a CI volume; new images and snapshots are only
+        # the not-yet-created target, and tag-on-create still requires the tags.
+        self.assertEqual(self.statements["CreateCiSnapshots"]["Resource"], f"arn:aws:ec2:*:{ACCOUNT_ID}:volume/*")
+        self.assertEqual(self.statements["CreateCiSnapshots"]["Condition"],
+                         {"StringEquals": {f"ec2:ResourceTag/{MARKER_TAG}": "true"}})
+        targets = self.statements["CreateCiImageAndSnapshotTargets"]
+        self.assertEqual(targets["Condition"], {"StringEqualsIfExists": {"ec2:ImageID": "*", "ec2:SnapshotID": "*"}})
+        self.assertEqual(targets["Action"], ["ec2:CreateImage", "ec2:CreateSnapshot", "ec2:CopySnapshot"])
         self.assertIn("CopySnapshot", self.statements["TagCiResourcesOnCreate"]["Condition"]["StringEquals"]["ec2:CreateAction"])
         # Previews: only the deadline key may change on an existing CI instance.
         renew = self.statements["RenewCiDeadline"]
@@ -490,7 +494,8 @@ class PolicyContractTests(unittest.TestCase):
             statement["Resource"],
             ["arn:aws:ec2:*::image/*", "arn:aws:ec2:*::snapshot/*"],
         )
-        self.assertEqual(statement["Condition"]["StringEquals"]["ec2:CreateAction"], ["CopyImage"])
+        self.assertEqual(statement["Condition"]["StringEquals"]["ec2:CreateAction"],
+                         ["CopyImage", "CreateImage", "CreateSnapshot", "CopySnapshot"])
         self.assertEqual(
             statement["Condition"]["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"],
             "true",
@@ -530,7 +535,7 @@ class PolicyContractTests(unittest.TestCase):
             statement["Condition"],
             {"StringEquals": {"ec2:Owner": ["amazon", ACCOUNT_ID]}},
         )
-        self.assertNotIn("ec2:CopyImage", self.statements["BuildCiImagesAndSnapshots"]["Action"])
+        self.assertNotIn("ec2:CopyImage", self.statements["CreateCiImageAndSnapshotTargets"]["Action"])
         tag_on_create = self.statements["TagCiResourcesOnCreate"]["Condition"]
         self.assertIn("CopyImage", tag_on_create["StringEquals"]["ec2:CreateAction"])
         self.assertEqual(
@@ -562,9 +567,9 @@ class PolicyContractTests(unittest.TestCase):
             "CopyImagesIntoTheCiAccount",
             "TagCopiedImagesOnCreate",
             "RemoveCiImagesAndSnapshots",
-            # A cross-region model-cache copy lands on an empty-account snapshot ARN;
-            # it still requires the mandatory request tags (DES-HOR-590-04).
-            "CreateCiSnapshots",
+            # New images and snapshots are authorized against empty-account
+            # wildcard ARNs, only as the not-yet-created target (DES-HOR-590-04).
+            "CreateCiImageAndSnapshotTargets",
         }
         for sid, statement in self.statements.items():
             if sid in exempt or statement["Effect"] == "Deny":
