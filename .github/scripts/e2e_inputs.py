@@ -79,12 +79,51 @@ def image_inputs(name: str, image: dict[str, str], source_sha: str, workdir: pat
         f"{prefix}_IMAGE_REPO": repository,
         f"{prefix}_IMAGE_TAG": tag,
         f"{prefix}_IMAGE_DIGEST": digest,
-        f"{prefix}_IMAGE_REGISTRY_DIGEST": digest,
         f"{prefix}_IMAGE_CONFIG_DIGEST": config_digest,
         f"{prefix}_IMAGE_SOURCE_SHA": source_sha,
         f"{prefix}_IMAGE_ARCHIVE": str(archive),
         FORGE_ARCHIVE_ALIAS[name]: str(archive),
     }
+
+
+OFFICIAL_NAMESPACES = ("ghcr.io/iterabase", "ghcr.io/nunocgoncalves")
+
+
+def official_image_inputs(name: str, workdir: pathlib.Path) -> dict[str, str]:
+    """A non-released target's already-published official image (C7 release validation)."""
+    contract = json.loads((ROOT / "release" / "targets.json").read_text(encoding="utf-8"))
+    recipe = contract["artifact_recipes"][name]
+    version = (ROOT / contract["targets"][recipe["target"]]["version_file"]).read_text(encoding="utf-8").strip()
+    for namespace in OFFICIAL_NAMESPACES:
+        repository = f"{namespace}/{recipe['name']}"
+        if subprocess.run(["docker", "pull", "--quiet", f"{repository}:{version}"], capture_output=True).returncode == 0:
+            break
+    else:
+        raise InputsError(f"{recipe['name']} {version} is not published; release its target in this set")
+    digest = run("docker", "image", "inspect", "--format", "{{index .RepoDigests 0}}", f"{repository}:{version}").split("@", 1)[1]
+    revision = run("docker", "image", "inspect", "--format",
+                   '{{index .Config.Labels "org.opencontainers.image.revision"}}', f"{repository}:{version}")
+    archive = workdir / f"{name}.tar"
+    run("docker", "save", "--output", str(archive), f"{repository}:{version}")
+    prefix = IMAGE_PREFIX[name]
+    return {
+        f"{prefix}_IMAGE_REPO": repository,
+        f"{prefix}_IMAGE_TAG": version,
+        f"{prefix}_IMAGE_DIGEST": digest,
+        f"{prefix}_IMAGE_CONFIG_DIGEST": run("docker", "image", "inspect", "--format", "{{.Id}}", f"{repository}:{version}"),
+        f"{prefix}_IMAGE_SOURCE_SHA": revision,
+        f"{prefix}_IMAGE_ARCHIVE": str(archive),
+        FORGE_ARCHIVE_ALIAS[name]: str(archive),
+    }
+
+
+def released(name: str, release_targets: set[str]) -> bool:
+    """Whether an image comes from this commit's build: always, unless validating a release."""
+    if not release_targets:
+        return True
+    contract = json.loads((ROOT / "release" / "targets.json").read_text(encoding="utf-8"))
+    target = contract["artifact_recipes"][name].get("target")
+    return target is None or target in release_targets
 
 
 def chart_version(chart: str) -> str:
@@ -141,7 +180,8 @@ def n1_inputs(workdir: pathlib.Path) -> dict[str, str]:
 
 
 def prepare(scenario_id: str, catalogue: dict[str, Any], images: dict[str, dict[str, str]],
-            source_sha: str, optional_stages: str, workdir: pathlib.Path) -> dict[str, str]:
+            source_sha: str, optional_stages: str, workdir: pathlib.Path,
+            release_targets: set[str] | None = None) -> dict[str, str]:
     metadata = scenario_metadata(catalogue, scenario_id)
     required = set(metadata.get("required_artifacts", ()))
     env = {
@@ -152,6 +192,9 @@ def prepare(scenario_id: str, catalogue: dict[str, Any], images: dict[str, dict[
         "ITERABASE_E2E_OPTIONAL_STAGES": optional_stages,
     }
     for name in sorted(required & set(IMAGE_PREFIX)):
+        if not released(name, release_targets or set()):
+            env.update(official_image_inputs(name, workdir))
+            continue
         if name not in images:
             raise InputsError(f"{scenario_id} requires {name}, which the build job did not produce")
         env.update(image_inputs(name, images[name], source_sha, workdir))
@@ -213,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     prepare_parser.add_argument("--source-sha", required=True)
     prepare_parser.add_argument("--optional-stages", default="")
     prepare_parser.add_argument("--workdir", required=True)
+    prepare_parser.add_argument("--release-targets", default="",
+                                help="validating a release: images of other targets come from their published versions")
     prepare_parser.add_argument("--env-output", default=os.environ.get("GITHUB_ENV", ""))
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{40}", args.source_sha):
@@ -226,7 +271,9 @@ def main(argv: list[str] | None = None) -> int:
     workdir = pathlib.Path(args.workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     try:
-        env = prepare(args.scenario, catalogue, json.loads(args.images), args.source_sha, args.optional_stages, workdir)
+        release_targets = {target.strip() for target in args.release_targets.split(",") if target.strip()}
+        env = prepare(args.scenario, catalogue, json.loads(args.images), args.source_sha, args.optional_stages, workdir,
+                      release_targets)
     except (InputsError, subprocess.CalledProcessError) as error:
         detail = getattr(error, "stderr", "") or ""
         print(f"e2e inputs: {error}\n{detail}", file=sys.stderr)
