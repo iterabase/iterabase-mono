@@ -103,6 +103,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create the annotated release tags locally
+        run: |
+          set -euo pipefail
+          git config user.name iterabase-release
+          git config user.email release@iterabase.com
+          while IFS= read -r tag; do
+            git -c tag.gpgSign=false tag -a "$tag" "$SHA" -m "Release $tag from $SHA"
+          done < <(jq -r '.[].tag' <<<"$MEMBERS")
       - name: Install repository-locked crane
         run: .github/scripts/install_ci_tool.sh crane v0.22.1
       - uses: ./.github/actions/setup-kubernetes-tools
@@ -184,10 +192,7 @@ jobs:
           gh api meta --jq '.ssh_keys[] | "github.com " + .' > ~/.ssh/known_hosts
           git remote set-url origin "git@github.com:$GITHUB_REPOSITORY.git"
           git config core.sshCommand "ssh -i $RUNNER_TEMP/release-tag -o IdentitiesOnly=yes"
-          git config user.name iterabase-release
-          git config user.email release@iterabase.com
           while IFS= read -r tag; do
-            git -c tag.gpgSign=false tag -a "$tag" "$SHA" -m "Release $tag from $SHA"
             git push origin "refs/tags/$tag"
           done < <(jq -r '.[].tag' <<<"$MEMBERS")
       - name: Publish one Release per target
