@@ -37,6 +37,7 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       kind: ${{ steps.plan.outputs.kind }}
       real: ${{ steps.plan.outputs.real }}
+      capacities: ${{ steps.plan.outputs.capacities }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,6 +62,7 @@ jobs:
             echo "build=$(jq -c .build <<<"$plan")"
             echo "kind=$(jq -c .kind <<<"$plan")"
             echo "real=$(jq -c .real <<<"$plan")"
+            echo "capacities=$(jq -c '[.real[].capacity] | unique' <<<"$plan")"
           } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -207,9 +209,22 @@ jobs:
       - name: Run ${{ matrix.id }}
         run: make -C '${{ matrix.owner }}' '${{ matrix.make_target }}'
 
+  # Real-machine hosts boot from the AMI baked for this tree's pinned inputs; the
+  # bake is a no-op when that generation exists (DES-HOR-590-03).
+  bake:
+    name: fixture images
+    needs: select
+    if: needs.select.outputs.real != '[]'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/bake.yml
+    with:
+      capacities: ${{ needs.select.outputs.capacities }}
+
   real-machine:
     name: ${{ matrix.id }}
-    needs: [select, images]
+    needs: [select, images, bake]
     if: needs.select.outputs.real != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.timeout }}
@@ -273,7 +288,7 @@ jobs:
   required:
     name: E2E / required
     if: always()
-    needs: [select, build, images, kind, real-machine]
+    needs: [select, build, images, kind, bake, real-machine]
     runs-on: ubuntu-latest
     steps:
       - name: Require the selection and every job that had work
@@ -299,5 +314,6 @@ jobs:
           expect build "$(has "$BUILD")" || status=1
           expect images "$(has "$BUILD")" || status=1
           expect kind "$(has "$KIND")" || status=1
+          expect bake "$(has "$REAL")" || status=1
           expect real-machine "$(has "$REAL")" || status=1
           exit "$status"

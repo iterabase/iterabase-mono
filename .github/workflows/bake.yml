@@ -1,0 +1,85 @@
+name: Bake
+
+# Fixture AMIs hold software inputs only (the pinned image cache and host
+# packages); the model cache is an EBS snapshot (C1). Both are baked by
+# aws_ci.py on the HOR-591 primitives with a pinned builder key
+# (DES-HOR-590-03), keyed by the content they carry, so a bake is a no-op when
+# this tree's generation already exists. E2E calls this before real-machine
+# scenarios, so a change to the pinned inputs bakes them on its own pull request.
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/inputs/remote-content.json
+      - forge/test/e2e/model-cache.json
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebake even when this generation exists
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      capacities:
+        description: JSON array of fixture capacities to ensure
+        type: string
+        default: '["cpu", "gpu"]'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: bake-${{ github.ref }}-${{ inputs.capacities || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  ami:
+    name: bake ${{ matrix.capacity }} AMI
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        capacity: ${{ fromJSON(inputs.capacities || '["cpu", "gpu"]') }}
+    env:
+      BAKE_RUN_ID: bake-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.capacity }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install repository-locked crane
+        run: .github/scripts/install_ci_tool.sh crane v0.22.1
+      - uses: ./.github/actions/setup-aws-ci
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-bake-${{ matrix.capacity }}-${{ github.run_id }}
+      - name: Bake the ${{ matrix.capacity }} fixture AMI
+        run: |
+          python3 .github/scripts/aws_ci.py bake-ami --region '${{ vars.AWS_CI_REGION }}' \
+            --run-id "$BAKE_RUN_ID" --capacity '${{ matrix.capacity }}' --crane "$(command -v crane)" \
+            ${{ inputs.force && '--force' || '' }}
+      - name: Remove the builder and its transient source image
+        if: always()
+        run: python3 .github/scripts/aws_ci.py cleanup-run --region '${{ vars.AWS_CI_REGION }}' --run-id "$BAKE_RUN_ID"
+
+  model-cache:
+    name: bake model cache
+    if: contains(inputs.capacities || '["cpu", "gpu"]', 'gpu')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      BAKE_RUN_ID: bake-${{ github.run_id }}-${{ github.run_attempt }}-model-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-aws-ci
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-bake-model-cache-${{ github.run_id }}
+      - name: Bake the model-cache snapshot
+        run: |
+          python3 .github/scripts/aws_ci.py bake-model-cache --region '${{ vars.AWS_CI_REGION }}' \
+            --run-id "$BAKE_RUN_ID" ${{ inputs.force && '--force' || '' }}
+      - name: Remove the builder and its transient source image
+        if: always()
+        run: python3 .github/scripts/aws_ci.py cleanup-run --region '${{ vars.AWS_CI_REGION }}' --run-id "$BAKE_RUN_ID"
