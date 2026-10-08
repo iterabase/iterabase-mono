@@ -56,7 +56,9 @@ func (suite *Suite) Add(definitions ...Definition) {
 }
 
 // Run emits the compiled catalogue when requested; otherwise it records the
-// exact fixture and runs every scenario as a selectable Go subtest.
+// exact fixture and runs every scenario as a selectable Go subtest. With
+// RequiredEnv set, the Go test result is the scenario verdict: any skipped,
+// blocked, or not-run stage fails it.
 func (suite *Suite) Run(t *testing.T) {
 	t.Helper()
 	if err := suite.validate(); err != nil {
@@ -89,13 +91,11 @@ func (suite *Suite) Run(t *testing.T) {
 
 	for _, definition := range suite.definitions {
 		definition := definition
-		scenarioID := suite.metadata.Name + "/" + definition.metadata.Name
 		t.Run(definition.metadata.Name, func(t *testing.T) {
 			if !slices.Contains(definition.metadata.FixtureModes, fixture.Mode) {
 				t.Fatalf("scenario does not support recorded fixture mode %q", fixture.Mode)
 			}
-			execution := prepareScenarioExecution(t, scenarioID, definition, fixture)
-			definition.run(t, execution)
+			definition.run(t, prepareScenarioExecution())
 		})
 	}
 }
@@ -167,45 +167,11 @@ const (
 )
 
 type scenarioExecution struct {
-	scenarioID    string
-	fixture       Fixture
-	required      bool
-	bundle        RuntimeBundle
-	runtimeSHA256 string
+	required bool
 }
 
-func prepareScenarioExecution(t *testing.T, scenarioID string, definition Definition, fixture Fixture) scenarioExecution {
-	t.Helper()
-	execution := scenarioExecution{scenarioID: scenarioID, fixture: fixture, required: os.Getenv(RequiredEnv) == "true"}
-	if !execution.required {
-		return execution
-	}
-	if selected := os.Getenv(ScenarioIDEnv); selected != scenarioID {
-		t.Fatalf("required scenario ID = %q, want %q", selected, scenarioID)
-	}
-	bundle, runtimeSHA, err := loadRuntimeBundle(os.Getenv(RuntimeBundleEnv))
-	if err != nil {
-		t.Fatalf("load required runtime bundle: %v", err)
-	}
-	planSHA, err := fileSHA256(os.Getenv(ExecutionPlanEnv))
-	if err != nil {
-		t.Fatalf("hash required execution plan: %v", err)
-	}
-	if planSHA != bundle.PlanSHA256 {
-		t.Fatalf("execution plan hash %s does not match runtime bundle %s", planSHA, bundle.PlanSHA256)
-	}
-	required := slices.Clone(definition.metadata.RequiredArtifacts)
-	actual := make([]string, 0, len(bundle.Artifacts))
-	for _, artifact := range bundle.Artifacts {
-		actual = append(actual, artifact.Name)
-	}
-	sort.Strings(required)
-	sort.Strings(actual)
-	if !slices.Equal(required, actual) {
-		t.Fatalf("runtime artifact set = %v, want %v", actual, required)
-	}
-	execution.bundle, execution.runtimeSHA256 = bundle, runtimeSHA
-	return execution
+func prepareScenarioExecution() scenarioExecution {
+	return scenarioExecution{required: os.Getenv(RequiredEnv) == "true"}
 }
 
 func runScenario[S any](t *testing.T, scenario Scenario[S], execution scenarioExecution) {
@@ -224,45 +190,8 @@ func runScenario[S any](t *testing.T, scenario Scenario[S], execution scenarioEx
 			if failedBeforeCleanup || incomplete {
 				runHooks(t, "diagnostics", state, scenario.Diagnostics)
 			}
-			cleanupFailed := runHooks(t, "cleanup", state, scenario.Cleanup)
-			if cleanupFailed && !failedBeforeCleanup {
+			if cleanupFailed := runHooks(t, "cleanup", state, scenario.Cleanup); cleanupFailed && !failedBeforeCleanup {
 				runHooks(t, "diagnostics-after-cleanup-failure", state, scenario.Diagnostics)
-			}
-			failed = failed || cleanupFailed
-		}
-		if execution.required {
-			status := "passed"
-			switch {
-			case failed:
-				status = "failed"
-			case incomplete:
-				status = "incomplete"
-			case t.Failed():
-				status = "failed"
-			}
-			stages := make([]StageResult, 0, len(scenario.Stages))
-			for _, stage := range scenario.Stages {
-				stages = append(stages, StageResult{Name: stage.Name, DependsOn: slices.Clone(stage.DependsOn), Status: string(statuses[stage.Name])})
-			}
-			artifacts, identityErr := resultArtifactsWithRuntimeIdentities(execution.bundle.Artifacts, status == "passed")
-			if identityErr != nil {
-				status = "failed"
-				t.Errorf("reconcile observed runtime image identities: %v", identityErr)
-			}
-			fixtureEvidence, fixtureErr := fixtureEvidenceForResult()
-			if fixtureErr != nil {
-				status = "failed"
-				t.Errorf("reconcile observed permanent fixture evidence: %v", fixtureErr)
-			}
-			result := ScenarioResult{
-				SchemaVersion: 1, ScenarioID: execution.scenarioID, Status: status,
-				SourceSHA: execution.bundle.SourceSHA, PlanSHA256: execution.bundle.PlanSHA256,
-				CatalogueSHA256: execution.bundle.CatalogueSHA256, RuntimeSHA256: execution.runtimeSHA256,
-				StageGraphSHA256: stageGraphSHA256(cloneStagesFromScenario(scenario.Stages)),
-				FixtureMode:      execution.fixture.Mode, Artifacts: artifacts, FixtureEvidence: fixtureEvidence, Stages: stages,
-			}
-			if err := writeScenarioResult(os.Getenv(ResultOutputEnv), result); err != nil {
-				t.Errorf("write required scenario result: %v", err)
 			}
 		}
 	}()
@@ -315,14 +244,6 @@ func runScenario[S any](t *testing.T, scenario Scenario[S], execution scenarioEx
 	if execution.required && incomplete {
 		t.Errorf("required scenario has skipped, blocked, or not-run stages")
 	}
-}
-
-func cloneStagesFromScenario[S any](stages []Stage[S]) []StageMetadata {
-	metadata := make([]StageMetadata, 0, len(stages))
-	for _, stage := range stages {
-		metadata = append(metadata, StageMetadata{Name: stage.Name, DependsOn: slices.Clone(stage.DependsOn), Optional: stage.Optional})
-	}
-	return metadata
 }
 
 func runHooks[S any](t *testing.T, group string, state S, hooks []Hook[S]) bool {

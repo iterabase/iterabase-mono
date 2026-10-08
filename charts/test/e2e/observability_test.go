@@ -44,7 +44,6 @@ func observabilityScenario() sharede2e.Definition {
 			"Installs the pinned LVM substrate and chart-owned observability composition, then proves exact thick XFS persistence, per-pool and aggregate VG monitor discovery, stack readiness, shipped dashboard queries, and client paths.",
 			"test-e2e-observability", 40,
 			[]string{"HOR-408", "HOR-414", "HOR-418", "HOR-416", "HOR-505", "HOR-545", "HOR-590", "DES-HOR-545-01"},
-			[]string{"control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"},
 			append(substrateRenders("opo1"), observabilityCandidateValues(observabilityPlatform, true, true).render()),
 		),
 		NewState: newChartState,
@@ -216,7 +215,7 @@ func installObservabilityHarnessStage(t *testing.T, state *chartState) {
 	repository, tag := os.Getenv("HARNESS_IMAGE_REPO"), os.Getenv("HARNESS_IMAGE_TAG")
 	if repository == "" || tag == "" {
 		if os.Getenv(sharede2e.RequiredEnv) == "true" {
-			t.Fatal("required observability runtime is missing the composed harness image")
+			t.Fatal("required observability runtime is missing the supplied harness image")
 		}
 		t.Log("HARNESS_IMAGE_REPO/TAG absent in the optional local fixture")
 		return

@@ -6,14 +6,14 @@ Generated from owner `TestE2E` registrations. Do not edit generated output by ha
 
 Owner: `control-plane` · Entrypoint: `control-plane/test/e2e`
 
-| Scenario | Tier | Stages | References | Release targets | Required artifacts | Routes | Fixture modes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `control-plane/identity` | F2 | `install`<br>`assert` ← install | HOR-478 | control-plane |  |  | source, candidate |
+| Scenario | Tier | Stages | References | Required artifacts | Fixture modes |
+| --- | --- | --- | --- | --- | --- |
+| `control-plane/identity` | F2 | `install`<br>`assert` ← install | HOR-478 | control-plane-image | source |
 
 ## charts
 
 Owner: `charts` · Entrypoint: `charts/test/e2e`
 
-| Scenario | Tier | Stages | References | Release targets | Required artifacts | Routes | Fixture modes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `charts/install` | F2 | `cluster` | HOR-475 | control-plane |  |  | source, published |
+| Scenario | Tier | Stages | References | Required artifacts | Fixture modes |
+| --- | --- | --- | --- | --- | --- |
+| `charts/install` | F2 | `cluster` | HOR-475 | iterabase-platform-chart | source |

@@ -22,7 +22,6 @@ func TestE2E(t *testing.T) {
 				"Bootstraps a fresh CPU host with the exact-head Forge and proves GPU refusal on a CPU host, the exact Flux handoff, durable host inotify capacity, idempotent reapply, secret sync and Flux reconciliation. LVM and AgentPool behaviour is cpu-workspace's.",
 				sharede2e.TierF3,
 				[]string{"HOR-406", "HOR-545", "HOR-569", "HOR-590", "DES-HOR-545-01", "DES-HOR-538-03"},
-				[]string{"forge", "control-plane", "control-plane-chart", "iterabase-platform-chart"},
 				"test-e2e", 60, "cpu",
 			),
 			NewState: newCPUFixtureState,
@@ -44,7 +43,6 @@ func TestE2E(t *testing.T) {
 				"Fresh exact-head real-machine install proving process-open refusal, receipt-bound PV/VG identity, mounted general and AgentPool grow-only XFS/LVM expansion, insufficient-capacity refusal, active-turn continuity, authenticated same-pool isolation, durable 20/25 gating, reboot/reapply convergence, persisted bytes, safe claim release, and non-purging ordinary destroy.",
 				sharede2e.TierF3,
 				[]string{"HOR-545", "HOR-557", "HOR-590", "REQ-018", "REQ-035", "SCN-018", "DES-HOR-545-01", "DES-HOR-545-02", "DES-HOR-545-03", "DES-HOR-545-07", "DES-HOR-538-03"},
-				[]string{"forge", "control-plane", "control-plane-chart", "iterabase-platform-chart"},
 				"test-e2e-workspace", 120, "cpu",
 			),
 			NewState: newCPUWorkspaceFixtureState,
@@ -76,7 +74,6 @@ func TestE2E(t *testing.T) {
 				"Bootstraps a fresh GPU host and proves Forge GPU readiness, exact artifact handoff, managed-PVC model-cache seeding and one real-serving completion; the optional driver-upgrade stage proves an emptyDir-safe driver transition when driver inputs change and in full validation.",
 				sharede2e.TierF3,
 				[]string{"HOR-411", "HOR-406", "HOR-481", "HOR-485", "HOR-494", "HOR-557", "HOR-590", "DES-HOR-545-02", "DES-HOR-545-07"},
-				[]string{"forge", "control-plane", "control-plane-chart", "iterabase-platform-chart"},
 				"test-e2e-gpu", 90, "gpu",
 			),
 			NewState: newGPUFixtureState,
@@ -94,7 +91,7 @@ func TestE2E(t *testing.T) {
 	suite.Run(t)
 }
 
-func forgeScenarioMetadata(name, description string, tier sharede2e.Tier, references, targets []string, makeTarget string, timeout int, capacity string) sharede2e.ScenarioMetadata {
+func forgeScenarioMetadata(name, description string, tier sharede2e.Tier, references []string, makeTarget string, timeout int, capacity string) sharede2e.ScenarioMetadata {
 	artifacts := []string{"forge-binary", "control-plane-chart", "iterabase-platform-chart", "cert-manager-substrate-chart", "lvm-storage-substrate-chart", "control-plane-image", "tool-runner-image", "inference-gateway-image"}
 	if name == cpuScenarioName || name == cpuWorkspaceScenarioName {
 		artifacts = append(artifacts, "harness-image")
@@ -104,9 +101,8 @@ func forgeScenarioMetadata(name, description string, tier sharede2e.Tier, refere
 	}
 	return sharede2e.ScenarioMetadata{
 		Name: name, Description: description, Tier: tier,
-		References: references, ReleaseTargets: targets, RequiredArtifacts: artifacts,
-		Intents:      []sharede2e.ExecutionIntent{sharede2e.IntentPR, sharede2e.IntentCandidate},
-		FixtureModes: []sharede2e.FixtureMode{sharede2e.FixtureSource, sharede2e.FixtureCandidate},
+		References: references, RequiredArtifacts: artifacts,
+		FixtureModes: []sharede2e.FixtureMode{sharede2e.FixtureSource},
 		MakeTarget:   makeTarget, TimeoutMinutes: timeout, Capacity: capacity, Mandatory: capacity != "",
 		// Real-machine scenarios run on pull requests for Forge changes only; the
 		// merge queue selects them for any artifact they deploy (DES-HOR-590-02).
@@ -116,7 +112,7 @@ func forgeScenarioMetadata(name, description string, tier sharede2e.Tier, refere
 }
 
 func TestGPUScenarioSelectsEveryChartRuntimeImage(t *testing.T) {
-	metadata := forgeScenarioMetadata(gpuScenarioName, "gpu", sharede2e.TierF3, nil, nil, "test-e2e-gpu", 110, "gpu")
+	metadata := forgeScenarioMetadata(gpuScenarioName, "gpu", sharede2e.TierF3, nil, "test-e2e-gpu", 110, "gpu")
 	for _, artifact := range []string{"control-plane-image", "inference-gateway-image", "tool-runner-image"} {
 		if !slices.Contains(metadata.RequiredArtifacts, artifact) {
 			t.Fatalf("GPU scenario does not select chart runtime artifact %q: %v", artifact, metadata.RequiredArtifacts)
@@ -131,7 +127,7 @@ func hermeticExampleScenario() sharede2e.Definition {
 		Metadata: sharede2e.ScenarioMetadata{
 			Name: "hermetic-example", Description: "Proves the Forge suite composes typed dependent stages without infrastructure.",
 			Tier: sharede2e.TierF0, References: []string{"HOR-476"},
-			FixtureModes: []sharede2e.FixtureMode{sharede2e.FixtureSource, sharede2e.FixtureCandidate, sharede2e.FixturePublished},
+			FixtureModes: []sharede2e.FixtureMode{sharede2e.FixtureSource},
 		},
 		NewState: func(*testing.T) *hermeticExampleState { return &hermeticExampleState{} },
 		Stages: []sharede2e.Stage[*hermeticExampleState]{

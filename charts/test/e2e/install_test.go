@@ -26,7 +26,6 @@ func freshInstallScenario() sharede2e.Definition {
 		"Installs ordered certificate and pinned OpenEBS LVM volume-only substrates plus class-isolated public/private ingress planes, then proves exact classes, claims, the inert LVMSnapshot deletion-safety boundary, CSI/user snapshot absence, manager, issuer, workload identity, fixed private allocation, route isolation, and verified gateway readiness.",
 		"test-e2e-install", 45,
 		[]string{"HOR-408", "HOR-414", "HOR-416", "HOR-475", "HOR-545", "HOR-557", "HOR-590", "DES-HOR-545-01", "DES-HOR-545-05", "DES-HOR-545-07"},
-		[]string{"control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"},
 		append(substrateRenders("iterabase"), freshInstallPlatform.render()),
 	)
 	// The suite's single smoke scenario: CI-only changes run exactly this one.

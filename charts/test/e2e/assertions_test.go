@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 )
@@ -163,18 +162,6 @@ func assertServiceMonitorTargets(body []byte, namespace, monitor string, expecte
 		}
 	}
 	return nil
-}
-
-func TestUnitPublishedPlatformVersionUsesOCITag(t *testing.T) {
-	fixture := `{"mode":"published","inputs":[{"name":"iterabase-platform","kind":"published-chart","reference":"oci://ghcr.io/nunocgoncalves/iterabase-charts/iterabase-platform:0.3.1"}]}`
-	path := t.TempDir() + "/fixture.json"
-	if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("ITERABASE_E2E_PUBLISHED_FIXTURE", path)
-	if got := publishedPlatformVersion(t); got != "0.3.1" {
-		t.Fatalf("published version=%q want=0.3.1", got)
-	}
 }
 
 func TestUnitHistoricalSampleRejectsFreshReplacement(t *testing.T) {

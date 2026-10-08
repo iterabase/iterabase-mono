@@ -135,7 +135,6 @@ func nMinusOneUpgradeScenario() sharede2e.Definition {
 			"Installs the newest published N-1 certificate, LVM storage, and platform charts on fresh Kind, seeds persisted state, upgrades to the head chart set, proves persisted state, immutable Secrets, PVCs, the Helm-owned provisioner Job, schema ownership, and rollout health, reapplies head without rolling workloads, applies N-1 back with state preserved, and recovers forward to head.",
 			"test-e2e-n-1-upgrade", 45,
 			[]string{"HOR-415", "HOR-418", "HOR-475", "HOR-530", "HOR-590"},
-			[]string{"control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"},
 			append(substrateRenders("iterabase"), nMinusOnePlatform.render()),
 		),
 		NewState: newChartState,

@@ -65,14 +65,15 @@ test: manifests generate fmt vet $(ENVTEST_DEPENDENCY) ## Run tests (unit + envt
 	if [ -z "$$assets" ]; then assets="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)"; fi; \
 	KUBEBUILDER_ASSETS="$$assets" go test -count=1 -coverprofile cover.out ./...
 
-E2E_SOURCE_SHA ?= $(shell git rev-parse HEAD)
-E2E_SOURCE_DIRTY ?= $(if $(shell git status --porcelain),true,false)
+# CI exports the exact source identity; local runs derive it from the checkout.
+E2E_SOURCE_SHA ?= $(or $(ITERABASE_E2E_SOURCE_SHA),$(shell git rev-parse HEAD))
+E2E_SOURCE_DIRTY ?= $(or $(ITERABASE_E2E_SOURCE_DIRTY),$(if $(shell git status --porcelain),true,false))
 ITERABASE_E2E_FIXTURE_MODE ?= source
 E2E_ENV := ITERABASE_E2E_FIXTURE_MODE=$(ITERABASE_E2E_FIXTURE_MODE) \
 	ITERABASE_E2E_SOURCE_SHA=$(E2E_SOURCE_SHA) \
 	ITERABASE_E2E_SOURCE_DIRTY=$(E2E_SOURCE_DIRTY) \
 	ITERABASE_REPOSITORY_ROOT=$(abspath ..)
-# Required source and candidate runs receive the same composer-produced bundle.
+# CI supplies the exact source-built images and the dependency-built platform chart.
 E2E_BUILD_DEPS :=
 
 PLAYWRIGHT_INSTALL_ARGS ?= chromium

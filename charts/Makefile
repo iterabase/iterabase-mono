@@ -22,14 +22,13 @@ KUBECONFORM := kubeconform -strict -kubernetes-version 1.31.0 -ignore-missing-sc
 # `iterabase` E2E release name.
 TLS_TEST_RELEASE := opo1
 TLS_TEST_NAMESPACE := portable-system
-E2E_SOURCE_SHA ?= $(shell git rev-parse HEAD)
-E2E_SOURCE_DIRTY ?= $(if $(shell git status --porcelain),true,false)
+# CI exports the exact source identity; local runs derive it from the checkout.
+E2E_SOURCE_SHA ?= $(or $(ITERABASE_E2E_SOURCE_SHA),$(shell git rev-parse HEAD))
+E2E_SOURCE_DIRTY ?= $(or $(ITERABASE_E2E_SOURCE_DIRTY),$(if $(shell git status --porcelain),true,false))
 ITERABASE_E2E_FIXTURE_MODE ?= source
-ITERABASE_E2E_PUBLISHED_FIXTURE ?= $(CURDIR)/test/e2e/published-fixture.json
 E2E_ENV := ITERABASE_E2E_FIXTURE_MODE=$(ITERABASE_E2E_FIXTURE_MODE) \
 	ITERABASE_E2E_SOURCE_SHA=$(E2E_SOURCE_SHA) \
 	ITERABASE_E2E_SOURCE_DIRTY=$(E2E_SOURCE_DIRTY) \
-	ITERABASE_E2E_PUBLISHED_FIXTURE=$(ITERABASE_E2E_PUBLISHED_FIXTURE) \
 	ITERABASE_CHARTS_ROOT=$(CURDIR)
 ifeq ($(E2E_SKIP_BUILD_DEPS),true)
 E2E_BUILD_DEPS :=

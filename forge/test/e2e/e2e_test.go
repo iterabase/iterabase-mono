@@ -734,7 +734,7 @@ func buildForge(t *testing.T) string {
 		return absolute
 	}
 	if os.Getenv("ITERABASE_E2E_REQUIRED") == "true" {
-		t.Fatal("required real-machine execution has no composer-supplied Forge binary")
+		t.Fatal("required real-machine execution has no CI-supplied FORGE_E2E_BINARY")
 	}
 	wd, err := os.Getwd()
 	if err != nil {

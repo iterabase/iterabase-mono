@@ -32,7 +32,7 @@ func TestHelmUpgradeUsesExactChartAndSortedValues(t *testing.T) {
 	client := Client{Executor: executor, Kubeconfig: "/tmp/isolated-kubeconfig"}
 	_, err := client.HelmUpgrade(context.Background(), HelmOptions{
 		Release: "platform", Namespace: "iterabase-system",
-		Chart:  Chart{Mode: e2e.FixtureCandidate, LocalPath: "/tmp/candidate/platform"},
+		Chart:  Chart{Mode: e2e.FixtureSource, LocalPath: "/tmp/source/platform"},
 		Values: map[string]string{"z.value": "last", "a.value": "first"},
 		Wait:   true, CreateNamespace: true, Timeout: 5 * time.Minute,
 	})
@@ -45,8 +45,8 @@ func TestHelmUpgradeUsesExactChartAndSortedValues(t *testing.T) {
 	if first < 0 || last < 0 || first > last {
 		t.Fatalf("Helm values are not sorted: %v", args)
 	}
-	if args[len(args)-1] != "/tmp/candidate/platform" {
-		t.Fatalf("Helm did not use exact candidate path: %v", args)
+	if args[len(args)-1] != "/tmp/source/platform" {
+		t.Fatalf("Helm did not use exact source path: %v", args)
 	}
 }
 
@@ -114,9 +114,10 @@ func TestPortForwardDiscoversEphemeralPortAndStops(t *testing.T) {
 func TestChartRejectsFloatingOrImplicitInputs(t *testing.T) {
 	t.Parallel()
 	charts := []Chart{
-		{Mode: e2e.FixturePublished, Reference: "oci://example/platform", Version: "latest"},
-		{Mode: e2e.FixturePublished, Reference: "oci://example/platform"},
-		{Mode: e2e.FixtureSource, Reference: "oci://example/platform", Version: "1.0.0"},
+		{Mode: e2e.FixtureSource, LocalPath: "/tmp/charts/platform-latest"},
+		{Mode: e2e.FixtureSource, LocalPath: "charts/platform"},
+		{Mode: e2e.FixtureSource},
+		{Mode: "published", LocalPath: "/tmp/charts/platform"},
 	}
 	for _, chart := range charts {
 		if err := chart.Validate(); err == nil {
