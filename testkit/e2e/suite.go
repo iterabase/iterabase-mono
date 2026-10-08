@@ -110,9 +110,16 @@ func (suite *Suite) validate() error {
 		return fmt.Errorf("suite %q has no entrypoint", suite.metadata.Name)
 	}
 	seen := make(map[string]struct{}, len(suite.definitions))
+	smoke := ""
 	for _, definition := range suite.definitions {
 		if err := validateScenario(definition); err != nil {
 			return err
+		}
+		if definition.metadata.Smoke {
+			if smoke != "" {
+				return fmt.Errorf("suite %q has two smoke scenarios: %q and %q", suite.metadata.Name, smoke, definition.metadata.Name)
+			}
+			smoke = definition.metadata.Name
 		}
 		if _, exists := seen[definition.metadata.Name]; exists {
 			return fmt.Errorf("suite %q repeats scenario %q", suite.metadata.Name, definition.metadata.Name)

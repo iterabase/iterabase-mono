@@ -65,7 +65,8 @@ GO_INPUTS = {
 
 def run(paths: list[str], **kwargs: object) -> affected.Selection:
     changes = [path if isinstance(path, Change) else Change(path) for path in paths]
-    return affected.select(changes, CATALOGUE, RECIPES, GO_INPUTS, kwargs.get("render_changed"))  # type: ignore[arg-type]
+    return affected.select(changes, CATALOGUE, RECIPES, GO_INPUTS, kwargs.get("render_changed"),  # type: ignore[arg-type]
+                           strict=bool(kwargs.get("strict")))
 
 
 class RealDiffTests(unittest.TestCase):
@@ -112,6 +113,15 @@ class RealDiffTests(unittest.TestCase):
         self.assertEqual(selection.jobs, ["control-plane"])
         self.assertEqual(selection.artifacts, ["control-plane-image"])
         self.assertEqual(selection.scenarios, sorted(CP_SCENARIOS + CHART_SCENARIOS))
+
+    def test_merge_queue_strict_mode_adds_real_machine_scenarios(self) -> None:
+        # DES-HOR-590-02: the same PR 122 diff in the merge queue also runs F3.
+        paths = ["control-plane/internal/identity/credentials.go", "control-plane/internal/server/auth_api.go"]
+        self.assertEqual(run(paths, strict=True).scenarios, sorted(CP_SCENARIOS + CHART_SCENARIOS + FORGE_SCENARIOS))
+
+    def test_strict_mode_still_skips_what_nothing_deploys(self) -> None:
+        self.assertEqual(run(["control-plane/internal/identity/auth_integration_test.go"], strict=True).scenarios, [])
+        self.assertEqual(run(["control-plane/VERSION"], strict=True).scenarios, ["charts/fresh-install"])
 
     def test_go_test_only_change_builds_nothing(self) -> None:
         selection = run(["control-plane/internal/identity/auth_integration_test.go"])

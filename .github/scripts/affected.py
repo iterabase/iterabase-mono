@@ -13,6 +13,10 @@ through the compiled E2E catalogue. The rules, applied in order:
   5. GPU driver inputs select the optional driver-upgrade stage;
   6. any path without an owner selects everything.
 
+Pull requests honour each scenario's compiled `selected_by` artifacts; the merge
+queue and the `e2e-real-machine` label run strict, selecting a scenario whenever
+any artifact it deploys changed (DES-HOR-590-02).
+
 Rules 2-5 union with the ordinary owner selection of any other changed path.
 `select()` is pure; the command-line entry point gathers its inputs from git,
 go and helm. The output is one JSON document consumed by ci.yml and e2e.yml.
@@ -146,6 +150,7 @@ def select(
     recipes: dict[str, dict[str, Any]],
     go_inputs: dict[str, dict[str, set[str]]] | None = None,
     render_changed: dict[str, bool] | None = None,
+    strict: bool = False,
 ) -> Selection:
     """Select CI jobs, affected artifacts, E2E scenarios and optional stages."""
     go_inputs = go_inputs or {}
@@ -217,9 +222,10 @@ def select(
     builds = product_artifacts - charts
     for owner, scenario in all_scenarios:
         meta = scenario["metadata"]
-        # selected_by narrows which changed artifacts select a scenario; it defaults
-        # to every artifact the scenario deploys.
-        sid, required = scenario["id"], set(meta.get("selected_by") or meta.get("required_artifacts", ()))
+        # selected_by narrows which changed artifacts select a scenario on pull
+        # requests; strict selection uses every artifact the scenario deploys.
+        narrowed = None if strict else meta.get("selected_by")
+        sid, required = scenario["id"], set(narrowed or meta.get("required_artifacts", ()))
         if owner in owner_tests:
             scenarios.add(sid)
         elif required & builds:
@@ -311,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--all", action="store_true", help="select everything (full validation)")
     parser.add_argument("--catalogue", required=True, help="compiled catalogue JSON (make e2e-catalogue)")
+    parser.add_argument("--strict", action="store_true",
+                        help="ignore selected_by (merge queue, or the e2e-real-machine label)")
     parser.add_argument("--output", help="write the selection JSON here as well as to stdout")
     args = parser.parse_args(argv)
 
@@ -326,8 +334,9 @@ def main(argv: list[str] | None = None) -> int:
                  if recipe.get("go_build") and any(matches(p, recipe["paths"]) for p in paths)}
     needs_render = args.base and not args.all and any(p.startswith("charts/charts/") for p in paths)
     renders = render_diff(args.base, catalogue) if needs_render and shutil.which("helm") else None
-    selection = select(changes, catalogue, recipes, go_inputs, renders)
-    document = json.dumps({**selection.as_json(), "base": args.base, "head": args.head, "paths": paths}, indent=2)
+    selection = select(changes, catalogue, recipes, go_inputs, renders, strict=args.strict)
+    document = json.dumps({**selection.as_json(), "strict": args.strict, "base": args.base, "head": args.head,
+                           "paths": paths}, indent=2)
     if args.output:
         pathlib.Path(args.output).write_text(document + "\n", encoding="utf-8")
     print(document)
