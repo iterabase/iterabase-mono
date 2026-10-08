@@ -564,10 +564,10 @@ class PolicyContractTests(unittest.TestCase):
         self.assertEqual(statement["Condition"]["StringEquals"]["token.actions.githubusercontent.com:aud"], "sts.amazonaws.com")
         self.assertEqual(
             statement["Condition"]["StringLike"]["token.actions.githubusercontent.com:sub"],
-            "repo:nunocgoncalves@64640406/iterabase-mono@1330311216:*",
+            "repo:iterabase@338844113/iterabase-mono@1330311216:*",
         )
         self.assertNotIn(
-            "repo:nunocgoncalves/iterabase-mono:*",
+            "repo:iterabase/iterabase-mono:*",
             json.dumps(document),
             "the classic subject form never matches an immutable-claim repository",
         )
@@ -578,7 +578,7 @@ class PolicyContractTests(unittest.TestCase):
         subject = statement["Condition"]["StringLike"]["token.actions.githubusercontent.com:sub"]
         # GitHub's immutable subject claims carry the owner and repository IDs; the
         # rendered condition must pin them rather than trust a re-creatable name.
-        self.assertIn(f"nunocgoncalves@{GITHUB_OWNER_ID}", subject)
+        self.assertIn(f"iterabase@{GITHUB_OWNER_ID}", subject)
         self.assertIn(f"iterabase-mono@{GITHUB_REPOSITORY_ID}", subject)
         self.assertTrue(subject.endswith(":*"))
         for overrides in (
@@ -590,7 +590,7 @@ class PolicyContractTests(unittest.TestCase):
                     render_role_trust_policy(ACCOUNT_ID, **overrides)
         rendered = render_role_trust_policy(ACCOUNT_ID, owner_id="1", repository_id="2")
         self.assertIn(
-            "repo:nunocgoncalves@1/iterabase-mono@2:*",
+            "repo:iterabase@1/iterabase-mono@2:*",
             json.dumps(rendered),
         )
 
