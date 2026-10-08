@@ -794,7 +794,9 @@ if test -e "$receipt"; then
   esac
   for ((i=0; i<count; i++)); do
     test "$(decode_receipt device_${i}_b64)" = "${selected[$i]}" || fail "data-storage device order/set differs from the receipt"
-    test "$(decode_receipt resolved_${i}_b64)" = "${resolved[$i]}" || fail "data-storage resolved device identity drift"
+    # resolved_<i> is recorded, not bound: kernel names (nvme0n1, sdb) are not
+    # stable across boots, so identity rests on the by-id link, hardware, size,
+    # and the receipt PV/VG UUIDs (DES-HOR-616-01).
     test "$(decode_receipt model_${i}_b64)" = "${model[$i]}" || fail "data-storage model identity drift"
     test "$(decode_receipt serial_${i}_b64)" = "${serial[$i]}" || fail "data-storage serial identity drift"
     test "$(decode_receipt wwn_${i}_b64)" = "${wwn[$i]}" || fail "data-storage WWN identity drift"

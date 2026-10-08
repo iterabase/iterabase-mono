@@ -527,6 +527,61 @@ func TestDataStorageReapplyReceiptMonotonicExecutable(t *testing.T) {
 	requireReceiptPVIdentityMatchesLive(t, spec)
 }
 
+// TestDataStorageReapplyAfterKernelNameReorderExecutable proves a reboot that
+// renames the selected disks (for example NVMe probe order) does not block
+// reapply, while hardware substitution under the same by-id link still refuses
+// (DES-HOR-616-01).
+func TestDataStorageReapplyAfterKernelNameReorderExecutable(t *testing.T) {
+	ok, reason := lvmFaultMatrixEnv(t)
+	if !ok {
+		t.Skip(reason)
+	}
+	resetFaultStorage(t)
+	dir := t.TempDir()
+	aliases, loops := makeFaultLoopDevices(t, dir, 2)
+	t.Cleanup(func() { teardownFaultLoopDevices(t, loops, aliases) })
+	spec := provisioner.DataStorageSpec{InstallName: "opo1", Devices: aliases}
+	reconcile := writeFaultScript(t, spec, "reconcile")
+	inspect := writeFaultScript(t, spec, "inspect")
+
+	out, outcome := runDataStorageBash(t, reconcile, "")
+	require.Equal(t, "ok", outcome, "reconcile failed on clean run: %s\n%s", out, lvmFaultDump())
+	requireReceiptStatus(t, "complete")
+
+	// Simulate the previous boot's kernel names by swapping the recorded paths.
+	fields := receiptFields(t)
+	setReceiptFields(t, map[string]string{"resolved_0_b64": fields["resolved_1_b64"], "resolved_1_b64": fields["resolved_0_b64"]})
+	for _, script := range []string{inspect, reconcile} {
+		out, outcome = runDataStorageBash(t, script, "")
+		require.Equal(t, "ok", outcome, "kernel-name reorder blocked %s: %s\n%s", filepath.Base(script), out, lvmFaultDump())
+		require.Contains(t, out, "FORGE_DATA_STORAGE_RESULT\tcomplete")
+	}
+	requireReceiptStatus(t, "complete")
+
+	// A different disk behind the same by-id link is still refused.
+	setReceiptFields(t, map[string]string{"size_0": "1"})
+	out, outcome = runDataStorageBash(t, inspect, "")
+	require.Equal(t, "error", outcome, "hardware substitution was not refused: %s", out)
+	require.Contains(t, out, "data-storage size identity drift")
+}
+
+// setReceiptFields rewrites receipt values in place, preserving its 0600 root
+// ownership, to stage an on-disk receipt from a different boot or disk.
+func setReceiptFields(t *testing.T, values map[string]string) {
+	t.Helper()
+	data, err := os.ReadFile(dataStorageReceiptPath)
+	require.NoError(t, err, "read durable receipt")
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if key, _, ok := strings.Cut(line, "="); ok {
+			if value, replace := values[key]; replace {
+				lines[i] = key + "=" + value
+			}
+		}
+	}
+	require.NoError(t, os.WriteFile(dataStorageReceiptPath, []byte(strings.Join(lines, "\n")), 0o600))
+}
+
 func requirePurgeBarrierState(t *testing.T, spec provisioner.DataStorageSpec, barrier string) {
 	t.Helper()
 	switch barrier {
