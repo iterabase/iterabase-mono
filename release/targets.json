@@ -9,6 +9,7 @@
       "context": "control-plane",
       "dockerfile": "control-plane/Dockerfile",
       "paths": ["control-plane/**"],
+      "go_build": {"module": "control-plane", "main": ["./cmd/manager", "./cmd/api", "./cmd/gateway", "./cmd/dispatch"], "inputs": ["control-plane/ui/**", "control-plane/Dockerfile", "control-plane/.dockerignore", "control-plane/go.mod", "control-plane/go.sum"]},
       "build_args": ["VERSION={version}", "COMMIT={source_sha}"],
       "labels": ["org.opencontainers.image.version={version}", "org.opencontainers.image.revision={source_sha}", "org.opencontainers.image.source=https://github.com/{repository}"]
     },
@@ -42,6 +43,7 @@
       "context": "inference-gateway",
       "dockerfile": "inference-gateway/Dockerfile",
       "paths": ["inference-gateway/**"],
+      "go_build": {"module": "inference-gateway", "main": ["./cmd/gateway"], "inputs": ["inference-gateway/Dockerfile", "inference-gateway/go.mod", "inference-gateway/go.sum"]},
       "build_args": ["VERSION={version}", "COMMIT={source_sha}"],
       "labels": ["org.opencontainers.image.version={version}", "org.opencontainers.image.revision={source_sha}", "org.opencontainers.image.source=https://github.com/{repository}"]
     },
@@ -76,7 +78,7 @@
       "chart": "iterabase-platform",
       "companions": ["cert-manager-substrate", "lvm-storage-substrate"],
       "dependency_builds": ["control-plane", "observability", "cert-manager-substrate", "lvm-storage-substrate", "iterabase-platform"],
-      "paths": ["charts/**"]
+      "paths": ["charts/charts/**"]
     },
     "cert-manager-substrate-chart": {
       "kind": "chart-companion",
@@ -96,6 +98,7 @@
       "kind": "forge",
       "target": "forge",
       "paths": ["forge/**"],
+      "go_build": {"module": "forge", "main": ["./cmd/forge"], "inputs": ["forge/.goreleaser.yaml", "forge/go.mod", "forge/go.sum", "forge/VERSION"]},
       "goreleaser_config": "forge/.goreleaser.yaml",
       "goreleaser_version": "v2.12.7",
       "platforms": ["linux_amd64", "linux_arm64", "darwin_amd64", "darwin_arm64"]
