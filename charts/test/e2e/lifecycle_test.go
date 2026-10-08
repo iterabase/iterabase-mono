@@ -96,11 +96,14 @@ func seedPersistedStateStage(t *testing.T, state *chartState) {
 	state.kubectl(t, 2*time.Minute, "exec", "-n", testNamespace, "statefulset/"+testRelease+"-postgresql", "--",
 		"psql", "-U", "controlplane", "-d", "controlplane", "-v", "ON_ERROR_STOP=1", "-c",
 		"CREATE TABLE IF NOT EXISTS e2e_chart_transition (marker text PRIMARY KEY); INSERT INTO e2e_chart_transition(marker) VALUES ('"+transitionMarker+"') ON CONFLICT DO NOTHING;")
-	state.kubectl(t, 30*time.Second, "exec", "-n", testNamespace, "statefulset/"+testRelease+"-minio", "--",
+	state.kubectl(t, 30*time.Second, "exec", "-n", testNamespace, testRelease+"-minio-0", "--",
 		"sh", "-c", "printf '%s' '"+transitionMarker+"' > /data/"+transitionMarker)
 	assertPersistedState(t, state)
 }
 
+// assertPersistedState reads the MinIO marker from the StatefulSet's pod by
+// name: the artifact-provisioner Job's pod also matches the StatefulSet's
+// (immutable) selector, so `exec statefulset/...` can land in it instead.
 func assertPersistedState(t *testing.T, state *chartState) {
 	t.Helper()
 	postgres := state.kubectl(t, 90*time.Second, "exec", "-n", testNamespace, "statefulset/"+testRelease+"-postgresql", "--",
@@ -109,7 +112,7 @@ func assertPersistedState(t *testing.T, state *chartState) {
 	if postgres != transitionMarker {
 		t.Fatalf("PostgreSQL persisted marker=%q want=%q", postgres, transitionMarker)
 	}
-	minio, err := state.kubectlOutput(30*time.Second, "exec", "-n", testNamespace, "statefulset/"+testRelease+"-minio", "--",
+	minio, err := state.kubectlOutput(30*time.Second, "exec", "-n", testNamespace, testRelease+"-minio-0", "--",
 		"cat", "/data/"+transitionMarker)
 	if err != nil || strings.TrimSpace(minio) != transitionMarker {
 		t.Fatalf("MinIO persisted marker=%q want=%q (%v)\n%s", strings.TrimSpace(minio), transitionMarker, err, minioVolumeEvidence(state))
