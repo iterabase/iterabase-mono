@@ -16,11 +16,8 @@ func TestE2E(t *testing.T) {
 	}, sharede2e.FixtureFromEnv)
 	suite.Add(
 		hermeticExampleScenario(),
-		deployedIdentityAPIScenario(),
-		deployedWorkRecoveryScenario(),
-		deployedArtifactDurabilityScenario(),
+		deployedControlPlaneScenario(),
 		deployedExecutionContractsScenario(),
-		deployedBrowserJourneysScenario(),
 	)
 	suite.Run(t)
 }
@@ -47,15 +44,21 @@ func deployedExecutionMetadata(name, description, makeTarget string, timeout int
 	return metadata
 }
 
-func deployedBrowserJourneysScenario() sharede2e.Definition {
+// deployedControlPlaneScenario installs the control plane once and runs the
+// identity, work, artifact and browser journeys against it (C5). Each journey
+// depends only on readiness, so one failing journey does not block the others.
+func deployedControlPlaneScenario() sharede2e.Definition {
 	diagnostics, cleanup := deployedBrowserScenarioHooks()
+	metadata := deployedMetadata(
+		"deployed-control-plane",
+		"Installs the source-built control plane once on fresh Kind, then proves the IdentityMapping delegated-token path, JWKS across restart and revocation; concurrent work, projections, durable restart and SSE reconnect; artifact publication, durability and tombstones; and locked Chromium journeys.",
+		"test-e2e-deployed", 50,
+		[]string{"HOR-478", "HOR-483", "HOR-490", "HOR-590", "REQ-005", "REQ-009", "REQ-010", "REQ-018", "REQ-019", "REQ-020", "REQ-023", "REQ-024", "REQ-025", "REQ-033", "REQ-041", "REQ-043",
+			"SCN-004", "SCN-005", "SCN-006", "SCN-007", "SCN-008", "SCN-009", "SCN-019", "SCN-020"},
+	)
+	metadata.Smoke = true
 	return sharede2e.Define(sharede2e.Scenario[*deployedState]{
-		Metadata: deployedMetadata(
-			"deployed-browser-journeys",
-			"Runs locked Chromium journeys against the source-built Dashboard and real API/SSE/artifact boundaries under Go-owned fresh-Kind orchestration.",
-			"test-e2e-browser", 45,
-			[]string{"HOR-483", "HOR-490"},
-		),
+		Metadata: metadata,
 		NewState: newDeployedState,
 		Stages: []sharede2e.Stage[*deployedState]{
 			{Name: "create-kind", Run: createControlPlaneKindStage},
@@ -64,6 +67,15 @@ func deployedBrowserJourneysScenario() sharede2e.Definition {
 			{Name: "install-lvm-storage-substrate", DependsOn: []string{"install-certificate-substrate"}, Run: installLVMStorageSubstrateStage},
 			{Name: "install-control-plane", DependsOn: []string{"install-lvm-storage-substrate"}, Run: installControlPlanePlatformStage},
 			{Name: "assert-deployment-ready", DependsOn: []string{"install-control-plane"}, Run: assertDeploymentReadyStage},
+			{Name: "exercise-identity-api", DependsOn: []string{"assert-deployment-ready"}, Run: exerciseIdentityAPIStage},
+			{Name: "setup-work-journey", DependsOn: []string{"assert-deployment-ready"}, Run: setupWorkJourneyStage},
+			{Name: "start-concurrently", DependsOn: []string{"setup-work-journey"}, Run: concurrentIdempotentStartStage},
+			{Name: "exercise-work-commands", DependsOn: []string{"start-concurrently"}, Run: workCommandsAndHistoryStage},
+			{Name: "restart-and-reconnect", DependsOn: []string{"exercise-work-commands"}, Run: restartAndReconnectStage},
+			{Name: "setup-artifact-journey", DependsOn: []string{"assert-deployment-ready"}, Run: setupArtifactJourneyStage},
+			{Name: "upload-publish-and-link", DependsOn: []string{"setup-artifact-journey"}, Run: uploadPublishAndLinkArtifactStage},
+			{Name: "restart-artifact-processes", DependsOn: []string{"upload-publish-and-link"}, Run: restartArtifactProcessesStage},
+			{Name: "delete-and-assert-tombstone", DependsOn: []string{"restart-artifact-processes"}, Run: deleteAndAssertTombstoneStage},
 			{Name: "setup-browser-fixtures", DependsOn: []string{"assert-deployment-ready"}, Run: setupBrowserFixturesStage},
 			{Name: "run-playwright-journeys", DependsOn: []string{"setup-browser-fixtures"}, Run: runPlaywrightJourneysStage},
 		},
@@ -99,81 +111,6 @@ func deployedExecutionContractsScenario() sharede2e.Definition {
 			{Name: "exercise-isolation-composition", DependsOn: []string{"exercise-idempotent-invocation-race"}, Run: exerciseIsolationCompositionStage},
 			{Name: "exercise-outcome-unknown-recovery", DependsOn: []string{"exercise-isolation-composition"}, Run: exerciseOutcomeUnknownRecoveryStage},
 			{Name: "exercise-consequence-confirmation", DependsOn: []string{"exercise-outcome-unknown-recovery"}, Run: exerciseConsequenceConfirmationStage},
-		},
-		Diagnostics: diagnostics, Cleanup: cleanup,
-	})
-}
-
-func deployedIdentityAPIScenario() sharede2e.Definition {
-	diagnostics, cleanup := deployedScenarioHooks()
-	return sharede2e.Define(sharede2e.Scenario[*deployedState]{
-		Metadata: deployedMetadata(
-			"deployed-identity-api",
-			"Builds and deploys the current control-plane, then proves bootstrap, verified TLS/JWKS, API scopes, delegated identity, soft deletion, migrations, and process recovery.",
-			"test-e2e-identity", 30,
-			[]string{"HOR-478", "REQ-009", "REQ-010", "SCN-008", "SCN-009"},
-		),
-		NewState: newDeployedState,
-		Stages: []sharede2e.Stage[*deployedState]{
-			{Name: "create-kind", Run: createControlPlaneKindStage},
-			{Name: "import-runtime-images", DependsOn: []string{"create-kind"}, Run: importRuntimeImagesStage},
-			{Name: "install-certificate-substrate", DependsOn: []string{"import-runtime-images"}, Run: installCertificateSubstrateStage},
-			{Name: "install-lvm-storage-substrate", DependsOn: []string{"install-certificate-substrate"}, Run: installLVMStorageSubstrateStage},
-			{Name: "install-control-plane", DependsOn: []string{"install-lvm-storage-substrate"}, Run: installControlPlanePlatformStage},
-			{Name: "assert-deployment-ready", DependsOn: []string{"install-control-plane"}, Run: assertDeploymentReadyStage},
-			{Name: "exercise-identity-api", DependsOn: []string{"assert-deployment-ready"}, Run: exerciseIdentityAPIStage},
-		},
-		Diagnostics: diagnostics, Cleanup: cleanup,
-	})
-}
-
-func deployedWorkRecoveryScenario() sharede2e.Definition {
-	diagnostics, cleanup := deployedScenarioHooks()
-	return sharede2e.Define(sharede2e.Scenario[*deployedState]{
-		Metadata: deployedMetadata(
-			"deployed-work-recovery",
-			"Proves authenticated concurrent manual starts, customer-safe work projections, blockers, feedback/revisions, immutable attempts, durable restart, and ordered SSE reconnect.",
-			"test-e2e-work", 35,
-			[]string{"HOR-478", "REQ-005", "REQ-009", "REQ-018", "REQ-020", "REQ-023", "REQ-024", "REQ-025", "REQ-041", "REQ-043", "SCN-005", "SCN-006", "SCN-007", "SCN-008", "SCN-019"},
-		),
-		NewState: newDeployedState,
-		Stages: []sharede2e.Stage[*deployedState]{
-			{Name: "create-kind", Run: createControlPlaneKindStage},
-			{Name: "import-runtime-images", DependsOn: []string{"create-kind"}, Run: importRuntimeImagesStage},
-			{Name: "install-certificate-substrate", DependsOn: []string{"import-runtime-images"}, Run: installCertificateSubstrateStage},
-			{Name: "install-lvm-storage-substrate", DependsOn: []string{"install-certificate-substrate"}, Run: installLVMStorageSubstrateStage},
-			{Name: "install-control-plane", DependsOn: []string{"install-lvm-storage-substrate"}, Run: installControlPlanePlatformStage},
-			{Name: "assert-deployment-ready", DependsOn: []string{"install-control-plane"}, Run: assertDeploymentReadyStage},
-			{Name: "setup-work-journey", DependsOn: []string{"assert-deployment-ready"}, Run: setupWorkJourneyStage},
-			{Name: "start-concurrently", DependsOn: []string{"setup-work-journey"}, Run: concurrentIdempotentStartStage},
-			{Name: "exercise-work-commands", DependsOn: []string{"start-concurrently"}, Run: workCommandsAndHistoryStage},
-			{Name: "restart-and-reconnect", DependsOn: []string{"exercise-work-commands"}, Run: restartAndReconnectStage},
-		},
-		Diagnostics: diagnostics, Cleanup: cleanup,
-	})
-}
-
-func deployedArtifactDurabilityScenario() sharede2e.Definition {
-	diagnostics, cleanup := deployedScenarioHooks()
-	return sharede2e.Define(sharede2e.Scenario[*deployedState]{
-		Metadata: deployedMetadata(
-			"deployed-artifact-durability",
-			"Proves public artifact upload/publication, work linking, immutable download, scoped deletion, MinIO/API restart durability, and persistent tombstones.",
-			"test-e2e-artifact", 35,
-			[]string{"HOR-478", "REQ-005", "REQ-009", "REQ-019", "REQ-033", "REQ-043", "SCN-004", "SCN-008", "SCN-020"},
-		),
-		NewState: newDeployedState,
-		Stages: []sharede2e.Stage[*deployedState]{
-			{Name: "create-kind", Run: createControlPlaneKindStage},
-			{Name: "import-runtime-images", DependsOn: []string{"create-kind"}, Run: importRuntimeImagesStage},
-			{Name: "install-certificate-substrate", DependsOn: []string{"import-runtime-images"}, Run: installCertificateSubstrateStage},
-			{Name: "install-lvm-storage-substrate", DependsOn: []string{"install-certificate-substrate"}, Run: installLVMStorageSubstrateStage},
-			{Name: "install-control-plane", DependsOn: []string{"install-lvm-storage-substrate"}, Run: installControlPlanePlatformStage},
-			{Name: "assert-deployment-ready", DependsOn: []string{"install-control-plane"}, Run: assertDeploymentReadyStage},
-			{Name: "setup-artifact-journey", DependsOn: []string{"assert-deployment-ready"}, Run: setupArtifactJourneyStage},
-			{Name: "upload-publish-and-link", DependsOn: []string{"setup-artifact-journey"}, Run: uploadPublishAndLinkArtifactStage},
-			{Name: "restart-artifact-processes", DependsOn: []string{"upload-publish-and-link"}, Run: restartArtifactProcessesStage},
-			{Name: "delete-and-assert-tombstone", DependsOn: []string{"restart-artifact-processes"}, Run: deleteAndAssertTombstoneStage},
 		},
 		Diagnostics: diagnostics, Cleanup: cleanup,
 	})

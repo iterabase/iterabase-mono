@@ -24,13 +24,11 @@ func exerciseIdentityAPIStage(t *testing.T, state *deployedState) {
 		t.Fatal("deployed JWKS has no signing key")
 	}
 
+	// API key scopes (401/403 on /v1/token, /v1/users and /v1/work-items) are
+	// proven by the F1 server TestAPI; this stage keeps only what needs the real
+	// operator and process: the IdentityMapping path, JWKS across restart, and
+	// revocation when the mapping is deleted (C5).
 	tokenRequest := map[string]any{"provider": "teams", "type": "user", "externalID": "aad:deployed-alice"}
-	status, body := state.requestJSON(t, http.MethodPost, "/v1/token", "", tokenRequest)
-	requireStatus(t, status, http.StatusUnauthorized, body)
-	status, body = state.requestJSON(t, http.MethodPost, "/v1/token", state.adminKey, tokenRequest)
-	requireStatus(t, status, http.StatusForbidden, body)
-	status, body = state.request(t, http.MethodGet, "/v1/users", state.tokenKey, nil, nil)
-	requireStatus(t, status, http.StatusForbidden, body)
 
 	identity := `apiVersion: platform.iterabase.com/v1alpha1
 kind: IdentityMapping
@@ -55,7 +53,7 @@ spec:
 		t.Fatal("Ready IdentityMapping has no materialized identity ID")
 	}
 
-	status, body = state.requestJSON(t, http.MethodPost, "/v1/token", state.tokenKey, tokenRequest)
+	status, body := state.requestJSON(t, http.MethodPost, "/v1/token", state.tokenKey, tokenRequest)
 	requireStatus(t, status, http.StatusOK, body)
 	var delegated delegatedTokenResponse
 	mustDecode(t, body, &delegated)
@@ -70,13 +68,6 @@ spec:
 	if subject, _ := claims["sub"].(string); subject != identityID {
 		t.Fatalf("delegated token subject=%q want materialized identity=%q", subject, identityID)
 	}
-
-	state.createWorkIdentity(t, "deployed-operator@local")
-	status, body = state.request(t, http.MethodGet, "/v1/work-items", state.adminKey, nil, nil)
-	requireStatus(t, status, http.StatusForbidden, body)
-	status, body = state.request(t, http.MethodGet, "/v1/work-items", state.workKey, nil, nil)
-	requireStatus(t, status, http.StatusOK, body)
-	assertCustomerSafeJSON(t, body)
 
 	oldAdminKey, oldTokenKey := state.adminKey, state.tokenKey
 	state.restartAPI(t)

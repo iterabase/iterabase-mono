@@ -6,11 +6,12 @@ Each F2 scenario creates and deletes its own fresh Kind cluster. The reusable `d
 
 ## Scenarios
 
-- `deployed-identity-api`: bootstrap, JWKS/delegated identity, API scopes, soft deletion, migrations, and API restart.
-- `deployed-work-recovery`: concurrent idempotent starts, list/detail/filter/timeline, blockers, feedback/revisions, immutable attempts, customer-safe projections, and ordered SSE reconnect after restart.
-- `deployed-artifact-durability`: upload/publication, work linking, download, MinIO/API restart persistence, admin deletion, and durable tombstones.
+- `deployed-control-plane` (the suite's CI smoke): one install, then four independent journeys that each depend only on readiness:
+  - identity: the IdentityMapping delegated-token path, JWKS across API restart, and revocation when the mapping is deleted. API key scopes are proven by the F1 server `TestAPI`;
+  - work: concurrent idempotent starts, list/detail/filter/timeline, blockers, feedback/revisions, immutable attempts, customer-safe projections, and ordered SSE reconnect after restart;
+  - artifacts: upload/publication, work linking, download, MinIO/API restart persistence, admin deletion, and durable tombstones;
+  - browser: locked Chromium/Playwright customer journeys over a stable Go-owned proxy to the verified deployed API, covering in-memory authentication, EN/PT portfolio/search/detail, blocker feedback/uploads/downloads, loading/error/SSE reconnect, customer-safe rendering, the automated accessibility baseline, keyboard use, and critical responsive layout.
 - `deployed-execution-contracts`: exact source/candidate image composition, late-Secret AgentPool recovery with real discovery/invocation, worker SPIFFE/mTLS, in-flight cancellation and generation fencing on worker replacement, durable assignment and inference, immutable Flux tool registration and invocation attribution, concurrent duplicate idempotency, non-idempotent `outcome_unknown` without silent retry across runner recovery, artifact lineage, disposable-child/session isolation, human-gate resume, and exact consequential repetition confirmation.
-- `deployed-browser-journeys`: locked Chromium/Playwright customer journeys over a stable Go-owned proxy to the verified deployed API, covering in-memory authentication, EN/PT portfolio/search/detail, blocker feedback/uploads/downloads, loading/error/SSE reconnect, customer-safe rendering, the automated accessibility baseline, keyboard use, and critical responsive layout.
 
 The identity and execution scenarios are the green product-owner replacements for Forge's former `kind-controlplane-identity`, `kind-inference-contract`, and `kind-tool-runner-contract` scenarios. HOR-481 removed those direct-chart Kind scenarios after the replacement gates passed; Forge retains only real-host CPU/GPU substrate authority and explicitly non-authoritative dependent serving smoke.
 
@@ -18,11 +19,8 @@ The identity and execution scenarios are the green product-owner replacements fo
 
 ```bash
 make -C control-plane test-e2e-unit
-make -C control-plane test-e2e-identity
-make -C control-plane test-e2e-work
-make -C control-plane test-e2e-artifact
+make -C control-plane test-e2e-deployed
 make -C control-plane test-e2e-execution
-make -C control-plane test-e2e-browser
 make -C control-plane test-e2e
 ```
 
