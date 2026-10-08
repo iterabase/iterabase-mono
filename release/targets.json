@@ -102,21 +102,6 @@
       "goreleaser_config": "forge/.goreleaser.yaml",
       "goreleaser_version": "v2.12.7",
       "platforms": ["linux_amd64", "linux_arm64", "darwin_amd64", "darwin_arm64"]
-    },
-    "certificate-migration-chart": {
-      "kind": "published-chart"
-    },
-    "supported-platform-predecessor": {
-      "kind": "published-chart"
-    },
-    "supported-substrate-predecessor": {
-      "kind": "published-chart"
-    },
-    "metallb-platform-predecessor": {
-      "kind": "published-chart"
-    },
-    "metallb-substrate-predecessor": {
-      "kind": "published-chart"
     }
   },
   "targets": {
