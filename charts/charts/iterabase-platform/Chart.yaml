@@ -2,23 +2,23 @@ apiVersion: v2
 name: iterabase-platform
 description: Iterabase platform umbrella chart — inference-gateway + control-plane + Postgres/Redis/MinIO + ingress-nginx + external-dns + observability.
 type: application
-version: 0.4.6
-appVersion: "0.4.6"
+version: 0.4.7
+appVersion: "0.4.7"
 dependencies:
   - name: redis
     version: 0.2.4
     repository: file://../redis
     condition: redis.enabled
   - name: minio
-    version: 0.2.6
+    version: 0.2.7
     repository: file://../minio
     condition: minio.enabled
   - name: inference-gateway
-    version: 0.2.13
+    version: 0.2.14
     repository: file://../inference-gateway
     condition: inference-gateway.enabled
   - name: control-plane
-    version: 0.5.4
+    version: 0.5.5
     repository: file://../control-plane
     condition: control-plane.enabled
   - name: ingress-nginx

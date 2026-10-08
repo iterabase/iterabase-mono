@@ -2,5 +2,5 @@ apiVersion: v2
 name: minio
 description: Self-contained MinIO object storage for the iterabase platform (official image).
 type: application
-version: 0.2.6
+version: 0.2.7
 appVersion: "RELEASE.2025-09-07T16-13-09Z"

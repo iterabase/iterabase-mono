@@ -2,7 +2,7 @@ apiVersion: v2
 name: control-plane
 description: Iterabase control-plane service — IdentityMapping operator + identity store + JWT/JWKS API.
 type: application
-version: 0.5.4
+version: 0.5.5
 appVersion: "0.0.40"
 dependencies:
   # Bundled pgvector Postgres. Disabled/BYO via postgresql.enabled. The image is
