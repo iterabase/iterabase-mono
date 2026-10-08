@@ -19,6 +19,10 @@ on:
         description: Exact commit to validate (default the triggering ref)
         type: string
         default: ""
+      release_targets:
+        description: Validating a release; images of other targets come from their published versions (C7)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -222,8 +226,11 @@ jobs:
           python3 .github/scripts/e2e_inputs.py prepare --scenario '${{ matrix.id }}' \
             --catalogue "$RUNNER_TEMP/selection/catalogue.json" --images "$IMAGES" \
             --source-sha '${{ needs.select.outputs.source_sha }}' \
-            --optional-stages '${{ needs.select.outputs.stages }}' --workdir "$RUNNER_TEMP/inputs"
+            --optional-stages '${{ needs.select.outputs.stages }}' --workdir "$RUNNER_TEMP/inputs" \
+            --release-targets '${{ inputs.release_targets }}'
       - name: Run ${{ matrix.id }}
+        env:
+          E2E_SKIP_BUILD_DEPS: "true"  # the inputs step built the chart dependencies once
         run: make -C '${{ matrix.owner }}' '${{ matrix.make_target }}'
 
   # Real-machine hosts boot from the AMI baked for this tree's pinned inputs; the
@@ -297,7 +304,8 @@ jobs:
           python3 .github/scripts/e2e_inputs.py prepare --scenario '${{ matrix.id }}' \
             --catalogue "$RUNNER_TEMP/selection/catalogue.json" --images "$IMAGES" \
             --source-sha '${{ needs.select.outputs.source_sha }}' \
-            --optional-stages '${{ needs.select.outputs.stages }}' --workdir "$RUNNER_TEMP/inputs"
+            --optional-stages '${{ needs.select.outputs.stages }}' --workdir "$RUNNER_TEMP/inputs" \
+            --release-targets '${{ inputs.release_targets }}'
       - name: Run ${{ matrix.id }}
         run: make -C forge '${{ matrix.make_target }}'
       - name: Remove the host
