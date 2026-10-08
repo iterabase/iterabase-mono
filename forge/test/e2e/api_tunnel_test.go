@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -14,9 +15,9 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-// sshAPITunnel keeps the GPU fixture's Kubernetes API private. The
-// fixture exposes only pinned SSH; all client-go and kubectl traffic traverses
-// one fixture-scoped direct-tcpip tunnel to the host-local K3s API.
+// sshAPITunnel keeps the fixture's Kubernetes API private. Fixture hosts
+// expose only pinned SSH; all client-go and kubectl traffic traverses one
+// fixture-scoped direct-tcpip tunnel to the host-local K3s API.
 type sshAPITunnel struct {
 	client   *ssh.Client
 	listener net.Listener
@@ -24,24 +25,78 @@ type sshAPITunnel struct {
 	stopOnce sync.Once
 }
 
+// fixturesByForgeHome lets runForgeE re-bind the kubeconfig Forge refreshes on
+// every apply without each stage remembering to do so.
+var fixturesByForgeHome sync.Map
+
+func registerFixtureForgeHome(forgeHome string, fixture *hostFixture) {
+	fixturesByForgeHome.Store(forgeHome, fixture)
+}
+
+// rebindForgeHomeKubeconfigs points every run kubeconfig under forgeHome at the
+// fixture tunnel. A missing kubeconfig (apply refused before K3s) is not an error.
+func rebindForgeHomeKubeconfigs(forgeHome string) error {
+	value, ok := fixturesByForgeHome.Load(forgeHome)
+	if !ok {
+		return nil
+	}
+	paths, err := filepath.Glob(filepath.Join(forgeHome, "*", "kubeconfig.yaml"))
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if err := value.(*hostFixture).bindKubeconfig(path); err != nil {
+			return fmt.Errorf("bind %s to the fixture API tunnel: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func (fixture *hostFixture) bindKubeconfig(path string) error {
+	fixture.tunnelMu.Lock()
+	defer fixture.tunnelMu.Unlock()
+	if fixture.apiTunnel == nil {
+		tunnel, err := startSSHAPITunnel(fixture.address, fixture.sshKeyPath)
+		if err != nil {
+			return fmt.Errorf("open pinned SSH tunnel to fixture Kubernetes API: %w", err)
+		}
+		fixture.apiTunnel = tunnel
+	}
+	serverName, err := rewriteKubeconfigForAPITunnel(path, fixture.apiTunnel.listener.Addr().String(), fixture.apiServerName)
+	if err != nil {
+		return err
+	}
+	fixture.apiServerName = serverName
+	return nil
+}
+
+// dialHostLocal reaches a host-local port (for example an ingress NodePort)
+// through the fixture's pinned SSH connection.
+func (fixture *hostFixture) dialHostLocal(port int) (net.Conn, error) {
+	fixture.tunnelMu.Lock()
+	tunnel := fixture.apiTunnel
+	fixture.tunnelMu.Unlock()
+	if tunnel == nil {
+		return nil, fmt.Errorf("fixture API tunnel is not open")
+	}
+	return tunnel.client.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+}
+
+func (fixture *hostFixture) stopAPITunnel() {
+	fixture.tunnelMu.Lock()
+	defer fixture.tunnelMu.Unlock()
+	if fixture.apiTunnel == nil {
+		return
+	}
+	fixture.apiTunnel.stop()
+	fixture.apiTunnel = nil
+}
+
 func (state *gpuFixtureState) bindKubeconfigTunnel(t *testing.T) {
 	t.Helper()
-	if state.fixture == nil {
-		return // legacy non-fixture qualification paths retain their existing public API path
-	}
-	if state.apiTunnel == nil {
-		tunnel, err := startSSHAPITunnel(state.host.IP, state.privKeyPath)
-		if err != nil {
-			t.Fatalf("open pinned SSH tunnel to GPU fixture Kubernetes API: %v", err)
-		}
-		state.apiTunnel = tunnel
-	}
-	path := filepath.Join(state.forgeHome, state.runID, "kubeconfig.yaml")
-	serverName, err := rewriteKubeconfigForAPITunnel(path, state.apiTunnel.listener.Addr().String(), state.apiServerName)
-	if err != nil {
+	if err := state.fixture.bindKubeconfig(filepath.Join(state.forgeHome, state.runID, "kubeconfig.yaml")); err != nil {
 		t.Fatalf("bind GPU fixture kubeconfig to pinned SSH tunnel: %v", err)
 	}
-	state.apiServerName = serverName
 }
 
 func startSSHAPITunnel(address, keyPath string) (*sshAPITunnel, error) {
@@ -98,14 +153,6 @@ func proxyTunnelConnection(local, remote net.Conn) {
 	closeOnce.Do(closeBoth)
 }
 
-func (state *gpuFixtureState) stopAPITunnel() {
-	if state.apiTunnel == nil {
-		return
-	}
-	state.apiTunnel.stop()
-	state.apiTunnel = nil
-}
-
 func (tunnel *sshAPITunnel) stop() {
 	tunnel.stopOnce.Do(func() {
 		_ = tunnel.listener.Close()
@@ -131,6 +178,9 @@ func rewriteKubeconfigForAPITunnel(path, localAddress, expectedServerName string
 	cluster := cfg.Clusters[context.Cluster]
 	if cluster == nil {
 		return "", fmt.Errorf("kubeconfig cluster %q is missing", context.Cluster)
+	}
+	if cluster.Server == "https://"+localAddress && cluster.TLSServerName != "" {
+		return cluster.TLSServerName, nil // already bound; Forge has not refreshed it since
 	}
 	serverName := expectedServerName
 	if serverName == "" {
@@ -176,5 +226,11 @@ func TestRewriteKubeconfigForAPITunnel(t *testing.T) {
 	cluster := got.Clusters["fixture"]
 	if cluster.Server != "https://127.0.0.1:32123" || cluster.TLSServerName != serverName {
 		t.Fatalf("rewritten cluster = %#v", cluster)
+	}
+	// A second bind without an intervening Forge apply must keep the original
+	// certificate identity rather than adopting the tunnel address.
+	again, err := rewriteKubeconfigForAPITunnel(path, "127.0.0.1:32123", "")
+	if err != nil || again != "149.36.0.109" {
+		t.Fatalf("rebind server name = %q, %v; want original fixture address", again, err)
 	}
 }

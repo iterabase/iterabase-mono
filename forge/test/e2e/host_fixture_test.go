@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,6 +51,10 @@ type hostFixture struct {
 	dataStorageDevice string
 	modelDevice       string
 	modelUUID         string
+
+	tunnelMu      sync.Mutex
+	apiTunnel     *sshAPITunnel
+	apiServerName string
 }
 
 func fixtureSSHUser() string {

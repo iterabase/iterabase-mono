@@ -80,6 +80,7 @@ func newCPUFixtureStateForScenario(t *testing.T, scenario string) *cpuFixtureSta
 	if githubToken := os.Getenv("GITHUB_TOKEN"); githubToken != "" {
 		state.diagnostics.redactor.Add(githubToken)
 	}
+	registerFixtureForgeHome(state.forgeHome, fixture)
 	state.forgeBin = buildForge(t)
 	state.chartVersion = platformChartVersion(t, "")
 	t.Logf("run %s on a fresh CPU host", state.runID)
@@ -225,7 +226,7 @@ printf "%%s|%%s\n" "$pv" "$vg"
 
 	kcPath := filepath.Join(state.forgeHome, state.runID, "kubeconfig.yaml")
 	checkGatewayRunning(t, kcPath)
-	checkGatewayNodePortHealth(t, kcPath, state.ip)
+	checkGatewayNodePortHealth(t, kcPath, state.fixture.dialHostLocal)
 }
 
 func seedLVMReapplyStage(t *testing.T, state *cpuFixtureState) {
@@ -763,6 +764,13 @@ func runForgeE(bin, forgeHome string, args ...string) (string, error) {
 		cmd.Env = append(cmd.Env, "FORGE_OVERLAY_TOKEN="+os.Getenv("GITHUB_TOKEN"))
 	}
 	out, err := cmd.CombinedOutput()
+	// Forge refreshes the run kubeconfig with the host's API endpoint on every
+	// apply; fixture hosts expose only SSH, so re-bind it to the SSH tunnel.
+	if len(args) > 0 && args[0] == "apply" {
+		if bindErr := rebindForgeHomeKubeconfigs(forgeHome); bindErr != nil && err == nil {
+			err = bindErr
+		}
+	}
 	return string(out), err
 }
 
@@ -806,7 +814,7 @@ func checkGatewayRunning(t *testing.T, kcPath string) {
 	t.Fatalf("inference-gateway pod not Running in iterabase-system")
 }
 
-func checkGatewayNodePortHealth(t *testing.T, kcPath, ip string) {
+func checkGatewayNodePortHealth(t *testing.T, kcPath string, dial func(port int) (net.Conn, error)) {
 	t.Helper()
 	restCfg, err := clientcmd.BuildConfigFromFlags("", kcPath)
 	if err != nil {
@@ -825,7 +833,7 @@ func checkGatewayNodePortHealth(t *testing.T, kcPath, ip string) {
 	for _, service := range services.Items {
 		for _, port := range service.Spec.Ports {
 			if port.Port == 443 && port.NodePort > 0 {
-				checkGatewayHealthOnPort(t, ip, int(port.NodePort))
+				checkGatewayHealthOnPort(t, dial, int(port.NodePort))
 				return
 			}
 		}
@@ -833,15 +841,15 @@ func checkGatewayNodePortHealth(t *testing.T, kcPath, ip string) {
 	t.Fatalf("ingress controller Services have no HTTPS NodePort: %+v", services.Items)
 }
 
-func checkGatewayHealthOnPort(t *testing.T, ip string, port int) {
+func checkGatewayHealthOnPort(t *testing.T, dial func(port int) (net.Conn, error), port int) {
 	t.Helper()
-	// Reach the gateway over the real HTTPS ingress with the chart's default Host
-	// and SNI. The E2E edge uses a self-signed issuer.
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	// Reach the gateway over the real HTTPS ingress NodePort with the chart's
+	// default Host and SNI, through the fixture's pinned SSH connection. The E2E
+	// edge uses a self-signed issuer.
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // self-signed e2e cert
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ip, fmt.Sprintf("%d", port)))
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return dial(port)
 		},
 	}
 	client := &http.Client{Timeout: 10 * time.Second, Transport: transport}
@@ -857,5 +865,5 @@ func checkGatewayHealthOnPort(t *testing.T, ip string, port int) {
 		}
 		time.Sleep(3 * time.Second)
 	}
-	t.Fatalf("gateway /health not 200 via %s (ip %s port %d)", url, ip, port)
+	t.Fatalf("gateway /health not 200 via %s (host-local NodePort %d)", url, port)
 }
