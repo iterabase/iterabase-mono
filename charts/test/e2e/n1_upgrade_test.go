@@ -215,6 +215,11 @@ func applyChartSet(t *testing.T, state *chartState, certificate, lvmStorage, pla
 	state.installSubstrateChart(t, certificate)
 	state.applyLVMStorage(t, lvmStorage)
 	state.installPlatformChart(t, platform, 18*time.Minute, nMinusOneValueFiles(t, state)...)
+	// Helm can return before a StatefulSet has replaced its pod; asserting
+	// persisted state then reads a pod in transition, not the data.
+	for _, statefulSet := range []string{testRelease + "-postgresql", testRelease + "-minio"} {
+		state.kubectl(t, 6*time.Minute, "rollout", "status", "statefulset/"+statefulSet, "-n", testNamespace, "--timeout=5m")
+	}
 }
 
 func applyNMinusOneChartsStage(t *testing.T, state *chartState) {
