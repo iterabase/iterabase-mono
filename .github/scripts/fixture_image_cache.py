@@ -428,6 +428,10 @@ def seed_fixture_image_cache(
         "StrictHostKeyChecking=yes",
         "-o",
         f"UserKnownHostsFile={host_key}",
+        # Packing a multi-gigabyte GPU image prints nothing for minutes; keep the
+        # connection alive so an idle network path cannot drop it.
+        "-o",
+        "ServerAliveInterval=30",
         f"{user}@{address}",
     ]
     scp_base = [

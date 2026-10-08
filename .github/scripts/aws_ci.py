@@ -686,6 +686,8 @@ def ssh_command(
         "CheckHostIP=no",
         "-o",
         f"UserKnownHostsFile={known_hosts_path}",
+        "-o",
+        "ServerAliveInterval=30",
         f"{SSH_USER}@{address}",
         remote_command,
     ]
