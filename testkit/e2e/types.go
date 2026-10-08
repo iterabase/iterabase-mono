@@ -83,12 +83,19 @@ type RenderInput struct {
 type StageMetadata struct {
 	Name      string   `json:"name"`
 	DependsOn []string `json:"depends_on,omitempty"`
+	Optional  bool     `json:"optional,omitempty"`
 }
 
-// Stage is one typed operation in a scenario.
+// OptionalStagesEnv lists, comma-separated, the optional stages the affected
+// selector chose for this run (for example the GPU driver upgrade).
+const OptionalStagesEnv = "ITERABASE_E2E_OPTIONAL_STAGES"
+
+// Stage is one typed operation in a scenario. An Optional stage runs only when
+// OptionalStagesEnv names it; no other stage may depend on it.
 type Stage[S any] struct {
 	Name      string
 	DependsOn []string
+	Optional  bool
 	Run       func(*testing.T, S)
 }
 
@@ -121,7 +128,7 @@ func Define[S any](scenario Scenario[S]) Definition {
 	stages := make([]StageMetadata, 0, len(scenario.Stages))
 	var definitionErr error
 	for _, stage := range scenario.Stages {
-		stages = append(stages, StageMetadata{Name: stage.Name, DependsOn: slices.Clone(stage.DependsOn)})
+		stages = append(stages, StageMetadata{Name: stage.Name, DependsOn: slices.Clone(stage.DependsOn), Optional: stage.Optional})
 		if stage.Run == nil && definitionErr == nil {
 			definitionErr = fmt.Errorf("stage %q has no run function", stage.Name)
 		}
@@ -245,6 +252,7 @@ func validateScenario(definition Definition) error {
 		return fmt.Errorf("scenario %q has no stages", metadata.Name)
 	}
 	seen := make(map[string]struct{}, len(definition.stages))
+	optional := make(map[string]struct{})
 	for _, stage := range definition.stages {
 		if err := validateName("stage", stage.Name); err != nil {
 			return fmt.Errorf("scenario %q: %w", metadata.Name, err)
@@ -256,8 +264,14 @@ func validateScenario(definition Definition) error {
 			if _, exists := seen[dependency]; !exists {
 				return fmt.Errorf("scenario %q stage %q has unknown or forward dependency %q", metadata.Name, stage.Name, dependency)
 			}
+			if _, exists := optional[dependency]; exists {
+				return fmt.Errorf("scenario %q stage %q depends on optional stage %q", metadata.Name, stage.Name, dependency)
+			}
 		}
 		seen[stage.Name] = struct{}{}
+		if stage.Optional {
+			optional[stage.Name] = struct{}{}
+		}
 	}
 	return nil
 }
