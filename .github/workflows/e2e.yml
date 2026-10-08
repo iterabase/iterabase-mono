@@ -312,6 +312,108 @@ jobs:
         if: always()
         run: python3 .github/scripts/aws_ci.py cleanup-run --region '${{ vars.AWS_CI_REGION }}' --run-id "$FIXTURE_RUN_ID"
 
+  # One live preview per pull request with deployable changes and one staging
+  # environment on master (C6, C9, C12). Not a merge gate.
+  preview:
+    name: preview
+    needs: [select, images]
+    if: >-
+      needs.select.outputs.build != '[]' && !inputs.all &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: preview-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || 'staging' }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      deployments: write
+    environment:
+      name: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || 'staging' }}
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      PREVIEW: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || 'staging' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: 1.26.5
+          cache-dependency-path: forge/go.sum
+          cache-scope: preview
+      - uses: ./.github/actions/setup-kubernetes-tools
+      - uses: ./.github/actions/cache-helm
+        with:
+          cache-scope: preview
+      - name: Add external chart repositories
+        run: .github/scripts/add_helm_repositories.sh
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log Helm in to the preview chart registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - uses: ./.github/actions/setup-aws-ci
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-preview-${{ github.run_id }}
+      - name: Mint an ephemeral tag:preview tailnet key
+        env:
+          CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+        run: |
+          set -euo pipefail
+          token=$(curl -fsS -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" \
+            https://api.tailscale.com/api/v2/oauth/token | jq -r .access_token)
+          echo "::add-mask::$token"
+          key=$(curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            -d '{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":true,"preauthorized":true,"tags":["tag:preview"]}}},"expirySeconds":3600}' \
+            https://api.tailscale.com/api/v2/tailnet/-/keys | jq -r .key)
+          echo "::add-mask::$key"
+          install -m 600 /dev/null "$RUNNER_TEMP/tailscale-key"
+          printf '%s' "$key" > "$RUNNER_TEMP/tailscale-key"
+      - name: Install the repository preview SSH key
+        env:
+          PREVIEW_SSH_KEY: ${{ secrets.PREVIEW_SSH_KEY }}
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/preview_ed25519"
+          printf '%s\n' "$PREVIEW_SSH_KEY" > "$RUNNER_TEMP/preview_ed25519"
+      - name: Find or launch the ${{ env.PREVIEW }} host
+        id: host
+        run: |
+          python3 .github/scripts/aws_ci.py preview-up --region '${{ vars.AWS_CI_REGION }}' --name "$PREVIEW" \
+            --run-id '${{ github.run_id }}' --ssh-key "$RUNNER_TEMP/preview_ed25519" \
+            --tailscale-auth-key-file "$RUNNER_TEMP/tailscale-key"
+      - name: Deploy with this commit's Forge
+        id: deploy
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PREVIEW_LLM_API_KEY: ${{ secrets.PREVIEW_LLM_API_KEY }}
+          IMAGES: ${{ needs.images.outputs.images }}
+        run: |
+          python3 .github/scripts/preview.py --name "$PREVIEW" --run-number '${{ github.run_number }}' \
+            --source-sha '${{ needs.select.outputs.source_sha }}' --images "$IMAGES" \
+            --address '${{ steps.host.outputs.address }}' --host-key '${{ steps.host.outputs.host_key }}' \
+            --data-device '${{ steps.host.outputs.data_device }}' --created '${{ steps.host.outputs.created }}' \
+            --ssh-key "$RUNNER_TEMP/preview_ed25519" \
+            --llm-base-url '${{ vars.PREVIEW_LLM_BASE_URL }}' --model-id '${{ vars.PREVIEW_LLM_MODEL }}'
+      - name: Summary
+        run: |
+          {
+            echo "### Preview \`$PREVIEW\`"
+            echo
+            echo "- URL (tailnet only): ${{ steps.deploy.outputs.url }}"
+            echo "- chart \`${{ steps.deploy.outputs.chart_version }}\`, host \`${{ steps.host.outputs.instance_id }}\` (created: ${{ steps.host.outputs.created }}), deadline \`${{ steps.host.outputs.deadline }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   required:
     name: E2E / required
     if: always()
