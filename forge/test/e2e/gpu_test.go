@@ -36,8 +36,6 @@ type gpuFixtureState struct {
 	chartVersion        string
 	upgradeEvidence     *gpuUpgradeEvidence
 	runtimeImageDigests map[string]importedRuntimeIdentity
-	apiTunnel           *sshAPITunnel
-	apiServerName       string
 	diagnostics         forgeDiagnostics
 }
 
@@ -53,6 +51,7 @@ func newGPUFixtureState(t *testing.T) *gpuFixtureState {
 		runtimeImageDigests: make(map[string]importedRuntimeIdentity),
 		diagnostics:         newForgeDiagnostics(t, gpuScenarioName),
 	}
+	registerFixtureForgeHome(state.forgeHome, fixture)
 	state.forgeBin = buildForge(t)
 	return state
 }

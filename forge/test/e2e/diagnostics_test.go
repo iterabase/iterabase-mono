@@ -313,8 +313,11 @@ func cpuScenarioDiagnostics() []sharede2e.Hook[*cpuFixtureState] {
 	return []sharede2e.Hook[*cpuFixtureState]{{Name: "shared-failure-evidence", Run: collectCPUDiagnostics}}
 }
 
-// cpuScenarioCleanup is empty: the workflow terminates the per-run host (C1).
-func cpuScenarioCleanup() []sharede2e.Hook[*cpuFixtureState] { return nil }
+// cpuScenarioCleanup stops the local API tunnel; the workflow terminates the
+// per-run host (C1).
+func cpuScenarioCleanup() []sharede2e.Hook[*cpuFixtureState] {
+	return []sharede2e.Hook[*cpuFixtureState]{{Name: "stop-api-tunnel", Run: func(_ *testing.T, state *cpuFixtureState) { state.fixture.stopAPITunnel() }}}
+}
 
 func gpuScenarioDiagnostics() []sharede2e.Hook[*gpuFixtureState] {
 	return []sharede2e.Hook[*gpuFixtureState]{{Name: "shared-failure-evidence", Run: collectGPUDiagnostics}}
@@ -323,7 +326,7 @@ func gpuScenarioDiagnostics() []sharede2e.Hook[*gpuFixtureState] {
 // gpuScenarioCleanup stops the local API tunnel; the workflow terminates the
 // per-run host (C1).
 func gpuScenarioCleanup() []sharede2e.Hook[*gpuFixtureState] {
-	return []sharede2e.Hook[*gpuFixtureState]{{Name: "stop-api-tunnel", Run: func(_ *testing.T, state *gpuFixtureState) { state.stopAPITunnel() }}}
+	return []sharede2e.Hook[*gpuFixtureState]{{Name: "stop-api-tunnel", Run: func(_ *testing.T, state *gpuFixtureState) { state.fixture.stopAPITunnel() }}}
 }
 
 func TestForgeDiagnosticsRecordsFailureDomain(t *testing.T) {
