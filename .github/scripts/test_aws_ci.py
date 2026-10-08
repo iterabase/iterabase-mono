@@ -296,7 +296,7 @@ class PolicyContractTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(self.document, separators=(",", ":"))), MAX_POLICY_CHARACTERS)
 
     def test_every_statement_is_rendered_and_well_formed(self) -> None:
-        self.assertEqual(len(self.document["Statement"]), 21)
+        self.assertEqual(len(self.document["Statement"]), 22)
         for statement in self.document["Statement"]:
             self.assertIn(statement["Effect"], {"Allow", "Deny"})
             self.assertTrue(statement["Action"])
@@ -312,6 +312,7 @@ class PolicyContractTests(unittest.TestCase):
             [
                 "arn:aws:ec2:*::image/*",
                 f"arn:aws:ec2:*:{ACCOUNT_ID}:image/*",
+                "arn:aws:ec2:*::snapshot/*",  # the GPU model cache, same owner condition (DES-HOR-590-04)
             ],
         )
         condition = self.statements["RunApprovedInstances"]["Condition"]
@@ -344,6 +345,7 @@ class PolicyContractTests(unittest.TestCase):
                 f"arn:aws:ec2:*:{ACCOUNT_ID}:network-interface/*",
                 f"arn:aws:ec2:*:{ACCOUNT_ID}:subnet/*",
                 f"arn:aws:ec2:*:{ACCOUNT_ID}:key-pair/*",
+                f"arn:aws:ec2:*:{ACCOUNT_ID}:spot-instances-request/*",
             ],
         )
         self.assertNotIn("Condition", dependencies)
@@ -389,10 +391,28 @@ class PolicyContractTests(unittest.TestCase):
                 )
 
     def test_describe_actions_are_read_only_and_account_wide(self) -> None:
-        self.assertEqual(self.statements["DescribeCiState"]["Action"], DESCRIBE_ACTIONS)
+        # DES-HOR-590-04: one read-only wildcard keeps the single policy in its size limit.
+        self.assertEqual(self.statements["DescribeCiState"]["Action"], "ec2:Describe*")
         self.assertEqual(self.statements["DescribeCiState"]["Resource"], "*")
-        for action in DESCRIBE_ACTIONS:
-            self.assertTrue(action.startswith("ec2:Describe"), action)
+
+    def test_des_hor_590_04_amendments_stay_tag_scoped(self) -> None:
+        # Bake: CreateImage only on a CI-marked instance.
+        terminate = self.statements["TerminateCiInstances"]
+        self.assertEqual(terminate["Action"], ["ec2:TerminateInstances", "ec2:CreateImage"])
+        self.assertEqual(terminate["Condition"], {"StringEquals": {f"ec2:ResourceTag/{MARKER_TAG}": "true"}})
+        # Model cache: copy sources must be CI-marked, copies carry the mandatory tags.
+        self.assertIn("ec2:CopySnapshot", self.statements["RemoveCiImagesAndSnapshots"]["Action"])
+        self.assertIn("ec2:CopySnapshot", self.statements["CreateCiSnapshots"]["Action"])
+        self.assertEqual(
+            self.statements["CreateCiSnapshots"]["Condition"]["StringEquals"][f"aws:RequestTag/{MARKER_TAG}"], "true"
+        )
+        self.assertIn("CopySnapshot", self.statements["TagCiResourcesOnCreate"]["Condition"]["StringEquals"]["ec2:CreateAction"])
+        # Previews: only the deadline key may change on an existing CI instance.
+        renew = self.statements["RenewCiDeadline"]
+        self.assertEqual(renew["Action"], "ec2:CreateTags")
+        self.assertEqual(renew["Resource"], f"arn:aws:ec2:*:{ACCOUNT_ID}:instance/*")
+        self.assertEqual(renew["Condition"]["ForAllValues:StringEquals"], {"aws:TagKeys": [DEADLINE_TAG]})
+        self.assertEqual(renew["Condition"]["StringEquals"], {f"ec2:ResourceTag/{MARKER_TAG}": "true"})
 
     def test_tag_on_create_is_bound_to_the_create_action(self) -> None:
         condition = self.statements["TagCiResourcesOnCreate"]["Condition"]
@@ -542,6 +562,9 @@ class PolicyContractTests(unittest.TestCase):
             "CopyImagesIntoTheCiAccount",
             "TagCopiedImagesOnCreate",
             "RemoveCiImagesAndSnapshots",
+            # A cross-region model-cache copy lands on an empty-account snapshot ARN;
+            # it still requires the mandatory request tags (DES-HOR-590-04).
+            "CreateCiSnapshots",
         }
         for sid, statement in self.statements.items():
             if sid in exempt or statement["Effect"] == "Deny":
@@ -903,6 +926,81 @@ class RepositoryContractTests(unittest.TestCase):
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, runbook)
+
+
+class FixtureLaunchTests(unittest.TestCase):
+    """C1 fixtures, C6 previews and the DES-HOR-590-03 bake surface."""
+
+    def test_fixture_launch_adds_root_model_cache_and_keeps_the_default_surface(self) -> None:
+        import aws_ci
+
+        base = dict(region=CI_REGION, image_id="ami-0123456789abcdef0", instance_type="g6.xlarge",
+                    subnet_id="subnet-0123456789abcdef0", security_group_id="sg-0123456789abcdef0",
+                    tags=required_tags("1", "gpu"), user_data_path="/tmp/u.sh")
+        command = aws_ci.launch_command(**base, data_gib=30, root_gib=80,
+                                        snapshot_volumes=(("/dev/sdg", "snap-0123456789abcdef0"),))
+        mappings = command[command.index("--block-device-mappings") + 1:command.index("--tag-specifications")]
+        self.assertEqual(mappings, [
+            "DeviceName=/dev/sda1,Ebs={VolumeSize=80,VolumeType=gp3,DeleteOnTermination=true}",
+            "DeviceName=/dev/sdf,Ebs={VolumeSize=30,VolumeType=gp3,DeleteOnTermination=true}",
+            "DeviceName=/dev/sdg,Ebs={SnapshotId=snap-0123456789abcdef0,VolumeType=gp3,DeleteOnTermination=true}",
+        ])
+        self.assertNotIn("--instance-market-options", command)
+        spot = aws_ci.launch_command(**base, spot=True)
+        self.assertEqual(spot[spot.index("--instance-market-options") + 1], aws_ci.SPOT_MARKET_OPTIONS)
+        self.assertIn("InstanceInterruptionBehavior=terminate", aws_ci.SPOT_MARKET_OPTIONS)
+
+    def test_fixture_environment_is_exactly_what_the_forge_scenarios_read(self) -> None:
+        import aws_ci
+
+        forge_env = set(re.findall(
+            r'"(FORGE_E2E_[A-Z_]+)"',
+            (Path(__file__).resolve().parents[2] / "forge" / "test" / "e2e" / "host_fixture_test.go").read_text(encoding="utf-8"),
+        ))
+        host = aws_ci.PinnedHost(
+            capacity="gpu", region=CI_REGION, instance_type="g6.xlarge", availability_zone="eu-west-1a",
+            instance_id="i-0123456789abcdef0", ami_id="ami-0123456789abcdef0", public_ip="192.0.2.10",
+            workdir=Path("/tmp/w"), ssh_key=Path("/tmp/w/id_ed25519"), known_hosts=Path("/tmp/w/known_hosts"),
+            host_public="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDummyHostKeyMaterial iterabase-ci-gpu",
+            data_volume_id="vol-0123456789abcdef0", capacity_failures=[],
+        )
+        environment = aws_ci.fixture_environment(
+            host, data_device="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol0123456789abcdef0",
+            manifest={"cache_root": "/var/lib/iterabase-e2e/image-cache", "generation": "abc"},
+            model_device="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol0fedcba9876543210",
+            model_uuid="2eb63d10-3d60-418e-bced-cae2f3a26f08",
+        )
+        self.assertTrue(forge_env <= set(environment), forge_env - set(environment))
+        self.assertEqual(environment["FORGE_E2E_FIXTURE_SSH_USER"], "ubuntu")
+        # The pinned host key is exported without its comment: exactly one OpenSSH key.
+        self.assertEqual(len(environment["FORGE_E2E_FIXTURE_SSH_HOST_KEY"].split()), 2)
+        with self.assertRaises(AwsCiError):
+            aws_ci.fixture_environment(host, data_device="", manifest={"cache_root": "/c", "generation": "g"})
+
+    def test_model_cache_mount_rejects_malformed_uuids(self) -> None:
+        import aws_ci
+
+        script = aws_ci.model_cache_mount_script("2eb63d10-3d60-418e-bced-cae2f3a26f08")
+        self.assertIn("mount -o ro UUID=2eb63d10-3d60-418e-bced-cae2f3a26f08 /data/hf-cache", script)
+        for bad in ("", "x; rm -rf /", "2eb63d10"):
+            with self.subTest(uuid=bad), self.assertRaises(AwsCiError):
+                aws_ci.model_cache_mount_script(bad)
+
+    def test_model_cache_bake_proves_the_pinned_weight_hash(self) -> None:
+        import aws_ci
+
+        generation, authority = aws_ci.model_cache_generation()
+        self.assertRegex(generation, r"^[0-9a-f]{16}$")
+        script = aws_ci.model_cache_bake_script(authority, "/dev/disk/by-id/nvme-x")
+        self.assertIn(authority["sha256"], script)
+        self.assertIn(authority["revision"], script)
+        self.assertIn(f"huggingface_hub=={aws_ci.HUGGINGFACE_HUB_VERSION}", script)
+
+    def test_bake_seal_removes_builder_identity(self) -> None:
+        import aws_ci
+
+        self.assertIn("rm -f /etc/ssh/ssh_host_* /home/ubuntu/.ssh/authorized_keys", aws_ci.BAKE_SEAL_SCRIPT)
+        self.assertIn("cloud-init clean", aws_ci.BAKE_SEAL_SCRIPT)
 
 
 if __name__ == "__main__":
