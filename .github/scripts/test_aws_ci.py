@@ -868,7 +868,7 @@ class RepositoryContractTests(unittest.TestCase):
 
     def test_workflows_are_dispatch_only_and_use_the_repository_variables(self) -> None:
         smoke = (ROOT / ".github/workflows/aws-ci-smoke.yml").read_text(encoding="utf-8")
-        reaper = (ROOT / ".github/workflows/aws-ci-reaper.yml").read_text(encoding="utf-8")
+        reaper = (ROOT / ".github/workflows/reaper.yml").read_text(encoding="utf-8")
         self.assertIn("on:\n  workflow_dispatch:", smoke)
         self.assertNotIn("pull_request:", smoke)
         self.assertNotIn("\n  push:", smoke)
@@ -922,7 +922,7 @@ class RepositoryContractTests(unittest.TestCase):
             "L-1216C47A",
             "describe-instance-type-offerings",
             "aws-ci-smoke.yml",
-            "aws-ci-reaper.yml",
+            "reaper.yml",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, runbook)
@@ -995,6 +995,17 @@ class FixtureLaunchTests(unittest.TestCase):
         self.assertIn(authority["sha256"], script)
         self.assertIn(authority["revision"], script)
         self.assertIn(f"huggingface_hub=={aws_ci.HUGGINGFACE_HUB_VERSION}", script)
+
+    def test_prune_keeps_the_newest_two_generations(self) -> None:
+        import aws_ci
+
+        def image(image_id: str, generation: str, created: str) -> dict:
+            return {"ImageId": image_id, "CreationDate": created, "Tags": [{"Key": aws_ci.IMAGE_CACHE_TAG, "Value": generation}]}
+
+        images = [image("ami-a", "g1", "2026-10-01"), image("ami-b", "g2", "2026-10-03"),
+                  image("ami-c", "g3", "2026-10-05"), image("ami-d", "g3", "2026-10-04")]
+        self.assertEqual([item["ImageId"] for item in aws_ci.prune_plan(images, aws_ci.IMAGE_CACHE_TAG)], ["ami-a"])
+        self.assertEqual(aws_ci.prune_plan(images[:2], aws_ci.IMAGE_CACHE_TAG), [])
 
     def test_bake_seal_removes_builder_identity(self) -> None:
         import aws_ci

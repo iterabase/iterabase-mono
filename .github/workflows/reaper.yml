@@ -1,9 +1,11 @@
-# Scheduled reaper for the `iterabase-ci` fixture account (DES-HOR-591-01/02,
-# docs/runbooks/aws-ci.md). It terminates instances that carry the
-# `iterabase-ci=true` marker once their `iterabase-ci-deadline` has passed, or
-# once they exceed the maximum host age, in every allowed region. Instances without
-# the marker are only reported: the role cannot terminate them, and this workflow never tries.
-name: AWS CI host reaper
+# Scheduled reaper for the `iterabase-ci` account (DES-HOR-591-01/02, C1, C6,
+# C9, docs/runbooks/aws-ci.md). It terminates instances that carry the
+# `iterabase-ci=true` marker once their `iterabase-ci-deadline` has passed (fixtures
+# and previews; previews renew theirs on each deploy) or once they exceed the
+# maximum host age, in every allowed region, and keeps only the newest baked
+# fixture-AMI and model-cache generations. Instances without the marker are only
+# reported: the role cannot terminate them, and this workflow never tries.
+name: Reaper
 
 on:
   schedule:
@@ -28,7 +30,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: aws-ci-reaper
+  group: reaper
   cancel-in-progress: false
 
 jobs:
@@ -58,3 +60,25 @@ jobs:
             arguments+=(--control-instance-id "$CONTROL_INSTANCE_ID")
           fi
           python3 .github/scripts/aws_ci.py reap "${arguments[@]}"
+
+  images:
+    name: baked image retention
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-aws-ci
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-ci-retention-${{ github.run_id }}
+      - name: Keep the newest baked generations
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          arguments=(--region '${{ vars.AWS_CI_REGION }}')
+          if [ "$DRY_RUN" = "true" ]; then
+            arguments+=(--dry-run)
+          fi
+          python3 .github/scripts/aws_ci.py prune-images "${arguments[@]}"

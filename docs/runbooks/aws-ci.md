@@ -6,7 +6,7 @@ and GPU type allowlist, both recorded on the HOR-591 ticket, plus D1/D2 of
 `Areas/ho/Delivery/Fast Validation Pipeline — Engineering Plan.md` and its
 2026-10-05 amendment. The GitHub
 workflows this runbook sets up are `.github/workflows/aws-ci-smoke.yml` and
-`.github/workflows/aws-ci-reaper.yml`; the contract and its enforcement live in
+`.github/workflows/reaper.yml`; the contract and its enforcement live in
 `.github/scripts/aws_ci.py`.
 
 The `iterabase-ci` account is a disposable CI substrate created once by hand. It
@@ -778,9 +778,9 @@ pull request merges to `master`. Later dispatches may target a branch ref
     ```
 18. **Dispatch the reaper with the control instance** and record the run id:
     ```bash
-    gh workflow run aws-ci-reaper.yml --repo "$REPO" --ref master \
+    gh workflow run reaper.yml --repo "$REPO" --ref master \
       -f control_instance_id="$CONTROL_ID"
-    gh run list --repo "$REPO" --workflow aws-ci-reaper.yml --limit 3 \
+    gh run list --repo "$REPO" --workflow reaper.yml --limit 3 \
       --json databaseId,status,conclusion,createdAt
     gh run view --repo "$REPO" --log <run-id>
     ```
@@ -814,7 +814,7 @@ pull request merges to `master`. Later dispatches may target a branch ref
 ## Operations
 
 - **Reaper.** Runs hourly on `master` at minute 17. To inspect without acting:
-  `gh workflow run aws-ci-reaper.yml --ref master -f dry_run=true`. To shorten
+  `gh workflow run reaper.yml --ref master -f dry_run=true`. To shorten
   the maximum age for a bounded cleanup, dispatch with
   `-f max_age_minutes=<minutes>`; do not use it while a legitimate run is in
   flight.
