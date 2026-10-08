@@ -122,7 +122,7 @@ workflows="$repo_root/.github/workflows"
 [[ "$(grep -l 'contents: write' "$workflows"/*.yml)" == "$workflows/release.yml" ]] || \
   fail "only release.yml may write repository contents"
 mapfile -t package_writers < <(grep -l 'packages: write' "$workflows"/*.yml | sort)
-expected_package_writers=("$workflows/e2e.yml" "$workflows/full-validation.yml" "$workflows/release.yml")
+expected_package_writers=("$workflows/e2e.yml" "$workflows/full-validation.yml" "$workflows/reaper.yml" "$workflows/release.yml")
 [[ "${package_writers[*]}" == "${expected_package_writers[*]}" ]] || \
   fail "packages are written outside the build-once preview job and the release: ${package_writers[*]}"
 for legacy in release-candidate release-promote release-rehearsal release-rollback fixture-image-cache; do

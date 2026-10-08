@@ -82,3 +82,24 @@ jobs:
             arguments+=(--dry-run)
           fi
           python3 .github/scripts/aws_ci.py prune-images "${arguments[@]}"
+
+  packages:
+    name: preview package retention
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Prune preview package versions (C9)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          arguments=(--repository "$GITHUB_REPOSITORY")
+          if [ "$DRY_RUN" = "true" ]; then
+            arguments+=(--dry-run)
+          fi
+          python3 .github/scripts/preview_packages.py "${arguments[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
