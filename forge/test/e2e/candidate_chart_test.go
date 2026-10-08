@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	sharede2e "github.com/nunocgoncalves/iterabase-mono/testkit/e2e"
 )
 
 const (
@@ -63,7 +61,7 @@ func prepareCandidateImages(t *testing.T, ip, keyPath string) map[string]importe
 		tag := os.Getenv(input.prefix + "_IMAGE_TAG")
 		configDigest := os.Getenv(input.prefix + "_IMAGE_CONFIG_DIGEST")
 		if repository == "" || tag == "" || !isCanonicalSHA256Digest(configDigest) {
-			t.Fatalf("composed %s image has incomplete repository/tag/config-digest identity", input.name)
+			t.Fatalf("supplied %s image has incomplete repository/tag/config-digest identity", input.name)
 		}
 		reference := repository + ":" + tag
 		source, err := os.Open(archive)
@@ -107,13 +105,6 @@ func prepareCandidateImages(t *testing.T, ip, keyPath string) map[string]importe
 		}
 		runtimeDigests[input.prefix] = importedRuntimeIdentity{
 			ConfigDigest: configDigest, ManifestDigest: runtimeDigest,
-		}
-		artifact := map[string]string{
-			"CONTROL_PLANE": "control-plane-image", "HARNESS": "harness-image", "TOOL_RUNNER": "tool-runner-image",
-			"INFERENCE_GATEWAY": "inference-gateway-image", "FORGE_E2E_RUNTIME": "runtime-fixture-image",
-		}[input.prefix]
-		if err := sharede2e.RecordRuntimeImageIdentity(artifact, runtimeDigest); err != nil {
-			t.Fatalf("record imported %s runtime identity: %v", input.name, err)
 		}
 	}
 	return runtimeDigests
@@ -184,7 +175,7 @@ func TestImportedRuntimeImageIdentityKeepsConfigAndManifestDigestsDistinct(t *te
 		t.Fatalf("repoTag=%s runtime identity=%s labels=%v", repoTag, got, labels)
 	}
 	if _, _, err := importedRuntimeImageConfig(configData, "sha256:"+strings.Repeat("c", 64)); err == nil {
-		t.Fatal("mismatched composer config digest unexpectedly passed remote import verification")
+		t.Fatal("mismatched supplied config digest unexpectedly passed remote import verification")
 	}
 }
 

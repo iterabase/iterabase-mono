@@ -1,9 +1,6 @@
 package e2e
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,7 +43,6 @@ func TestSuiteValidatesSelectionMetadata(t *testing.T) {
 		metadata := ScenarioMetadata{
 			Name: "deployed", Description: "deployed", Tier: TierF2, FixtureModes: []FixtureMode{FixtureSource},
 			MakeTarget: "test-e2e", TimeoutMinutes: 10, RequiredArtifacts: []string{"control-plane-image", "forge-binary"},
-			Intents: []ExecutionIntent{IntentPR, IntentCandidate},
 		}
 		mutate(&metadata)
 		return Define(Scenario[struct{}]{Metadata: metadata, Stages: []Stage[struct{}]{{Name: "run", Run: func(*testing.T, struct{}) {}}}})
@@ -98,7 +94,9 @@ func TestOptionalStageRunsOnlyWhenSelected(t *testing.T) {
 					{Name: "driver-upgrade", DependsOn: []string{"serve"}, Optional: true, Run: func(*testing.T, struct{}) { ran = true }},
 				},
 			}
-			runScenario(t, scenario, scenarioExecution{})
+			// Required execution still passes: an unselected optional stage is
+			// recorded not-selected, which is complete rather than skipped.
+			runScenario(t, scenario, scenarioExecution{required: true})
 			if want := selected != ""; ran != want {
 				t.Fatalf("optional stage ran=%v with %s=%q", ran, OptionalStagesEnv, selected)
 			}
@@ -152,37 +150,11 @@ func TestRequiredSkipIsIncompleteAndStillRunsIndependentWorkAndCleanup(t *testin
 		return
 	}
 	directory := t.TempDir()
-	plan := filepath.Join(directory, "plan.json")
-	if err := os.WriteFile(plan, []byte("{}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	planData, err := os.ReadFile(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	planDigest := sha256.Sum256(planData)
-	bundle := RuntimeBundle{
-		SchemaVersion: 1, Intent: IntentPR, SourceSHA: strings.Repeat("a", 40),
-		PlanSHA256: hex.EncodeToString(planDigest[:]), CatalogueSHA256: strings.Repeat("b", 64),
-	}
-	bundleData, err := json.Marshal(bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundlePath := filepath.Join(directory, "bundle.json")
-	if err := os.WriteFile(bundlePath, append(bundleData, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	resultPath := filepath.Join(directory, "result.json")
 	command := exec.Command(os.Args[0], "-test.run=^TestRequiredSkipIsIncompleteAndStillRunsIndependentWorkAndCleanup$")
 	command.Env = append(os.Environ(),
 		"ITERABASE_E2E_SKIP_HELPER=1",
 		"ITERABASE_E2E_HELPER_DIR="+directory,
 		RequiredEnv+"=true",
-		RuntimeBundleEnv+"="+bundlePath,
-		ExecutionPlanEnv+"="+plan,
-		ScenarioIDEnv+"=helper/lifecycle",
-		ResultOutputEnv+"="+resultPath,
 	)
 	output, err := command.CombinedOutput()
 	if err == nil {
@@ -196,16 +168,8 @@ func TestRequiredSkipIsIncompleteAndStillRunsIndependentWorkAndCleanup(t *testin
 	if _, err := os.Stat(filepath.Join(directory, "blocked")); !os.IsNotExist(err) {
 		t.Fatalf("blocked stage ran: %v", err)
 	}
-	var result ScenarioResult
-	data, err := os.ReadFile(resultPath)
-	if err != nil {
-		t.Fatalf("required result missing: %v\n%s", err, output)
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != "incomplete" || len(result.Stages) != 3 || result.Stages[0].Status != string(stageSkipped) || result.Stages[1].Status != string(stageBlocked) || result.Stages[2].Status != string(stagePassed) {
-		t.Fatalf("required skip result = %+v", result)
+	if !strings.Contains(string(output), "required scenario has skipped, blocked, or not-run stages") {
+		t.Fatalf("required forced skip did not fail as incomplete:\n%s", output)
 	}
 }
 

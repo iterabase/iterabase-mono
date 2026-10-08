@@ -133,7 +133,7 @@ spec:
 
 func installExecutionPlatformStage(t *testing.T, state *deployedState) {
 	t.Helper()
-	// The shared composer materializes every selected or baseline image locally.
+	// CI supplies every image as an exact archive imported before install.
 	pullPolicy := "Never"
 	values := map[string]any{
 		"global":         map[string]any{"internalTLS": map[string]any{"enabled": true}},

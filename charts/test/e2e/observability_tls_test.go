@@ -31,7 +31,6 @@ func observabilityTLSScenario() sharede2e.Definition {
 			"Installs the internal-TLS observability composition on the ordered internal CA and proves a single adopted root authority whose issued stack, datastore, and control-plane leaves chain to the mounted root; verified HTTPS for the stack, exporters, self-monitors, Grafana datasources/sidecars, Loki gateway, Promtail, and Alertmanager; distinct verified control-plane edge/backend TLS; gateway dependency readiness; rejected plaintext Redis/PostgreSQL transport; and root-key stability across a reconcile.",
 			"test-e2e-observability-tls", 50,
 			[]string{"HOR-371", "HOR-408", "HOR-414", "HOR-418", "HOR-420", "HOR-416", "HOR-475", "HOR-507", "HOR-528", "HOR-545", "HOR-590", "DES-HOR-545-01"},
-			[]string{"control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"},
 			append(substrateRenders("opo1", "values-tls.yaml"), observabilityCandidateValues(observabilityTLSPlatform, true, true).render()),
 		),
 		NewState: newChartState,

@@ -1,56 +1,48 @@
 # Shared E2E execution contract
 
-`testkit/e2e` owns the typed suite/stage runner, compiled catalogue, explicit
-fixture records, runtime-bundle identity, and strict result schema. Product,
-chart, browser, and Forge assertions remain in their owner modules.
+`testkit/e2e` owns the typed suite/stage runner, compiled catalogue, and explicit
+source fixture record. Product, chart, browser, and Forge assertions remain in
+their owner modules.
 
 ## Compiled metadata
 
-Every runnable F2/F3 scenario declares artifact requirements; PR and candidate
-routes; source/candidate fixture support; owner Make target; timeout;
-release targets; mandatory capacity where applicable; and its stage DAG.
-`make e2e-catalogue` compiles the real owner `TestE2E` registrations. A missing
-route, artifact, target, fixture mode, timeout, or stage fails catalogue
-validation.
+Every runnable F2/F3 scenario declares its required artifacts, the `source`
+fixture mode, owner Make target, timeout, mandatory capacity where applicable,
+and its stage DAG. `make e2e-catalogue` compiles the real owner `TestE2E`
+registrations. A missing artifact, target, fixture mode, timeout, or stage fails
+catalogue validation.
 
 ## Required execution
 
-Required CI sets:
+CI runs one scenario per job and judges it by the job result. It sets:
 
-- `ITERABASE_E2E_PLAN`
-- `ITERABASE_E2E_RUNTIME_BUNDLE`
-- `ITERABASE_E2E_SCENARIO_ID`
-- `ITERABASE_E2E_RESULT`
+- `ITERABASE_E2E_FIXTURE_MODE=source`, `ITERABASE_E2E_SOURCE_SHA` (full 40-hex)
+  and `ITERABASE_E2E_SOURCE_DIRTY=false`
 - `ITERABASE_E2E_REQUIRED=true`
+- `ITERABASE_E2E_OPTIONAL_STAGES`, the comma-separated optional stages the
+  affected selector chose (may be empty)
 
-The runtime bundle must bind the exact source, plan and catalogue hashes, and the
-scenario's exact artifact set. Selected temporary/candidate artifacts carry the
-planned source SHA and recipe hash. Published baselines carry the one pinned
-complete snapshot hash plus immutable reference, OCI digest and/or archive
-identity and cannot claim selected-source custody. Digest-qualified published baselines are pulled, inspected, and saved
-by their exact reference without looking up a mutable daemon tag. Unqualified
-selected-candidate aliases are pulled and inspected as aliases to prove their
-planned digest binding, then saved by the resulting exact reference. The
-composer binds the planned runtime tag into the saved archive metadata without
-materializing it in the daemon. Every image artifact resolves to this
-archive/reference pair. F2 scenarios
-with image requirements must declare `create-kind` followed by
-`import-runtime-images`; every later stage depends transitively on that import.
-The shared Kind helper restores the downloaded archive and transports the exact
+Owner suites additionally receive the exact source-built artifacts: for each
+required image prefix `<P>_IMAGE_{REPO,TAG,DIGEST,CONFIG_DIGEST,SOURCE_SHA}` and
+a `docker save` archive of `repo:tag`, plus the dependency-built platform chart
+directory. F2 scenarios with image requirements declare `create-kind` followed
+by `import-runtime-images`; every later stage depends transitively on that
+import. The shared Kind helper restores the archive and transports the exact
 reference into the created nodes, so pre-cluster runner-daemon state cannot
 silently satisfy an install. It verifies the archive's config digest and returns
 the imported single-platform manifest digest. Owners then prove that workloads
-requested the composer reference and bind it to the immutable identity exposed
-by that CRI. Kind Pod status reports the imported manifest digest; K3s Pod status
-reports the already-verified config digest, so Forge also proves the imported
-tag-to-manifest mapping separately. Registry/index, config, and runtime-manifest
+requested the supplied reference, that its revision label matches the source
+SHA, and bind it to the immutable identity exposed by that CRI. Kind Pod status
+reports the imported manifest digest; K3s Pod status reports the
+already-verified config digest, so Forge also proves the imported
+tag-to-manifest mapping separately. Registry, config, and runtime-manifest
 digests remain distinct identities rather than being compared as if they were
 interchangeable.
 
 Kind scenarios that create an `AgentPool` use the shared storage helper before
 platform data claims or workers. It removes Kind's local-path/default fallback,
 prepares a real loop-backed thick `iterabase-data` VG in the one privileged node,
-installs the exact composed `lvm-storage-substrate` with the real
+installs the exact source `lvm-storage-substrate` with the real
 `/var/lib/kubelet` registration path used by both Kind and supported K3s, and
 waits for exact OpenEBS CRD/controller/node/CSINode-topology/VG readiness. It
 verifies exactly the non-default,
@@ -60,27 +52,14 @@ grow-only-expandable, thick XFS/RWO `iterabase-lvm-xfs` and
 
 The runner records exactly one terminal status for every declared stage. Failed
 or skipped prerequisites block only dependents, so independent work,
-diagnostics, and cleanup continue. In required execution any direct skip,
-blocked/not-run stage, missing result, or incomplete artifact identity fails the
-scenario and aggregate.
-
-The result record binds scenario status, source/plan/catalogue/runtime/stage-graph
-hashes, fixture mode, artifact identities, and every stage terminal status. F3
-results additionally bind the permanent fixture capacity, pinned host-key hash,
-configured data-storage by-id device, and pre/post-cleanup boot IDs. GPU results
-also bind the separate model-cache by-id device/mount/UUID plus the
-repository-pinned public model revision and content hash; that device may not
-alias the Forge data-storage device. Each retained scenario artifact includes
-the exact composer runtime bundle and post-import runtime-image observation map. The
-workflow aggregate verifies the bundle hash, reconciles every plan-known and
-result identity with that bundle, checks each observed runtime digest against
-its map, and reconciles the complete result-artifact set against the generated
-plan.
+diagnostics, and cleanup continue. With `ITERABASE_E2E_REQUIRED=true` any direct
+skip or blocked/not-run stage fails the scenario, so mandatory CPU/GPU capacity
+cannot pass by skipping. An optional stage that `ITERABASE_E2E_OPTIONAL_STAGES`
+does not name is recorded `not-selected`, which is complete rather than skipped.
 
 ## Validation
 
 ```bash
 make testkit-test
-python3 .github/scripts/test_e2e.py
-python3 .github/scripts/e2e.py validate-contract
+make e2e-catalogue
 ```

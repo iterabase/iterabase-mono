@@ -161,8 +161,8 @@ func newDeployedState(t *testing.T) *deployedState {
 func (state *deployedState) resolveRuntime(t *testing.T) {
 	t.Helper()
 	mode := sharede2e.FixtureMode(os.Getenv("ITERABASE_E2E_FIXTURE_MODE"))
-	if mode != sharede2e.FixtureSource && mode != sharede2e.FixtureCandidate {
-		t.Fatalf("control-plane deployed scenarios support source and candidate fixtures, got %q", mode)
+	if mode != sharede2e.FixtureSource {
+		t.Fatalf("control-plane deployed scenarios support the source fixture, got %q", mode)
 	}
 	controlImage := runtimeImage(t, "control-plane", "CONTROL_PLANE", true)
 	state.imageRepo = controlImage.repository
@@ -176,11 +176,11 @@ func (state *deployedState) resolveRuntime(t *testing.T) {
 	state.runtimeImage = runtimeImage(t, "runtime-fixture", "FORGE_E2E_RUNTIME", false)
 	platform := os.Getenv("ITERABASE_PLATFORM_LOCAL_CHART")
 	if platform == "" {
-		t.Fatal("composed runtime requires ITERABASE_PLATFORM_LOCAL_CHART")
+		t.Fatal("source runtime requires ITERABASE_PLATFORM_LOCAL_CHART")
 	}
 	platform, err := filepath.Abs(platform)
 	if err != nil {
-		t.Fatalf("resolve composed platform chart: %v", err)
+		t.Fatalf("resolve source platform chart: %v", err)
 	}
 	state.platform = kube.Chart{Mode: mode, LocalPath: platform}
 	state.substrate = kube.Chart{Mode: mode, LocalPath: filepath.Join(filepath.Dir(platform), "cert-manager-substrate")}
@@ -207,7 +207,7 @@ func runtimeImage(t *testing.T, name, prefix string, required bool) deployedImag
 	if image.repository == "" || image.tag == "" || image.archive == "" ||
 		!regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(image.digest) ||
 		!regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(image.configDigest) {
-		t.Fatalf("composed runtime requires exact %s image repository/tag/artifact-digest/config-digest/archive", prefix)
+		t.Fatalf("source runtime requires exact %s image repository/tag/artifact-digest/config-digest/archive", prefix)
 	}
 	return image
 }
@@ -251,17 +251,10 @@ func loadLocalImage(t *testing.T, state *deployedState, image *deployedImage) {
 	t.Helper()
 	identity, err := state.cluster.ImportImageArchive(state.ctx, image.archive, image.reference(), image.configDigest)
 	if err != nil {
-		t.Fatalf("import composed %s image archive into Kind: %v", image.name, err)
+		t.Fatalf("import supplied %s image archive into Kind: %v", image.name, err)
 	}
 	if image.sourceSHA != "" && identity.Labels["org.opencontainers.image.revision"] != image.sourceSHA {
 		t.Fatalf("Kind %s image revision label=%q want=%q", image.name, identity.Labels["org.opencontainers.image.revision"], image.sourceSHA)
-	}
-	artifact := map[string]string{
-		"control-plane": "control-plane-image", "harness": "harness-image", "tool-runner": "tool-runner-image",
-		"inference-gateway": "inference-gateway-image", "runtime-fixture": "runtime-fixture-image",
-	}[image.name]
-	if err := sharede2e.RecordRuntimeImageIdentity(artifact, identity.RuntimeDigest); err != nil {
-		t.Fatalf("record Kind %s runtime image identity: %v", image.name, err)
 	}
 	image.digest = identity.RuntimeDigest
 }
@@ -279,8 +272,8 @@ func installCertificateSubstrateStage(t *testing.T, state *deployedState) {
 
 func installControlPlanePlatformStage(t *testing.T, state *deployedState) {
 	t.Helper()
-	// The shared composer materializes every selected or baseline image locally;
-	// owner scenarios never build or pull mode-specific bytes.
+	// CI supplies every image as an exact archive imported before install;
+	// owner scenarios never build or pull images.
 	pullPolicy := "Never"
 	values := map[string]any{
 		"global":            map[string]any{"internalTLS": map[string]any{"enabled": true}},

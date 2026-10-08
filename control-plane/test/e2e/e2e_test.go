@@ -25,20 +25,17 @@ func TestE2E(t *testing.T) {
 func deployedMetadata(name, description, makeTarget string, timeout int, references []string) sharede2e.ScenarioMetadata {
 	return sharede2e.ScenarioMetadata{
 		Name: name, Description: description, Tier: sharede2e.TierF2,
-		References:     references,
-		ReleaseTargets: []string{"control-plane", "control-plane-chart", "iterabase-platform-chart"},
+		References: references,
 		RequiredArtifacts: []string{
 			"control-plane-image", "control-plane-chart", "iterabase-platform-chart", "cert-manager-substrate-chart", "lvm-storage-substrate-chart",
 		},
-		Intents:      []sharede2e.ExecutionIntent{sharede2e.IntentPR, sharede2e.IntentCandidate},
-		FixtureModes: []sharede2e.FixtureMode{sharede2e.FixtureSource, sharede2e.FixtureCandidate},
+		FixtureModes: []sharede2e.FixtureMode{sharede2e.FixtureSource},
 		MakeTarget:   makeTarget, TimeoutMinutes: timeout,
 	}
 }
 
 func deployedExecutionMetadata(name, description, makeTarget string, timeout int, references []string) sharede2e.ScenarioMetadata {
 	metadata := deployedMetadata(name, description, makeTarget, timeout, references)
-	metadata.ReleaseTargets = []string{"control-plane", "inference-gateway", "control-plane-chart", "inference-gateway-chart", "iterabase-platform-chart"}
 	metadata.RequiredArtifacts = append(metadata.RequiredArtifacts,
 		"harness-image", "tool-runner-image", "inference-gateway-image", "inference-gateway-chart", "runtime-fixture-image")
 	return metadata
@@ -121,7 +118,7 @@ func hermeticExampleScenario() sharede2e.Definition {
 		Metadata: sharede2e.ScenarioMetadata{
 			Name: "hermetic-example", Description: "Proves the control-plane suite composes typed dependent stages without infrastructure.",
 			Tier: sharede2e.TierF0, References: []string{"HOR-476"},
-			FixtureModes: []sharede2e.FixtureMode{sharede2e.FixtureSource, sharede2e.FixtureCandidate, sharede2e.FixturePublished},
+			FixtureModes: []sharede2e.FixtureMode{sharede2e.FixtureSource},
 		},
 		NewState: func(*testing.T) *exampleState { return &exampleState{} },
 		Stages: []sharede2e.Stage[*exampleState]{

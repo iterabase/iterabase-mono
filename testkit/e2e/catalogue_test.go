@@ -9,7 +9,7 @@ import (
 func TestCatalogueSelectionIsDeterministic(t *testing.T) {
 	t.Parallel()
 	catalogue := fixtureCatalogue()
-	selected := catalogue.Select(Selection{Tiers: []Tier{TierF2}, ReleaseTargets: []string{"control-plane"}})
+	selected := catalogue.Select(Selection{Tiers: []Tier{TierF2}, References: []string{"HOR-478", "HOR-475"}})
 	ids := make([]string, 0, len(selected))
 	for _, item := range selected {
 		ids = append(ids, item.Scenario.ID)
@@ -44,7 +44,7 @@ func fixtureCatalogue() Catalogue {
 			Scenarios: []CatalogueScenario{{
 				ID: "control-plane/identity",
 				Metadata: ScenarioMetadata{Name: "identity", Description: "identity", Tier: TierF2,
-					References: []string{"HOR-478"}, ReleaseTargets: []string{"control-plane"}, FixtureModes: []FixtureMode{FixtureSource, FixtureCandidate}},
+					References: []string{"HOR-478"}, RequiredArtifacts: []string{"control-plane-image"}, FixtureModes: []FixtureMode{FixtureSource}},
 				Stages: []StageMetadata{{Name: "install"}, {Name: "assert", DependsOn: []string{"install"}}},
 			}},
 		},
@@ -53,7 +53,7 @@ func fixtureCatalogue() Catalogue {
 			Scenarios: []CatalogueScenario{{
 				ID: "charts/install",
 				Metadata: ScenarioMetadata{Name: "install", Description: "install", Tier: TierF2,
-					References: []string{"HOR-475"}, ReleaseTargets: []string{"control-plane"}, FixtureModes: []FixtureMode{FixtureSource, FixturePublished}},
+					References: []string{"HOR-475"}, RequiredArtifacts: []string{"iterabase-platform-chart"}, FixtureModes: []FixtureMode{FixtureSource}},
 				Stages: []StageMetadata{{Name: "cluster"}},
 			}},
 		},

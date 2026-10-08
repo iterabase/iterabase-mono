@@ -140,51 +140,20 @@ func newChartState(t *testing.T) *chartState {
 func resolveCharts(t *testing.T, _ string) (kube.Chart, kube.Chart, kube.Chart) {
 	t.Helper()
 	mode := sharede2e.FixtureMode(os.Getenv("ITERABASE_E2E_FIXTURE_MODE"))
-	switch mode {
-	case sharede2e.FixtureSource, sharede2e.FixtureCandidate:
-		platform := os.Getenv("ITERABASE_PLATFORM_LOCAL_CHART")
-		if platform == "" {
-			t.Fatal("composed runtime requires ITERABASE_PLATFORM_LOCAL_CHART")
-		}
-		platform, err := filepath.Abs(platform)
-		if err != nil {
-			t.Fatalf("resolve composed platform chart: %v", err)
-		}
-		substrate := filepath.Join(filepath.Dir(platform), "cert-manager-substrate")
-		lvmSubstrate := filepath.Join(filepath.Dir(platform), "lvm-storage-substrate")
-		return kube.Chart{Mode: mode, LocalPath: platform}, kube.Chart{Mode: mode, LocalPath: substrate}, kube.Chart{Mode: mode, LocalPath: lvmSubstrate}
-	case sharede2e.FixturePublished:
-		t.Fatal("current chart scenarios do not advertise published mode until the same-version LVM storage companion is published")
-		return kube.Chart{}, kube.Chart{}, kube.Chart{}
-	default:
+	if mode != sharede2e.FixtureSource {
 		t.Fatalf("unsupported charts fixture mode %q", mode)
-		return kube.Chart{}, kube.Chart{}, kube.Chart{}
 	}
-}
-
-func publishedPlatformVersion(t *testing.T) string {
-	t.Helper()
-	path := os.Getenv("ITERABASE_E2E_PUBLISHED_FIXTURE")
-	data, err := os.ReadFile(path)
+	platform := os.Getenv("ITERABASE_PLATFORM_LOCAL_CHART")
+	if platform == "" {
+		t.Fatal("source runtime requires ITERABASE_PLATFORM_LOCAL_CHART")
+	}
+	platform, err := filepath.Abs(platform)
 	if err != nil {
-		t.Fatalf("read published fixture: %v", err)
+		t.Fatalf("resolve source platform chart: %v", err)
 	}
-	var fixture sharede2e.Fixture
-	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatalf("decode published fixture: %v", err)
-	}
-	for _, input := range fixture.Inputs {
-		if input.Name != "iterabase-platform" {
-			continue
-		}
-		separator := strings.LastIndexByte(input.Reference, ':')
-		if separator < 0 || separator == len(input.Reference)-1 {
-			t.Fatalf("published platform reference has no version: %q", input.Reference)
-		}
-		return input.Reference[separator+1:]
-	}
-	t.Fatal("published fixture has no iterabase-platform input")
-	return ""
+	substrate := filepath.Join(filepath.Dir(platform), "cert-manager-substrate")
+	lvmSubstrate := filepath.Join(filepath.Dir(platform), "lvm-storage-substrate")
+	return kube.Chart{Mode: mode, LocalPath: platform}, kube.Chart{Mode: mode, LocalPath: substrate}, kube.Chart{Mode: mode, LocalPath: lvmSubstrate}
 }
 
 func createKindStage(t *testing.T, state *chartState) {
@@ -207,15 +176,14 @@ func importRuntimeImagesStage(t *testing.T, state *chartState) {
 	t.Helper()
 	images := []struct {
 		name       string
-		artifact   string
 		prefix     string
 		archiveEnv string
 	}{
-		{name: "control-plane", artifact: "control-plane-image", prefix: "CONTROL_PLANE", archiveEnv: "FORGE_E2E_CONTROL_PLANE_IMAGE_ARCHIVE"},
-		{name: "inference-gateway", artifact: "inference-gateway-image", prefix: "INFERENCE_GATEWAY", archiveEnv: "FORGE_E2E_INFERENCE_IMAGE_ARCHIVE"},
-		{name: "harness", artifact: "harness-image", prefix: "HARNESS", archiveEnv: "FORGE_E2E_HARNESS_IMAGE_ARCHIVE"},
-		{name: "tool-runner", artifact: "tool-runner-image", prefix: "TOOL_RUNNER", archiveEnv: "FORGE_E2E_TOOL_RUNNER_IMAGE_ARCHIVE"},
-		{name: "runtime-fixture", artifact: "runtime-fixture-image", prefix: "FORGE_E2E_RUNTIME", archiveEnv: "FORGE_E2E_RUNTIME_IMAGE_ARCHIVE"},
+		{name: "control-plane", prefix: "CONTROL_PLANE", archiveEnv: "FORGE_E2E_CONTROL_PLANE_IMAGE_ARCHIVE"},
+		{name: "inference-gateway", prefix: "INFERENCE_GATEWAY", archiveEnv: "FORGE_E2E_INFERENCE_IMAGE_ARCHIVE"},
+		{name: "harness", prefix: "HARNESS", archiveEnv: "FORGE_E2E_HARNESS_IMAGE_ARCHIVE"},
+		{name: "tool-runner", prefix: "TOOL_RUNNER", archiveEnv: "FORGE_E2E_TOOL_RUNNER_IMAGE_ARCHIVE"},
+		{name: "runtime-fixture", prefix: "FORGE_E2E_RUNTIME", archiveEnv: "FORGE_E2E_RUNTIME_IMAGE_ARCHIVE"},
 	}
 	imported := 0
 	for _, image := range images {
@@ -230,25 +198,22 @@ func importRuntimeImagesStage(t *testing.T, state *chartState) {
 		if repository == "" || tag == "" || archive == "" ||
 			!regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(digest) ||
 			!regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(configDigest) {
-			t.Fatalf("composed %s runtime image has incomplete repository/tag/artifact-digest/config-digest/archive identity", image.name)
+			t.Fatalf("supplied %s runtime image has incomplete repository/tag/artifact-digest/config-digest/archive identity", image.name)
 		}
 		reference := repository + ":" + tag
 		identity, err := state.cluster.ImportImageArchive(state.ctx, archive, reference, configDigest)
 		if err != nil {
-			t.Fatalf("import composed %s image before chart install: %v", image.name, err)
+			t.Fatalf("import supplied %s image before chart install: %v", image.name, err)
 		}
 		if sourceSHA := os.Getenv(image.prefix + "_IMAGE_SOURCE_SHA"); sourceSHA != "" &&
 			identity.Labels["org.opencontainers.image.revision"] != sourceSHA {
 			t.Fatalf("imported %s image revision label=%q want=%q", image.name, identity.Labels["org.opencontainers.image.revision"], sourceSHA)
 		}
 		state.runtimeImageDigests[image.prefix] = identity.RuntimeDigest
-		if err := sharede2e.RecordRuntimeImageIdentity(image.artifact, identity.RuntimeDigest); err != nil {
-			t.Fatalf("record imported %s runtime identity: %v", image.name, err)
-		}
 		imported++
 	}
 	if imported == 0 && os.Getenv(sharede2e.RequiredEnv) == "true" {
-		t.Fatal("required composed chart runtime has no image archives to import")
+		t.Fatal("required chart runtime has no image archives to import")
 	}
 }
 
@@ -442,13 +407,13 @@ func runtimeImageValues(t *testing.T) map[string]any {
 
 func applyRuntimeImages(t *testing.T, values map[string]any) {
 	t.Helper()
-	// Every workflow mode consumes the same composer-produced image identities;
-	// chart stages never substitute owner-local or stale published fixture bytes.
+	// Chart stages install only the CI-supplied source-built image identities;
+	// they never substitute owner-local or published image bytes.
 	applyCandidateImages(values)
 	if os.Getenv(sharede2e.RequiredEnv) == "true" {
 		for _, prefix := range []string{"CONTROL_PLANE", "INFERENCE_GATEWAY"} {
 			if os.Getenv(prefix+"_IMAGE_REPO") == "" || os.Getenv(prefix+"_IMAGE_TAG") == "" {
-				t.Fatalf("composed runtime is missing %s image identity", prefix)
+				t.Fatalf("source runtime is missing %s image identity", prefix)
 			}
 		}
 	}
@@ -807,10 +772,7 @@ func (state *chartState) adoptMetalLBHookObjects(t *testing.T) {
 }
 
 func helmChartArgs(chart kube.Chart) []string {
-	if chart.LocalPath != "" {
-		return []string{chart.LocalPath}
-	}
-	return []string{chart.Reference, "--version", chart.Version}
+	return []string{chart.LocalPath}
 }
 
 func (state *chartState) waitForPods(t *testing.T, selector string, timeout time.Duration) {

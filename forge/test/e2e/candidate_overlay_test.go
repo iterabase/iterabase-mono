@@ -110,21 +110,17 @@ func prepareCandidateOverlay(t *testing.T, runID, ip, keyPath string) candidateO
 }
 
 func candidateOverlayValues(t *testing.T) string {
-	imageValues := func(repositoryEnv, tagEnv, digestEnv, prefix string) string {
+	imageValues := func(repositoryEnv, tagEnv, prefix string) string {
 		repository, tag := os.Getenv(repositoryEnv), os.Getenv(tagEnv)
 		if repository == "" || tag == "" {
 			return ""
 		}
-		registryDigestEnv := strings.TrimSuffix(digestEnv, "_DIGEST") + "_REGISTRY_DIGEST"
-		if registryDigest := os.Getenv(registryDigestEnv); registryDigest != "" && !isCanonicalSHA256Digest(registryDigest) {
-			t.Fatalf("registry image %s/%s has invalid selected registry digest %s", repositoryEnv, tagEnv, registryDigest)
-		}
 		return fmt.Sprintf("%srepository: %q\n%stag: %q\n%spullPolicy: Never\n", prefix, repository, prefix, tag, prefix)
 	}
 
-	controlPlane := imageValues("CONTROL_PLANE_IMAGE_REPO", "CONTROL_PLANE_IMAGE_TAG", controlPlaneDigestEnv, "    ")
-	toolRunner := imageValues("TOOL_RUNNER_IMAGE_REPO", "TOOL_RUNNER_IMAGE_TAG", toolRunnerDigestEnv, "      ")
-	inference := imageValues("INFERENCE_GATEWAY_IMAGE_REPO", "INFERENCE_GATEWAY_IMAGE_TAG", inferenceGatewayDigestEnv, "    ")
+	controlPlane := imageValues("CONTROL_PLANE_IMAGE_REPO", "CONTROL_PLANE_IMAGE_TAG", "    ")
+	toolRunner := imageValues("TOOL_RUNNER_IMAGE_REPO", "TOOL_RUNNER_IMAGE_TAG", "      ")
+	inference := imageValues("INFERENCE_GATEWAY_IMAGE_REPO", "INFERENCE_GATEWAY_IMAGE_TAG", "    ")
 
 	// Storage has no overlay-selectable backend, class, path, or access mode.
 	// Forge reconciles the fixed receipt-bound LVM storage substrate before Helm.
@@ -158,12 +154,9 @@ func candidateOverlayValues(t *testing.T) string {
 func TestCandidateOverlayValues(t *testing.T) {
 	t.Setenv(workspaceBehaviorEnv, "true")
 	digest := "sha256:" + strings.Repeat("a", 64)
-	t.Setenv("FORGE_E2E_RELEASE_CANDIDATE", "true")
-	t.Setenv("FORGE_E2E_CHART_REPOSITORY", "oci://ghcr.io/example/candidates/platform")
 	t.Setenv("CONTROL_PLANE_IMAGE_REPO", "ghcr.io/example/control-plane")
 	t.Setenv("CONTROL_PLANE_IMAGE_TAG", "candidate-run")
 	t.Setenv(controlPlaneDigestEnv, digest)
-	t.Setenv("CONTROL_PLANE_IMAGE_REGISTRY_DIGEST", digest)
 	t.Setenv("TOOL_RUNNER_IMAGE_REPO", "")
 	t.Setenv("TOOL_RUNNER_IMAGE_TAG", "")
 	t.Setenv(toolRunnerDigestEnv, "")
@@ -221,7 +214,7 @@ func TestCandidateOverlayValuesKeepWorkloadListenerScopedToWorkspaceScenario(t *
 	t.Setenv(inferenceGatewayDigestEnv, "")
 	values := candidateOverlayValues(t)
 	if strings.Contains(values, "workload:\n    enabled: true") {
-		t.Fatalf("non-workspace Forge scenarios must not widen the published migration fixture:\n%s", values)
+		t.Fatalf("non-workspace Forge scenarios must not enable the workload listener:\n%s", values)
 	}
 	if !strings.Contains(values, "inference-gateway:\n  image:") {
 		t.Fatalf("non-workspace fixture lost the exact inference image override:\n%s", values)
@@ -238,28 +231,15 @@ func TestCandidateOverlayValuesContainNoStorageBackendSelection(t *testing.T) {
 }
 
 func TestCandidateOverlayValuesEnableDispatchForRealWorkspaceBehavior(t *testing.T) {
-	for _, fixture := range []struct {
-		name             string
-		mode             string
-		releaseCandidate string
-	}{
-		{name: "source", mode: "source"},
-		{name: "published", mode: "published"},
-		{name: "release-candidate", mode: "source", releaseCandidate: "true"},
-	} {
-		t.Run(fixture.name, func(t *testing.T) {
-			t.Setenv(workspaceBehaviorEnv, "true")
-			t.Setenv("ITERABASE_E2E_FIXTURE_MODE", fixture.mode)
-			t.Setenv("FORGE_E2E_RELEASE_CANDIDATE", fixture.releaseCandidate)
-			t.Setenv(controlPlaneDigestEnv, "")
-			t.Setenv(toolRunnerDigestEnv, "")
-			t.Setenv(inferenceGatewayDigestEnv, "")
+	t.Setenv(workspaceBehaviorEnv, "true")
+	t.Setenv("ITERABASE_E2E_FIXTURE_MODE", "source")
+	t.Setenv(controlPlaneDigestEnv, "")
+	t.Setenv(toolRunnerDigestEnv, "")
+	t.Setenv(inferenceGatewayDigestEnv, "")
 
-			values := candidateOverlayValues(t)
-			if !strings.Contains(values, "control-plane:\n  dispatch:\n    enabled: true\n    defaultModel:\n      id: forge-workspace-model") {
-				t.Fatalf("%s machine fixture must enable dispatch for the exact-candidate real-workspace scenario:\n%s", fixture.name, values)
-			}
-		})
+	values := candidateOverlayValues(t)
+	if !strings.Contains(values, "control-plane:\n  dispatch:\n    enabled: true\n    defaultModel:\n      id: forge-workspace-model") {
+		t.Fatalf("source machine fixture must enable dispatch for the exact-source real-workspace scenario:\n%s", values)
 	}
 }
 
@@ -268,7 +248,6 @@ func TestCandidateOverlayCheckoutKeepsExactSourceCommit(t *testing.T) {
 	t.Setenv("CONTROL_PLANE_IMAGE_REPO", "ghcr.io/example/control-plane")
 	t.Setenv("CONTROL_PLANE_IMAGE_TAG", "candidate-run")
 	t.Setenv(controlPlaneDigestEnv, digest)
-	t.Setenv("CONTROL_PLANE_IMAGE_REGISTRY_DIGEST", digest)
 	t.Setenv(toolRunnerDigestEnv, "")
 	t.Setenv(inferenceGatewayDigestEnv, "")
 	plan := candidateOverlayPlanForEnvironment(t)

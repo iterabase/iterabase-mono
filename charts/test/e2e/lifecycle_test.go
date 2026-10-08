@@ -731,13 +731,7 @@ func currentChartVersion(t *testing.T, state *chartState, chart kube.Chart) stri
 	t.Helper()
 	// Keep the Helm input selection identical to installation rather than
 	// trusting a parallel version constant.
-	args := []string{"show", "chart"}
-	if chart.LocalPath != "" {
-		args = append(args, chart.LocalPath)
-	} else {
-		args = append(args, chart.Reference, "--version", chart.Version)
-	}
-	metadata := state.process(t, 60*time.Second, "helm", args...)
+	metadata := state.process(t, 60*time.Second, "helm", "show", "chart", chart.LocalPath)
 	for _, line := range strings.Split(metadata, "\n") {
 		if version, ok := strings.CutPrefix(line, "version:"); ok {
 			return strings.Trim(strings.TrimSpace(version), `"'`)

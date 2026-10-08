@@ -28,11 +28,10 @@ type Client struct {
 	Redactor   *redact.Redactor
 }
 
-// Chart is an explicit source, candidate, or published Helm input.
+// Chart is an explicit source Helm input: an exact local chart directory or
+// packaged archive.
 type Chart struct {
 	Mode      e2e.FixtureMode
-	Reference string
-	Version   string
 	LocalPath string
 }
 
@@ -108,11 +107,7 @@ func (client Client) HelmUpgrade(ctx context.Context, options HelmOptions) (stri
 	for _, key := range keys {
 		args = append(args, "--set-string", key+"="+options.Values[key])
 	}
-	if options.Chart.LocalPath != "" {
-		args = append(args, options.Chart.LocalPath)
-	} else {
-		args = append(args, options.Chart.Reference, "--version", options.Chart.Version)
-	}
+	args = append(args, options.Chart.LocalPath)
 	result, err := client.Executor.Run(ctx, process.Command{
 		Name: "helm", Args: args, Timeout: options.Timeout + 2*time.Minute,
 		OutputName: "helm-" + options.Release + ".log",
@@ -122,26 +117,17 @@ func (client Client) HelmUpgrade(ctx context.Context, options HelmOptions) (stri
 
 // Validate rejects floating chart selection and mismatched fixture shapes.
 func (chart Chart) Validate() error {
-	if strings.Contains(strings.ToLower(chart.Reference+chart.Version+chart.LocalPath), "latest") {
+	if strings.Contains(strings.ToLower(chart.LocalPath), "latest") {
 		return fmt.Errorf("helm chart input must not use latest")
 	}
-	switch chart.Mode {
-	case e2e.FixtureSource, e2e.FixtureCandidate:
-		if chart.LocalPath == "" {
-			return fmt.Errorf("%s Helm chart requires an exact local path", chart.Mode)
-		}
-		if !filepath.IsAbs(chart.LocalPath) {
-			return fmt.Errorf("helm chart local path must be absolute")
-		}
-	case e2e.FixturePublished:
-		if chart.Reference == "" || chart.Version == "" {
-			return fmt.Errorf("published Helm chart requires repository and exact version")
-		}
-		if chart.LocalPath != "" {
-			return fmt.Errorf("published Helm chart cannot silently use a local path")
-		}
-	default:
+	if chart.Mode != e2e.FixtureSource {
 		return fmt.Errorf("unsupported Helm fixture mode %q", chart.Mode)
+	}
+	if chart.LocalPath == "" {
+		return fmt.Errorf("%s Helm chart requires an exact local path", chart.Mode)
+	}
+	if !filepath.IsAbs(chart.LocalPath) {
+		return fmt.Errorf("helm chart local path must be absolute")
 	}
 	return nil
 }

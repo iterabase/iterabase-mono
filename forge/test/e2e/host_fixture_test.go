@@ -2,9 +2,7 @@ package e2e
 
 import (
 	"context"
-	"crypto/sha256"
 	_ "embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	sharede2e "github.com/nunocgoncalves/iterabase-mono/testkit/e2e"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -50,7 +47,6 @@ type hostFixture struct {
 	address           string
 	sshUser           string
 	sshKeyPath        string
-	sshHostKey        string
 	dataStorageDevice string
 	modelDevice       string
 	modelUUID         string
@@ -93,7 +89,7 @@ func requireHostFixture(t *testing.T, capacity string) *hostFixture {
 	}
 	fixture := &hostFixture{
 		capacity: capacity, address: values[hostFixtureAddressEnv], sshUser: values[hostFixtureSSHUserEnv],
-		sshKeyPath: values[hostFixtureSSHKeyPathEnv], sshHostKey: values[hostFixtureHostKeyEnv],
+		sshKeyPath:        values[hostFixtureSSHKeyPathEnv],
 		dataStorageDevice: values[hostFixtureDataStorageDeviceEnv],
 	}
 	if capacity == "gpu" {
@@ -123,7 +119,7 @@ func (fixture *hostFixture) installName() string {
 // prepare hands a freshly launched host to the scenario. Every run gets its own
 // EC2 instance (C1), so there is nothing to destroy or reboot: it waits for the
 // host baseline, proves the data device is blank and nothing is installed, and
-// records the host and model-cache evidence.
+// on GPU hosts verifies the pinned model-cache device, mount, UUID, and content.
 func (fixture *hostFixture) prepare(t *testing.T) error {
 	t.Helper()
 	client, err := waitForHostReady(context.Background(), fixture.address, fixture.sshKeyPath)
@@ -141,15 +137,8 @@ func (fixture *hostFixture) prepare(t *testing.T) error {
 	if err := fixture.assertFreshBaseline(client); err != nil {
 		return err
 	}
-	if err := fixture.recordEvidence("lifecycle", bootID, bootID, modelCacheAuthority{}); err != nil {
-		return err
-	}
 	if fixture.capacity == "gpu" {
-		authority, err := fixture.validateModelCache(client)
-		if err != nil {
-			return err
-		}
-		if err := fixture.recordEvidence("model-cache", bootID, bootID, authority); err != nil {
+		if err := fixture.validateModelCache(client); err != nil {
 			return err
 		}
 	}
@@ -415,10 +404,10 @@ func decodeModelCacheAuthority(data []byte) (modelCacheAuthority, error) {
 	return authority, nil
 }
 
-func (fixture *hostFixture) validateModelCache(client *ssh.Client) (modelCacheAuthority, error) {
+func (fixture *hostFixture) validateModelCache(client *ssh.Client) error {
 	authority, err := loadModelCacheAuthority()
 	if err != nil {
-		return authority, err
+		return err
 	}
 	weightPath := filepath.Join(hostFixtureModelMount, authority.WeightPath)
 	script := fmt.Sprintf(`
@@ -437,26 +426,9 @@ test "$(readlink -f -- "$weight_source")" = "$cache"
 test "$(sha256sum -- "$weight" | awk '{print $1}')" = %s
 `, candidateShellQuote(fixture.dataStorageDevice), candidateShellQuote(fixture.modelDevice), candidateShellQuote(hostFixtureModelMount), candidateShellQuote(fixture.modelUUID), candidateShellQuote(weightPath), candidateShellQuote(hostFixtureModelMount), candidateShellQuote(authority.SHA256))
 	if output, err := sshOutput(client, "sudo bash -ceu "+candidateShellQuote(script)); err != nil {
-		return authority, fmt.Errorf("GPU model-cache identity/revision/hash validation failed: %w\n%s", err, output)
+		return fmt.Errorf("GPU model-cache identity/revision/hash validation failed: %w\n%s", err, output)
 	}
-	return authority, nil
-}
-
-func (fixture *hostFixture) recordEvidence(name, before, after string, authority modelCacheAuthority) error {
-	hostKeyHash := sha256.Sum256([]byte(fixture.sshHostKey))
-	evidence := sharede2e.FixtureEvidence{
-		Name: name, Capacity: fixture.capacity, HostKeySHA256: hex.EncodeToString(hostKeyHash[:]),
-		DataStorageDevice: fixture.dataStorageDevice, BootIDBefore: before, BootIDAfter: after,
-	}
-	if name == "model-cache" {
-		evidence.ModelCacheDevice = fixture.modelDevice
-		evidence.ModelCacheMount = hostFixtureModelMount
-		evidence.ModelCacheUUID = fixture.modelUUID
-		evidence.ModelID = authority.ModelID
-		evidence.ModelRevision = authority.Revision
-		evidence.ModelContentSHA256 = authority.SHA256
-	}
-	return sharede2e.RecordFixtureEvidence(evidence)
+	return nil
 }
 
 func TestHostFixtureConsumerReleaseScriptIsValid(t *testing.T) {

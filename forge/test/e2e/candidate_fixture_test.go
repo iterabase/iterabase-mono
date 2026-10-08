@@ -37,10 +37,9 @@ type candidateContainerStatus struct {
 const candidateControlPlaneReadyTimeout = 10 * time.Minute
 
 // assertCandidateImageDigests verifies both sides of the unified runtime
-// contract. Pods request the exact composer reference and K3s CRI binds their
+// contract. Pods request the exact supplied reference and K3s CRI binds their
 // imageID to the config digest proven at import. The same import separately
-// binds that tag to its single-platform manifest digest, which remains the
-// runtime identity retained in scenario evidence.
+// binds that tag to its single-platform manifest digest.
 func assertCandidateImageDigests(t *testing.T, cluster *remotecluster.Cluster, namespace string, runtimeDigests map[string]importedRuntimeIdentity, digestEnvs ...string) {
 	t.Helper()
 	waitForCandidateControlPlaneReady(t, cluster, namespace, candidateControlPlaneReadyTimeout)

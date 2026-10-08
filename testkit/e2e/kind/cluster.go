@@ -112,7 +112,7 @@ func (cluster *Cluster) LoadImage(ctx context.Context, image string) error {
 	return err
 }
 
-// ImportedImageIdentity binds the composer archive identity to the immutable
+// ImportedImageIdentity binds the supplied archive identity to the immutable
 // manifest digest that CRI reports after Kind import.
 type ImportedImageIdentity struct {
 	ConfigDigest  string
@@ -120,7 +120,7 @@ type ImportedImageIdentity struct {
 	Labels        map[string]string
 }
 
-// ImportImageArchive restores one composer-resolved archive into the runner
+// ImportImageArchive restores one supplied image archive into the runner
 // daemon after cluster creation, transports that exact reference into every
 // Kind node, and proves that each node retained the expected image config. The
 // returned runtime digest is the immutable manifest identity CRI later reports

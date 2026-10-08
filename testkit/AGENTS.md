@@ -21,11 +21,11 @@ make e2e-catalogue-check
 
 - No automatic scenario/assertion retry or pass-on-retry behavior.
 - Every process and poll is bounded; observation errors fail immediately.
-- Fixture mode is explicit (`source`, `candidate`, or `published`) and floating `latest` is rejected.
+- Scenarios run in explicit `source` fixture mode against the exact commit's build-once artifacts (C3); floating `latest` is rejected.
 - Stage dependencies are acyclic and backward-declared; failed/skipped prerequisites block only their dependents.
 - Diagnostics and cleanup continue after failures.
 - Text evidence passes through shared redaction. Opaque evidence is rejected unless explicitly declared safe synthetic content.
 - The catalogue is emitted from compiled owner registrations; never add a parallel manual coverage mapping.
-- Release target selection remains a conservative union of compiled metadata. CPU/GPU capacity marked mandatory cannot pass by skipping.
+- Scenario selection is derived only from compiled metadata (`required_artifacts`, `selected_by`, `renders`, `smoke`) by `.github/scripts/affected.py` (C2, DES-HOR-590-02). A required run fails on any skipped, blocked, or not-run stage; an optional stage the selector did not choose is complete. CPU/GPU capacity marked mandatory cannot pass by skipping.
 
-Changes to these failure, fixture, security, ownership, or release-selection semantics are architectural and require explicit user approval.
+Changes to these failure, fixture, security, ownership, or selection semantics are architectural and require explicit user approval.

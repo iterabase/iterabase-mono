@@ -21,22 +21,11 @@ const (
 	TierP  Tier = "P"  // irreducibly production-only evidence
 )
 
-// FixtureMode identifies how runtime artifacts are supplied.
+// FixtureMode identifies how runtime artifacts are supplied. Source is the
+// only mode: runtime artifacts are built from the exact source SHA under test.
 type FixtureMode string
 
-const (
-	FixtureSource    FixtureMode = "source"
-	FixtureCandidate FixtureMode = "candidate"
-	FixturePublished FixtureMode = "published"
-)
-
-// ExecutionIntent identifies the workflow route that may select a scenario.
-type ExecutionIntent string
-
-const (
-	IntentPR        ExecutionIntent = "pr"
-	IntentCandidate ExecutionIntent = "candidate"
-)
+const FixtureSource FixtureMode = "source"
 
 // SuiteMetadata identifies one repository-owned TestE2E entrypoint.
 type SuiteMetadata struct {
@@ -47,19 +36,17 @@ type SuiteMetadata struct {
 
 // ScenarioMetadata is compiled with the scenario that it describes.
 type ScenarioMetadata struct {
-	Name              string            `json:"name"`
-	Description       string            `json:"description"`
-	Tier              Tier              `json:"tier"`
-	References        []string          `json:"references,omitempty"`
-	ReleaseTargets    []string          `json:"release_targets,omitempty"`
-	RequiredArtifacts []string          `json:"required_artifacts,omitempty"`
-	Intents           []ExecutionIntent `json:"intents,omitempty"`
-	FixtureModes      []FixtureMode     `json:"fixture_modes"`
-	MakeTarget        string            `json:"make_target,omitempty"`
-	TimeoutMinutes    int               `json:"timeout_minutes,omitempty"`
-	Capacity          string            `json:"capacity,omitempty"`
-	Mandatory         bool              `json:"mandatory_capacity,omitempty"`
-	ProductionOnly    bool              `json:"production_only,omitempty"`
+	Name              string        `json:"name"`
+	Description       string        `json:"description"`
+	Tier              Tier          `json:"tier"`
+	References        []string      `json:"references,omitempty"`
+	RequiredArtifacts []string      `json:"required_artifacts,omitempty"`
+	FixtureModes      []FixtureMode `json:"fixture_modes"`
+	MakeTarget        string        `json:"make_target,omitempty"`
+	TimeoutMinutes    int           `json:"timeout_minutes,omitempty"`
+	Capacity          string        `json:"capacity,omitempty"`
+	Mandatory         bool          `json:"mandatory_capacity,omitempty"`
+	ProductionOnly    bool          `json:"production_only,omitempty"`
 	// Smoke marks the one scenario per suite that CI-only changes run.
 	Smoke bool `json:"smoke,omitempty"`
 	// SelectedBy narrows which changed artifacts select this scenario on pull
@@ -177,7 +164,7 @@ func validateScenario(definition Definition) error {
 	fixtureModes := make(map[FixtureMode]struct{}, len(metadata.FixtureModes))
 	for _, mode := range metadata.FixtureModes {
 		switch mode {
-		case FixtureSource, FixtureCandidate, FixturePublished:
+		case FixtureSource:
 		default:
 			return fmt.Errorf("scenario %q has invalid fixture mode %q", metadata.Name, mode)
 		}
@@ -198,26 +185,6 @@ func validateScenario(definition Definition) error {
 		}
 		if len(metadata.RequiredArtifacts) == 0 {
 			return fmt.Errorf("runnable scenario %q has no artifact requirements", metadata.Name)
-		}
-		if len(metadata.Intents) == 0 {
-			return fmt.Errorf("runnable scenario %q has no workflow routing", metadata.Name)
-		}
-		intents := make(map[ExecutionIntent]struct{}, len(metadata.Intents))
-		for _, intent := range metadata.Intents {
-			switch intent {
-			case IntentPR, IntentCandidate:
-			default:
-				return fmt.Errorf("scenario %q has invalid execution intent %q", metadata.Name, intent)
-			}
-			if _, exists := intents[intent]; exists {
-				return fmt.Errorf("scenario %q repeats execution intent %q", metadata.Name, intent)
-			}
-			intents[intent] = struct{}{}
-		}
-		for _, required := range []ExecutionIntent{IntentPR, IntentCandidate} {
-			if _, exists := intents[required]; !exists {
-				return fmt.Errorf("runnable scenario %q has no %s routing", metadata.Name, required)
-			}
 		}
 		artifacts := make(map[string]struct{}, len(metadata.RequiredArtifacts))
 		for _, artifact := range metadata.RequiredArtifacts {
@@ -302,9 +269,7 @@ func validateHookList[S any](kind string, hooks []Hook[S]) error {
 
 func cloneScenarioMetadata(metadata ScenarioMetadata) ScenarioMetadata {
 	metadata.References = slices.Clone(metadata.References)
-	metadata.ReleaseTargets = slices.Clone(metadata.ReleaseTargets)
 	metadata.RequiredArtifacts = slices.Clone(metadata.RequiredArtifacts)
-	metadata.Intents = slices.Clone(metadata.Intents)
 	metadata.FixtureModes = slices.Clone(metadata.FixtureModes)
 	metadata.SelectedBy = slices.Clone(metadata.SelectedBy)
 	renders := make([]RenderInput, 0, len(metadata.Renders))

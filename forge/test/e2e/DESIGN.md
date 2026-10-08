@@ -6,15 +6,15 @@ and exact-artifact cutover: `DES-HOR-540-01` and `DES-HOR-540-02`, approved
 
 ## Goals
 
-- One compiled `TestE2E` entrypoint and one stage DAG per scenario in source and
-  candidate modes.
-- Exact composer-verified images, charts/companion, Forge binary, runtime
-  fixture, plan, and metadata; no owner-local build/load fallback.
+- One compiled `TestE2E` entrypoint and one stage DAG per scenario, run in the
+  `source` fixture mode.
+- Exact CI-supplied source-built images, chart archives, Forge binary, and
+  runtime fixture; no owner-local build/load fallback in required execution.
 - Real CPU/GPU substrate behavior without provider availability or provider API
   credentials in Actions.
 - A proven clean destroy/apply/test/destroy boundary on dedicated, reimageable
   fixtures.
-- Fail-closed fixture, artifact, stage, and result identities with no retry or
+- Fail-closed fixture, artifact, and stage identities with no retry or
   selected-capacity skip.
 
 ## Permanent fixture authority
@@ -105,25 +105,23 @@ Forge registers no chart-install-only Kind scenario. Product and chart behavior
 remains in control-plane/charts owner suites; Forge's deployed checks are
 bounded dependent smokes after Forge-owned substrate and handoff assertions.
 
-## Exact artifact and result contract
+## Exact artifact contract
 
-The one compiled planner selects PR and explicit candidate intent.
-`.github/scripts/e2e.py` builds affected temporary or immutable
-candidate artifacts once from the reviewed production recipes, composes one
-verified runtime bundle, and supplies the same scenario ID, Make target,
-timeout, and stage DAG in both modes.
+CI builds each affected image once from the exact source SHA, pushes it to the
+preview registry, and exports its repository, tag, registry digest, config
+digest, source SHA, and `docker save` archive, together with `FORGE_E2E_BINARY`
+and the `FORGE_E2E_{PLATFORM,SUBSTRATE,LVM_STORAGE}_CHART_ARCHIVE` packages of
+the source charts.
 
-The Forge stages transfer only composer-authorized bytes and separately verify
+The Forge stages transfer only those supplied bytes and separately verify
 requested references, archive config/source labels, imported K3s CRI config
-identity, and remote tag-to-manifest identity. A source-only build/load path,
-published substitution for selected targets, stale host byte, or missing/extra
-artifact is a failure.
+identity, and remote tag-to-manifest identity. A source-only build/load path in
+required execution, stale host byte, or missing artifact is a failure.
 
-Each result binds plan, catalogue, source, stage graph, runtime bundle, exact
-artifact identities, terminal stage statuses, fixture capacity, pinned host-key
-hash, data-storage device, and pre/post-cleanup boot IDs. GPU results additionally
-bind model-cache device/mount/UUID/model revision/hash. The aggregate requires
-exactly one result per planned scenario.
+With `ITERABASE_E2E_REQUIRED=true` the scenario's Go test result is its
+verdict: any skipped, blocked, or not-run mandatory stage fails it, so selected
+CPU/GPU capacity cannot pass by skipping. The GPU fixture additionally verifies
+the model-cache device, mount, UUID, and pinned model revision hash before use.
 
 ## Qualification and legacy removal
 
