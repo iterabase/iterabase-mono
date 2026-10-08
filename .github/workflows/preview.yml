@@ -1,0 +1,41 @@
+name: Preview teardown
+
+# A pull request's preview is destroyed when the pull request closes or merges
+# (C6); the reaper also removes any preview past its 72 h idle deadline.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  id-token: write
+  deployments: write
+
+concurrency:
+  group: preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  teardown:
+    name: teardown
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-aws-ci
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-preview-teardown-${{ github.run_id }}
+      - name: Terminate the preview host
+        run: python3 .github/scripts/aws_ci.py preview-down --region '${{ vars.AWS_CI_REGION }}' --name 'pr-${{ github.event.pull_request.number }}'
+      - name: Mark the preview deployments inactive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: pr-${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=$ENVIRONMENT&per_page=100" --jq '.[].id'); do
+            gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=inactive >/dev/null
+          done
