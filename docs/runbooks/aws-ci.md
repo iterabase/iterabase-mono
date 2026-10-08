@@ -18,7 +18,7 @@ workflow is the executable proof that the account is still correct.
 
 | Surface | Contract |
 | --- | --- |
-| Credentials | GitHub OIDC only, no static keys anywhere, no GitHub environment. Trust covers `aud=sts.amazonaws.com` and `sub=repo:nunocgoncalves@64640406/iterabase-mono@1330311216:*` — the immutable subject form GitHub issues for repositories created after 2026-07-15, which pins the owner and repository IDs so a rename or a recreated repository cannot inherit trust; fork pull requests cannot request OIDC tokens. |
+| Credentials | GitHub OIDC only, no static keys anywhere, no GitHub environment. Trust covers `aud=sts.amazonaws.com` and `sub=repo:iterabase@338844113/iterabase-mono@1330311216:*` — the immutable subject form GitHub issues for repositories created after 2026-07-15, which pins the owner and repository IDs so a rename or a recreated repository cannot inherit trust; fork pull requests cannot request OIDC tokens. |
 | Launch | `RunInstances` only for `m6i.xlarge` (CPU) and `g6.xlarge`, `g5.xlarge`, `g6.2xlarge`, `g5.2xlarge`, `g5.4xlarge` (GPU; all 24 GiB and at least sm_86), only from AMIs owned by the CI account, and only with no instance profile — each enforced twice, as an allow condition and as an explicit deny. The mandatory tags are required on the instance and volume resources of the launch statement itself and again at tag-on-create (`ec2:CreateTags`); `aws:RequestTag` is absent only from the plumbing resources' contexts (subnet, network interface, key pair), which is why the conditions are split per resource. |
 | Tags | `iterabase-ci=true` (marker, mandatory), `iterabase-ci-run=<github run id>` (mandatory), `iterabase-ci-scenario=<identity>` (mandatory), optional `iterabase-ci-deadline=<RFC3339 UTC>`, `Name=iterabase-ci-<run>-<scenario>`. The marker is the IAM condition key and the reaper's only selection criterion. |
 | Lifecycle | Terminate, volume, snapshot, and AMI actions are scoped to resources carrying `iterabase-ci=true`; tag-on-create is bound to the creating action. |
@@ -507,7 +507,7 @@ renderer is the exact committed version. Two equivalent ways to get there:
 export AWS_PAGER=""
 # Step 6 onwards runs as the member account's Identity Center admin session,
 # never as root: `aws sts get-caller-identity` must return the CI account ID.
-export REPO=nunocgoncalves/iterabase-mono
+export REPO=iterabase/iterabase-mono
 export VPC_ID=$(aws ec2 describe-vpcs --region eu-west-1 --filters Name=isDefault,Values=true \
   --query 'Vpcs[0].VpcId' --output text)
 export CI_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)

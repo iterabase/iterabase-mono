@@ -79,7 +79,7 @@ CANONICAL_OWNER = "099720109477"
 # GitHub issues immutable subject claims for repositories created after 2026-07-15,
 # so the OIDC sub claim pins these IDs: `repo:OWNER@OWNER_ID/REPO@REPO_ID:*`.
 # They are immutable, so a rename or a recreated repository cannot inherit trust.
-GITHUB_OWNER_ID = "64640406"
+GITHUB_OWNER_ID = "338844113"
 GITHUB_REPOSITORY_ID = "1330311216"
 UBUNTU_IMAGE_NAME = "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
 SSH_USER = "ubuntu"
@@ -519,7 +519,7 @@ def policy_document(account_id: str, region: str = CI_REGION) -> dict[str, Any]:
 
 def render_role_trust_policy(
     account_id: str = "",
-    repository: str = "nunocgoncalves/iterabase-mono",
+    repository: str = "iterabase/iterabase-mono",
     owner_id: str = GITHUB_OWNER_ID,
     repository_id: str = GITHUB_REPOSITORY_ID,
 ) -> dict[str, Any]:
@@ -1793,7 +1793,7 @@ def build_parser() -> argparse.ArgumentParser:
         "render-trust-policy", help="render the GitHub OIDC role trust policy", parents=[common]
     )
     trust.add_argument("--account-id", default="")
-    trust.add_argument("--repository", default="nunocgoncalves/iterabase-mono")
+    trust.add_argument("--repository", default="iterabase/iterabase-mono")
     trust.add_argument("--owner-id", default=GITHUB_OWNER_ID)
     trust.add_argument("--repository-id", default=GITHUB_REPOSITORY_ID)
     trust.add_argument("--output")
