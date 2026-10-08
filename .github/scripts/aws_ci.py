@@ -1778,6 +1778,48 @@ def command_bake_model_cache(args: argparse.Namespace) -> int:
     return 0
 
 
+BAKE_GENERATIONS_KEPT = 2
+
+
+def prune_plan(items: list[dict[str, Any]], generation_tag: str, keep: int = BAKE_GENERATIONS_KEPT) -> list[dict[str, Any]]:
+    """Baked images or snapshots beyond the newest `keep` generations, oldest generations first."""
+    newest: dict[str, str] = {}
+    for item in items:
+        generation = tagged_value(item.get("Tags"), generation_tag) or ""
+        created = str(item.get("CreationDate") or item.get("StartTime") or "")
+        newest[generation] = max(newest.get(generation, ""), created)
+    kept = set(sorted(newest, key=lambda generation: newest[generation], reverse=True)[:keep])
+    return [item for item in items if (tagged_value(item.get("Tags"), generation_tag) or "") not in kept]
+
+
+def command_prune_images(args: argparse.Namespace) -> int:
+    """Keep the newest baked generations per fixture role and of the model cache (C1 cost model)."""
+    primary = require_region(args.region)
+    removed: list[str] = []
+    for region in region_order(primary):
+        for capacity in sorted(APPROVED_INSTANCE_TYPES):
+            images = as_list(aws_json(["ec2", "describe-images", "--region", region, "--owners", "self", "--filters",
+                                       f"Name=tag:{AMI_ROLE_TAG},Values=fixture-{capacity}"])["Images"], what="images")
+            for image in prune_plan(images, IMAGE_CACHE_TAG):
+                removed.append(f"AMI `{image['ImageId']}` ({region}, fixture-{capacity})")
+                if args.dry_run:
+                    continue
+                aws(["ec2", "deregister-image", "--region", region, "--image-id", str(image["ImageId"])])
+                for mapping in image.get("BlockDeviceMappings") or []:
+                    snapshot = (mapping.get("Ebs") or {}).get("SnapshotId")
+                    if snapshot:
+                        aws(["ec2", "delete-snapshot", "--region", region, "--snapshot-id", str(snapshot)])
+        snapshots = as_list(aws_json(["ec2", "describe-snapshots", "--region", region, "--owner-ids", "self", "--filters",
+                                      f"Name=tag-key,Values={MODEL_CACHE_TAG}"])["Snapshots"], what="snapshots")
+        for snapshot in prune_plan(snapshots, MODEL_CACHE_TAG):
+            removed.append(f"model cache `{snapshot['SnapshotId']}` ({region})")
+            if not args.dry_run:
+                aws(["ec2", "delete-snapshot", "--region", region, "--snapshot-id", str(snapshot["SnapshotId"])])
+    write_summary("### Baked image retention\n\n" + ("".join(f"- {'would remove' if args.dry_run else 'removed'} {item}\n"
+                                                         for item in removed) or "- nothing beyond the kept generations\n"))
+    return 0
+
+
 def wait_for_snapshot(region: str, snapshot_id: str, timeout_seconds: int = 3600) -> None:
     deadline = time.monotonic() + timeout_seconds
     while True:
@@ -2250,6 +2292,10 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--run-id", required=True)
     cleanup.add_argument("--ami-ids", default="", help="region=ami-... map from the same run")
     cleanup.set_defaults(handler=command_cleanup_run)
+
+    prune = subparsers.add_parser("prune-images", help="keep the newest baked generations", parents=[common])
+    prune.add_argument("--dry-run", action="store_true")
+    prune.set_defaults(handler=command_prune_images)
 
     reap = subparsers.add_parser("reap", help="terminate aged tag-marked CI instances", parents=[common])
     reap.add_argument("--max-age-minutes", type=int, default=DEFAULT_MAX_AGE_MINUTES)
