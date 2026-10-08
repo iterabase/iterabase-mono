@@ -83,7 +83,7 @@ func preparePinnedImageCache(t *testing.T, diagnostics *forgeDiagnostics, ip, ke
 	root := os.Getenv(pinnedImageCacheRootEnv)
 	generation := os.Getenv(pinnedImageCacheGenerationEnv)
 	if root == "" || generation == "" {
-		t.Fatalf("pinned image cache identity is not configured (%s, %s); seed the fixture with the Fixture image cache workflow",
+		t.Fatalf("pinned image cache identity is not configured (%s, %s); bake the fixture AMI with bake.yml",
 			pinnedImageCacheRootEnv, pinnedImageCacheGenerationEnv)
 	}
 	if !pinnedImageCacheGenerationPattern.MatchString(generation) {
@@ -98,7 +98,7 @@ func preparePinnedImageCache(t *testing.T, diagnostics *forgeDiagnostics, ip, ke
 	manifestPath := path.Join(root, capacity, generation, "generation.json")
 	output, err := sshOutput(client, "sudo cat "+candidateShellQuote(manifestPath))
 	if err != nil {
-		t.Fatalf("read pinned image cache manifest %s: %v\n%s; seed the fixture with the Fixture image cache workflow", manifestPath, err, output)
+		t.Fatalf("read pinned image cache manifest %s: %v\n%s; bake the fixture AMI with bake.yml", manifestPath, err, output)
 	}
 	manifest, err := parsePinnedImageCacheManifest(capacity, []byte(output))
 	if err != nil {

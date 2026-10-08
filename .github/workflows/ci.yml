@@ -365,9 +365,7 @@ jobs:
   # linted by any of their product jobs. This dedicated job installs the
   # repository-pinned golangci-lint and runs it in every nested module, so a
   # required aggregate cannot pass while the canonical local lint matrix fails.
-  # `.github/ci/go-lint-owners.json` names this job as the PR and candidate lint
-  # owner for all four modules; `.github/scripts/test_lint_parity.py` fails when
-  # that ownership or this wiring drifts.
+  # The selector schedules it for any change to an E2E module or testkit.
   nested-go-lint:
     name: nested-go-lint
     needs: select
