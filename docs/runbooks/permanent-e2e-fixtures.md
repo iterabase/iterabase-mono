@@ -213,7 +213,7 @@ fixture has a dedicated cache volume.
   workflow reports the retained generation sizes.
 - The cache is a derived artifact of `remote-content.json`; never hand-edit it
   and never place credentials or customer data in it.
-- MinIO provenance: `ghcr.io/nunocgoncalves/iterabase-third-party/minio:RELEASE.2025-09-07T16-13-09Z`
+- MinIO provenance: `ghcr.io/iterabase/iterabase-third-party/minio:RELEASE.2025-09-07T16-13-09Z`
   (`sha256:786c852164a4fab14fd194fdbe6b4ed6f34934fcf6e4556aa9368432081719e9`)
   republishes the exact archived upstream multi-arch content (linux/amd64,
   linux/arm64) because the upstream registries no longer serve it anonymously.
