@@ -126,7 +126,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: materializer
-          image: "{{ .Values.toolRunner.image.repository }}:{{ .Values.toolRunner.image.tag }}"
+          image: "{{ .Values.toolRunner.image.repository }}:{{ .Values.toolRunner.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.toolRunner.image.pullPolicy }}
           args: ["materialize"]
           env:
@@ -157,7 +157,7 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
         - name: runner
-          image: "{{ .Values.toolRunner.image.repository }}:{{ .Values.toolRunner.image.tag }}"
+          image: "{{ .Values.toolRunner.image.repository }}:{{ .Values.toolRunner.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.toolRunner.image.pullPolicy }}
           # /control is pod-scoped and survives a container restart. Clear the
           # prior process's marker before exec so readiness is process-lifetime

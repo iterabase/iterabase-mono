@@ -87,7 +87,7 @@ spec:
           {{- end }}
       containers:
         - name: gateway
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/gateway"]
           args: ["--config", "/etc/control-plane/gateway/gateway.yaml", "serve"]

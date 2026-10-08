@@ -6,7 +6,7 @@ GO_MODULE_FILES := $(foreach module,$(GO_MODULES),$(module)/go.mod $(wildcard $(
 WORKSPACE_FILES := go.work go.work.sum $(GO_MODULE_FILES)
 CONTAINER_TOOL ?= docker
 
-.PHONY: workspace-sync workspace-check workspace-list fmt-check vet build test testkit-test testkit-kind-example e2e-catalogue e2e-catalogue-check lint codegen-check charts-check release-check release-security-audit source-authority-check source-authority-audit docker-build check install-hooks pre-commit clean
+.PHONY: workspace-sync workspace-check workspace-list fmt-check vet build test testkit-test testkit-kind-example e2e-catalogue e2e-catalogue-check lint codegen-check charts-check release-check bump release-security-audit source-authority-check source-authority-audit docker-build check install-hooks pre-commit clean
 
 workspace-sync:
 	go work sync
@@ -95,9 +95,15 @@ release-check:
 	python3 .github/scripts/test_release.py
 	python3 .github/scripts/test_remote_content.py
 	python3 .github/scripts/test_aws_ci.py
+	python3 release/test_bump.py
 	python3 .github/scripts/remote_content.py validate
 	python3 .github/scripts/e2e.py validate-contract
 	python3 .github/scripts/release.py validate
+
+# Bump one release target and every linked version field: make bump TARGET=control-plane VERSION=0.0.41
+bump:
+	@[[ -n "$(TARGET)" && -n "$(VERSION)" ]] || { echo "usage: make bump TARGET=<target> VERSION=<x.y.z>"; exit 2; }
+	python3 release/bump.py "$(TARGET)" "$(VERSION)"
 
 release-security-audit:
 	.github/scripts/audit_release_security.sh

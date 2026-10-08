@@ -2,7 +2,7 @@ enabled: true # standalone install renders everything; the umbrella toggles this
 
 image:
   repository: ghcr.io/iterabase/control-plane
-  tag: "0.0.31"
+  tag: "" # default: the chart appVersion, which equals control-plane/VERSION
   pullPolicy: IfNotPresent
 
 # One image, three Deployments selected via command (see control-plane Dockerfile).
@@ -64,7 +64,7 @@ toolRunner:
   enabled: false # umbrella enables; requires gateway + Flux GitRepository
   image:
     repository: ghcr.io/iterabase/control-plane-tool-runner
-    tag: "0.0.31"
+    tag: "" # default: the chart appVersion, which equals control-plane/VERSION
     pullPolicy: IfNotPresent
   runnerId: overlay-tools
   # Exact first segment(s) of dotted tool names this reviewed runner may publish.
