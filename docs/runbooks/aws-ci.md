@@ -529,6 +529,47 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
    Both must be non-empty. The smoke workflow passes
    `--associate-public-ip-address` explicitly, so it fails closed rather than
    launching an unreachable host.
+
+   **Make every default VPC dual-stack (DES-HOR-590-01).** Forge installs dual-stack
+   k3s by default, and the F3 fixtures and previews keep that default. So each
+   allowed region's default VPC gets an Amazon-provided IPv6 /56, every subnet gets
+   one /64 with IPv6 auto-assign, and the main route table gets a `::/0` route to the
+   internet gateway. The loop skips whatever is already in place, so it is safe to
+   re-run:
+   ```bash
+   v6() { aws ec2 "$@" --output text; }
+   for region in eu-west-1 eu-central-1 eu-north-1; do
+     vpc=$(v6 describe-vpcs --region "$region" --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId')
+     associated="Vpcs[0].Ipv6CidrBlockAssociationSet[?Ipv6CidrBlockState.State=='associated'].Ipv6CidrBlock | [0]"
+     if [ "$(v6 describe-vpcs --region "$region" --vpc-ids "$vpc" --query "$associated")" = None ]; then
+       v6 associate-vpc-cidr-block --region "$region" --vpc-id "$vpc" --amazon-provided-ipv6-cidr-block >/dev/null
+       until [ "$(v6 describe-vpcs --region "$region" --vpc-ids "$vpc" --query "$associated")" != None ]; do sleep 5; done
+     fi
+     block=$(v6 describe-vpcs --region "$region" --vpc-ids "$vpc" --query "$associated")
+     index=0
+     for subnet in $(v6 describe-subnets --region "$region" --filters Name=vpc-id,Values="$vpc" \
+         --query 'sort_by(Subnets,&AvailabilityZone)[].SubnetId'); do
+       if [ "$(v6 describe-subnets --region "$region" --subnet-ids "$subnet" \
+           --query "Subnets[0].Ipv6CidrBlockAssociationSet[?Ipv6CidrBlockState.State=='associated'].Ipv6CidrBlock | [0]")" = None ]; then
+         cidr=$(python3 -c 'import ipaddress,sys; print(list(ipaddress.ip_network(sys.argv[1]).subnets(new_prefix=64))[int(sys.argv[2])])' "$block" "$index")
+         v6 associate-subnet-cidr-block --region "$region" --subnet-id "$subnet" --ipv6-cidr-block "$cidr" >/dev/null
+       fi
+       aws ec2 modify-subnet-attribute --region "$region" --subnet-id "$subnet" --assign-ipv6-address-on-creation
+       index=$((index + 1))
+     done
+     igw=$(v6 describe-internet-gateways --region "$region" --filters Name=attachment.vpc-id,Values="$vpc" \
+       --query 'InternetGateways[0].InternetGatewayId')
+     table=$(v6 describe-route-tables --region "$region" --filters Name=vpc-id,Values="$vpc" Name=association.main,Values=true \
+       --query 'RouteTables[0].RouteTableId')
+     if [ "$(v6 describe-route-tables --region "$region" --route-table-ids "$table" \
+         --query "RouteTables[0].Routes[?DestinationIpv6CidrBlock=='::/0'].GatewayId | [0]")" = None ]; then
+       v6 create-route --region "$region" --route-table-id "$table" --destination-ipv6-cidr-block ::/0 --gateway-id "$igw" >/dev/null
+     fi
+     printf '%s %s %s\n' "$region" "$vpc" "$block"
+   done
+   ```
+   Each region must print its associated `/56`. Step 12 opens port 22 on both
+   `0.0.0.0/0` and `::/0`.
 9. **Create the GitHub OIDC identity provider.**
    ```bash
    aws iam create-open-id-connect-provider \
@@ -637,6 +678,8 @@ printf 'member account %s in default VPC %s\n' "$CI_ACCOUNT_ID" "$VPC_ID"
       --query 'SecurityGroups[0].GroupId' --output text)
     aws ec2 authorize-security-group-ingress --region eu-west-1 --group-id "$SG_ID" \
       --protocol tcp --port 22 --cidr 0.0.0.0/0
+    aws ec2 authorize-security-group-ingress --region eu-west-1 --group-id "$SG_ID" \
+      --ip-permissions 'IpProtocol=tcp,FromPort=22,ToPort=22,Ipv6Ranges=[{CidrIpv6=::/0}]'
     aws ec2 describe-security-groups --region eu-west-1 --group-ids "$SG_ID" \
       --query 'SecurityGroups[0].{Id:GroupId,Ingress:IpPermissions,Vpc:VpcId,Tags:Tags}'
     ```
