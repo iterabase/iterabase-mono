@@ -25,7 +25,7 @@ workflow is the executable proof that the account is still correct.
 | Reaper | `iterabase-ci-deadline` when present, otherwise `LaunchTime + 180 minutes`. Untagged or foreign instances are reported and never touched; the role cannot terminate them. |
 | Unreachable by the role | `iam:*`, `organizations:*`, `s3:*`, `ssm:*`, and `sts:AssumeRole` (no `iam:PassRole`, so no instance profile can ever be attached). |
 | Region | Three allowed regions in preference order: `eu-west-1` (primary: default VPC, bootstrap AMI, CPU fixtures, cheapest `g5`), `eu-central-1`, `eu-north-1`. A GPU fixture walks regions, then approved types, then offered AZs, because `eu-west-1` offers `g5` without live capacity and does not offer the `g6`/L4 family at all. The policy's ARNs carry a wildcard region — listing three regions would exceed the 6,144-character managed-policy limit (9,136 expanded) — and the allowed set is enforced by an explicit `DenyOutsideCiRegions` on `aws:RequestedRegion`, so the boundary stays in the artifact AWS evaluates. |
-| Budget | `$250/month` cost budget `iterabase-ci-monthly` on the member account, forecast alert at 80% and actual alert at 100%. The budget measures gross usage cost (`IncludeCredit=false`), so startup credits cannot hide runaway spend. |
+| Budget | `$350/month` cost budget (raised from $250 for fixtures and previews, C12) `iterabase-ci-monthly` on the member account, forecast alert at 80% and actual alert at 100%. The budget measures gross usage cost (`IncludeCredit=false`), so startup credits cannot hide runaway spend. |
 
 `Describe*` actions cannot be resource-scoped by AWS design; the policy grants
 `ec2:Describe*` account-wide, read-only, as one wildcard so the single managed
@@ -59,7 +59,7 @@ observed outcomes on the ticket. Do not record secret material here.
 | AZs offering `g5.xlarge` | step 13 below | `eu-west-1a`, `eu-west-1b`, `eu-west-1c` (offered, but live probes found no capacity in any of them) |
 | AZs offering `g6.xlarge` (L4) | step 13 below | not offered in `eu-west-1`; offered in `eu-central-1` and `eu-north-1` |
 | AZs offering `m6i.xlarge` | step 13 below | `eu-west-1a`, `eu-west-1b`, `eu-west-1c` |
-| Budget name | `iterabase-ci-monthly` | `iterabase-ci-monthly` — $250/month, forecast >80%, actual >100%, subscribers `nuno+ci@iterabase.com` (email) and the SNS topic below |
+| Budget name | `iterabase-ci-monthly` | `iterabase-ci-monthly` — $350/month, forecast >80%, actual >100%, subscribers `nuno+ci@iterabase.com` (email) and the SNS topic below |
 | SNS alerts topic | `aws sns list-topics --region us-east-1 --query 'Topics[].TopicArn' --output text` | `arn:aws:sns:us-east-1:024378233802:iterabase-ci-budget-alerts` (display name `iterabase-ci budget`; Budgets publish allowed by the topic policy; `nuno+ci@iterabase.com` confirmed as `arn:aws:sns:us-east-1:024378233802:iterabase-ci-budget-alerts:96796240-e89e-4cb7-bdbe-78fde1fa8493`; delivery proven 2026-09-27 by test message `5e578566-6a21-546c-86dc-e655f25b0d4d`: delivered 1, failed 0) |
 
 ## Part 1 — Account setup (console, founder)
@@ -208,7 +208,7 @@ aws organizations describe-organization \
    cat > /tmp/iterabase-ci-budget.json <<JSON
    {
      "BudgetName": "iterabase-ci-monthly",
-     "BudgetLimit": {"Amount": "250", "Unit": "USD"},
+     "BudgetLimit": {"Amount": "350", "Unit": "USD"},
      "TimeUnit": "MONTHLY",
      "TimePeriod": {"Start": "${MONTH_START}"},
      "BudgetType": "COST",
@@ -437,7 +437,7 @@ aws organizations describe-organization \
    - A scheduled GitHub Actions reaper terminates any tagged instance older than
      three hours, and the CI role may only create or terminate resources
      carrying the CI tag, so an orphan cannot survive.
-   - A $250/month AWS Budget with alerts at 80% forecast and 100% actual covers
+   - A $350/month AWS Budget with alerts at 80% forecast and 100% actual covers
      this account, and no static credentials are used anywhere.
    - The same role is limited to two approved instance types (m6i.xlarge and
      g5.xlarge) and to CI-owned AMIs, so both the launch surface and the
