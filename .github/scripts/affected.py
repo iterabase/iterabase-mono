@@ -70,6 +70,7 @@ VERSION_FILES = ("control-plane/VERSION", "inference-gateway/VERSION", "forge/VE
 # Inputs that change what the GPU driver-upgrade stage proves (rule 5).
 DRIVER_INPUT_PATTERNS = ("forge/internal/gpu/**", "forge/internal/config/gpu*.go", "forge/test/e2e/gpu_upgrade_test.go")
 DRIVER_REMOTE_CONTENT = re.compile(r"nvcr\.io/nvidia/driver|gpu-operator")
+REMOTE_CONTENT = ".github/inputs/remote-content.json"
 OWNER_TEST_PREFIX = re.compile(r"^([^/]+)/test/e2e/")
 
 
@@ -182,6 +183,9 @@ def select(
     version_changes = [change for change in relevant if change not in ci_changes and (
         change.path in VERSION_FILES or (change.version_only and change.path.endswith("Chart.yaml")))]
     product_changes = [change for change in relevant if change not in ci_changes and change not in version_changes]
+    # Pinned remote content is both a CI input and a product input: it also feeds
+    # the recipes whose paths name it (the LVM substrate) and the GPU driver.
+    product_changes += [change for change in ci_changes if change.path == REMOTE_CONTENT]
 
     if ci_changes:  # rule 2
         jobs.update(ALL_JOBS)
@@ -204,10 +208,17 @@ def select(
         if change.driver_input or matches(change.path, DRIVER_INPUT_PATTERNS):
             stages.add(DRIVER_UPGRADE_STAGE)
             because(DRIVER_UPGRADE_STAGE, change.path)
+    if stages:
+        # The stage runs only inside the scenario that declares it.
+        for _, scenario in all_scenarios:
+            if any(stage.get("name") == DRIVER_UPGRADE_STAGE and stage.get("optional") for stage in scenario.get("stages", ())):
+                scenarios.add(scenario["id"])
+                because(scenario["id"], f"declares the {DRIVER_UPGRADE_STAGE} stage")
 
     owner_tests: set[str] = set()
     for change in product_changes:
-        jobs.update(jobs_for(change.path))
+        if change.path != REMOTE_CONTENT:
+            jobs.update(jobs_for(change.path))
         owner = OWNER_TEST_PREFIX.match(change.path)
         if owner:
             owner_tests.add(owner.group(1))
