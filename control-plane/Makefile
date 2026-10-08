@@ -77,25 +77,17 @@ E2E_BUILD_DEPS :=
 
 PLAYWRIGHT_INSTALL_ARGS ?= chromium
 
-.PHONY: test-e2e-unit test-e2e test-e2e-identity test-e2e-work test-e2e-artifact test-e2e-execution test-e2e-browser playwright-browser-deps
+.PHONY: test-e2e-unit test-e2e test-e2e-deployed test-e2e-execution playwright-browser-deps
 
 test-e2e-unit: ## Compile the owner E2E entrypoint and run hermetic helper tests.
 	cd test/e2e && $(E2E_ENV) go test -race -count=1 -run '^TestE2E$$/^hermetic-example$$' .
 	cd test/e2e && $(E2E_ENV) go test -race -count=1 -skip '^TestE2E$$' .
 	cd test/e2e && go test -race -count=1 ./fixtures/runtime
 
-# Each product contract gets a fresh isolated Kind cluster and consumes the
-# same exact composer-produced runtime bundle in source and candidate modes.
-test-e2e: test-e2e-identity test-e2e-work test-e2e-artifact test-e2e-execution test-e2e-browser
-
-test-e2e-identity: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 30m -run '^TestE2E$$/^deployed-identity-api$$' .
-
-test-e2e-work: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 35m -run '^TestE2E$$/^deployed-work-recovery$$' .
-
-test-e2e-artifact: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 35m -run '^TestE2E$$/^deployed-artifact-durability$$' .
+# Each scenario gets a fresh isolated Kind cluster and consumes the same exact
+# composer-produced runtime bundle. deployed-control-plane runs the identity,
+# work, artifact and browser journeys on one install (C5).
+test-e2e: test-e2e-deployed test-e2e-execution
 
 test-e2e-execution: $(E2E_BUILD_DEPS)
 	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 55m -run '^TestE2E$$/^deployed-execution-contracts$$' .
@@ -111,8 +103,8 @@ playwright-browser-deps:
 		cd test/e2e/playwright && npx --no-install playwright install $(PLAYWRIGHT_INSTALL_ARGS); \
 	fi
 
-test-e2e-browser: $(E2E_BUILD_DEPS) playwright-browser-deps
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 45m -run '^TestE2E$$/^deployed-browser-journeys$$' .
+test-e2e-deployed: $(E2E_BUILD_DEPS) playwright-browser-deps
+	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 50m -run '^TestE2E$$/^deployed-control-plane$$' .
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
