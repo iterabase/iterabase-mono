@@ -45,12 +45,15 @@ class CacheContractTests(unittest.TestCase):
             source.write_text('package main\nconst version = "changed"\n')
             self.assertNotEqual(before, content_digest([dockerfile, source]))
 
-    def test_cache_actions_have_no_fallback_restore_keys(self) -> None:
+    def test_only_dependency_caches_roll(self) -> None:
+        # C3: Go and Helm download caches roll forward from their scope's newest
+        # entry; checksummed tool archives stay exact-key only.
+        rolling = {"setup-go", "cache-helm"}
         actions = list((ROOT / ".github/actions").glob("*/action.yml"))
         self.assertTrue(actions)
         for action in actions:
             with self.subTest(action=action):
-                self.assertNotIn("restore-keys:", action.read_text())
+                self.assertEqual("restore-keys:" in action.read_text(), action.parent.name in rolling)
 
     def test_checked_go_tool_bin_is_on_subsequent_step_path(self) -> None:
         installer = (ROOT / ".github/scripts/install_ci_tool.sh").read_text()

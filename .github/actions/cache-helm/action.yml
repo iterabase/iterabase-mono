@@ -26,6 +26,8 @@ runs:
       with:
         path: ~/.cache/helm
         key: ${{ steps.cache-key.outputs.key }}
+        # Rolling (C3): downloaded chart archives are digest-checked by Helm.
+        restore-keys: ${{ runner.os }}-${{ runner.arch }}-helm-downloads-
     - name: Report Helm cache source
       shell: bash
       run: |

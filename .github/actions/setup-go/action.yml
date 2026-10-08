@@ -36,6 +36,7 @@ runs:
         version=$(go env GOVERSION)
         key="${{ runner.os }}-${{ runner.arch }}-go-${version}-${{ inputs.cache-scope }}-${digest}"
         echo "key=$key" >> "$GITHUB_OUTPUT"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
         echo "Go cache key: $key"
         printf 'Go cache inputs:\n%s\n' "$DEPENDENCY_PATHS"
     - name: Restore exact Go dependency/build cache
@@ -46,11 +47,14 @@ runs:
           ~/go/pkg/mod
           ~/.cache/go-build
         key: ${{ steps.cache-key.outputs.key }}
+        # Rolling (C3): a new go.sum starts from the scope's newest cache. Modules
+        # are checksum-verified and the build cache is content-addressed.
+        restore-keys: ${{ runner.os }}-${{ runner.arch }}-go-${{ steps.cache-key.outputs.version }}-${{ inputs.cache-scope }}-
     - name: Report Go cache source
       shell: bash
       run: |
         if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
           echo "Go cache source: exact key ${{ steps.cache-key.outputs.key }}"
         else
-          echo "Go cache source: cold (will save ${{ steps.cache-key.outputs.key }})"
+          echo "Go cache source: ${{ steps.cache.outputs.cache-matched-key || 'cold' }} (will save ${{ steps.cache-key.outputs.key }})"
         fi
