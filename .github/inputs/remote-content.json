@@ -106,7 +106,7 @@
       "digest": "sha256:0530cf462fa3ba530fab887372e3b79caf608d0093ffc2fded9fa33bac8b74cd"
     },
     {
-      "reference": "ghcr.io/nunocgoncalves/iterabase-third-party/minio:RELEASE.2025-09-07T16-13-09Z",
+      "reference": "ghcr.io/iterabase/iterabase-third-party/minio:RELEASE.2025-09-07T16-13-09Z",
       "digest": "sha256:786c852164a4fab14fd194fdbe6b4ed6f34934fcf6e4556aa9368432081719e9"
     },
     {
