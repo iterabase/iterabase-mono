@@ -3,6 +3,7 @@ package e2e
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -59,6 +60,23 @@ type ScenarioMetadata struct {
 	Capacity          string            `json:"capacity,omitempty"`
 	Mandatory         bool              `json:"mandatory_capacity,omitempty"`
 	ProductionOnly    bool              `json:"production_only,omitempty"`
+	// Smoke marks the one scenario per suite that CI-only changes run.
+	Smoke bool `json:"smoke,omitempty"`
+	// SelectedBy narrows which changed artifacts select this scenario on pull
+	// requests; the merge queue ignores it (DES-HOR-590-02). Empty means all
+	// RequiredArtifacts.
+	SelectedBy []string `json:"selected_by,omitempty"`
+	// Renders declares the chart renders this scenario installs, so a chart
+	// change selects it only when its rendered manifests change.
+	Renders []RenderInput `json:"renders,omitempty"`
+}
+
+// RenderInput is one `helm template` of a repository chart with the values a
+// scenario installs. Paths are repository-relative.
+type RenderInput struct {
+	Chart  string            `json:"chart"`
+	Values []string          `json:"values,omitempty"`
+	Set    map[string]string `json:"set,omitempty"`
 }
 
 // StageMetadata describes one stage and its direct prerequisites.
@@ -204,6 +222,18 @@ func validateScenario(definition Definition) error {
 			}
 			artifacts[artifact] = struct{}{}
 		}
+		for _, artifact := range metadata.SelectedBy {
+			if _, exists := artifacts[artifact]; !exists {
+				return fmt.Errorf("scenario %q is selected by %q, which it does not require", metadata.Name, artifact)
+			}
+		}
+		for _, render := range metadata.Renders {
+			if !strings.HasPrefix(render.Chart, "charts/charts/") {
+				return fmt.Errorf("scenario %q renders %q, which is not a repository chart", metadata.Name, render.Chart)
+			}
+		}
+	} else if metadata.Smoke || len(metadata.SelectedBy) > 0 || len(metadata.Renders) > 0 {
+		return fmt.Errorf("scenario %q declares selection metadata outside tiers F2 and F3", metadata.Name)
 	}
 	if metadata.Capacity != "" && metadata.Tier != TierF3 {
 		return fmt.Errorf("scenario %q declares capacity outside tier F3", metadata.Name)
@@ -262,5 +292,16 @@ func cloneScenarioMetadata(metadata ScenarioMetadata) ScenarioMetadata {
 	metadata.RequiredArtifacts = slices.Clone(metadata.RequiredArtifacts)
 	metadata.Intents = slices.Clone(metadata.Intents)
 	metadata.FixtureModes = slices.Clone(metadata.FixtureModes)
+	metadata.SelectedBy = slices.Clone(metadata.SelectedBy)
+	renders := make([]RenderInput, 0, len(metadata.Renders))
+	for _, render := range metadata.Renders {
+		render.Values = slices.Clone(render.Values)
+		render.Set = maps.Clone(render.Set)
+		renders = append(renders, render)
+	}
+	if len(renders) == 0 {
+		renders = nil
+	}
+	metadata.Renders = renders
 	return metadata
 }

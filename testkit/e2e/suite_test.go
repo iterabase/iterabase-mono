@@ -40,6 +40,52 @@ func TestSuiteRejectsDuplicateScenarioAndForwardDependency(t *testing.T) {
 	}
 }
 
+func TestSuiteValidatesSelectionMetadata(t *testing.T) {
+	t.Parallel()
+	runnable := func(mutate func(*ScenarioMetadata)) Definition {
+		metadata := ScenarioMetadata{
+			Name: "deployed", Description: "deployed", Tier: TierF2, FixtureModes: []FixtureMode{FixtureSource},
+			MakeTarget: "test-e2e", TimeoutMinutes: 10, RequiredArtifacts: []string{"control-plane-image", "forge-binary"},
+			Intents: []ExecutionIntent{IntentPR, IntentCandidate},
+		}
+		mutate(&metadata)
+		return Define(Scenario[struct{}]{Metadata: metadata, Stages: []Stage[struct{}]{{Name: "run", Run: func(*testing.T, struct{}) {}}}})
+	}
+	validate := func(definitions ...Definition) error {
+		suite := NewSuite(SuiteMetadata{Name: "owner", Owner: "owner", Entrypoint: "owner/test/e2e"}, nil)
+		suite.Add(definitions...)
+		return suite.validate()
+	}
+	valid := runnable(func(m *ScenarioMetadata) {
+		m.Smoke = true
+		m.SelectedBy = []string{"forge-binary"}
+		m.Renders = []RenderInput{{Chart: "charts/charts/iterabase-platform", Values: []string{"charts/charts/iterabase-platform/values-tls.yaml"}}}
+	})
+	if err := validate(valid); err != nil {
+		t.Fatalf("valid selection metadata: %v", err)
+	}
+	for name, test := range map[string]struct {
+		definitions []Definition
+		want        string
+	}{
+		"selected by an artifact it does not require": {
+			[]Definition{runnable(func(m *ScenarioMetadata) { m.SelectedBy = []string{"harness-image"} })}, "does not require"},
+		"render outside the repository charts": {
+			[]Definition{runnable(func(m *ScenarioMetadata) { m.Renders = []RenderInput{{Chart: "/tmp/chart"}} })}, "not a repository chart"},
+		"two smoke scenarios": {
+			[]Definition{valid, runnable(func(m *ScenarioMetadata) { m.Name, m.Smoke = "other", true })}, "two smoke scenarios"},
+		"selection metadata on a hermetic scenario": {
+			[]Definition{Define(Scenario[struct{}]{
+				Metadata: ScenarioMetadata{Name: "hermetic", Description: "hermetic", Tier: TierF0, FixtureModes: []FixtureMode{FixtureSource}, Smoke: true},
+				Stages:   []Stage[struct{}]{{Name: "run", Run: func(*testing.T, struct{}) {}}},
+			})}, "outside tiers F2 and F3"},
+	} {
+		if err := validate(test.definitions...); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("%s: error = %v, want %q", name, err, test.want)
+		}
+	}
+}
+
 func TestStageFailureKeepsIndependentWorkAndLifecycleHooks(t *testing.T) {
 	if os.Getenv("ITERABASE_E2E_FAILURE_HELPER") == "1" {
 		runFailureHelper(t)
