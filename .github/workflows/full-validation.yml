@@ -1,0 +1,116 @@
+name: Full validation
+
+# The whole catalogue against one commit (C11): every CI job, every Kind and
+# real-machine scenario, the GPU driver upgrade and n-1-upgrade. It publishes
+# nothing. Nightly only when master changed; on demand; from release.yml; and
+# on a pull request through the full-validation label, which uses the pull
+# request's own workflow files.
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact commit to validate
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gate
+    if: github.event_name != 'pull_request' || github.event.label.name == 'full-validation'
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - name: Skip a nightly run when master has not changed
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" != schedule ]]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          last=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/full-validation.yml/runs?branch=master&event=schedule&status=success&per_page=1" \
+            --jq '.workflow_runs[0].head_sha // ""')
+          if [[ "$last" == "$GITHUB_SHA" ]]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "master $GITHUB_SHA already passed full validation" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  ci:
+    name: CI
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      all: true
+      ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+
+  e2e:
+    name: E2E
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/e2e.yml
+    secrets: inherit
+    with:
+      all: true
+      ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+
+  report:
+    name: report
+    needs: [gate, ci, e2e]
+    if: always() && needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - name: Durations and queue wait per job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Full validation of \`${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}\`"
+            echo
+            echo "| job | queue wait | duration | result |"
+            echo "| --- | ---: | ---: | --- |"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --jq '
+              .jobs[] | select(.started_at and .completed_at) |
+              "| \(.name) | \(((.started_at|fromdate) - (.created_at|fromdate)))s | \(((.completed_at|fromdate) - (.started_at|fromdate)))s | \(.conclusion) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Open or update the tracking issue when red
+        if: (needs.ci.result != 'success' || needs.e2e.result != 'success') && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ inputs.ref || github.sha }}
+        run: |
+          set -euo pipefail
+          title="Full validation is red"
+          body="Full validation of \`$SHA\` failed: $RUN_URL (CI: ${{ needs.ci.result }}, E2E: ${{ needs.e2e.result }})."
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number --jq '.[0].number // ""')
+          if [[ -n "$number" ]]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+      - name: Fail when red
+        if: needs.ci.result != 'success' || needs.e2e.result != 'success'
+        run: exit 1

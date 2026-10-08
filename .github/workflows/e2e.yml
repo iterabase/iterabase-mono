@@ -9,12 +9,22 @@ on:
   merge_group:
   push:
     branches: [master]
+  workflow_call:
+    inputs:
+      all:
+        description: Select everything (full validation)
+        type: boolean
+        default: false
+      ref:
+        description: Exact commit to validate (default the triggering ref)
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: e2e-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
+  group: e2e-${{ inputs.all && 'full-' || '' }}${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -41,9 +51,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
       - id: select
         uses: ./.github/actions/select
+        with:
+          all: ${{ inputs.all || false }}
       - name: Plan builds and scenario matrices
         id: plan
         env:
@@ -85,6 +98,8 @@ jobs:
         include: ${{ fromJSON(needs.select.outputs.build) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - name: Verify the exact source
         run: test "$(git rev-parse HEAD)" = '${{ needs.select.outputs.source_sha }}'
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -168,6 +183,8 @@ jobs:
         include: ${{ fromJSON(needs.select.outputs.kind) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: e2e-selection
@@ -240,6 +257,8 @@ jobs:
       FIXTURE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: e2e-selection

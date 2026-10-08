@@ -6,12 +6,22 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      all:
+        description: Select everything (full validation)
+        type: boolean
+        default: false
+      ref:
+        description: Exact commit to validate (default the triggering ref)
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
+  group: ci-${{ inputs.all && 'full-' || '' }}${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -39,9 +49,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
       - id: select
         uses: ./.github/actions/select
+        with:
+          all: ${{ inputs.all || false }}
 
   # CI, testkit and release-contract changes: the selector, release, remote
   # content, AWS substrate and shared E2E mechanics.
@@ -52,6 +65,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
@@ -70,6 +85,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
@@ -110,6 +127,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.19.0
@@ -135,6 +154,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
@@ -165,6 +186,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.19.0
@@ -190,6 +213,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
@@ -219,6 +244,8 @@ jobs:
       GOWORK: "off"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.25.12
@@ -251,6 +278,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
@@ -292,6 +321,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
@@ -315,6 +346,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-kubernetes-tools
       - uses: ./.github/actions/cache-helm
         with:
@@ -343,11 +376,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify exact lint source
-        env:
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
