@@ -109,11 +109,32 @@ func assertPersistedState(t *testing.T, state *chartState) {
 	if postgres != transitionMarker {
 		t.Fatalf("PostgreSQL persisted marker=%q want=%q", postgres, transitionMarker)
 	}
-	minio := state.kubectl(t, 30*time.Second, "exec", "-n", testNamespace, "statefulset/"+testRelease+"-minio", "--",
+	minio, err := state.kubectlOutput(30*time.Second, "exec", "-n", testNamespace, "statefulset/"+testRelease+"-minio", "--",
 		"cat", "/data/"+transitionMarker)
-	if minio != transitionMarker {
-		t.Fatalf("MinIO persisted marker=%q want=%q", minio, transitionMarker)
+	if err != nil || strings.TrimSpace(minio) != transitionMarker {
+		t.Fatalf("MinIO persisted marker=%q want=%q (%v)\n%s", strings.TrimSpace(minio), transitionMarker, err, minioVolumeEvidence(state))
 	}
+}
+
+// minioVolumeEvidence tells a deleted file on the same filesystem apart from a
+// volume recreated underneath an unchanged PVC.
+func minioVolumeEvidence(state *chartState) string {
+	var evidence strings.Builder
+	for _, probe := range [][]string{
+		{"get", "pod", testRelease + "-minio-0", "-n", testNamespace, "-o", "jsonpath={.metadata.uid} {.status.startTime} {.spec.containers[0].image}"},
+		{"get", "pvc", "data-" + testRelease + "-minio-0", "-n", testNamespace, "-o", "jsonpath={.metadata.uid} {.spec.volumeName}"},
+		{"exec", "-n", testNamespace, testRelease + "-minio-0", "--", "sh", "-c", "ls -la --time-style=full-iso /data; findmnt -no SOURCE,FSTYPE,OPTIONS /data"},
+	} {
+		out, err := state.kubectlOutput(30*time.Second, probe...)
+		fmt.Fprintf(&evidence, "kubectl %s:\n%s(err=%v)\n", strings.Join(probe, " "), out, err)
+	}
+	node := testRelease
+	if nodes, err := state.runner.Run(state.ctx, process.Command{Name: "kind", Args: []string{"get", "nodes", "--name", state.cluster.Name}, Timeout: 30 * time.Second}); err == nil {
+		node = strings.TrimSpace(nodes.Output)
+	}
+	lvs, err := state.runner.Run(state.ctx, process.Command{Name: "docker", Args: []string{"exec", node, "lvs", "-o", "lv_name,lv_time,lv_size"}, Timeout: 30 * time.Second})
+	fmt.Fprintf(&evidence, "lvs on %s:\n%s(err=%v)\n", node, lvs.Output, err)
+	return evidence.String()
 }
 
 func captureLifecycleSnapshot(t *testing.T, state *chartState) lifecycleSnapshot {
