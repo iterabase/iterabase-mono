@@ -99,6 +99,11 @@ IMAGE_CACHE_TAG = "iterabase-ci-image-cache"
 MODEL_CACHE_TAG = "iterabase-ci-model-cache"
 MODEL_CACHE_UUID_TAG = "iterabase-ci-model-cache-uuid"
 KIND_TAG = "iterabase-ci-kind"
+# Previews keep one host across pushes; its pinned host key is read back from this
+# tag through the authenticated EC2 API (C12, HOR-521).
+HOST_KEY_TAG = "iterabase-ci-host-key"
+PREVIEW_TTL_HOURS = 72
+STAGING_TTL_DAYS = 3650  # staging is never TTL-expired (C6); the deadline only keeps it reapable by hand
 FIXTURE_DATA_GIB = 30
 MODEL_CACHE_GIB = 16
 HUGGINGFACE_HUB_VERSION = "0.30.2"
@@ -1345,6 +1350,7 @@ def launch_pinned_host(
     extra_tags: tuple[tuple[str, str], ...] = (),
     user_data_extra: str = "",
     launch_options: dict[str, Any] | None = None,
+    authorized_key_path: Path | None = None,
 ) -> PinnedHost:
     """Launch one host with a per-run pinned host key and prove that identity.
 
@@ -1353,9 +1359,11 @@ def launch_pinned_host(
     host afterwards: smoke terminates it, fixtures and previews keep it.
     """
     workdir = Path(tempfile.mkdtemp(prefix=f"iterabase-ci-{capacity}-"))
-    ssh_key, host_key = workdir / "id_ed25519", workdir / "host_ed25519"
-    for path in (ssh_key, host_key):
+    ssh_key, host_key = authorized_key_path or workdir / "id_ed25519", workdir / "host_ed25519"
+    for path in (host_key,) if authorized_key_path else (ssh_key, host_key):
         run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"iterabase-ci-{scenario}", "-f", str(path)])
+    if authorized_key_path and not ssh_key.with_suffix(".pub").exists():
+        ssh_key.with_suffix(".pub").write_text(run(["ssh-keygen", "-y", "-f", str(ssh_key)]).stdout, encoding="utf-8")
     host_public = host_key.with_suffix(".pub").read_text(encoding="utf-8").strip()
     user_data_path = workdir / "user-data.sh"
     user_data_path.write_text(
@@ -1367,6 +1375,9 @@ def launch_pinned_host(
         ),
         encoding="utf-8",
     )
+    if HOST_KEY_TAG in dict(extra_tags):
+        extra_tags = tuple((key, value) for key, value in extra_tags if key != HOST_KEY_TAG) + (
+            (HOST_KEY_TAG, " ".join(host_public.split()[:2])),)
     region, instance_type, az, instance_id, failures = place_fixture(
         capacity=capacity, run_id=run_id, ami_ids=ami_ids, user_data_path=str(user_data_path), regions=regions,
         scenario=scenario, deadline=deadline, extra_tags=extra_tags, launch_options=launch_options,
@@ -1775,6 +1786,102 @@ def command_bake_model_cache(args: argparse.Namespace) -> int:
         f"### Model cache\n\n- `{authority['model_id']}@{authority['revision']}`, generation `{generation}`, UUID `{uuid}`\n"
         + "".join(f"- `{region}`: `{copied}`\n" for region, copied in snapshots.items())
     )
+    return 0
+
+
+PREVIEW_NAME = re.compile(r"^(pr-[1-9][0-9]*|staging)$")
+
+
+def find_preview(region: str, name: str) -> dict[str, Any] | None:
+    """The running preview host for one environment, if any."""
+    reservations = as_list(aws_json([
+        "ec2", "describe-instances", "--region", region, "--filters", f"Name=tag:{KIND_TAG},Values=preview",
+        f"Name=tag:{SCENARIO_TAG},Values={name}", "Name=instance-state-name,Values=pending,running",
+    ])["Reservations"], what="reservations")
+    instances = [instance for reservation in reservations for instance in reservation["Instances"]]
+    if len(instances) > 1:
+        raise AwsCiError(f"preview {name} has {len(instances)} hosts; expected at most one")
+    return instances[0] if instances else None
+
+
+def preview_deadline(name: str) -> dt.datetime:
+    now = dt.datetime.now(dt.timezone.utc)
+    return now + (dt.timedelta(days=STAGING_TTL_DAYS) if name == "staging" else dt.timedelta(hours=PREVIEW_TTL_HOURS))
+
+
+def command_preview_up(args: argparse.Namespace) -> int:
+    """Find or launch one preview host and renew its deadline (C6, C12).
+
+    The host is a spot m6i.xlarge from the CPU fixture AMI. Its host key is
+    generated at creation and published in a tag; a later run reads that tag
+    through the authenticated EC2 API to pin the same key (HOR-521). Runner SSH
+    uses the one repository preview key, authorized at creation.
+    """
+    region = require_region(args.region)
+    if not PREVIEW_NAME.match(args.name):
+        raise AwsCiError(f"preview name {args.name!r} is not pr-<number> or staging")
+    key_path = Path(args.ssh_key)
+    deadline = preview_deadline(args.name)
+    instance = find_preview(region, args.name)
+    if instance:
+        instance_id = str(instance["InstanceId"])
+        aws(["ec2", "create-tags", "--region", region, "--resources", instance_id,
+             "--tags", f"Key={DEADLINE_TAG},Value={format_timestamp(deadline)}"])
+        address = str(instance.get("PublicIpAddress") or "")
+        host_public = tagged_value(instance.get("Tags"), HOST_KEY_TAG) or ""
+        if not address or len(host_public.split()) != 2:
+            raise AwsCiError(f"preview host {instance_id} has no address or host-key tag")
+        created = "false"
+    else:
+        manifest = image_cache_manifest("cpu")
+        ami_ids = resolve_fixture_amis("cpu", str(manifest["generation"]), (region,))
+        tailscale = Path(args.tailscale_auth_key_file).read_text(encoding="utf-8").strip() if args.tailscale_auth_key_file else ""
+        host = launch_pinned_host(
+            capacity="cpu", run_id=args.run_id, scenario=args.name, ami_ids=ami_ids, regions=(region,),
+            deadline=deadline, extra_tags=((KIND_TAG, "preview"), (HOST_KEY_TAG, "pending")),
+            user_data_extra=tailscale_join_script(tailscale, args.name) if tailscale else "",
+            launch_options={"data_gib": FIXTURE_DATA_GIB, "root_gib": FIXTURE_ROOT_GIB["cpu"], "spot": True},
+            authorized_key_path=key_path,
+        )
+        instance_id, address, host_public, created = host.instance_id, host.public_ip, host.host_public, "true"
+        instance = describe_instance(region, instance_id)
+    data_device = by_id_path(data_volume_id_from_instance(instance))
+    outputs = {
+        "instance_id": instance_id, "address": address, "host_key": " ".join(host_public.split()[:2]),
+        "data_device": data_device, "created": created, "deadline": format_timestamp(deadline),
+    }
+    write_outputs(outputs)
+    print(json.dumps(outputs))
+    return 0
+
+
+def by_id_path(volume_id: str) -> str:
+    """The stable by-id path EC2's NVMe driver gives an EBS volume."""
+    if not re.fullmatch(r"vol-[0-9a-f]+", volume_id):
+        raise AwsCiError(f"not an EBS volume id: {volume_id!r}")
+    return f"/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_{volume_id.replace('-', '')}"
+
+
+def tailscale_join_script(auth_key: str, hostname: str) -> str:
+    """User data that joins the tailnet as an ephemeral tag:preview node (C6)."""
+    if not re.fullmatch(r"tskey-auth-[A-Za-z0-9-]+", auth_key):
+        raise AwsCiError("the Tailscale auth key is not a tskey-auth key")
+    return (
+        "\n# Join the tailnet as an ephemeral tag:preview node (C6).\n"
+        "curl -fsSL https://tailscale.com/install.sh | sh\n"
+        f"tailscale up --auth-key={shlex.quote(auth_key)} --hostname={shlex.quote('iterabase-' + hostname)} --ssh=false\n"
+    )
+
+
+def command_preview_down(args: argparse.Namespace) -> int:
+    """Terminate one preview host (PR closed or merged, C6)."""
+    region = require_region(args.region)
+    if not PREVIEW_NAME.match(args.name):
+        raise AwsCiError(f"preview name {args.name!r} is not pr-<number> or staging")
+    instance = find_preview(region, args.name)
+    if instance:
+        aws(["ec2", "terminate-instances", "--region", region, "--instance-ids", str(instance["InstanceId"])])
+    write_summary(f"### Preview {args.name}\n\n- {'terminated `' + str(instance['InstanceId']) + '`' if instance else 'no host'}\n")
     return 0
 
 
@@ -2292,6 +2399,17 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--run-id", required=True)
     cleanup.add_argument("--ami-ids", default="", help="region=ami-... map from the same run")
     cleanup.set_defaults(handler=command_cleanup_run)
+
+    up = subparsers.add_parser("preview-up", help="find or launch one preview host (C6)", parents=[common])
+    up.add_argument("--name", required=True, help="pr-<number> or staging")
+    up.add_argument("--run-id", required=True)
+    up.add_argument("--ssh-key", required=True, help="the repository preview SSH private key file")
+    up.add_argument("--tailscale-auth-key-file", default="")
+    up.set_defaults(handler=command_preview_up)
+
+    down = subparsers.add_parser("preview-down", help="terminate one preview host (C6)", parents=[common])
+    down.add_argument("--name", required=True)
+    down.set_defaults(handler=command_preview_down)
 
     prune = subparsers.add_parser("prune-images", help="keep the newest baked generations", parents=[common])
     prune.add_argument("--dry-run", action="store_true")

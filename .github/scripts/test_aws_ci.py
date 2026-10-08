@@ -1007,6 +1007,22 @@ class FixtureLaunchTests(unittest.TestCase):
         self.assertEqual([item["ImageId"] for item in aws_ci.prune_plan(images, aws_ci.IMAGE_CACHE_TAG)], ["ami-a"])
         self.assertEqual(aws_ci.prune_plan(images[:2], aws_ci.IMAGE_CACHE_TAG), [])
 
+    def test_preview_inputs_fail_closed(self) -> None:
+        import aws_ci
+
+        for name in ("pr-1", "pr-133", "staging"):
+            self.assertTrue(aws_ci.PREVIEW_NAME.match(name), name)
+        for name in ("pr-0", "pr-", "prod", "pr-1;rm"):
+            self.assertFalse(aws_ci.PREVIEW_NAME.match(name), name)
+        self.assertIn("--hostname=iterabase-pr-7", aws_ci.tailscale_join_script("tskey-auth-kAbC123-XyZ", "pr-7"))
+        with self.assertRaises(AwsCiError):
+            aws_ci.tailscale_join_script("tskey-auth-x; curl evil", "pr-7")
+        self.assertEqual(aws_ci.by_id_path("vol-0abc123"), "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol0abc123")
+        with self.assertRaises(AwsCiError):
+            aws_ci.by_id_path("/dev/sdf")
+        # Staging never expires on the preview TTL; PR previews do after 72 h.
+        self.assertGreater(aws_ci.preview_deadline("staging") - aws_ci.preview_deadline("pr-1"), dt.timedelta(days=365))
+
     def test_bake_seal_removes_builder_identity(self) -> None:
         import aws_ci
 
