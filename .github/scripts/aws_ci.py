@@ -1748,7 +1748,8 @@ def command_bake_ami(args: argparse.Namespace) -> int:
             return 0
         if primary in present and not args.force:
             # Only regional copies are missing: start them from the primary image.
-            source_image = str(tagged_ids(primary, "image", marker)[0]["ImageId"])
+            source_image = str(tagged_ids(primary, "image", marker, include_pending=True)[0]["ImageId"])
+            wait_for_image(primary, source_image, timeout_seconds=3000)
             copy_fixture_ami(primary, source_image, args.capacity, generation, marker,
                              tuple(region for region in regions if region not in present))
             write_outputs({"builder": ""})
