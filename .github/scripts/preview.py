@@ -254,6 +254,28 @@ def serve_on_tailnet(host: Host) -> dict[str, str]:
     return {"url": f"https://{dns}", "inference_url": f"https://{dns}:8443/v1"}
 
 
+PREVIEW_EVIDENCE = (
+    "sudo k3s kubectl get gitrepository,kustomization,helmrelease -A -o wide",
+    "sudo k3s kubectl get gitrepository -A -o yaml",
+    "sudo k3s kubectl get pods -A -o wide",
+    "sudo k3s kubectl get events -A --sort-by=.lastTimestamp | tail -60",
+    "sudo k3s kubectl logs -n flux-system deploy/source-controller --tail=120",
+)
+
+
+def cluster_evidence(host: Host) -> str:
+    """Best-effort cluster state for a failed preview apply; the host has no
+    runner-side diagnostics upload, so this goes to the job log."""
+    sections = []
+    for command in PREVIEW_EVIDENCE:
+        try:
+            output = host.ssh(command + " 2>&1 || true")
+        except subprocess.CalledProcessError as error:
+            output = f"(unavailable: {error})"
+        sections.append(f"::group::{command}\n{output}\n::endgroup::")
+    return "\n".join(sections)
+
+
 def deploy(args: argparse.Namespace) -> dict[str, str]:
     workdir = pathlib.Path(tempfile.mkdtemp(prefix="iterabase-preview-"))
     images = json.loads(args.images)
@@ -277,7 +299,11 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
         subprocess.run([str(forge), "apply", "--config", str(config), "--skip-chart", "--skip-gpu", "--skip-overlay",
                         "--skip-secrets", "--skip-flux"], env=env, check=True)
     import_images(host, images, args.source_sha, workdir)
-    subprocess.run([str(forge), "apply", "--config", str(config)], env=env, check=True)
+    try:
+        subprocess.run([str(forge), "apply", "--config", str(config)], env=env, check=True)
+    except subprocess.CalledProcessError:
+        print(cluster_evidence(host), file=sys.stderr)
+        raise
     hosted_model(host, args.llm_base_url, args.model_id, os.environ["PREVIEW_LLM_API_KEY"])
     return {**serve_on_tailnet(host), "chart_version": version}
 
