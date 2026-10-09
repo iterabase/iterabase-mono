@@ -5,8 +5,8 @@ A preview host joins the tailnet as an ephemeral tag:preview node and
 advertises two Tailscale Services that route through ingress-nginx:
 svc:<env>-app (Dashboard and API) and svc:<env>-inference (OpenAI-compatible
 gateway). This script mints the host's one-time key, creates or updates the
-two Services before deploy, deletes them on teardown, and prunes Services whose
-preview no longer exists. Credentials come from TAILSCALE_OAUTH_CLIENT_ID and
+two Services before deploy, deletes them and the host's tailnet node on
+teardown, and prunes Services and nodes whose preview no longer exists. Credentials come from TAILSCALE_OAUTH_CLIENT_ID and
 TAILSCALE_OAUTH_SECRET; no token or key is ever printed.
 """
 from __future__ import annotations
@@ -104,6 +104,39 @@ def services_down(request: Request, environment: str) -> list[str]:
     return names
 
 
+def device_hostname(environment: str) -> str:
+    service_names(environment)  # validates the environment
+    return f"iterabase-{environment}"
+
+
+def preview_devices(request: Request) -> list[dict[str, Any]]:
+    """Tailnet devices that are preview hosts (tag:preview, iterabase-<env> hostname)."""
+    devices = (request("GET", "/tailnet/-/devices", None) or {}).get("devices", [])
+    return [device for device in devices if HOST_TAG in device.get("tags", [])
+            and re.fullmatch(r"iterabase-(pr-[1-9][0-9]{0,6}|staging)", device.get("hostname", ""))]
+
+
+def devices_down(request: Request, environment: str) -> list[str]:
+    """Remove the preview's tailnet node now instead of waiting for ephemeral expiry."""
+    hostname = device_hostname(environment)
+    removed = []
+    for device in preview_devices(request):
+        if device["hostname"] == hostname:
+            request("DELETE", f"/device/{urllib.parse.quote(str(device['id']), safe='')}", None)
+            removed.append(device.get("name") or hostname)
+    return removed
+
+
+def devices_prune(request: Request, live: set[str]) -> list[str]:
+    removed = []
+    for device in preview_devices(request):
+        if device["hostname"].removeprefix("iterabase-") in live:
+            continue
+        request("DELETE", f"/device/{urllib.parse.quote(str(device['id']), safe='')}", None)
+        removed.append(device.get("name") or device["hostname"])
+    return removed
+
+
 def services_prune(request: Request, live: set[str]) -> list[str]:
     """Delete preview Services whose environment has no live preview host."""
     removed = []
@@ -138,10 +171,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "up":
             print(" ".join(services_up(request, args.environment)))
         elif args.command == "down":
-            print(" ".join(services_down(request, args.environment)))
+            print(" ".join(services_down(request, args.environment) + devices_down(request, args.environment)))
         else:
             live = {item for item in args.live.split(",") if item}
-            print(" ".join(services_prune(request, live)) or "no orphaned preview Services")
+            print(" ".join(services_prune(request, live) + devices_prune(request, live)) or "no orphaned preview Services or devices")
     except TailscaleError as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1

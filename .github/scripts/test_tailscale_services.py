@@ -4,12 +4,15 @@ import tailscale_services as ts
 
 
 class FakeAPI:
-    def __init__(self, services=None):
+    def __init__(self, services=None, devices=None):
         self.calls = []
         self.services = services or []
+        self.devices = devices or []
 
     def __call__(self, method, path, body=None):
         self.calls.append((method, path, body))
+        if method == "GET" and path.endswith("/devices"):
+            return {"devices": self.devices}
         if method == "GET":
             return {"vipServices": self.services}
         if method == "POST":
@@ -53,6 +56,22 @@ class TailscaleServicesTests(unittest.TestCase):
         self.assertEqual(removed, ["svc:pr-1-app"])
         self.assertEqual([c for c in fake.calls if c[0] == "DELETE"],
                          [("DELETE", "/tailnet/-/vip-services/svc:pr-1-app", None)])
+
+    def test_down_and_prune_remove_preview_nodes_only(self):
+        devices = [
+            {"id": "1", "hostname": "iterabase-pr-7", "name": "iterabase-pr-7.tail.ts.net", "tags": [ts.HOST_TAG]},
+            {"id": "2", "hostname": "iterabase-pr-8", "name": "iterabase-pr-8.tail.ts.net", "tags": [ts.HOST_TAG]},
+            {"id": "3", "hostname": "iterabase-staging", "name": "iterabase-staging.tail.ts.net", "tags": [ts.HOST_TAG]},
+            {"id": "4", "hostname": "iterabase-pr-9", "name": "laptop", "tags": []},          # untagged: not a preview
+            {"id": "5", "hostname": "nuno-laptop", "name": "nuno-laptop", "tags": [ts.HOST_TAG]},
+        ]
+        fake = FakeAPI(devices=devices)
+        self.assertEqual(ts.devices_down(fake, "pr-7"), ["iterabase-pr-7.tail.ts.net"])
+        self.assertEqual([c for c in fake.calls if c[0] == "DELETE"], [("DELETE", "/device/1", None)])
+
+        fake = FakeAPI(devices=devices)
+        self.assertEqual(ts.devices_prune(fake, {"pr-8", "staging"}), ["iterabase-pr-7.tail.ts.net"])
+        self.assertEqual([c[1] for c in fake.calls if c[0] == "DELETE"], ["/device/1"])
 
     def test_host_key_is_ephemeral_preauthorized_and_tagged(self):
         fake = FakeAPI()
