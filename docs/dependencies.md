@@ -2,7 +2,7 @@
 
 - **Owner:** repository root
 - **Governing config:** [`.github/dependabot.yml`](../.github/dependabot.yml)
-- **Last reviewed:** 2026-10-04
+- **Last reviewed:** 2026-10-10
 - **Tracking:** HOR-608
 
 ## Posture
@@ -19,6 +19,19 @@ The per-entry `schedule` is required by the config schema and gates only version
 updates, so it is inert while the limit is zero. `cooldown: default-days: 3`
 makes the built-in default window explicit.
 
+**Leave `target-branch` unset, including when the default branch is `master`.**
+GitHub's [options reference](https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#target-branch)
+states that when this option is defined, the entry's options no longer apply to
+security updates: those always use the repository default branch. Omitting the
+selector lets the per-directory security groups and labels apply. Setting it to
+`master` does not add a security-update safeguard; it disables this steering.
+
+`make dependabot-check` guards the implicit default branch, security-only limits,
+and one-entry-per-manifest inventory in local checks and the required
+`ci-contract` job of `ci.yml`, including full validation. These policy tests are
+not proof of GitHub's live behavior; the post-merge observation below remains
+mandatory.
+
 ## Covered ecosystems
 
 | Ecosystem | Directories | Rationale |
@@ -27,10 +40,12 @@ makes the built-in default window explicit.
 | `gomod` | `control-plane`, `inference-gateway`, `forge`, `forge/test/e2e`, `testkit/e2e`, `control-plane/test/e2e`, `charts/test/e2e`, `.github/tools`, `.github/tools/control-plane` | Nine independently buildable modules; a Go bump must keep `make workspace-check` clean. |
 | `github-actions` | `/` | Inventory entry only: every external action is SHA-pinned and GitHub Actions alerts require a semantic-version reference, so there is no automated advisory signal. SHA refreshes stay manual. |
 
-Each entry groups only its own directory's security updates
-(`applies-to: security-updates`, `patterns: ["*"]`). A config file overrides
-repository-level security-update grouping, so configured directories no longer
-converge onto one version. The precedent is PR #117: one group moved
+Each entry declares a group for only its own directory's security updates
+(`applies-to: security-updates`, `patterns: ["*"]`). These rules override
+repository-level security-update grouping only when the entry applies to
+security updates (in particular, `target-branch` must be absent). Per-directory
+behavior must be confirmed after merge, not inferred from valid YAML. The
+precedent is PR #117: one group moved
 `control-plane/harness`, `control-plane/ui`, and `control-plane/tool-runner` to
 exactly `vitest 5.0.2` while the advisory's minimum patched version was
 `4.1.11` (`GHSA-82fw-gwwq-j7x9`). The harness move had no advisory purpose
@@ -86,11 +101,35 @@ ecosystem label; the values in the config preserve the repository's existing
 
 ## Post-merge verification
 
-HOR-608 acceptance requires observing the first security-update pull request
-after this config lands: it must be per-directory and must not converge a
-directory onto a version above its minimum patched version. No version-update
-pull request may appear in any ecosystem. The observation is recorded on the
-ticket before it is accepted.
+The first observation after PR #127 merged failed: [PR #132](https://github.com/iterabase/iterabase-mono/pull/132)
+(2026-10-06), then its replacement [PR #135](https://github.com/iterabase/iterabase-mono/pull/135)
+(2026-10-09), grouped harness, tool-runner, and UI into one security PR.
+`source-map-js` moved from 1.2.1 to the advisory minimum 1.2.2, so the failed
+condition was directory isolation, not the version floor. [Update run 37430624324](https://github.com/iterabase/iterabase-mono/actions/runs/37430624324)
+had `security-updates-only: true`, the fallback `npm_and_yarn` group, and all
+three source directories rather than the configured `security` group. The
+original `target-branch: master` on every entry made those options inapplicable
+to security updates. This remediation removes the selector; it does not waive
+the failed observation or change repository/organization security settings.
+
+Before accepting HOR-608 after the remediation merges:
+
+1. Record the remediation merge SHA and the subsequent Dependabot run/PR URLs
+   on the ticket. Confirm that new runs use a source revision containing the
+   fix, one configured directory per job, and the configured `security` group
+   rather than the cross-directory fallback `npm_and_yarn` group. A rebase of
+   an older PR is not proof that a new job used the corrected configuration.
+2. Inspect the first new security-update PR produced with the corrected config:
+   it must be per-directory and must not converge a component onto a version
+   above its minimum patched version. Compare the actual changed manifest paths
+   and versions with each advisory's patched floor, not just the PR title.
+3. Observe that no version-update PR appears in any ecosystem over the first
+   weeks after merge; record the observation dates and results on the ticket.
+
+Criteria 2 and 4 remain open until this evidence exists (or an explicit founder
+exception is recorded). Valid YAML, passing CI, or no trigger alone does not
+satisfy the security-PR observation. The four Moby dismissals remain valid; this
+config remediation does not remediate the remaining package advisories.
 
 ## Alert dispositions
 

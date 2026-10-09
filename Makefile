@@ -6,7 +6,7 @@ GO_MODULE_FILES := $(foreach module,$(GO_MODULES),$(module)/go.mod $(wildcard $(
 WORKSPACE_FILES := go.work go.work.sum $(GO_MODULE_FILES)
 CONTAINER_TOOL ?= docker
 
-.PHONY: workspace-sync workspace-check workspace-list fmt-check vet build test testkit-test testkit-kind-example e2e-catalogue e2e-catalogue-check lint codegen-check charts-check release-check bump release-security-audit source-authority-check source-authority-audit docker-build check install-hooks pre-commit clean
+.PHONY: workspace-sync workspace-check workspace-list fmt-check vet build test testkit-test testkit-kind-example e2e-catalogue e2e-catalogue-check lint codegen-check charts-check dependabot-check release-check bump release-security-audit source-authority-check source-authority-audit docker-build check install-hooks pre-commit clean
 
 workspace-sync:
 	go work sync
@@ -88,6 +88,9 @@ codegen-check:
 charts-check:
 	$(MAKE) -C charts check
 
+dependabot-check:
+	python3 .github/scripts/test_dependabot.py
+
 # Selector, release planning, AWS substrate, remote-content and cache contracts.
 release-check:
 	python3 .github/scripts/test_affected.py
@@ -128,12 +131,12 @@ docker-build:
 	$(CONTAINER_TOOL) build -t control-plane-tool-runner:latest -f control-plane/tool-runner/Dockerfile control-plane/tool-runner
 	$(CONTAINER_TOOL) build -t inference-gateway:latest inference-gateway
 
-check: workspace-check fmt-check vet build test lint codegen-check charts-check release-check source-authority-check docker-build
+check: workspace-check fmt-check vet build test lint codegen-check charts-check dependabot-check release-check source-authority-check docker-build
 
 install-hooks:
 	git config core.hooksPath .githooks
 
-pre-commit: workspace-check fmt-check vet build lint release-check source-authority-check
+pre-commit: workspace-check fmt-check vet build lint dependabot-check release-check source-authority-check
 
 clean:
 	$(MAKE) -C control-plane clean
