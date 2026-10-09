@@ -72,6 +72,7 @@ jobs:
       contents: read
       id-token: write
       packages: write
+      deployments: write
       actions: read
       issues: write
     uses: ./.github/workflows/full-validation.yml
