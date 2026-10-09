@@ -271,9 +271,21 @@ def serve_on_tailnet(host: Host, environment: str, hosts: dict[str, str]) -> dic
     if not re.fullmatch(r"[0-9a-f.:]+", ingress):
         raise PreviewError(f"preview ingress-nginx has no cluster address: {ingress!r}")
     target = f"http://[{ingress}]:80" if ":" in ingress else f"http://{ingress}:80"
+    # Each surface must answer through ingress-nginx for its Service name
+    # before it is advertised; a miss here is a routing defect, not a tailnet one.
+    health = {"app": "/healthz", "inference": "/health"}
+    for surface, path in health.items():
+        code = host.ssh(f"curl -s -o /dev/null -w '%{{http_code}}' -m 10 -H {shlex.quote('Host: ' + hosts[surface])} "
+                        f"{shlex.quote(target + path)} || true")
+        if code != "200":
+            evidence = host.ssh("sudo k3s kubectl get ingress -A -o wide 2>&1; sudo k3s kubectl get ingress -A -o yaml 2>&1 "
+                                "| grep -E '^ *(name|host|ingressClassName|path):' || true")
+            raise PreviewError(f"{hosts[surface]}{path} through ingress-nginx returned {code!r}\n{evidence}")
     host.ssh("sudo tailscale serve reset")
     for surface in ("app", "inference"):
         host.ssh(f"sudo tailscale serve --bg --service=svc:{environment}-{surface} --https=443 {shlex.quote(target)} >/dev/null")
+    status = host.ssh("sudo tailscale serve status 2>&1 || true")
+    print(f"tailscale serve status:\n{status}", file=sys.stderr)
     return {"url": f"https://{hosts['app']}", "inference_url": f"https://{hosts['inference']}/v1"}
 
 
