@@ -41,7 +41,7 @@ forge destroy --purge-data-storage --reboot --yes # explicit empty-VG/PV decommi
 
 `spec.overlay.repo` is an `https://` fork or a `file://` path on the host. With `spec.flux.enabled`, Flux's source-controller must read the same commit Forge applied. It fetches an `https://` fork directly, with a token Secret when one is configured. For a `file://` overlay, Forge serves the overlay from the node over read-only SSH (DES-HOR-632-01). On every apply it:
 
-- refreshes a bare mirror of `overlay.ref` at `/var/lib/iterabase/overlay-source/overlay.git`;
+- refreshes a bare mirror of `overlay.ref` at `/var/lib/iterabase-overlay-source/overlay.git`;
 - installs one fresh ed25519 key for the dedicated `iterabase-overlay` user. The key is restricted with `restrict`, a forced `git-upload-pack` on that mirror, and `from=` the cluster pod CIDRs, so it gives no shell, no forwarding, no writes and no other paths;
 - points the `overlay` GitRepository at `ssh://iterabase-overlay@<node InternalIP>/…` with an `overlay-git-ssh` Secret that holds the key and the node's own ed25519 host key as `known_hosts`.
 
