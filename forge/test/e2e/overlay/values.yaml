@@ -1,0 +1,23 @@
+# Base Helm values — E2E TEST FIXTURE (minimal).
+#
+# This `e2e` branch is a test fixture for forge's e2e suites (overlay-e2e,
+# flux-e2e). `master` holds the bare-metal PROD recipe (HOR-299): real values
+# with `required` placeholders that fail loudly until a client fork fills
+# values.client.yaml — by design not deployable as-is. A cloud CI VM (DigitalOcean
+# droplet, IPv4, no Cloudflare, no real domain) can't deploy the prod recipe, so
+# this fixture is intentionally minimal: no values => the iterabase-platform
+# chart's own E2E-friendly defaults apply (self-signed issuer, IPv4, MetalLB and
+# external-dns disabled) and it deploys cleanly on a cloud VM.
+#
+# This validates forge's MECHANICS (clone -> helm -f values.yaml -f
+# values.client.yaml -> kubectl apply -k crds/client/) on a real host. The prod
+# recipe's deployability is validated by HOR-299's real OPO1 client fork.
+#
+# forge applies:  helm -f values.yaml -f values.client.yaml
+
+# Forge's cloud E2E disables k3s ServiceLB. Use a deterministic NodePort edge;
+# the earlier migration-source stage separately proves MetalLB/L2 delivery.
+ingress-nginx:
+  controller:
+    service:
+      type: NodePort

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -22,13 +21,6 @@ type catalogEntry struct {
 	ModelID    string `json:"model_id"`
 	Available  bool   `json:"available"`
 	BackendURL string `json:"backend_url"`
-}
-
-func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
 }
 
 var keyRe = regexp.MustCompile(`API key \(([^)]+)\): (\S+)`)

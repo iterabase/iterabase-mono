@@ -1,0 +1,13 @@
+# Product base CRD INSTANCES — upstream product config (clients never edit).
+#
+# Empty in this scaffold. Broad-default permissions are engine-built-in (HOR-243),
+# so no PermissionPolicy instance is needed in v1. Model/ModelBackend/IdentityMapping
+# instances are deployment/client-specific and live in crds/client/.
+#
+# CRD *definitions* ship with the control-plane Helm chart — this overlay carries
+# instances only.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+metadata:
+  name: overlay-crds-base
+resources: []

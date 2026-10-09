@@ -758,13 +758,6 @@ func buildForge(t *testing.T) string {
 func runForgeE(bin, forgeHome string, args ...string) (string, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), "FORGE_HOME="+forgeHome)
-	// Required cloud E2E uses the workflow's ephemeral GitHub token for the
-	// public exact-overlay clone when no explicit Forge token was supplied. This
-	// avoids anonymous smart-HTTP edge failures from short-lived cloud IPs while
-	// exercising Forge's credential-helper path without persisting the token.
-	if os.Getenv("FORGE_OVERLAY_TOKEN") == "" && os.Getenv("GITHUB_TOKEN") != "" {
-		cmd.Env = append(cmd.Env, "FORGE_OVERLAY_TOKEN="+os.Getenv("GITHUB_TOKEN"))
-	}
 	// Stream Forge's progress as it runs so a hung apply shows where it stopped;
 	// the captured copy still feeds marker assertions.
 	var captured bytes.Buffer
