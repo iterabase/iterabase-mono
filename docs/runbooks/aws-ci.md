@@ -870,7 +870,7 @@ Previews (C6, C9, C12) need the following beyond Part 1 and Part 2:
   An `InvalidInput` error saying the role already exists is success.
 - **Repository secrets:** `PREVIEW_SSH_KEY` (the one runner key authorized on
   preview hosts), `TAILSCALE_OAUTH_CLIENT_ID` and `TAILSCALE_OAUTH_SECRET` (an
-  OAuth client with the **Auth Keys: write** and **Services: write** scopes,
+  OAuth client with the **Auth Keys: write**, **Services: write** and **Devices: Core (write)** scopes,
   tagged `tag:preview`), and `PREVIEW_LLM_API_KEY` (the preview inference key;
   for the internal-prod gateway it is a `gateway`-scope key on the
   `preview-ci` service account).
@@ -891,8 +891,9 @@ Previews (C6, C9, C12) need the following beyond Part 1 and Part 2:
   ```
   No rule has `tag:preview` as a source, so preview hosts reach nothing else
   on the tailnet. Preview hosts join as ephemeral nodes; each preview's two
-  Services are created by the preview job, deleted on teardown, and pruned by
-  the reaper when their host is gone.
+  Services are created by the preview job. Teardown deletes them and the
+  host's tailnet node, and the reaper prunes Services and nodes whose host is
+  gone, so nothing waits for ephemeral-node expiry.
 - **Teardown.** `preview.yml` terminates a `pr-<N>` host when its pull request
   closes. A preview idle for 72 hours is removed by the reaper through its
   deadline. `staging` carries a far-future deadline and is removed only by
