@@ -273,7 +273,9 @@ def serve_on_tailnet(host: Host, environment: str, hosts: dict[str, str]) -> dic
     target = f"http://[{ingress}]:80" if ":" in ingress else f"http://{ingress}:80"
     # Each surface must answer through ingress-nginx for its Service name
     # before it is advertised; a miss here is a routing defect, not a tailnet one.
-    health = {"app": "/healthz", "inference": "/health"}
+    # Paths only the real backends serve (ingress-nginx's default backend also
+    # answers /healthz), so a 200 proves the Ingress rule matched.
+    health = {"app": "/readyz", "inference": "/health"}
     for surface, path in health.items():
         code = host.ssh(f"curl -s -o /dev/null -w '%{{http_code}}' -m 10 -H {shlex.quote('Host: ' + hosts[surface])} "
                         f"{shlex.quote(target + path)} || true")
