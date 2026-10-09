@@ -113,7 +113,7 @@ only the smoke scenarios, even when it moves GPU driver inputs. Add the
 
 | Job | Selected by | Runs |
 | --- | --- | --- |
-| `ci-contract` | `.github/**`, `release/**`, `testkit/**`, version changes | `make testkit-test` and `make release-check` (selector, release plan, bump, AWS substrate, remote-content and cache contracts) |
+| `ci-contract` | `.github/**`, `release/**`, `testkit/**`, version changes | `make testkit-test`, `make release-check` (selector, release plan, bump, AWS substrate, remote-content and cache contracts), and `make dependabot-check` (security-only per-directory policy) |
 | `control-plane` | `control-plane/**`, protobufs | format, lint, build, unit, integration and envtest |
 | `dashboard` | `control-plane/ui/**` | typecheck, component tests, production build |
 | `harness` | `control-plane/harness/**`, protobufs | typecheck, tests, the required Linux isolation gate |
@@ -349,6 +349,7 @@ compiled catalogue is the only scenario list.
 ```bash
 make testkit-test     # shared mechanics, owner examples, compiled catalogue
 make release-check    # selector, release plan, bump, AWS substrate, remote content, caches
+make dependabot-check # security-only inventory + implicit default-branch guard
 make -C charts check  # includes the appVersion link lint
 go run ./testkit/e2e/cmd/e2e-catalogue --format json --output /tmp/catalogue.json
 python3 .github/scripts/affected.py --catalogue /tmp/catalogue.json --base origin/master

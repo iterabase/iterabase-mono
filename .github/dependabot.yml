@@ -9,6 +9,12 @@
 # `schedule` is required by the config schema but gates version updates only, so
 # it is inert while the limit is zero.
 #
+# Do not set `target-branch`, even to master: GitHub excludes entries with that
+# option from security-update configuration. Security updates always target the
+# repository default branch; leaving the selector unset lets the groups and
+# labels below apply instead of falling back to cross-directory repo grouping.
+# See docs/dependencies.md for the failed post-merge observation and reference.
+#
 # Groups: each entry groups only its own directory's security updates
 # (`applies-to: security-updates`, `patterns: ["*"]`). A config file overrides
 # repository-level security-update grouping, so configured directories no longer
@@ -33,7 +39,6 @@ updates:
   # npm lockfile — control-plane harness.
   - package-ecosystem: npm
     directory: /control-plane/harness
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -51,7 +56,6 @@ updates:
   # npm lockfile — control-plane dashboard (ui).
   - package-ecosystem: npm
     directory: /control-plane/ui
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -69,7 +73,6 @@ updates:
   # npm lockfile — control-plane tool runner.
   - package-ecosystem: npm
     directory: /control-plane/tool-runner
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -87,7 +90,6 @@ updates:
   # npm lockfile — control-plane end-to-end Playwright harness.
   - package-ecosystem: npm
     directory: /control-plane/test/e2e/playwright
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -105,7 +107,6 @@ updates:
   # npm lockfile — protobuf tooling under the shared .github tools.
   - package-ecosystem: npm
     directory: /.github/tools/protobuf
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -123,7 +124,6 @@ updates:
   # Go module — control-plane.
   - package-ecosystem: gomod
     directory: /control-plane
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -141,7 +141,6 @@ updates:
   # Go module — inference-gateway.
   - package-ecosystem: gomod
     directory: /inference-gateway
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -159,7 +158,6 @@ updates:
   # Go module — forge.
   - package-ecosystem: gomod
     directory: /forge
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -177,7 +175,6 @@ updates:
   # Go module — forge end-to-end harness.
   - package-ecosystem: gomod
     directory: /forge/test/e2e
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -195,7 +192,6 @@ updates:
   # Go module — shared testkit end-to-end mechanics.
   - package-ecosystem: gomod
     directory: /testkit/e2e
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -213,7 +209,6 @@ updates:
   # Go module — control-plane end-to-end harness.
   - package-ecosystem: gomod
     directory: /control-plane/test/e2e
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -231,7 +226,6 @@ updates:
   # Go module — charts end-to-end harness.
   - package-ecosystem: gomod
     directory: /charts/test/e2e
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -249,7 +243,6 @@ updates:
   # Go module — shared .github tooling.
   - package-ecosystem: gomod
     directory: /.github/tools
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -267,7 +260,6 @@ updates:
   # Go module — control-plane .github tooling.
   - package-ecosystem: gomod
     directory: /.github/tools/control-plane
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -292,7 +284,6 @@ updates:
   # from composite actions under `.github/actions/`.
   - package-ecosystem: github-actions
     directory: /
-    target-branch: master
     schedule:
       interval: weekly
     open-pull-requests-limit: 0

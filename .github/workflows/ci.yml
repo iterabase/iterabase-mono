@@ -83,6 +83,8 @@ jobs:
         run: make testkit-test
       - name: Selector, release, remote-content and AWS substrate contracts
         run: make release-check
+      - name: Test Dependabot security-update steering
+        run: make dependabot-check
 
   control-plane:
     name: control-plane

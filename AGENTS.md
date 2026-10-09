@@ -33,7 +33,7 @@ See [`docs/source-authority.md`](docs/source-authority.md) for the cutover audit
 
 - Dependabot is configured security-updates-only in [`.github/dependabot.yml`](.github/dependabot.yml). Every entry sets `open-pull-requests-limit: 0`, which disables version updates for that ecosystem while security-update pull requests remain exempt. Version updates, auto-merge, and `docker`, `helm`, `docker-compose`, or `devcontainers` entries require a new recorded decision.
 - Dependency pull requests are ticket-backed and are never self-merged. A Dependabot pull request is a diff source; only the user approves and merges, and required CI is a floor, not an approval.
-- Security updates are grouped per configured directory. Do not add `group-by: dependency-name`, repository-level, or organization-level grouping that can converge components onto a version above the minimum patched version.
+- Security updates are grouped per configured directory. Leave `target-branch` unset, even for `master`: setting it makes the entry's options inapplicable to security updates, which always target the repository default branch. `make dependabot-check` guards this policy; post-merge observation still proves the actual PR shape. Do not add `group-by: dependency-name`, repository-level, or organization-level grouping that can converge components onto a version above the minimum patched version.
 - GitHub Actions SHAs are refreshed manually in a ticket-backed change, never by a scheduled version-update pull request.
 - Advisory disposition uses reachability evidence. Verify vendor-shrinkwrap-pinned packages against the installed and shipped on-disk version, not `npm audit`; dismiss untriggered advisories with the documented reason and record the evidence. Dismissed Moby daemon advisories and their re-entry triggers live in [`control-plane/docs/moby-test-dependency-risk.md`](control-plane/docs/moby-test-dependency-risk.md).
 - Base-image and Dockerfile-frontend digests are governed by [`.github/inputs/remote-content.json`](.github/inputs/remote-content.json) and `.github/scripts/remote_content.py validate`, not by Dependabot.
@@ -68,6 +68,7 @@ make test             # component tests + required Linux harness isolation + For
 make lint             # all Go modules, including Forge E2E
 make codegen-check    # protobuf freshness
 make charts-check     # Helm/static chart validation
+make dependabot-check # security-only inventory + implicit default-branch guard
 make release-check    # selector, release plan, version bump, AWS substrate, remote-content and cache contracts
 make release-security-audit # authenticated GitHub environment, deploy-key, tag-ruleset, and workflow-permission audit
 make bump TARGET=<target> VERSION=<x.y.z> # move every version field linked to one release target
