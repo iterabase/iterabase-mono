@@ -118,6 +118,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+      - name: Log in to Docker Hub (authenticated pull limit)
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Verify the exact source
         run: test "$(git rev-parse HEAD)" = '${{ needs.select.outputs.source_sha }}'
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -203,6 +208,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+      - name: Log in to Docker Hub (authenticated pull limit)
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: e2e-selection
@@ -244,8 +254,12 @@ jobs:
             --release-targets '${{ inputs.release_targets }}'
       - name: Run ${{ matrix.id }}
         env:
-          E2E_SKIP_BUILD_DEPS: "true"
-          ITERABASE_E2E_DIAGNOSTICS: ${{ runner.temp }}/diagnostics  # the inputs step built the chart dependencies once
+          E2E_SKIP_BUILD_DEPS: "true" # the inputs step built the chart dependencies once
+          ITERABASE_E2E_DIAGNOSTICS: ${{ runner.temp }}/diagnostics
+          # Kind nodes pull chart images with their own containerd (testkit
+          # gives it these credentials); the runner's docker login does not.
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: make -C '${{ matrix.owner }}' '${{ matrix.make_target }}'
       - name: Keep the scenario's diagnostics
         if: failure() || cancelled()
@@ -289,6 +303,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+      - name: Log in to Docker Hub (authenticated pull limit)
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: e2e-selection
@@ -373,6 +392,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+      - name: Log in to Docker Hub (authenticated pull limit)
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - uses: ./.github/actions/setup-go
         with:
           go-version: 1.26.5
