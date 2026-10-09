@@ -223,15 +223,35 @@ spec:
     host.ssh("sudo k3s kubectl apply -f -", stdin=manifest)
 
 
-def serve_on_tailnet(host: Host) -> str:
-    """Expose the ingress on the tailnet over HTTPS and return the preview URL."""
-    ingress = host.ssh(f"sudo k3s kubectl get svc -n {NAMESPACE} -l app.kubernetes.io/component=controller "
-                       "-o jsonpath='{.items[0].spec.clusterIP}'")
-    if not re.fullmatch(r"[0-9a-f.:]+", ingress):
-        raise PreviewError(f"preview ingress has no cluster address: {ingress!r}")
-    host.ssh(f"sudo tailscale serve --bg --https=443 http://{shlex.quote(ingress)}:80 >/dev/null")
+# What the tailnet name serves: the control-plane API (Dashboard at /, API at
+# /v1) on 443 and the OpenAI-compatible inference gateway on 8443. Both go to
+# the Services directly, so the chart's ingress host names (which only E2E
+# exercises) never have to match the preview's ts.net name.
+TAILNET_SERVICES = (
+    (443, "app.kubernetes.io/name=control-plane,app.kubernetes.io/component=api"),
+    (8443, "app.kubernetes.io/name=inference-gateway"),
+)
+
+
+def service_target(host: Host, selector: str) -> str:
+    """The Service's cluster address and http port, with the scheme it actually serves."""
+    address = host.ssh(f"sudo k3s kubectl get svc -n {NAMESPACE} -l {shlex.quote(selector)} -o jsonpath="
+                       "'{.items[0].spec.clusterIP}:{.items[0].spec.ports[?(@.name==\"http\")].port}'")
+    if not re.fullmatch(r"[0-9a-f.:]+:\d+", address):
+        raise PreviewError(f"no Service with an http port for {selector}: {address!r}")
+    # internalTLS (when an overlay enables it) serves TLS on the same port.
+    tls = host.ssh(f"curl -sk -o /dev/null -w '%{{http_code}}' -m 5 https://{address}/healthz || true")
+    return f"https+insecure://{address}" if tls == "200" else f"http://{address}"
+
+
+def serve_on_tailnet(host: Host) -> dict[str, str]:
+    """Expose the API and the inference gateway on the tailnet over HTTPS; return their URLs."""
+    host.ssh("sudo tailscale serve reset")
+    for port, selector in TAILNET_SERVICES:
+        target = service_target(host, selector)
+        host.ssh(f"sudo tailscale serve --bg --https={port} {shlex.quote(target)} >/dev/null")
     dns = host.ssh("tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"Self\"][\"DNSName\"].rstrip(\".\"))'")
-    return f"https://{dns}"
+    return {"url": f"https://{dns}", "inference_url": f"https://{dns}:8443/v1"}
 
 
 def deploy(args: argparse.Namespace) -> dict[str, str]:
@@ -259,8 +279,7 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
     import_images(host, images, args.source_sha, workdir)
     subprocess.run([str(forge), "apply", "--config", str(config)], env=env, check=True)
     hosted_model(host, args.llm_base_url, args.model_id, os.environ["PREVIEW_LLM_API_KEY"])
-    url = serve_on_tailnet(host)
-    return {"url": url, "chart_version": version}
+    return {**serve_on_tailnet(host), "chart_version": version}
 
 
 def main(argv: list[str] | None = None) -> int:
