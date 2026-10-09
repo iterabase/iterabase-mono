@@ -31,7 +31,7 @@ func TestFluxOverlayServeScriptRestrictsTheKey(t *testing.T) {
 	want := `restrict,from="10.42.0.0/16,fd00:42::/56",command="git-upload-pack '/var/lib/iterabase-overlay-source/overlay.git'" ` + publicKey
 	assert.Contains(t, script, shellQuote(want))
 	assert.Contains(t, script, `--shell /usr/bin/git-shell`)
-	assert.Contains(t, script, `usermod -p '*' "$user"`)
+	assert.Contains(t, script, `usermod -d "$root" -s /usr/bin/git-shell -p '*' "$user"`, "an existing user converges to the current home")
 	assert.Contains(t, script, `clone --quiet --bare --single-branch --branch "$ref" "file://$source"`)
 	assert.Contains(t, script, `source='/srv/overlay'`)
 	assert.Contains(t, script, `ref='e2e'`)

@@ -82,8 +82,9 @@ ref=%[5]s
 if ! id -u "$user" >/dev/null 2>&1; then
   useradd --system --home-dir "$root" --no-create-home --shell /usr/bin/git-shell "$user"
 fi
+# Converge an existing user too (an earlier apply may have used another home).
 # No password and not locked: sshd accepts only the restricted key below.
-usermod -p '*' "$user"
+usermod -d "$root" -s /usr/bin/git-shell -p '*' "$user"
 install -d -o root -g root -m 0755 "$root" "$root/.ssh"
 
 # Refresh the bare mirror of exactly the configured ref, then swap it in.
