@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"k8s.io/client-go/tools/clientcmd"
@@ -19,11 +20,20 @@ import (
 // expose only pinned SSH; all client-go and kubectl traffic traverses one
 // fixture-scoped direct-tcpip tunnel to the host-local K3s API.
 type sshAPITunnel struct {
+	address  string
+	keyPath  string
+	mu       sync.Mutex
 	client   *ssh.Client
 	listener net.Listener
 	done     chan struct{}
+	stop     chan struct{}
 	stopOnce sync.Once
 }
+
+// sshTunnelKeepalive keeps the runner's outbound NAT mapping alive (GitHub
+// runners drop idle flows after about four minutes without a reset) and detects
+// a dead connection so the tunnel re-dials instead of stalling watches.
+const sshTunnelKeepalive = 20 * time.Second
 
 // fixturesByForgeHome lets runForgeE re-bind the kubeconfig Forge refreshes on
 // every apply without each stage remembering to do so.
@@ -79,7 +89,7 @@ func (fixture *hostFixture) dialHostLocal(port int) (net.Conn, error) {
 	if tunnel == nil {
 		return nil, fmt.Errorf("fixture API tunnel is not open")
 	}
-	return tunnel.client.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	return tunnel.current().Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 }
 
 func (fixture *hostFixture) stopAPITunnel() {
@@ -88,7 +98,7 @@ func (fixture *hostFixture) stopAPITunnel() {
 	if fixture.apiTunnel == nil {
 		return
 	}
-	fixture.apiTunnel.stop()
+	fixture.apiTunnel.close()
 	fixture.apiTunnel = nil
 }
 
@@ -100,27 +110,84 @@ func (state *gpuFixtureState) bindKubeconfigTunnel(t *testing.T) {
 }
 
 func startSSHAPITunnel(address, keyPath string) (*sshAPITunnel, error) {
+	client, err := dialHostLocalAPI(address, keyPath)
+	if err != nil {
+		return nil, err
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("listen for local Kubernetes API traffic: %w", err)
+	}
+	tunnel := &sshAPITunnel{address: address, keyPath: keyPath, client: client, listener: listener,
+		done: make(chan struct{}), stop: make(chan struct{})}
+	go tunnel.accept()
+	go tunnel.keepalive()
+	return tunnel, nil
+}
+
+// dialHostLocalAPI fails before a tunnel is used when the host-local K3s API is
+// not reachable through the authenticated fixture connection.
+func dialHostLocalAPI(address, keyPath string) (*ssh.Client, error) {
 	client, err := sshDial(address, keyPath)
 	if err != nil {
 		return nil, err
 	}
-	// Fail before returning a local listener when the host-local K3s API is not
-	// reachable through the authenticated fixture connection.
 	probe, err := client.Dial("tcp", "127.0.0.1:6443")
 	if err != nil {
 		client.Close()
 		return nil, fmt.Errorf("dial host-local K3s API: %w", err)
 	}
 	probe.Close()
+	return client, nil
+}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("listen for local Kubernetes API traffic: %w", err)
+func (tunnel *sshAPITunnel) current() *ssh.Client {
+	tunnel.mu.Lock()
+	defer tunnel.mu.Unlock()
+	return tunnel.client
+}
+
+// redial replaces a dead SSH connection. Closing the old client fails its
+// forwarded connections promptly, so clients retry instead of hanging.
+func (tunnel *sshAPITunnel) redial(dead *ssh.Client) {
+	tunnel.mu.Lock()
+	defer tunnel.mu.Unlock()
+	if tunnel.client != dead {
+		return // another caller already replaced it
 	}
-	tunnel := &sshAPITunnel{client: client, listener: listener, done: make(chan struct{})}
-	go tunnel.accept()
-	return tunnel, nil
+	_ = dead.Close()
+	if client, err := dialHostLocalAPI(tunnel.address, tunnel.keyPath); err == nil {
+		tunnel.client = client
+	}
+}
+
+func (tunnel *sshAPITunnel) keepalive() {
+	ticker := time.NewTicker(sshTunnelKeepalive)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-tunnel.stop:
+			return
+		case <-ticker.C:
+		}
+		client := tunnel.current()
+		replied := make(chan error, 1)
+		go func() {
+			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+			replied <- err
+		}()
+		select {
+		case err := <-replied:
+			if err != nil {
+				tunnel.redial(client)
+			}
+		case <-time.After(sshTunnelKeepalive):
+			tunnel.redial(client)
+		case <-tunnel.stop:
+			return
+		}
+	}
 }
 
 func (tunnel *sshAPITunnel) accept() {
@@ -130,7 +197,12 @@ func (tunnel *sshAPITunnel) accept() {
 		if err != nil {
 			return
 		}
-		remote, err := tunnel.client.Dial("tcp", "127.0.0.1:6443")
+		client := tunnel.current()
+		remote, err := client.Dial("tcp", "127.0.0.1:6443")
+		if err != nil {
+			tunnel.redial(client)
+			remote, err = tunnel.current().Dial("tcp", "127.0.0.1:6443")
+		}
 		if err != nil {
 			local.Close()
 			continue
@@ -153,10 +225,11 @@ func proxyTunnelConnection(local, remote net.Conn) {
 	closeOnce.Do(closeBoth)
 }
 
-func (tunnel *sshAPITunnel) stop() {
+func (tunnel *sshAPITunnel) close() {
 	tunnel.stopOnce.Do(func() {
+		close(tunnel.stop)
 		_ = tunnel.listener.Close()
-		_ = tunnel.client.Close()
+		_ = tunnel.current().Close()
 		<-tunnel.done
 	})
 }
