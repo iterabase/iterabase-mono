@@ -73,16 +73,15 @@ def preview_version(base: str, name: str, run_number: str) -> str:
 
 def package_charts(version: str, workdir: pathlib.Path) -> dict[str, pathlib.Path]:
     """Package the platform chart and its companions at the preview version and publish them."""
+    # Build every chart's dependencies in the source tree first, so the staged
+    # copy carries them for the platform and both substrates alike.
+    run("make", "-C", "charts", "build-deps")
     staged = workdir / "charts"
     shutil.copytree(CHARTS, staged)
-    run("make", "-C", "charts", "build-deps")
     for chart in ("iterabase-platform", "cert-manager-substrate", "lvm-storage-substrate"):
         manifest = staged / chart / "Chart.yaml"
         manifest.write_text(re.sub(r"^version:.*$", f"version: {version}", manifest.read_text(encoding="utf-8"),
                                    count=1, flags=re.MULTILINE), encoding="utf-8")
-    # The platform's vendored dependencies come from the source tree's build-deps.
-    shutil.rmtree(staged / "iterabase-platform" / "charts", ignore_errors=True)
-    shutil.copytree(CHARTS / "iterabase-platform" / "charts", staged / "iterabase-platform" / "charts")
     archives = {}
     for chart in ("iterabase-platform", "cert-manager-substrate", "lvm-storage-substrate"):
         run("helm", "package", str(staged / chart), "--destination", str(workdir / "packages"))
