@@ -955,6 +955,22 @@ class FixtureLaunchTests(unittest.TestCase):
         self.assertEqual(spot[spot.index("--instance-market-options") + 1], aws_ci.SPOT_MARKET_OPTIONS)
         self.assertIn("InstanceInterruptionBehavior=terminate", aws_ci.SPOT_MARKET_OPTIONS)
 
+    def test_fixture_preload_initializes_only_snapshot_restored_volumes(self) -> None:
+        import aws_ci
+
+        base = dict(region=CI_REGION, image_id="ami-0123456789abcdef0", instance_type="g6.xlarge",
+                    subnet_id="subnet-0123456789abcdef0", security_group_id="sg-0123456789abcdef0",
+                    tags=required_tags("1", "gpu"), user_data_path="/tmp/u.sh")
+        command = aws_ci.launch_command(**base, data_gib=30, root_gib=160, preload=True,
+                                        snapshot_volumes=(("/dev/sdg", "snap-0123456789abcdef0"),))
+        mappings = command[command.index("--block-device-mappings") + 1:command.index("--tag-specifications")]
+        restored = ",Throughput=500,VolumeInitializationRate=300}"
+        self.assertEqual(mappings, [
+            "DeviceName=/dev/sda1,Ebs={VolumeSize=160,VolumeType=gp3,DeleteOnTermination=true" + restored,
+            "DeviceName=/dev/sdf,Ebs={VolumeSize=30,VolumeType=gp3,DeleteOnTermination=true}",
+            "DeviceName=/dev/sdg,Ebs={SnapshotId=snap-0123456789abcdef0,VolumeType=gp3,DeleteOnTermination=true" + restored,
+        ])
+
     def test_fixture_environment_is_exactly_what_the_forge_scenarios_read(self) -> None:
         import aws_ci
 
