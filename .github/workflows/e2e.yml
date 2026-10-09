@@ -443,7 +443,8 @@ jobs:
           {
             echo "### Preview \`$PREVIEW\`"
             echo
-            echo "- URL (tailnet only): ${{ steps.deploy.outputs.url }}"
+            echo "- Dashboard and API (tailnet only): ${{ steps.deploy.outputs.url }}"
+            echo "- OpenAI-compatible inference (tailnet only): ${{ steps.deploy.outputs.inference_url }}"
             echo "- chart \`${{ steps.deploy.outputs.chart_version }}\`, host \`${{ steps.host.outputs.instance_id }}\` (created: ${{ steps.host.outputs.created }}), deadline \`${{ steps.host.outputs.deadline }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
