@@ -286,6 +286,7 @@ PREVIEW_EVIDENCE = (
     "sudo k3s kubectl get pods -A -o wide",
     "sudo k3s kubectl get events -A --sort-by=.lastTimestamp | tail -60",
     "sudo k3s kubectl logs -n flux-system deploy/source-controller --tail=120",
+    "sudo journalctl -u ssh --no-pager --since -30min | grep -i iterabase-overlay | tail -40",
 )
 
 
