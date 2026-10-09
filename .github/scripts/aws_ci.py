@@ -108,6 +108,13 @@ FIXTURE_DATA_GIB = 30
 MODEL_CACHE_GIB = 16
 HUGGINGFACE_HUB_VERSION = "0.30.2"
 FIXTURE_ROOT_GIB = {"cpu": 40, "gpu": 160}  # the GPU image cache is ~46 GB plus its imported copy
+# A volume restored from a snapshot reads at 6-9 MiB/s until each block is
+# fetched from S3, which made the GPU image-cache import take ~60 min. Fixture
+# volumes restored from the baked AMI or model-cache snapshot are pre-loaded at
+# this rate, with gp3 throughput above its 125 MiB/s default so reads are not
+# capped again (DES-HOR-590-05).
+FIXTURE_VOLUME_INITIALIZATION_MIBPS = 300
+FIXTURE_VOLUME_THROUGHPUT_MIBPS = 500
 DEFAULT_MAX_AGE_MINUTES = 180
 SSH_POLL_SECONDS = 15
 SSH_TIMEOUT_SECONDS = 900
@@ -610,21 +617,27 @@ def launch_command(
     root_gib: int | None = None,
     snapshot_volumes: tuple[tuple[str, str], ...] = (),
     spot: bool = False,
+    preload: bool = False,
 ) -> list[str]:
     """Build the exact approved-instance launch command (never with a profile).
 
     Fixtures add a larger data volume, a larger root for their image cache and,
     on GPU, the model cache restored from its snapshot (C1); previews run on
-    spot capacity (C6).
+    spot capacity (C6). With preload, the volumes restored from a snapshot (the
+    root and the model cache) are initialized at a provisioned rate.
     """
+    restored = (
+        f",Throughput={FIXTURE_VOLUME_THROUGHPUT_MIBPS},VolumeInitializationRate={FIXTURE_VOLUME_INITIALIZATION_MIBPS}"
+        if preload else ""
+    )
     block_devices = [
         f"DeviceName={DATA_VOLUME_DEVICE},"
         f"Ebs={{VolumeSize={data_gib},VolumeType=gp3,DeleteOnTermination=true}}"
     ]
     if root_gib:
-        block_devices.insert(0, f"DeviceName={ROOT_DEVICE},Ebs={{VolumeSize={root_gib},VolumeType=gp3,DeleteOnTermination=true}}")
+        block_devices.insert(0, f"DeviceName={ROOT_DEVICE},Ebs={{VolumeSize={root_gib},VolumeType=gp3,DeleteOnTermination=true{restored}}}")
     for device, snapshot_id in snapshot_volumes:
-        block_devices.append(f"DeviceName={device},Ebs={{SnapshotId={snapshot_id},VolumeType=gp3,DeleteOnTermination=true}}")
+        block_devices.append(f"DeviceName={device},Ebs={{SnapshotId={snapshot_id},VolumeType=gp3,DeleteOnTermination=true{restored}}}")
     market = (["--instance-market-options", SPOT_MARKET_OPTIONS] if spot else [])
     return [
         "aws",
@@ -1626,7 +1639,7 @@ def command_launch_fixture(args: argparse.Namespace) -> int:
         host = launch_pinned_host(
             capacity="cpu", run_id=args.run_id, scenario=args.scenario, ami_ids=ami_ids, regions=regions,
             deadline=deadline, user_data_extra=shutdown_backstop(args.max_age_minutes),
-            launch_options={"data_gib": FIXTURE_DATA_GIB, "root_gib": FIXTURE_ROOT_GIB["cpu"]},
+            launch_options={"data_gib": FIXTURE_DATA_GIB, "root_gib": FIXTURE_ROOT_GIB["cpu"], "preload": True},
         )
     data_device = probe_by_id(host, host.data_volume_id)["by_id"]
     model_device = ""
@@ -1660,7 +1673,7 @@ def launch_gpu_fixture(args: argparse.Namespace, ami_ids: dict[str, str], region
             return launch_pinned_host(
                 capacity="gpu", run_id=args.run_id, scenario=args.scenario, ami_ids=ami_ids, regions=(region,),
                 deadline=deadline, user_data_extra=model_cache_mount_script(uuid) + shutdown_backstop(args.max_age_minutes),
-                launch_options={"data_gib": FIXTURE_DATA_GIB, "root_gib": FIXTURE_ROOT_GIB["gpu"],
+                launch_options={"data_gib": FIXTURE_DATA_GIB, "root_gib": FIXTURE_ROOT_GIB["gpu"], "preload": True,
                                 "snapshot_volumes": ((MODEL_CACHE_DEVICE, snapshots[region]),)},
             )
         except AwsCiError as error:
