@@ -32,6 +32,8 @@ const (
 	gpuUpgradeCandidateDriver       = "595.71.05"
 	gpuUpgradeCandidateDriverSHA256 = "d8c38c473375d7262e36ad100dc0732859592a5ff65b238e41057e1dc0763098"
 	gpuUpgradeNamespace             = "forge-gpu-upgrade"
+	gpuServingNamespace             = "iterabase-system"
+	gpuServingBackend               = "qwen35-backend"
 	gpuUpgradeWorkloadName          = "gpu-driver-upgrade-workload"
 	gpuUpgradeReadyPrefix           = "gpu-upgrade-ready "
 )
@@ -66,9 +68,58 @@ const gpuDriverUpgradeStage = "driver-upgrade"
 func gpuDriverUpgradeStageRun(t *testing.T, state *gpuFixtureState) {
 	t.Helper()
 	recordGPUUpgradeInputsStage(t, state)
+	releaseServingGPU(t, state)
 	startGPUUpgradeWorkloadStage(t, state)
 	applyGPUDriverUpgradeStage(t, state)
 	assertGPUDriverUpgradeStage(t, state)
+}
+
+// releaseServingGPU frees the fixture's single GPU from the serving smoke that
+// ran before this optional stage, so the emptyDir workload can schedule on the
+// baseline driver. It deletes the smoke ModelBackend and waits until no pod
+// outside the GPU operator still requests nvidia.com/gpu.
+func releaseServingGPU(t *testing.T, state *gpuFixtureState) {
+	t.Helper()
+	clients := newGPUUpgradeClients(t, state)
+	ctx := context.Background()
+	backends := clients.dynamic.Resource(schema.GroupVersionResource{Group: "platform.iterabase.com", Version: "v1alpha1", Resource: "modelbackends"})
+	if err := backends.Namespace(gpuServingNamespace).Delete(ctx, gpuServingBackend, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("delete serving ModelBackend %s/%s: %v", gpuServingNamespace, gpuServingBackend, err)
+	}
+	deadline := time.Now().Add(5 * time.Minute)
+	for {
+		holders, err := gpuRequestingPods(ctx, clients.typed)
+		if err != nil {
+			t.Fatalf("list GPU-requesting pods: %v", err)
+		}
+		if len(holders) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GPU still held after deleting the serving ModelBackend: %v", holders)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func gpuRequestingPods(ctx context.Context, client kubernetes.Interface) ([]string, error) {
+	pods, err := client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	var holders []string
+	for _, pod := range pods.Items {
+		if pod.Namespace == "gpu-operator" || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		for _, container := range pod.Spec.Containers {
+			if quantity, ok := container.Resources.Limits["nvidia.com/gpu"]; ok && !quantity.IsZero() {
+				holders = append(holders, pod.Namespace+"/"+pod.Name)
+				break
+			}
+		}
+	}
+	return holders, nil
 }
 
 func recordGPUUpgradeInputsStage(t *testing.T, state *gpuFixtureState) {
