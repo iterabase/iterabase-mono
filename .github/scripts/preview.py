@@ -257,7 +257,14 @@ spec:
 
 def tailnet_hosts(host: Host, environment: str) -> dict[str, str]:
     """The Tailscale Service DNS names for this preview (DES-HOR-590-06)."""
-    suffix = host.ssh("tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"MagicDNSSuffix\"])'")
+    # A new host joins the tailnet from its boot script; wait for that to finish
+    # and for tailscaled to be Running before reading the tailnet name.
+    suffix = host.ssh(
+        "sudo cloud-init status --wait >/dev/null 2>&1 || true; "
+        "for _ in $(seq 1 60); do "
+        "state=$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; s=json.load(sys.stdin); "
+        "print(s[\"MagicDNSSuffix\"] if s.get(\"BackendState\") == \"Running\" else \"\")' 2>/dev/null); "
+        "[ -n \"$state\" ] && { echo \"$state\"; exit 0; }; sleep 5; done; exit 1")
     if not re.fullmatch(r"[a-z0-9-]+\.ts\.net", suffix):
         raise PreviewError(f"preview host has no tailnet DNS suffix: {suffix!r}")
     return {surface: f"{environment}-{surface}.{suffix}" for surface in ("app", "inference")}
