@@ -1053,3 +1053,26 @@ class FixtureLaunchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LivePreviewTests(unittest.TestCase):
+    """DES-HOR-590-06: the reaper prunes Tailscale Services against live preview hosts."""
+
+    def test_live_previews_lists_named_preview_hosts_only(self) -> None:
+        import aws_ci
+
+        response = {"Reservations": [{"Instances": [
+            {"Tags": [{"Key": aws_ci.SCENARIO_TAG, "Value": "pr-133"}]},
+            {"Tags": [{"Key": aws_ci.SCENARIO_TAG, "Value": "staging"}]},
+            {"Tags": [{"Key": aws_ci.SCENARIO_TAG, "Value": "not-a-preview"}]},
+            {"Tags": []},
+        ]}]}
+        calls = []
+        original = aws_ci.aws_json
+        aws_ci.aws_json = lambda command: calls.append(command) or response
+        try:
+            self.assertEqual(aws_ci.live_previews("eu-west-1"), ["pr-133", "staging"])
+        finally:
+            aws_ci.aws_json = original
+        self.assertIn(f"Name=tag:{aws_ci.KIND_TAG},Values=preview", calls[0])
+        self.assertIn("Name=instance-state-name,Values=pending,running", calls[0])

@@ -870,11 +870,29 @@ Previews (C6, C9, C12) need the following beyond Part 1 and Part 2:
   An `InvalidInput` error saying the role already exists is success.
 - **Repository secrets:** `PREVIEW_SSH_KEY` (the one runner key authorized on
   preview hosts), `TAILSCALE_OAUTH_CLIENT_ID` and `TAILSCALE_OAUTH_SECRET` (an
-  OAuth client allowed to mint `tag:preview` auth keys), and
-  `PREVIEW_LLM_API_KEY` (the capped hosted-LLM key; cap spend at the provider).
+  OAuth client with the **Auth Keys: write** and **Services: write** scopes,
+  tagged `tag:preview`), and `PREVIEW_LLM_API_KEY` (the preview inference key;
+  for the internal-prod gateway it is a `gateway`-scope key on the
+  `preview-ci` service account).
 - **Repository variables:** `PREVIEW_LLM_BASE_URL` and `PREVIEW_LLM_MODEL`.
-- **Tailnet policy:** a `tag:preview` tag owned by the OAuth client. Preview
-  hosts join as ephemeral nodes and are reachable only on the tailnet.
+- **Tailnet (DES-HOR-590-06):** MagicDNS and HTTPS certificates on, and this
+  policy:
+  ```jsonc
+  "tagOwners": {
+    "tag:preview":     ["autogroup:admin"],
+    "tag:preview-svc": ["autogroup:admin", "tag:preview"],
+  },
+  "autoApprovers": {
+    "services": {"tag:preview-svc": ["tag:preview"]},
+  },
+  "grants": [
+    {"src": ["autogroup:member"], "dst": ["tag:preview-svc"], "ip": ["443"]},
+  ],
+  ```
+  No rule has `tag:preview` as a source, so preview hosts reach nothing else
+  on the tailnet. Preview hosts join as ephemeral nodes; each preview's two
+  Services are created by the preview job, deleted on teardown, and pruned by
+  the reaper when their host is gone.
 - **Teardown.** `preview.yml` terminates a `pr-<N>` host when its pull request
   closes. A preview idle for 72 hours is removed by the reaper through its
   deadline. `staging` carries a far-future deadline and is removed only by

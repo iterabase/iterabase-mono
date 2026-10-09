@@ -398,21 +398,14 @@ jobs:
           role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
           region: ${{ vars.AWS_CI_REGION }}
           session-name: iterabase-preview-${{ github.run_id }}
-      - name: Mint an ephemeral tag:preview tailnet key
+      - name: Mint an ephemeral tag:preview tailnet key and create the preview's Tailscale Services
         env:
-          CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
-          CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TAILSCALE_OAUTH_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
         run: |
           set -euo pipefail
-          token=$(curl -fsS -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" \
-            https://api.tailscale.com/api/v2/oauth/token | jq -r .access_token)
-          echo "::add-mask::$token"
-          key=$(curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-            -d '{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":true,"preauthorized":true,"tags":["tag:preview"]}}},"expirySeconds":3600}' \
-            https://api.tailscale.com/api/v2/tailnet/-/keys | jq -r .key)
-          echo "::add-mask::$key"
-          install -m 600 /dev/null "$RUNNER_TEMP/tailscale-key"
-          printf '%s' "$key" > "$RUNNER_TEMP/tailscale-key"
+          python3 .github/scripts/tailscale_services.py mint-host-key --output "$RUNNER_TEMP/tailscale-key"
+          python3 .github/scripts/tailscale_services.py up --environment "$PREVIEW"
       - name: Install the repository preview SSH key
         env:
           PREVIEW_SSH_KEY: ${{ secrets.PREVIEW_SSH_KEY }}
