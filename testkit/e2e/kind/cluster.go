@@ -68,8 +68,22 @@ func (manager Manager) Create(ctx context.Context, prefix string) (*Cluster, err
 		_ = os.RemoveAll(tempDir)
 		return nil, err
 	}
+	args := []string{"create", "cluster", "--name", name, "--kubeconfig", kubeconfig, "--wait", "120s"}
+	config, err := registryAuthConfig(os.Getenv("DOCKERHUB_USERNAME"), os.Getenv("DOCKERHUB_TOKEN"))
+	if err != nil {
+		_ = os.RemoveAll(tempDir)
+		return nil, err
+	}
+	if config != "" {
+		configPath := filepath.Join(tempDir, "kind-config.yaml")
+		if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+			_ = os.RemoveAll(tempDir)
+			return nil, err
+		}
+		args = append(args, "--config", configPath)
+	}
 	_, err = manager.Executor.Run(ctx, process.Command{
-		Name: "kind", Args: []string{"create", "cluster", "--name", name, "--kubeconfig", kubeconfig, "--wait", "120s"},
+		Name: "kind", Args: args,
 		Timeout: 5 * time.Minute, OutputName: "kind-create-" + name + ".log",
 	})
 	if err != nil {
@@ -86,6 +100,29 @@ func (manager Manager) Create(ctx context.Context, prefix string) (*Cluster, err
 		return nil, fmt.Errorf("create kind cluster %s: %w", name, err)
 	}
 	return &Cluster{Name: name, Kubeconfig: kubeconfig, executor: manager.Executor, tempDir: tempDir, owned: true}, nil
+}
+
+var registryCredential = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// registryAuthConfig authenticates the Kind nodes' own containerd to Docker
+// Hub. Chart images are pulled inside the nodes, so a docker login on the
+// runner does not cover them, and anonymous pulls share the runner IP's rate
+// limit. Without credentials the cluster is created unchanged.
+func registryAuthConfig(username, token string) (string, error) {
+	if username == "" && token == "" {
+		return "", nil
+	}
+	if !registryCredential.MatchString(username) || !registryCredential.MatchString(token) {
+		return "", fmt.Errorf("DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must both be set to plain credential strings")
+	}
+	return fmt.Sprintf(`kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."registry-1.docker.io".auth]
+      username = %q
+      password = %q
+`, username, token), nil
 }
 
 // Use wraps an exact existing kubeconfig without taking lifecycle ownership.

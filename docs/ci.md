@@ -201,6 +201,16 @@ F3 scenarios additionally receive `FORGE_E2E_BINARY`,
 | `FORGE_E2E_MODEL_CACHE_DEVICE`, `FORGE_E2E_MODEL_CACHE_UUID` | GPU only: the restored model-cache volume |
 | `AWS_CI_FIXTURE_REGION`, `AWS_CI_FIXTURE_INSTANCE_ID` | where the host runs |
 
+## Docker Hub pulls
+
+Every job that pulls from Docker Hub (image builds, testcontainers, Kind) logs
+in with the `DOCKERHUB_USERNAME` repository variable and `DOCKERHUB_TOKEN`
+secret, a read-only public-repository access token, because anonymous pulls
+share the GitHub runners' IP-based rate limit. Kind nodes pull chart images
+with their own containerd, so Kind scenarios also pass the pair to testkit,
+which adds the credentials to the nodes' containerd config. A missing token
+fails the login step instead of falling back to anonymous pulls.
+
 ## Baked fixture images (`bake.yml`, `DES-HOR-590-03`)
 
 Fixture AMIs hold software inputs only: Ubuntu 24.04, host packages, and the

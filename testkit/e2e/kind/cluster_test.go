@@ -474,3 +474,27 @@ func TestClusterLifecycleUsesUniqueNamesAndIsolatedKubeconfigs(t *testing.T) {
 		t.Fatalf("unexpected lifecycle commands: %+v", executor.commands)
 	}
 }
+
+func TestRegistryAuthConfig(t *testing.T) {
+	config, err := registryAuthConfig("", "")
+	if err != nil || config != "" {
+		t.Fatalf("no credentials must leave the cluster config unchanged: %q, %v", config, err)
+	}
+	config, err = registryAuthConfig("iterabase", "dckr_pat_abc-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`[plugins."io.containerd.grpc.v1.cri".registry.configs."registry-1.docker.io".auth]`,
+		`username = "iterabase"`, `password = "dckr_pat_abc-123"`,
+	} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("kind config is missing %q:\n%s", want, config)
+		}
+	}
+	for _, bad := range [][2]string{{"iterabase", ""}, {"", "token"}, {"user\"", "token"}, {"user", "tok\nen"}} {
+		if _, err := registryAuthConfig(bad[0], bad[1]); err == nil {
+			t.Fatalf("credentials %q were accepted", bad)
+		}
+	}
+}
