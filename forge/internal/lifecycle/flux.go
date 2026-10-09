@@ -2,7 +2,10 @@ package lifecycle
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,6 +14,9 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/config"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/deployer"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/fluxer"
+	"github.com/nunocgoncalves/iterabase-mono/forge/internal/k3s"
+	"github.com/nunocgoncalves/iterabase-mono/forge/internal/overlayer"
+	"golang.org/x/crypto/ssh"
 )
 
 // Flux sync resource names + constants. v1 single-node => one install per
@@ -20,6 +26,7 @@ const (
 	fluxSourceName      = "overlay"          // GitRepository name (source-controller fetches the fork)
 	fluxKustomizeName   = "overlay-crds"     // Kustomization name (reconciles crds/client)
 	fluxTokenSecretName = "overlay-git-auth" //nolint:gosec // resource name, not a credential (GitRepository secretRef)
+	fluxSSHSecretName   = "overlay-git-ssh"  //nolint:gosec // resource name, not a credential (identity + known_hosts for a file:// overlay)
 	fluxGitUsername     = "git"              // generic https username (GitHub ignores it; password is the PAT)
 	fluxInterval        = "1m"               // GitRepository + Kustomization poll interval
 	fluxCRDPath         = "./crds/client"    // Kustomization path (the overlay's CRD instances)
@@ -39,7 +46,7 @@ var (
 // waits for a runner generation but Forge previously created the GitRepository
 // only after the chart. Forge gates on metadata only and never downloads or
 // parses the artifact.
-func applyFluxSourcePhase(ctx context.Context, cfg *config.Cluster, f fluxer.Fluxer, d deployer.Deployer, opts ApplyOpts, res *Result, expectedCommit string) error {
+func applyFluxSourcePhase(ctx context.Context, cfg *config.Cluster, o overlayer.Overlayer, f fluxer.Fluxer, d deployer.Deployer, opts ApplyOpts, res *Result, expectedCommit string) error {
 	if !cfg.Spec.Flux.Enabled || opts.SkipFlux {
 		return nil
 	}
@@ -51,23 +58,12 @@ func applyFluxSourcePhase(ctx context.Context, cfg *config.Cluster, f fluxer.Flu
 		return fmt.Errorf("flux install: %w", err)
 	}
 
-	// Token Secret (only when a token was resolved — public repos omit it and
-	// Flux clones anonymously). Applied through stdin so the token never appears
-	// in a command string or process list.
-	hasToken := len(opts.OverlayToken) > 0
-	if hasToken {
-		sec := fluxTokenSecretManifest(fluxTokenSecretName, fluxNamespace, fluxGitUsername, opts.OverlayToken)
-		if err := d.ApplyManifest(ctx, sec); err != nil {
-			auditFail(cfg, "apply-flux", err)
-			return fmt.Errorf("flux token secret: %w", err)
-		}
+	url, secretRef, err := applyFluxSourceAccess(ctx, cfg, o, d, opts)
+	if err != nil {
+		auditFail(cfg, "apply-flux", err)
+		return err
 	}
-
-	secretRef := ""
-	if hasToken {
-		secretRef = fluxTokenSecretName
-	}
-	repo := gitRepositoryManifest(fluxSourceName, fluxNamespace, cfg.Spec.Overlay.Repo, cfg.Spec.Overlay.Ref, secretRef)
+	repo := gitRepositoryManifest(fluxSourceName, fluxNamespace, url, cfg.Spec.Overlay.Ref, secretRef)
 	if err := d.ApplyManifest(ctx, repo); err != nil {
 		auditFail(cfg, "apply-flux", err)
 		return fmt.Errorf("flux gitrepository: %w", err)
@@ -91,6 +87,89 @@ func applyFluxSourcePhase(ctx context.Context, cfg *config.Cluster, f fluxer.Flu
 	res.FluxInstalled = true
 	res.GitRepositoryStatus = fmt.Sprintf("ready=True revision=%s digest=%s", artifact.Revision, artifact.Digest)
 	return nil
+}
+
+// applyFluxSourceAccess gives source-controller a way to read the overlay and
+// returns the GitRepository URL and Secret. An https fork is read directly
+// (with a token Secret when one was resolved; public repos clone anonymously).
+// A file:// overlay is served from the node over read-only SSH with a fresh
+// Forge-generated key (DES-HOR-632-01). Secrets go through stdin so no
+// credential appears in a command string or process list.
+func applyFluxSourceAccess(ctx context.Context, cfg *config.Cluster, o overlayer.Overlayer, d deployer.Deployer, opts ApplyOpts) (url, secretRef string, err error) {
+	if !strings.HasPrefix(cfg.Spec.Overlay.Repo, "file://") {
+		if len(opts.OverlayToken) == 0 {
+			return cfg.Spec.Overlay.Repo, "", nil
+		}
+		sec := fluxTokenSecretManifest(fluxTokenSecretName, fluxNamespace, fluxGitUsername, opts.OverlayToken)
+		if err := d.ApplyManifest(ctx, sec); err != nil {
+			return "", "", fmt.Errorf("flux token secret: %w", err)
+		}
+		return cfg.Spec.Overlay.Repo, fluxTokenSecretName, nil
+	}
+	if o == nil {
+		return "", "", fmt.Errorf("a file:// overlay with flux needs an overlayer (internal error)")
+	}
+	key, err := newFluxSSHKey()
+	if err != nil {
+		return "", "", err
+	}
+	source, err := o.ServeToFlux(ctx, cfg.Spec.Overlay.Repo, cfg.Spec.Overlay.Ref, key.publicKey, podCIDRs(cfg.Spec.K3s))
+	if err != nil {
+		return "", "", err
+	}
+	sec := fluxSSHSecretManifest(fluxSSHSecretName, fluxNamespace, key, source.KnownHosts)
+	if err := d.ApplyManifest(ctx, sec); err != nil {
+		return "", "", fmt.Errorf("flux ssh secret: %w", err)
+	}
+	return source.URL, fluxSSHSecretName, nil
+}
+
+// podCIDRs are the source addresses source-controller connects from.
+func podCIDRs(k config.K3s) []string {
+	return strings.Split(k3s.DesiredClusterCIDR(k), ",")
+}
+
+type fluxSSHKey struct {
+	privateKey string // OpenSSH PEM
+	publicKey  string // authorized_keys line
+}
+
+func newFluxSSHKey() (fluxSSHKey, error) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return fluxSSHKey{}, fmt.Errorf("generate flux overlay key: %w", err)
+	}
+	const comment = "forge-flux-overlay"
+	block, err := ssh.MarshalPrivateKey(private, comment)
+	if err != nil {
+		return fluxSSHKey{}, fmt.Errorf("encode flux overlay key: %w", err)
+	}
+	sshPublic, err := ssh.NewPublicKey(public)
+	if err != nil {
+		return fluxSSHKey{}, fmt.Errorf("encode flux overlay public key: %w", err)
+	}
+	return fluxSSHKey{
+		privateKey: string(pem.EncodeToMemory(block)),
+		publicKey:  strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPublic))) + " " + comment,
+	}, nil
+}
+
+// fluxSSHSecretManifest renders the Flux SSH auth Secret: identity,
+// identity.pub and known_hosts (source-controller's documented keys).
+func fluxSSHSecretManifest(name, namespace string, key fluxSSHKey, knownHosts string) string {
+	m := fluxTokenSecret{
+		APIVersion: "v1",
+		Kind:       "Secret",
+		Type:       "Opaque",
+		Metadata:   fluxMeta{Name: name, Namespace: namespace},
+		StringData: map[string]string{
+			"identity":     key.privateKey,
+			"identity.pub": key.publicKey,
+			"known_hosts":  knownHosts,
+		},
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
 }
 
 // applyFluxReconciliationPhase starts continuous reconciliation only after the
