@@ -244,13 +244,6 @@ apiVersion: platform.iterabase.com/v1alpha1
 kind: Model
 metadata: {{name: preview-hosted, namespace: {NAMESPACE}}}
 spec: {{modelID: {json.dumps(model_id)}, displayName: Preview hosted model, backendRef: preview-hosted}}
----
-apiVersion: platform.iterabase.com/v1alpha1
-kind: IdentityMapping
-metadata: {{name: qa-operator, namespace: {NAMESPACE}}}
-spec:
-  identity: {{kind: user, displayName: QA Operator}}
-  bindings: [{{provider: teams, type: user, externalID: "aad:qa-operator"}}]
 """
     host.ssh("sudo k3s kubectl apply -f -", stdin=manifest)
 
