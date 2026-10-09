@@ -65,10 +65,14 @@ jobs:
     name: E2E
     needs: gate
     if: needs.gate.outputs.run == 'true'
+    # A reusable workflow cannot request more than its caller grants, even for
+    # jobs it skips: this is the union of e2e.yml's job permissions.
     permissions:
       contents: read
       id-token: write
       packages: write
+      deployments: write
+      actions: read
     uses: ./.github/workflows/e2e.yml
     secrets: inherit
     with:
