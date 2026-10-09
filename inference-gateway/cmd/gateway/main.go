@@ -1,3 +1,4 @@
+// HOR-590 throwaway: preview teardown check with Tailscale Services (never merged).
 package main
 
 import (
