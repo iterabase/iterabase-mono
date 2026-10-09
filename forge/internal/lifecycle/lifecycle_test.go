@@ -16,6 +16,7 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/config"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/deployer"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/fluxer"
+	"github.com/nunocgoncalves/iterabase-mono/forge/internal/overlayer"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/provisioner"
 )
 
@@ -564,6 +565,13 @@ type fakeOverlayer struct {
 	readFileErrors  map[string]error
 	readFileErr     error
 	readFileCalls   []readFileCall
+	serveCalls      []serveCall
+	stopServeCalls  int
+}
+
+type serveCall struct {
+	repo, ref, publicKey string
+	podCIDRs             []string
 }
 
 type cloneCall struct {
@@ -574,6 +582,14 @@ type cloneCall struct {
 type readFileCall struct{ dest, relPath string }
 
 func (f *fakeOverlayer) EnsureGit(_ context.Context) error { return f.ensureGitErr }
+func (f *fakeOverlayer) ServeToFlux(_ context.Context, repo, ref, publicKey string, podCIDRs []string) (overlayer.FluxSSHSource, error) {
+	f.serveCalls = append(f.serveCalls, serveCall{repo: repo, ref: ref, publicKey: publicKey, podCIDRs: podCIDRs})
+	return overlayer.FluxSSHSource{URL: "ssh://iterabase-overlay@10.0.0.5/var/lib/iterabase/overlay-source/overlay.git", KnownHosts: "10.0.0.5 ssh-ed25519 AAAAhost"}, nil
+}
+func (f *fakeOverlayer) StopServingToFlux(_ context.Context) error {
+	f.stopServeCalls++
+	return nil
+}
 func (f *fakeOverlayer) Clone(_ context.Context, repo, ref, dest string, token []byte) (string, error) {
 	f.cloneCalls = append(f.cloneCalls, cloneCall{repo, ref, dest, len(token) > 0})
 	if f.cloneErr != nil {
@@ -1558,6 +1574,50 @@ func TestApply_Flux_PublicRepoNoToken(t *testing.T) {
 	assert.Contains(t, policy, `"NetworkPolicy"`)
 }
 
+func TestApply_Flux_FileOverlayServedOverNodeSSH(t *testing.T) {
+	useTempHome(t)
+	p := &fakeProv{pf: readyPf(), kubeconfig: []byte(minKubeconfig), readyAfterInstall: true}
+	d := &fakeDeployer{}
+	o := &fakeOverlayer{cloneCommit: "deadbeef"}
+	fx := &fakeFluxer{}
+	cfg := testConfigWithFlux()
+	cfg.Spec.Overlay.Repo = "file:///srv/overlay"
+	cfg.Spec.K3s.DualStack = true
+	cfg.Spec.K3s.ClusterCIDRv6 = "fd00:42::/56"
+
+	res, err := Apply(context.Background(), cfg, p, d, o, fx, ApplyOpts{
+		ReadyTimeout: 1 * time.Second, ReadyInterval: 10 * time.Millisecond,
+		OverlayToken: []byte("ghp_unused"),
+	})
+	require.NoError(t, err)
+	assert.True(t, res.FluxInstalled)
+
+	// DES-HOR-632-01: the host serves the configured ref to the pod CIDRs with a
+	// fresh Forge key, never the https token.
+	require.Len(t, o.serveCalls, 1)
+	serve := o.serveCalls[0]
+	assert.Equal(t, "file:///srv/overlay", serve.repo)
+	assert.Equal(t, cfg.Spec.Overlay.Ref, serve.ref)
+	assert.Equal(t, []string{cfg.Spec.K3s.ClusterCIDR, "fd00:42::/56"}, serve.podCIDRs)
+	assert.True(t, strings.HasPrefix(serve.publicKey, "ssh-ed25519 "), serve.publicKey)
+
+	require.Len(t, d.applyManifestCalls, 4)
+	sec, repo := d.applyManifestCalls[0], d.applyManifestCalls[1]
+	assert.Contains(t, sec, `"overlay-git-ssh"`)
+	assert.Contains(t, sec, "BEGIN OPENSSH PRIVATE KEY")
+	assert.Contains(t, sec, `"known_hosts":"10.0.0.5 ssh-ed25519 AAAAhost"`)
+	assert.Contains(t, sec, strings.TrimSuffix(strings.SplitN(serve.publicKey, " ", 3)[1], "="))
+	assert.NotContains(t, sec, "ghp_unused")
+	assert.Contains(t, repo, `"url":"ssh://iterabase-overlay@10.0.0.5/var/lib/iterabase/overlay-source/overlay.git"`)
+	assert.Contains(t, repo, `"secretRef":{"name":"overlay-git-ssh"}`)
+
+	// Every apply gets a new key: re-apply replaces the authorized key.
+	_, err = Apply(context.Background(), cfg, p, d, o, fx, ApplyOpts{ReadyTimeout: 1 * time.Second, ReadyInterval: 10 * time.Millisecond})
+	require.NoError(t, err)
+	require.Len(t, o.serveCalls, 2)
+	assert.NotEqual(t, o.serveCalls[0].publicKey, o.serveCalls[1].publicKey)
+}
+
 func TestApply_Flux_SkipFlag(t *testing.T) {
 	useTempHome(t)
 	p := &fakeProv{pf: readyPf(), kubeconfig: []byte(minKubeconfig), readyAfterInstall: true}
@@ -1695,6 +1755,21 @@ func TestDestroy_Flux(t *testing.T) {
 
 	require.NoError(t, Destroy(context.Background(), cfg, p, d, o, fx))
 	assert.Equal(t, 1, fx.uninstallCalls, "Flux uninstalled on destroy")
+}
+
+func TestDestroy_Flux_FileOverlayStopsServing(t *testing.T) {
+	p := &fakeProv{pf: readyPf(), state: inSyncState()}
+	p.pf.Installed = true
+	o := &fakeOverlayer{}
+	cfg := testConfigWithFlux()
+	cfg.Spec.Overlay.Repo = "file:///srv/overlay"
+
+	require.NoError(t, Destroy(context.Background(), cfg, p, &fakeDeployer{}, o, &fakeFluxer{}))
+	assert.Equal(t, 1, o.stopServeCalls, "the read-only user, key and mirror are removed")
+
+	https := &fakeOverlayer{}
+	require.NoError(t, Destroy(context.Background(), testConfigWithFlux(), p, &fakeDeployer{}, https, &fakeFluxer{}))
+	assert.Zero(t, https.stopServeCalls, "an https overlay was never served from the node")
 }
 
 func TestDestroy_Flux_Disabled(t *testing.T) {

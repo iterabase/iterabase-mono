@@ -30,4 +30,20 @@ type Overlayer interface {
 	// caller can treat an optional file (like secrets.yaml) as absent. Used by the
 	// secret-sync phase to read the overlay's non-secret secret declarations.
 	ReadFile(ctx context.Context, dest, relPath string) (string, error)
+	// ServeToFlux publishes a file:// overlay at ref to the in-cluster Flux
+	// source-controller over read-only SSH from the node itself (DES-HOR-632-01):
+	// a bare mirror of ref, a dedicated unprivileged user whose only key is
+	// publicKey, restricted to git-upload-pack on that mirror from podCIDRs.
+	// Idempotent; every call refreshes the mirror and replaces the key.
+	ServeToFlux(ctx context.Context, repo, ref, publicKey string, podCIDRs []string) (FluxSSHSource, error)
+	// StopServingToFlux removes the user, key and mirror. Best-effort on destroy.
+	StopServingToFlux(ctx context.Context) error
+}
+
+// FluxSSHSource is where Flux clones a host-served overlay: an ssh:// URL on the
+// node's cluster-reachable address and the known_hosts line for the node's own
+// SSH host key.
+type FluxSSHSource struct {
+	URL        string
+	KnownHosts string
 }

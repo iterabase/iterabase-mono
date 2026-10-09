@@ -128,9 +128,10 @@ type K3s struct {
 // Kustomization pointing at the client overlay fork (overlay.repo) for
 // continuous reconciliation of the overlay contents (CRD instances +, later, the
 // pi/ tree). The platform Helm release stays forge-managed; Flux does not run a
-// HelmRelease (no dual-ownership of the chart). v1: requires an https://
-// overlay.repo — Flux source-controller fetches from a remote git server and
-// cannot watch a file:// local path.
+// HelmRelease (no dual-ownership of the chart). overlay.repo is an https://
+// fork that source-controller fetches directly, or a file:// path on the host
+// that Forge serves to source-controller over read-only SSH from the node
+// (DES-HOR-632-01).
 type Flux struct {
 	Enabled bool   `yaml:"enabled"`
 	Version string `yaml:"version"` // flux2 release tag (semver, e.g. v2.4.0); default defaultFluxVersion
@@ -150,9 +151,8 @@ func (f *Flux) applyDefaults() {
 }
 
 // validate enforces v1 constraints on the Flux configuration. Flux requires an
-// https:// overlay.repo (source-controller fetches from a remote git server; it
-// cannot watch a file:// local path, and an empty repo gives Flux nothing to
-// watch). A disabled Flux config is always valid.
+// https:// or file:// overlay.repo (an empty repo gives Flux nothing to watch).
+// A disabled Flux config is always valid.
 func (f Flux) validate(overlay Overlay) error {
 	if !f.Enabled {
 		return nil
@@ -160,8 +160,10 @@ func (f Flux) validate(overlay Overlay) error {
 	if overlay.Repo == "" {
 		return fmt.Errorf("flux.enabled requires overlay.repo to be set (Flux watches the client overlay fork)")
 	}
-	if !strings.HasPrefix(overlay.Repo, "https://") {
-		return fmt.Errorf("flux.enabled requires an https:// overlay.repo (Flux source-controller cannot watch %q; file:// is a forge-apply-only dev path)", overlay.Repo)
+	// A file:// overlay is served to source-controller from the node over
+	// read-only SSH (DES-HOR-632-01); an https fork is read directly.
+	if !strings.HasPrefix(overlay.Repo, "https://") && !strings.HasPrefix(overlay.Repo, "file://") {
+		return fmt.Errorf("flux.enabled requires an https:// or file:// overlay.repo (got %q)", overlay.Repo)
 	}
 	if f.Version != defaultFluxVersion {
 		return fmt.Errorf("flux.version %q has no repository-reviewed executable/runtime identity", f.Version)

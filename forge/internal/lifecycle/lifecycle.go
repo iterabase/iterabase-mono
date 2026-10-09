@@ -661,7 +661,7 @@ func applyOverlayPhase(ctx context.Context, cfg *config.Cluster, p provisioner.P
 	if err := applyLVMStorageSubstrate(ctx, cfg, p, d, opts, res); err != nil {
 		return err
 	}
-	if err := applyFluxSourcePhase(ctx, cfg, f, d, opts, res, overlayCommit); err != nil {
+	if err := applyFluxSourcePhase(ctx, cfg, o, f, d, opts, res, overlayCommit); err != nil {
 		return err
 	}
 	if err := applyPlatformChartPhase(ctx, cfg, d, opts, res, overlayDest, migrated); err != nil {
@@ -990,6 +990,9 @@ func destroyProductSubstrate(ctx context.Context, cfg *config.Cluster, d deploye
 	}
 	if o != nil && cfg.Spec.Overlay.Repo != "" {
 		_ = o.Remove(ctx, overlayDestPath(cfg))
+		if cfg.Spec.Flux.Enabled && strings.HasPrefix(cfg.Spec.Overlay.Repo, "file://") {
+			_ = o.StopServingToFlux(ctx)
+		}
 	}
 	if d != nil && cfg.Spec.Chart.Version != "" {
 		ch := cfg.Spec.Chart

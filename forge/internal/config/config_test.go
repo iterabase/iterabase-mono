@@ -410,11 +410,15 @@ func TestFluxValidate_RequiresOverlay(t *testing.T) {
 	assert.Contains(t, err.Error(), "overlay.repo")
 }
 
-func TestFluxValidate_RequiresHTTPS(t *testing.T) {
-	err := Flux{Enabled: true, Version: defaultFluxVersion}.validate(Overlay{Repo: "file:///tmp/overlay", Ref: "master"})
+func TestFluxValidate_FileOverlayServedOverNodeSSH(t *testing.T) {
+	// DES-HOR-632-01: Forge serves a file:// overlay to source-controller.
+	require.NoError(t, Flux{Enabled: true, Version: defaultFluxVersion}.validate(Overlay{Repo: "file:///tmp/overlay", Ref: "master"}))
+}
+
+func TestFluxValidate_RejectsOtherSchemes(t *testing.T) {
+	err := Flux{Enabled: true, Version: defaultFluxVersion}.validate(Overlay{Repo: "ssh://git@github.com/example/overlay.git", Ref: "master"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "https://")
-	assert.Contains(t, err.Error(), "file://")
+	assert.Contains(t, err.Error(), "https:// or file://")
 }
 
 func TestFluxValidate_HTTPSOK(t *testing.T) {
@@ -428,13 +432,13 @@ func TestFluxValidate_DisabledIgnoresOverlay(t *testing.T) {
 	require.NoError(t, Flux{}.validate(Overlay{Repo: "file:///tmp/overlay", Ref: "master"}))
 }
 
-func TestParse_FluxEnabledFileURLRejected(t *testing.T) {
-	_, err := Parse(yamlFor(t, func(cc *Cluster) {
+func TestParse_FluxEnabledFileURLAccepted(t *testing.T) {
+	c, err := Parse(yamlFor(t, func(cc *Cluster) {
 		cc.Spec.Overlay = Overlay{Repo: "file:///tmp/overlay", Ref: "master"}
 		cc.Spec.Flux = Flux{Enabled: true}
 	}))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "https://")
+	require.NoError(t, err)
+	assert.Equal(t, "file:///tmp/overlay", c.Spec.Overlay.Repo)
 }
 
 func TestParse_FluxEnabledNoOverlayRejected(t *testing.T) {
