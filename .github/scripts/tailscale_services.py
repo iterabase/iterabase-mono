@@ -61,7 +61,7 @@ def api(token: str) -> Request:
             with urllib.request.urlopen(req, timeout=30) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
-            if method == "DELETE" and error.code == 404:
+            if method in ("DELETE", "GET") and error.code == 404:
                 return None
             detail = error.read().decode(errors="replace")[:300]
             raise TailscaleError(f"{method} {path}: HTTP {error.code}: {detail}") from None
@@ -91,9 +91,16 @@ def mint_host_key(request: Request) -> str:
 
 
 def services_up(request: Request, environment: str) -> list[str]:
+    """Create each Service, or update it keeping its virtual addresses (an
+    update must carry the existing IPv4 and IPv6 addrs)."""
     names = service_names(environment)
     for name in names:
-        request("PUT", f"/tailnet/-/vip-services/{urllib.parse.quote(name, safe=':')}", service_body(name))
+        path = f"/tailnet/-/vip-services/{urllib.parse.quote(name, safe=':')}"
+        body = service_body(name)
+        existing = request("GET", path, None)
+        if existing and existing.get("addrs"):
+            body["addrs"] = existing["addrs"]
+        request("PUT", path, body)
     return names
 
 

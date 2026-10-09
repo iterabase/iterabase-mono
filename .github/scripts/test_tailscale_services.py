@@ -8,11 +8,14 @@ class FakeAPI:
         self.calls = []
         self.services = services or []
         self.devices = devices or []
+        self.existing = {}
 
     def __call__(self, method, path, body=None):
         self.calls.append((method, path, body))
         if method == "GET" and path.endswith("/devices"):
             return {"devices": self.devices}
+        if method == "GET" and "/vip-services/" in path:
+            return self.existing.get(path.rsplit("/", 1)[1])
         if method == "GET":
             return {"vipServices": self.services}
         if method == "POST":
@@ -28,16 +31,26 @@ class TailscaleServicesTests(unittest.TestCase):
             with self.assertRaises(ts.TailscaleError):
                 ts.service_names(bad)
 
-    def test_up_puts_tagged_https_services(self):
+    def test_up_creates_tagged_https_services(self):
         fake = FakeAPI()
         ts.services_up(fake, "pr-7")
-        self.assertEqual([c[:2] for c in fake.calls], [
-            ("PUT", "/tailnet/-/vip-services/svc:pr-7-app"),
-            ("PUT", "/tailnet/-/vip-services/svc:pr-7-inference"),
+        puts = [c for c in fake.calls if c[0] == "PUT"]
+        self.assertEqual([c[1] for c in puts], [
+            "/tailnet/-/vip-services/svc:pr-7-app",
+            "/tailnet/-/vip-services/svc:pr-7-inference",
         ])
-        for _, _, body in fake.calls:
+        for _, _, body in puts:
             self.assertEqual(body["ports"], ["tcp:443"])
             self.assertEqual(body["tags"], [ts.SERVICE_TAG])
+            self.assertNotIn("addrs", body, "a new Service gets its addresses from Tailscale")
+
+    def test_up_keeps_existing_service_addresses(self):
+        fake = FakeAPI()
+        fake.existing["svc:pr-7-app"] = {"name": "svc:pr-7-app", "addrs": ["100.100.1.2", "fd7a:115c:a1e0::1:2"]}
+        ts.services_up(fake, "pr-7")
+        puts = {c[1]: c[2] for c in fake.calls if c[0] == "PUT"}
+        self.assertEqual(puts["/tailnet/-/vip-services/svc:pr-7-app"]["addrs"], ["100.100.1.2", "fd7a:115c:a1e0::1:2"])
+        self.assertNotIn("addrs", puts["/tailnet/-/vip-services/svc:pr-7-inference"])
 
     def test_down_deletes_both(self):
         fake = FakeAPI()
