@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -118,7 +119,9 @@ func preparePinnedImageCache(t *testing.T, diagnostics *forgeDiagnostics, ip, ke
 		}
 		if !verified {
 			archive := path.Join(root, capacity, generation, "images", image.Archive)
+			started := time.Now()
 			importOutput, err := sshOutput(client, "sudo k3s ctr images import "+candidateShellQuote(archive))
+			t.Logf("pinned image %s import took %s", image.Reference, time.Since(started).Round(time.Second))
 			if err != nil {
 				diagnostics.collectPinnedImageCacheEvidence(t, ip, keyPath, archive, root, image.Reference, importOutput)
 				t.Fatalf("import pinned image %s from %s: %v\n%s", image.Reference, archive, err, importOutput)

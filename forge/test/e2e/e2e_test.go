@@ -4,10 +4,12 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -763,7 +765,13 @@ func runForgeE(bin, forgeHome string, args ...string) (string, error) {
 	if os.Getenv("FORGE_OVERLAY_TOKEN") == "" && os.Getenv("GITHUB_TOKEN") != "" {
 		cmd.Env = append(cmd.Env, "FORGE_OVERLAY_TOKEN="+os.Getenv("GITHUB_TOKEN"))
 	}
-	out, err := cmd.CombinedOutput()
+	// Stream Forge's progress as it runs so a hung apply shows where it stopped;
+	// the captured copy still feeds marker assertions.
+	var captured bytes.Buffer
+	stream := io.MultiWriter(&captured, os.Stderr)
+	cmd.Stdout, cmd.Stderr = stream, stream
+	err := cmd.Run()
+	out := captured.Bytes()
 	// Forge refreshes the run kubeconfig with the host's API endpoint on every
 	// apply; fixture hosts expose only SSH, so re-bind it to the SSH tunnel.
 	if len(args) > 0 && args[0] == "apply" {

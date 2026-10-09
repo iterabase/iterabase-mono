@@ -33,13 +33,13 @@ test-unit:
 # The E2E module has one top-level TestE2E runner. -run selects an isolated
 # scenario; -v is required so capacity skips and named stages remain visible.
 test-e2e:
-	cd test/e2e && go test -v -race -count=1 -timeout 95m -run '^TestE2E$$/^cpu$$' .
+	cd test/e2e && go test -v -race -count=1 -timeout 60m -run '^TestE2E$$/^cpu$$' .
 
 test-e2e-workspace:
-	cd test/e2e && go test -v -race -count=1 -timeout 95m -run '^TestE2E$$/^cpu-workspace$$' .
+	cd test/e2e && go test -v -race -count=1 -timeout 120m -run '^TestE2E$$/^cpu-workspace$$' .
 
 test-e2e-gpu:
-	cd test/e2e && go test -v -race -count=1 -timeout 100m -run '^TestE2E$$/^gpu$$' .
+	cd test/e2e && go test -v -race -count=1 -timeout 90m -run '^TestE2E$$/^gpu$$' .
 
 # Run the hermetic shared-runner scenario and Forge-specific fixture,
 # diagnostics, GPU-transition, and candidate-composition tests. Direct chart
