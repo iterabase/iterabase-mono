@@ -9,22 +9,17 @@ import (
 )
 
 // runOverlayStage upgrades the composed CPU fixture from the migration source
-// to the current platform through Forge's production ordering: clone the public
-// fixture, install the certificate substrate, establish an exact Flux artifact,
-// migrate certificate ownership, apply the platform, then reconcile its CRs.
+// to the current platform through Forge's production ordering: clone the
+// fixture overlay, install the certificate substrate, establish an exact Flux
+// artifact, migrate certificate ownership, apply the platform, then reconcile
+// its CRs.
 //
-// It points at ref `e2e` (a minimal-scaffold test-fixture branch): `master` holds
-// the HOR-299 bare-metal prod recipe (required placeholders, not deployable bare
-// on the fixture host). The prod recipe's deployability is HOR-299's job; this test is
-// forge's mechanics. See iterabase-overlay `e2e` branch.
-//
-// No explicit FORGE_OVERLAY_TOKEN is accepted. The E2E process maps the
-// workflow's ephemeral GITHUB_TOKEN only into each Forge subprocess so repeated
-// exact public-overlay clones avoid anonymous cloud-edge failures; tokenless and
-// prompt behavior remains covered by unit + fake-SSH tests.
+// The overlay is the minimal fixture under ./overlay, committed on the host as
+// a file:// repository with the run's values and served to Flux over read-only
+// node SSH (DES-HOR-632-01). No overlay token is involved.
 func runOverlayStage(t *testing.T, state *cpuFixtureState) {
 	if _, ok := os.LookupEnv("FORGE_OVERLAY_TOKEN"); ok {
-		t.Fatal("FORGE_OVERLAY_TOKEN must be unset; E2E supplies only the ephemeral workflow token")
+		t.Fatal("FORGE_OVERLAY_TOKEN must be unset; the fixture overlay is host-local")
 	}
 	prepareCandidateChart(t, state.ip, state.privKeyPath)
 	plan := prepareCandidateOverlay(t, state.runID, state.ip, state.privKeyPath)

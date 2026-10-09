@@ -6,13 +6,16 @@ Forge binary applies the commit's complete artifact set, exactly like a
 customer `forge apply`, and later pushes upgrade it in place. Images are the
 build-once digests imported into the host's containerd; charts are the source
 charts re-versioned `<version>-pr.<N>.<run>` / `<version>-main.<run>` and
-published to the preview namespace; the CI-owned preview overlay is the public
-overlay plus a host-local smudge filter carrying the preview values (the F3
-mechanism). Inference routes to a hosted, capped OpenAI-compatible API.
+published to the preview namespace; the CI-owned preview overlay is the
+versioned E2E fixture overlay plus the preview values, committed on the host as
+a file:// repository that Forge serves to Flux over read-only node SSH
+(DES-HOR-632-01). Inference routes to a hosted, capped OpenAI-compatible API.
 """
 from __future__ import annotations
 
 import argparse
+import gzip
+import io
 import json
 import os
 import pathlib
@@ -21,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from typing import Any
 
@@ -30,8 +34,13 @@ import e2e_inputs  # noqa: E402
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CHARTS = ROOT / "charts" / "charts"
 PREVIEW_CHARTS = "oci://ghcr.io/iterabase/preview/charts"
-OVERLAY_REPO = "https://github.com/nunocgoncalves/iterabase-overlay.git"
-OVERLAY_REF = "e2e"
+# The preview overlay is the versioned E2E fixture plus the preview values,
+# committed on the host and served to Flux over read-only node SSH
+# (DES-HOR-632-01). No overlay token is involved.
+OVERLAY_FIXTURE = ROOT / "forge" / "test" / "e2e" / "overlay"
+OVERLAY_ROOT = "/var/lib/iterabase-preview/overlay"
+OVERLAY_REPO = f"file://{OVERLAY_ROOT}"
+OVERLAY_REF = "preview"
 RELEASE = "iterabase"
 NAMESPACE = "iterabase-system"
 HOST_CHARTS = "/var/lib/iterabase-preview/charts"
@@ -58,6 +67,10 @@ class Host:
 
     def ssh(self, command: str, stdin: str | None = None) -> str:
         return run("ssh", *self.base, f"ubuntu@{self.address}", command, stdin=stdin)
+
+    def ssh_bytes(self, command: str, stdin: bytes) -> str:
+        return subprocess.run(["ssh", *self.base, f"ubuntu@{self.address}", command], cwd=ROOT, check=True,
+                              capture_output=True, input=stdin).stdout.decode().strip()
 
     def copy(self, source: pathlib.Path, destination: str) -> None:
         run("scp", "-q", *self.base, str(source), f"ubuntu@{self.address}:{destination}")
@@ -93,8 +106,8 @@ def package_charts(version: str, workdir: pathlib.Path) -> dict[str, pathlib.Pat
 def preview_values(images: dict[str, dict[str, str]], model: str) -> str:
     """The CI-owned preview overlay values (C9): build-once images and the hosted model.
 
-    Block YAML, because the smudge filter appends it to the overlay's own
-    values.client.yaml; scalars are JSON-quoted so no value can break the document.
+    Block YAML, because it is appended to the overlay's own values.client.yaml;
+    scalars are JSON-quoted so no value can break the document.
     """
     def image(name: str) -> dict[str, str]:
         return {"repository": images[name]["repository"], "tag": images[name]["tag"], "pullPolicy": "IfNotPresent"}
@@ -108,7 +121,7 @@ def preview_values(images: dict[str, dict[str, str]], model: str) -> str:
         "minio": {"persistence": {"size": "5Gi"}},
         "inference-gateway": {"image": image("inference-gateway-image")},
     }
-    return "# CI-owned preview values (HOR-590 C6/C9); appended by a host-local smudge filter.\n" + block_yaml(values)
+    return "# CI-owned preview values (HOR-590 C6/C9); appended to the fixture overlay's values.client.yaml.\n" + block_yaml(values)
 
 
 def block_yaml(value: dict[str, Any], indent: int = 0) -> str:
@@ -121,21 +134,34 @@ def block_yaml(value: dict[str, Any], indent: int = 0) -> str:
     return "".join(lines)
 
 
-def smudge_script(values: str) -> str:
-    """Install the host-local smudge filter that appends the preview values (the F3 mechanism)."""
-    prefix = "/home/ubuntu/.iterabase-preview"
+def overlay_archive(values: str, fixture: pathlib.Path = OVERLAY_FIXTURE) -> bytes:
+    """The fixture overlay with the preview values appended to values.client.yaml,
+    as a deterministic tar.gz (sorted, timestamp-free)."""
+    buffer = io.BytesIO()
+    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as gz, tarfile.open(fileobj=gz, mode="w") as archive:
+        for path in sorted(p for p in fixture.rglob("*") if p.is_file()):
+            relative = path.relative_to(fixture).as_posix()
+            contents = path.read_bytes()
+            if relative == "values.client.yaml":
+                contents += b"\n" + values.encode("utf-8")
+            info = tarfile.TarInfo(relative)
+            info.size, info.mode = len(contents), 0o644
+            archive.addfile(info, io.BytesIO(contents))
+    return buffer.getvalue()
+
+
+def overlay_script() -> str:
+    """Commit the archive on stdin as a fresh one-commit overlay repository."""
     return f"""set -euo pipefail
-install -d -m 700 {prefix}
-cat > {prefix}/values.yaml <<'VALUES'
-{values}
-VALUES
-printf '#!/bin/sh\\ncat\\nprintf "\\\\n"\\ncat {prefix}/values.yaml\\n' > {prefix}/smudge
-chmod 700 {prefix}/smudge
-printf 'values.client.yaml filter=iterabase-preview\\n' > {prefix}/attributes
-git config --global core.attributesFile {prefix}/attributes
-git config --global filter.iterabase-preview.clean cat
-git config --global filter.iterabase-preview.smudge {prefix}/smudge
-git config --global filter.iterabase-preview.required true
+command -v git >/dev/null || {{ sudo apt-get update -qq && sudo apt-get install -y git; }}
+sudo rm -rf {OVERLAY_ROOT}
+sudo install -d -o ubuntu -g ubuntu -m 0755 {OVERLAY_ROOT}
+tar -xz -C {OVERLAY_ROOT}
+cd {OVERLAY_ROOT}
+git init -q -b {OVERLAY_REF}
+git add -A
+git -c user.email=preview@iterabase.invalid -c user.name="Iterabase preview" commit -qm "Preview overlay"
+git rev-parse HEAD
 """
 
 
@@ -286,8 +312,9 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
     forge = ROOT / "forge" / "bin" / "forge"
     run("make", "-C", "forge", "build")
     config = forge_config(host, args.data_device, version, workdir)
-    env = {**os.environ, "FORGE_HOME": str(workdir / "forge-home"), "FORGE_OVERLAY_TOKEN": os.environ.get("GITHUB_TOKEN", "")}
-    host.ssh(smudge_script(preview_values(images, args.model_id)))
+    env = {key: value for key, value in os.environ.items() if key != "FORGE_OVERLAY_TOKEN"}
+    env["FORGE_HOME"] = str(workdir / "forge-home")
+    host.ssh_bytes(overlay_script(), overlay_archive(preview_values(images, args.model_id)))
     host.ssh(f"sudo install -d -o ubuntu {HOST_CHARTS}")
     for chart, archive in archives.items():
         host.copy(archive, f"/tmp/{archive.name}")

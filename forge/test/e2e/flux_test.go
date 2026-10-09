@@ -12,19 +12,15 @@ import (
 
 // runFluxStage exercises the Flux GitOps phase on the composed CPU fixture:
 // Forge reconciles Flux, its GitRepository, and Kustomization against the
-// public exact-artifact E2E overlay fixture using only the workflow's
-// ephemeral read credential,
-// and Flux source-controller materializes the fork in-cluster + kustomize-controller
-// reconciles crds/client. Validates the MECHANICS (install → sync resources →
-// Flux reconciles) rather than a writable push-to-git loop (that's Flux upstream
-// behavior, validated end-to-end by HOR-299's real OPO1 client fork).
-//
-// No explicit FORGE_OVERLAY_TOKEN is accepted. The E2E process maps the
-// workflow's ephemeral GITHUB_TOKEN into each Forge subprocess; tokenless and
-// prompt behavior remains covered by unit + fake-SSH tests.
+// host-local fixture overlay, served to source-controller over read-only node
+// SSH (DES-HOR-632-01), and kustomize-controller reconciles crds/client.
+// Validates the MECHANICS (install → sync resources → Flux reconciles) rather
+// than a writable push-to-git loop (that's Flux upstream behavior, validated
+// end-to-end by HOR-299's real OPO1 client fork). The https token path remains
+// covered by unit + fake-SSH tests.
 func runFluxStage(t *testing.T, state *cpuFixtureState) {
 	if _, ok := os.LookupEnv("FORGE_OVERLAY_TOKEN"); ok {
-		t.Fatal("FORGE_OVERLAY_TOKEN must be unset; E2E supplies only the ephemeral workflow token")
+		t.Fatal("FORGE_OVERLAY_TOKEN must be unset; the fixture overlay is host-local")
 	}
 
 	cfgPath := writeFluxForgeConfig(t, state.runID, state.ip, state.privKeyPath, state.chartVersion)
@@ -124,13 +120,14 @@ func pollFluxReady(t *testing.T, client *ssh.Client, kind, name string, timeout 
 }
 
 // writeFluxForgeConfig writes a forge.yaml identical to the overlay e2e config
-// but with Flux enabled (pointing at the public iterabase-overlay base repo).
+// but with Flux enabled, on the host-local fixture overlay the overlay stage
+// built (served to Flux over read-only node SSH, DES-HOR-632-01).
 func writeFluxForgeConfig(t *testing.T, name, ip, keyPath, chartVersion string) string {
 	return writeForgeConfigSpec(t, forgeConfigSpec{
 		Name: name, Address: ip, SSHKeyPath: keyPath, RunLabel: true, DualStack: true,
 		ChartVersion: chartVersion,
-		OverlayRepo:  "https://github.com/nunocgoncalves/iterabase-overlay.git",
-		OverlayRef:   envOr("FORGE_E2E_OVERLAY_REF", "e2e"),
+		OverlayRepo:  candidateOverlayRepository,
+		OverlayRef:   candidateOverlayRef,
 		Flux:         true,
 	})
 }

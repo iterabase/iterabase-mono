@@ -1,0 +1,17 @@
+# Client CRD instances + supersede patches — client-owned (no upstream-sync conflict).
+#
+# Composes the base instances (../base) and adds client-specific CRD instances.
+# To SUPERSEDE a base instance (same name), add a patch below — do not edit crds/base/.
+#
+# forge:   kubectl apply -k crds/client/
+# Flux:    Kustomization targeting crds/client/ (HOR-292)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+metadata:
+  name: overlay-crds-client
+resources:
+  - ../base
+# Add client CRD instances here, e.g.:
+#   - modelbackend-opo1-vllm.yaml
+#   - model-opo1-alias.yaml
+# patches: []  # supersede base instances by identity (name)

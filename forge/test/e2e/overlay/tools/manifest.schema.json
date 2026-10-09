@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iterabase.com/schemas/tool-manifest-v1.json",
+  "title": "Iterabase reviewed gateway tool manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "name", "version", "digest", "description", "bundle", "inputSchema", "effectClass", "timeoutMs"],
+  "properties": {
+    "apiVersion": {"const": "iterabase.io/tool/v1"},
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$"},
+    "version": {"type": "string", "minLength": 1, "maxLength": 128},
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "description": {"type": "string", "minLength": 1},
+    "bundle": {"const": "index.mjs"},
+    "inputSchema": {"type": "object"},
+    "effectClass": {"enum": ["read_only", "idempotent_write", "non_idempotent_write"]},
+    "credentialSlots": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["name", "scheme"], "properties": {"name": {"type": "string", "minLength": 1}, "scheme": {"enum": ["bearer", "oauth_client_credentials"]}, "required": {"type": "boolean"}, "bindingSchema": {"type": "object"}}}},
+    "artifactCapabilities": {"type": "object", "additionalProperties": false, "properties": {"readsArtifacts": {"type": "boolean"}, "writesArtifacts": {"type": "boolean"}, "acceptedMimeTypes": {"type": "array", "items": {"type": "string", "minLength": 1}}}},
+    "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 3600000},
+    "idempotencyProof": {"type": "object", "additionalProperties": false, "required": ["strategy", "upstreamKeyHeader"], "properties": {"strategy": {"const": "upstream_key"}, "description": {"type": "string"}, "upstreamKeyHeader": {"type": "string", "minLength": 1}}},
+    "consequenceSummaryTemplate": {"type": "object", "additionalProperties": false, "required": ["localizedTemplates", "argumentPaths"], "properties": {"localizedTemplates": {"type": "object", "required": ["en", "pt"], "additionalProperties": {"type": "string"}}, "argumentPaths": {"type": "object", "additionalProperties": {"type": "string"}}}}
+  }
+}

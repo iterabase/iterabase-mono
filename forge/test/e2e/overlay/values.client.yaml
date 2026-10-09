@@ -1,0 +1,5 @@
+# Client Helm value overrides — applied AFTER values.yaml (later file wins).
+#
+# This file is empty in the base repo. Clients fill it in their fork with
+# deployment-specific overrides (ingress host, image tags, dep toggles, etc.).
+# Do NOT edit values.yaml — put overrides here to keep upstream syncs conflict-free.
