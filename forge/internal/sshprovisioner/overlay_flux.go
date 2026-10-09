@@ -20,7 +20,7 @@ import (
 // git-upload-pack on that one mirror and to connections from the pod CIDRs.
 const (
 	fluxOverlayUser   = "iterabase-overlay"
-	fluxOverlayRoot   = "/var/lib/iterabase/overlay-source"
+	fluxOverlayRoot   = "/var/lib/iterabase-overlay-source"
 	fluxOverlayMirror = fluxOverlayRoot + "/overlay.git"
 	fluxSourceMarker  = "FORGE_FLUX_SOURCE"
 )
@@ -99,6 +99,11 @@ rm -rf "$mirror.old"
 umask 022
 printf '%%s\n' %[6]s > "$root/.ssh/authorized_keys.next"
 mv -f "$root/.ssh/authorized_keys.next" "$root/.ssh/authorized_keys"
+
+# sshd reads authorized_keys as the target user, and git-upload-pack runs as
+# it: prove both are reachable now rather than as a Flux authentication timeout.
+runuser -u "$user" -- test -r "$root/.ssh/authorized_keys" || { echo "$user cannot read $root/.ssh/authorized_keys" >&2; exit 1; }
+runuser -u "$user" -- git --git-dir="$mirror" rev-parse --verify --quiet "$ref^{commit}" >/dev/null || { echo "$user cannot read ref $ref in $mirror" >&2; exit 1; }
 
 addresses=$(k3s kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
 hostkey=$(awk '{print $1" "$2}' /etc/ssh/ssh_host_ed25519_key.pub)

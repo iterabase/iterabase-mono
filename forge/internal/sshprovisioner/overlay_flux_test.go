@@ -28,7 +28,7 @@ func TestFluxOverlayServeScriptRestrictsTheKey(t *testing.T) {
 
 	// DES-HOR-632-01: one key, no shell/forwarding, read-only on one mirror, pod
 	// CIDRs only.
-	want := `restrict,from="10.42.0.0/16,fd00:42::/56",command="git-upload-pack '/var/lib/iterabase/overlay-source/overlay.git'" ` + publicKey
+	want := `restrict,from="10.42.0.0/16,fd00:42::/56",command="git-upload-pack '/var/lib/iterabase-overlay-source/overlay.git'" ` + publicKey
 	assert.Contains(t, script, shellQuote(want))
 	assert.Contains(t, script, `--shell /usr/bin/git-shell`)
 	assert.Contains(t, script, `usermod -p '*' "$user"`)
@@ -37,6 +37,8 @@ func TestFluxOverlayServeScriptRestrictsTheKey(t *testing.T) {
 	assert.Contains(t, script, `ref='e2e'`)
 	assert.Contains(t, script, `> "$root/.ssh/authorized_keys.next"`)
 	assert.NotContains(t, script, "authorized_keys >>", "the key is replaced, never appended")
+	assert.Contains(t, script, `runuser -u "$user" -- test -r "$root/.ssh/authorized_keys"`, "sshd reads the key as the user")
+	assert.NotContains(t, script, "/var/lib/iterabase/", "/var/lib/iterabase is root-only (data-storage receipt)")
 
 	out, err := exec.Command("bash", "-n", "-c", script).CombinedOutput()
 	require.NoError(t, err, "script is not valid bash: %s", out)
@@ -73,13 +75,13 @@ func TestParseFluxSSHSource(t *testing.T) {
 	hostKey := strings.TrimSuffix(testFluxPublicKey(t), " forge-flux-overlay")
 	source, err := parseFluxSSHSource("noise\nFORGE_FLUX_SOURCE\tfd00::5 172.31.20.168\t" + hostKey + "\n")
 	require.NoError(t, err)
-	assert.Equal(t, "ssh://iterabase-overlay@172.31.20.168/var/lib/iterabase/overlay-source/overlay.git", source.URL,
+	assert.Equal(t, "ssh://iterabase-overlay@172.31.20.168/var/lib/iterabase-overlay-source/overlay.git", source.URL,
 		"IPv4 is preferred when the node is dual-stack")
 	assert.Equal(t, "172.31.20.168 "+hostKey, source.KnownHosts)
 
 	source, err = parseFluxSSHSource("FORGE_FLUX_SOURCE\tfd00::5\t" + hostKey)
 	require.NoError(t, err)
-	assert.Equal(t, "ssh://iterabase-overlay@[fd00::5]/var/lib/iterabase/overlay-source/overlay.git", source.URL)
+	assert.Equal(t, "ssh://iterabase-overlay@[fd00::5]/var/lib/iterabase-overlay-source/overlay.git", source.URL)
 	assert.Equal(t, "fd00::5 "+hostKey, source.KnownHosts)
 
 	for name, out := range map[string]string{

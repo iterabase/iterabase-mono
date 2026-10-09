@@ -584,7 +584,7 @@ type readFileCall struct{ dest, relPath string }
 func (f *fakeOverlayer) EnsureGit(_ context.Context) error { return f.ensureGitErr }
 func (f *fakeOverlayer) ServeToFlux(_ context.Context, repo, ref, publicKey string, podCIDRs []string) (overlayer.FluxSSHSource, error) {
 	f.serveCalls = append(f.serveCalls, serveCall{repo: repo, ref: ref, publicKey: publicKey, podCIDRs: podCIDRs})
-	return overlayer.FluxSSHSource{URL: "ssh://iterabase-overlay@10.0.0.5/var/lib/iterabase/overlay-source/overlay.git", KnownHosts: "10.0.0.5 ssh-ed25519 AAAAhost"}, nil
+	return overlayer.FluxSSHSource{URL: "ssh://iterabase-overlay@10.0.0.5/var/lib/iterabase-overlay-source/overlay.git", KnownHosts: "10.0.0.5 ssh-ed25519 AAAAhost"}, nil
 }
 func (f *fakeOverlayer) StopServingToFlux(_ context.Context) error {
 	f.stopServeCalls++
@@ -1608,7 +1608,7 @@ func TestApply_Flux_FileOverlayServedOverNodeSSH(t *testing.T) {
 	assert.Contains(t, sec, `"known_hosts":"10.0.0.5 ssh-ed25519 AAAAhost"`)
 	assert.Contains(t, sec, strings.TrimSuffix(strings.SplitN(serve.publicKey, " ", 3)[1], "="))
 	assert.NotContains(t, sec, "ghp_unused")
-	assert.Contains(t, repo, `"url":"ssh://iterabase-overlay@10.0.0.5/var/lib/iterabase/overlay-source/overlay.git"`)
+	assert.Contains(t, repo, `"url":"ssh://iterabase-overlay@10.0.0.5/var/lib/iterabase-overlay-source/overlay.git"`)
 	assert.Contains(t, repo, `"secretRef":{"name":"overlay-git-ssh"}`)
 
 	// Every apply gets a new key: re-apply replaces the authorized key.
