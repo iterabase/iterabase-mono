@@ -1,0 +1,36 @@
+name: Log in to Docker Hub
+description: >-
+  Authenticated Docker Hub pulls (DES-HOR-590-08), retrying transient registry
+  errors. Fails when the username or token is missing or every attempt fails; it
+  never falls back to anonymous pulls.
+inputs:
+  username:
+    description: Docker Hub username (the DOCKERHUB_USERNAME variable).
+    required: true
+  token:
+    description: Read-only Docker Hub access token (the DOCKERHUB_TOKEN secret).
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Log in to Docker Hub with retries
+      shell: bash
+      env:
+        USERNAME: ${{ inputs.username }}
+        TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        if [[ -z "$USERNAME" || -z "$TOKEN" ]]; then
+          echo "::error::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must be set (docs/ci.md, Docker Hub pulls)"
+          exit 1
+        fi
+        for attempt in 1 2 3 4 5; do
+          if printf '%s' "$TOKEN" | docker login docker.io --username "$USERNAME" --password-stdin >/dev/null 2>"$RUNNER_TEMP/docker-login.err"; then
+            echo "Logged in to Docker Hub (attempt $attempt)"
+            exit 0
+          fi
+          echo "Docker Hub login attempt $attempt failed: $(tail -1 "$RUNNER_TEMP/docker-login.err")"
+          sleep $((attempt * 10))
+        done
+        echo "::error::Docker Hub login failed after 5 attempts"
+        exit 1
