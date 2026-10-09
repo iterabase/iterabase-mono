@@ -1871,6 +1871,22 @@ def find_preview(region: str, name: str) -> dict[str, Any] | None:
     return instances[0] if instances else None
 
 
+def live_previews(region: str) -> list[str]:
+    """Environments that still have a pending or running preview host."""
+    reservations = as_list(aws_json([
+        "ec2", "describe-instances", "--region", region, "--filters", f"Name=tag:{KIND_TAG},Values=preview",
+        "Name=instance-state-name,Values=pending,running",
+    ])["Reservations"], what="reservations")
+    names = {tagged_value(instance.get("Tags"), SCENARIO_TAG) for reservation in reservations for instance in reservation["Instances"]}
+    return sorted(name for name in names if name and PREVIEW_NAME.match(name))
+
+
+def command_preview_list(args: argparse.Namespace) -> int:
+    """Print the live preview environments, comma-separated (reaper Service pruning, DES-HOR-590-06)."""
+    print(",".join(live_previews(require_region(args.region))))
+    return 0
+
+
 def preview_deadline(name: str) -> dt.datetime:
     now = dt.datetime.now(dt.timezone.utc)
     return now + (dt.timedelta(days=STAGING_TTL_DAYS) if name == "staging" else dt.timedelta(hours=PREVIEW_TTL_HOURS))
@@ -2484,6 +2500,9 @@ def build_parser() -> argparse.ArgumentParser:
     down = subparsers.add_parser("preview-down", help="terminate one preview host (C6)", parents=[common])
     down.add_argument("--name", required=True)
     down.set_defaults(handler=command_preview_down)
+
+    listing = subparsers.add_parser("preview-list", help="print live preview environments", parents=[common])
+    listing.set_defaults(handler=command_preview_list)
 
     prune = subparsers.add_parser("prune-images", help="keep the newest baked generations", parents=[common])
     prune.add_argument("--dry-run", action="store_true")

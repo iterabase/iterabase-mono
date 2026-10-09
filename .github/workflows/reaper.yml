@@ -60,6 +60,15 @@ jobs:
             arguments+=(--control-instance-id "$CONTROL_INSTANCE_ID")
           fi
           python3 .github/scripts/aws_ci.py reap "${arguments[@]}"
+      - name: Delete Tailscale Services of previews that no longer exist
+        if: ${{ inputs.dry_run != true }}
+        env:
+          TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TAILSCALE_OAUTH_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+        run: |
+          set -euo pipefail
+          live=$(python3 .github/scripts/aws_ci.py preview-list --region '${{ vars.AWS_CI_REGION }}')
+          python3 .github/scripts/tailscale_services.py prune --live "$live"
 
   images:
     name: baked image retention

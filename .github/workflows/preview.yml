@@ -30,6 +30,11 @@ jobs:
           session-name: iterabase-preview-teardown-${{ github.run_id }}
       - name: Terminate the preview host
         run: python3 .github/scripts/aws_ci.py preview-down --region '${{ vars.AWS_CI_REGION }}' --name 'pr-${{ github.event.pull_request.number }}'
+      - name: Delete the preview's Tailscale Services
+        env:
+          TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TAILSCALE_OAUTH_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+        run: python3 .github/scripts/tailscale_services.py down --environment 'pr-${{ github.event.pull_request.number }}'
       - name: Mark the preview deployments inactive
         env:
           GH_TOKEN: ${{ github.token }}

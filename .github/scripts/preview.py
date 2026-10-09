@@ -103,7 +103,7 @@ def package_charts(version: str, workdir: pathlib.Path) -> dict[str, pathlib.Pat
     return archives
 
 
-def preview_values(images: dict[str, dict[str, str]], model: str) -> str:
+def preview_values(images: dict[str, dict[str, str]], model: str, hosts: dict[str, str]) -> str:
     """The CI-owned preview overlay values (C9): build-once images and the hosted model.
 
     Block YAML, because it is appended to the overlay's own values.client.yaml;
@@ -117,9 +117,15 @@ def preview_values(images: dict[str, dict[str, str]], model: str) -> str:
             "toolRunner": {"image": image("tool-runner-image")},
             "dispatch": {"enabled": True, "defaultModel": {"id": "preview-hosted", "api": "openai-completions"}},
             "postgresql": {"persistence": {"size": "5Gi"}},
+            # DES-HOR-590-06: the real Ingress objects route the Tailscale
+            # Service names; TLS ends at Tailscale, so the Ingresses are HTTP.
+            "ingress": {"enabled": True, "className": "nginx", "host": hosts["app"], "tls": {"enabled": False}},
         },
         "minio": {"persistence": {"size": "5Gi"}},
-        "inference-gateway": {"image": image("inference-gateway-image")},
+        "inference-gateway": {
+            "image": image("inference-gateway-image"),
+            "ingress": {"host": hosts["inference"], "tls": {"enabled": False}},
+        },
     }
     return "# CI-owned preview values (HOR-590 C6/C9); appended to the fixture overlay's values.client.yaml.\n" + block_yaml(values)
 
@@ -249,35 +255,26 @@ spec:
     host.ssh("sudo k3s kubectl apply -f -", stdin=manifest)
 
 
-# What the tailnet name serves: the control-plane API (Dashboard at /, API at
-# /v1) on 443 and the OpenAI-compatible inference gateway on 8443. Both go to
-# the Services directly, so the chart's ingress host names (which only E2E
-# exercises) never have to match the preview's ts.net name.
-TAILNET_SERVICES = (
-    (443, "app.kubernetes.io/name=control-plane,app.kubernetes.io/component=api"),
-    (8443, "app.kubernetes.io/name=inference-gateway"),
-)
+def tailnet_hosts(host: Host, environment: str) -> dict[str, str]:
+    """The Tailscale Service DNS names for this preview (DES-HOR-590-06)."""
+    suffix = host.ssh("tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"MagicDNSSuffix\"])'")
+    if not re.fullmatch(r"[a-z0-9-]+\.ts\.net", suffix):
+        raise PreviewError(f"preview host has no tailnet DNS suffix: {suffix!r}")
+    return {surface: f"{environment}-{surface}.{suffix}" for surface in ("app", "inference")}
 
 
-def service_target(host: Host, selector: str) -> str:
-    """The Service's cluster address and http port, with the scheme it actually serves."""
-    address = host.ssh(f"sudo k3s kubectl get svc -n {NAMESPACE} -l {shlex.quote(selector)} -o jsonpath="
-                       "'{.items[0].spec.clusterIP}:{.items[0].spec.ports[?(@.name==\"http\")].port}'")
-    if not re.fullmatch(r"[0-9a-f.:]+:\d+", address):
-        raise PreviewError(f"no Service with an http port for {selector}: {address!r}")
-    # internalTLS (when an overlay enables it) serves TLS on the same port.
-    tls = host.ssh(f"curl -sk -o /dev/null -w '%{{http_code}}' -m 5 https://{address}/healthz || true")
-    return f"https+insecure://{address}" if tls == "200" else f"http://{address}"
-
-
-def serve_on_tailnet(host: Host) -> dict[str, str]:
-    """Expose the API and the inference gateway on the tailnet over HTTPS; return their URLs."""
+def serve_on_tailnet(host: Host, environment: str, hosts: dict[str, str]) -> dict[str, str]:
+    """Advertise both preview Services through ingress-nginx; return their URLs."""
+    ingress = host.ssh(f"sudo k3s kubectl get svc -n {NAMESPACE} "
+                       "-l app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller "
+                       "-o jsonpath='{.items[0].spec.clusterIP}'")
+    if not re.fullmatch(r"[0-9a-f.:]+", ingress):
+        raise PreviewError(f"preview ingress-nginx has no cluster address: {ingress!r}")
+    target = f"http://[{ingress}]:80" if ":" in ingress else f"http://{ingress}:80"
     host.ssh("sudo tailscale serve reset")
-    for port, selector in TAILNET_SERVICES:
-        target = service_target(host, selector)
-        host.ssh(f"sudo tailscale serve --bg --https={port} {shlex.quote(target)} >/dev/null")
-    dns = host.ssh("tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"Self\"][\"DNSName\"].rstrip(\".\"))'")
-    return {"url": f"https://{dns}", "inference_url": f"https://{dns}:8443/v1"}
+    for surface in ("app", "inference"):
+        host.ssh(f"sudo tailscale serve --bg --service=svc:{environment}-{surface} --https=443 {shlex.quote(target)} >/dev/null")
+    return {"url": f"https://{hosts['app']}", "inference_url": f"https://{hosts['inference']}/v1"}
 
 
 PREVIEW_EVIDENCE = (
@@ -315,7 +312,8 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
     config = forge_config(host, args.data_device, version, workdir)
     env = {key: value for key, value in os.environ.items() if key != "FORGE_OVERLAY_TOKEN"}
     env["FORGE_HOME"] = str(workdir / "forge-home")
-    host.ssh_bytes(overlay_script(), overlay_archive(preview_values(images, args.model_id)))
+    hosts = tailnet_hosts(host, args.name)
+    host.ssh_bytes(overlay_script(), overlay_archive(preview_values(images, args.model_id, hosts)))
     host.ssh(f"sudo install -d -o ubuntu {HOST_CHARTS}")
     for chart, archive in archives.items():
         host.copy(archive, f"/tmp/{archive.name}")
@@ -333,7 +331,7 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
         print(cluster_evidence(host), file=sys.stderr)
         raise
     hosted_model(host, args.llm_base_url, args.model_id, os.environ["PREVIEW_LLM_API_KEY"])
-    return {**serve_on_tailnet(host), "chart_version": version}
+    return {**serve_on_tailnet(host, args.name, hosts), "chart_version": version}
 
 
 def main(argv: list[str] | None = None) -> int:
