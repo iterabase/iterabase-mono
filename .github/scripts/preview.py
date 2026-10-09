@@ -250,8 +250,10 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
     for chart, archive in archives.items():
         host.copy(archive, f"/tmp/{archive.name}")
         host.ssh(f"rm -rf {HOST_CHARTS}/{chart} && tar -xzf /tmp/{archive.name} -C {HOST_CHARTS} && rm -f /tmp/{archive.name}")
-    if args.created == "true":
-        # First create: k3s and data storage before the images can be imported (the F3 sequence).
+    # A new host, or one whose first deploy failed before K3s was installed,
+    # needs k3s and data storage before the images can be imported (the F3
+    # sequence). The host's state decides, not whether this run launched it.
+    if args.created == "true" or host.ssh("command -v k3s >/dev/null && echo yes || echo no").strip() != "yes":
         subprocess.run([str(forge), "apply", "--config", str(config), "--skip-chart", "--skip-gpu", "--skip-overlay",
                         "--skip-secrets", "--skip-flux"], env=env, check=True)
     import_images(host, images, args.source_sha, workdir)
