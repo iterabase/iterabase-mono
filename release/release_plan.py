@@ -4,10 +4,13 @@
 The source tree at the release commit pins the composition: every member of the
 set must carry a version that is not yet published, and every version a member
 references in another target must either be released in the same set or
-already be published. A missing reference fails and names the target; the set
-is never expanded silently.
+already be published. "Published" for a reference means every artifact of that
+target exists at that version in the official ghcr.io/iterabase registry, which
+is what the released charts point at (C13); a git tag cut before the org move
+proves nothing about that namespace. A missing reference fails and names the
+target; the set is never expanded silently.
 
-Usage: release_plan.py --targets control-plane,iterabase-platform-chart [--published-tags FILE]
+Usage: release_plan.py --targets control-plane,iterabase-platform-chart --sha SHA [--published-tags FILE]
 """
 from __future__ import annotations
 
@@ -17,7 +20,7 @@ import pathlib
 import re
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Callable
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CHARTS = ROOT / "charts" / "charts"
@@ -63,8 +66,26 @@ def references(name: str, root: pathlib.Path = ROOT) -> list[tuple[str, str]]:
     return []
 
 
+def official_references(target: str, version: str, contract: dict[str, Any]) -> list[str]:
+    """The official registry references a published target version must have."""
+    recipes = contract["artifact_recipes"]
+    refs = []
+    for recipe in contract["targets"][target]["artifacts"]:
+        kind = recipes[recipe]["kind"]
+        if kind == "image":
+            refs.append(f"{OFFICIAL_IMAGES}/{recipes[recipe]['name']}:{version}")
+        elif kind in ("chart", "chart-companion"):
+            refs.append(f"{OFFICIAL_CHARTS.removeprefix('oci://')}/{recipes[recipe]['chart']}:{version}")
+    return refs
+
+
+def registry_probe(reference: str) -> bool:
+    """Whether the official registry serves this reference (crane is installed by release.yml)."""
+    return subprocess.run(["crane", "manifest", reference], capture_output=True).returncode == 0
+
+
 def plan(selected: list[str], contract: dict[str, Any], published_tags: set[str], sha: str,
-         root: pathlib.Path = ROOT) -> list[dict[str, Any]]:
+         root: pathlib.Path = ROOT, exists: Callable[[str], bool] = registry_probe) -> list[dict[str, Any]]:
     targets = contract["targets"]
     unknown = sorted(set(selected) - set(targets))
     if unknown or not selected:
@@ -79,10 +100,12 @@ def plan(selected: list[str], contract: dict[str, Any], published_tags: set[str]
         for referenced, version in references(name, root):
             if referenced in selected and versions[referenced] == version:
                 continue
-            if f"{targets[referenced]['tag_prefix']}{version}" in published_tags:
+            missing = [ref for ref in official_references(referenced, version, contract) if not exists(ref)]
+            if not missing:
                 continue
-            errors.append(f"{name} references {referenced} {version}, which is neither published nor in this release; "
-                          f"add {referenced} to the target set or publish it first")
+            errors.append(f"{name} references {referenced} {version}, which is neither in this release nor published "
+                          f"in the official registry (missing {', '.join(missing)}); add {referenced} to the target set "
+                          f"or publish it first")
     if errors:
         raise ReleasePlanError("; ".join(errors))
     recipes = contract["artifact_recipes"]

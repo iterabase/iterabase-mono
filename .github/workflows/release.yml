@@ -28,6 +28,9 @@ jobs:
   plan:
     name: plan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     outputs:
       members: ${{ steps.plan.outputs.members }}
     steps:
@@ -53,14 +56,23 @@ jobs:
               --jq "[.check_runs[] | select(.name == \"$check\")] | sort_by(.completed_at) | last | .conclusion // \"missing\"")
             [[ "$conclusion" == success ]] || { echo "::error::$check is $conclusion at $SHA"; exit 1; }
           done
+      - name: Install repository-locked crane
+        run: .github/scripts/install_ci_tool.sh crane v0.22.1
+      - name: Log crane in to GHCR (official-registry reference checks)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - name: Plan the release
         id: plan
+        env:
+          SHA: ${{ inputs.sha }}
+          TARGETS: ${{ inputs.targets }}
         run: |
           set -euo pipefail
-          members=$(python3 release/release_plan.py --targets '${{ inputs.targets }}' --sha '${{ inputs.sha }}')
+          members=$(python3 release/release_plan.py --targets "$TARGETS" --sha "$SHA")
           echo "members=$members" >> "$GITHUB_OUTPUT"
           {
-            echo "### Release plan for \`${{ inputs.sha }}\`"
+            echo "### Release plan for \`$SHA\`"
             echo
             jq -r '.[] | "- `\(.tag)`\(if .latest then " (Latest)" else "" end)"' <<<"$members"
           } >> "$GITHUB_STEP_SUMMARY"

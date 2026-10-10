@@ -19,8 +19,14 @@ SHA = "a" * 40
 
 
 def published(*except_targets: str) -> set[str]:
-    """Every target published at its current version except the named ones."""
+    """Every target tagged at its current version except the named ones."""
     return {TAGS[name] for name in TAGS if name not in except_targets}
+
+
+def registry(*missing_targets: str):
+    """An official-registry probe that serves every target's artifacts except the named ones."""
+    missing = {ref for name in missing_targets for ref in release_plan.official_references(name, VERSIONS[name], CONTRACT)}
+    return lambda reference: reference not in missing
 
 
 class ReleasePlanTests(unittest.TestCase):
@@ -35,21 +41,42 @@ class ReleasePlanTests(unittest.TestCase):
     def test_a_missing_reference_fails_and_names_the_target(self) -> None:
         # Releasing the control-plane chart whose appVersion image is unpublished and not in the set.
         with self.assertRaisesRegex(ReleasePlanError, r"control-plane-chart references control-plane .*add control-plane"):
-            release_plan.plan(["control-plane-chart"], CONTRACT, published("control-plane", "control-plane-chart"), SHA)
+            release_plan.plan(["control-plane-chart"], CONTRACT, published("control-plane", "control-plane-chart"), SHA,
+                              exists=registry("control-plane"))
 
     def test_releasing_the_referenced_target_together_satisfies_the_reference(self) -> None:
         members = release_plan.plan(["control-plane", "control-plane-chart"], CONTRACT,
-                                    published("control-plane", "control-plane-chart"), SHA)
+                                    published("control-plane", "control-plane-chart"), SHA,
+                                    exists=registry("control-plane", "control-plane-chart"))
         self.assertEqual(sorted(m["target"] for m in members), ["control-plane", "control-plane-chart"])
 
     def test_platform_chart_references_both_component_charts_and_becomes_latest(self) -> None:
         with self.assertRaisesRegex(ReleasePlanError, "iterabase-platform-chart references inference-gateway-chart"):
             release_plan.plan(["iterabase-platform-chart"], CONTRACT,
-                              published("iterabase-platform-chart", "inference-gateway-chart"), SHA)
-        members = release_plan.plan(["iterabase-platform-chart"], CONTRACT, published("iterabase-platform-chart"), SHA)
+                              published("iterabase-platform-chart", "inference-gateway-chart"), SHA,
+                              exists=registry("inference-gateway-chart"))
+        members = release_plan.plan(["iterabase-platform-chart"], CONTRACT, published("iterabase-platform-chart"), SHA,
+                                    exists=registry())
         self.assertTrue(members[0]["latest"])
         self.assertEqual({a["recipe"] for a in members[0]["artifacts"]},
                          {"iterabase-platform-chart", "cert-manager-substrate-chart", "lvm-storage-substrate-chart"})
+
+    def test_a_reference_tagged_only_under_the_old_namespace_fails(self) -> None:
+        # The control-plane image tag exists (cut before the org move), but the
+        # official ghcr.io/iterabase registry never received that version.
+        with self.assertRaisesRegex(ReleasePlanError,
+                                    r"control-plane-chart references control-plane .*ghcr\.io/iterabase/control-plane:"):
+            release_plan.plan(["control-plane-chart"], CONTRACT, published("control-plane-chart"), SHA,
+                              exists=registry("control-plane"))
+
+    def test_official_references_cover_every_artifact_of_a_target(self) -> None:
+        self.assertEqual(release_plan.official_references("iterabase-platform-chart", "1.2.3", CONTRACT), [
+            "ghcr.io/iterabase/iterabase-charts/iterabase-platform:1.2.3",
+            "ghcr.io/iterabase/iterabase-charts/cert-manager-substrate:1.2.3",
+            "ghcr.io/iterabase/iterabase-charts/lvm-storage-substrate:1.2.3",
+        ])
+        self.assertIn("ghcr.io/iterabase/control-plane-harness:0.1.0",
+                      release_plan.official_references("control-plane", "0.1.0", CONTRACT))
 
     def test_image_members_name_their_images(self) -> None:
         members = release_plan.plan(["control-plane"], CONTRACT, published("control-plane"), SHA)

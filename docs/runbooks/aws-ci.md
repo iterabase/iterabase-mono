@@ -871,9 +871,10 @@ Previews (C6, C9, C12) need the following beyond Part 1 and Part 2:
 - **Repository secrets:** `PREVIEW_SSH_KEY` (the one runner key authorized on
   preview hosts), `TAILSCALE_OAUTH_CLIENT_ID` and `TAILSCALE_OAUTH_SECRET` (an
   OAuth client with the **Auth Keys: write**, **Services: write** and **Devices: Core (write)** scopes,
-  tagged `tag:preview`), and `PREVIEW_LLM_API_KEY` (the preview inference key;
-  for the internal-prod gateway it is a `gateway`-scope key on the
-  `preview-ci` service account).
+  tagged `tag:preview`), and `PREVIEW_LLM_API_KEY` (a `gateway`-scope key on the
+  `preview-ci` service account of the internal-prod gateway, DES-HOR-590-10:
+  preview load lands on prod and has no rate cap until the V2 cutover; revoke
+  with `DELETE /v1/api-keys/{id}`).
 - **Repository variables:** `PREVIEW_LLM_BASE_URL` and `PREVIEW_LLM_MODEL`.
 - **Tailnet (DES-HOR-590-06):** MagicDNS and HTTPS certificates on, and this
   policy:
