@@ -86,7 +86,11 @@ def image_inputs(name: str, image: dict[str, str], source_sha: str, workdir: pat
     }
 
 
-OFFICIAL_NAMESPACES = ("ghcr.io/iterabase", "ghcr.io/nunocgoncalves")
+# Release validation tests what ships: the released charts point at the
+# official ghcr.io/iterabase namespace (C13), so a non-released target's image
+# must come from there. Only the n-1 baseline (N1_NAMESPACES) also reads the
+# pre-move namespace, because that is what older installs actually run.
+OFFICIAL_NAMESPACE = "ghcr.io/iterabase"
 
 
 def official_image_inputs(name: str, workdir: pathlib.Path) -> dict[str, str]:
@@ -94,12 +98,9 @@ def official_image_inputs(name: str, workdir: pathlib.Path) -> dict[str, str]:
     contract = json.loads((ROOT / "release" / "targets.json").read_text(encoding="utf-8"))
     recipe = contract["artifact_recipes"][name]
     version = (ROOT / contract["targets"][recipe["target"]]["version_file"]).read_text(encoding="utf-8").strip()
-    for namespace in OFFICIAL_NAMESPACES:
-        repository = f"{namespace}/{recipe['name']}"
-        if subprocess.run(["docker", "pull", "--quiet", f"{repository}:{version}"], capture_output=True).returncode == 0:
-            break
-    else:
-        raise InputsError(f"{recipe['name']} {version} is not published; release its target in this set")
+    repository = f"{OFFICIAL_NAMESPACE}/{recipe['name']}"
+    if subprocess.run(["docker", "pull", "--quiet", f"{repository}:{version}"], capture_output=True).returncode != 0:
+        raise InputsError(f"{repository}:{version} is not published in the official registry; release its target in this set")
     digest = run("docker", "image", "inspect", "--format", "{{index .RepoDigests 0}}", f"{repository}:{version}").split("@", 1)[1]
     revision = run("docker", "image", "inspect", "--format",
                    '{{index .Config.Labels "org.opencontainers.image.revision"}}', f"{repository}:{version}")

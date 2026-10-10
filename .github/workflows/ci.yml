@@ -20,8 +20,10 @@ on:
 permissions:
   contents: read
 
+# Full validation (inputs.all) gets a group per run: a release's validation and
+# a nightly or manual full validation of the same ref must never cancel each other.
 concurrency:
-  group: ci-${{ inputs.all && 'full-' || '' }}${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
+  group: ci-${{ inputs.all && format('full-{0}', github.run_id) || github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:

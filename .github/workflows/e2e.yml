@@ -27,8 +27,10 @@ on:
 permissions:
   contents: read
 
+# Full validation (inputs.all) gets a group per run: a release's validation and
+# a nightly or manual full validation of the same ref must never cancel each other.
 concurrency:
-  group: e2e-${{ inputs.all && 'full-' || '' }}${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
+  group: e2e-${{ inputs.all && format('full-{0}', github.run_id) || github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -244,12 +246,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGES: ${{ needs.images.outputs.images }}
+          RELEASE_TARGETS: ${{ inputs.release_targets }}
         run: |
           python3 .github/scripts/e2e_inputs.py prepare --scenario '${{ matrix.id }}' \
             --catalogue "$RUNNER_TEMP/selection/catalogue.json" --images "$IMAGES" \
             --source-sha '${{ needs.select.outputs.source_sha }}' \
             --optional-stages '${{ needs.select.outputs.stages }}' --workdir "$RUNNER_TEMP/inputs" \
-            --release-targets '${{ inputs.release_targets }}'
+            --release-targets "$RELEASE_TARGETS"
       - name: Run ${{ matrix.id }}
         env:
           E2E_SKIP_BUILD_DEPS: "true" # the inputs step built the chart dependencies once
@@ -339,12 +342,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGES: ${{ needs.images.outputs.images }}
+          RELEASE_TARGETS: ${{ inputs.release_targets }}
         run: |
           python3 .github/scripts/e2e_inputs.py prepare --scenario '${{ matrix.id }}' \
             --catalogue "$RUNNER_TEMP/selection/catalogue.json" --images "$IMAGES" \
             --source-sha '${{ needs.select.outputs.source_sha }}' \
             --optional-stages '${{ needs.select.outputs.stages }}' --workdir "$RUNNER_TEMP/inputs" \
-            --release-targets '${{ inputs.release_targets }}'
+            --release-targets "$RELEASE_TARGETS"
       - name: Run ${{ matrix.id }}
         env:
           ITERABASE_E2E_DIAGNOSTICS: ${{ runner.temp }}/diagnostics
