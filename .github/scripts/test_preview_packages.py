@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import pathlib
 import sys
 import unittest
@@ -38,6 +39,15 @@ class PreviewRetentionTests(unittest.TestCase):
 
     def test_unrecognised_tags_are_never_deleted(self) -> None:
         self.assertEqual(deleted([version("0.4.7", OLD), version("latest", OLD)]), [])
+
+    def test_package_names_cover_every_preview_image_and_chart(self) -> None:
+        recipes = json.loads(preview_packages.TARGETS.read_text(encoding="utf-8"))["artifact_recipes"]
+        self.assertEqual(preview_packages.package_names(recipes), [
+            "preview/control-plane", "preview/control-plane-harness", "preview/control-plane-runtime-fixture",
+            "preview/control-plane-tool-runner", "preview/inference-gateway",
+            "preview/charts/iterabase-platform", "preview/charts/cert-manager-substrate",
+            "preview/charts/lvm-storage-substrate",
+        ])
 
 
 if __name__ == "__main__":
