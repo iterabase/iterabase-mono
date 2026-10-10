@@ -173,10 +173,11 @@ A mismatch in either check means the published artifact is not what this SHA
 validated: fix forward with a new version.
 
 If `master` has moved since the failed run, the plan refuses the old SHA.
-Release master's head instead: bump to new versions, or, only with founder
-approval and only when nothing has referenced them (no tag, Release or
-consumer), delete the partially published versions and reuse them
-(DES-HOR-590-11).
+Bump to new versions and release master's head; releases are fixed forward,
+never republished. The first official release was a recorded one-off
+exception (DES-HOR-590-11): its unreferenced partial image versions were
+deleted and reused, and its content-equal charts were left for publish to
+reuse.
 
 **The boundary is the tag push.** Resume works through the attestation steps.
 Once any tag has been pushed, a re-dispatch fails its plan, because that target
