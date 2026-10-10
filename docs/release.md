@@ -147,6 +147,20 @@ container only runs `migrate up`: an older image over a newer schema fails unles
 which can lose data. A release that contains a schema migration is therefore
 fix-forward only.
 
+## Resuming a failed publish
+
+If `publish` fails after some artifacts are already in the official registry,
+dispatch `release.yml` again for the same SHA and targets. The plan still
+passes, because no tag was pushed. Full validation runs again, then you approve
+again. `publish` then picks up without changing anything already published:
+
+- an image version that already holds the tested digest is kept; any other
+  digest fails and needs a fix forward;
+- a chart version that is already in the registry is pulled back and attested
+  as published, never packaged and pushed again (Helm archives are not
+  byte-reproducible);
+- Forge archives, attestations, tags and Releases are then produced as normal.
+
 ## Protection and audit
 
 The `release` environment requires founder review, allows only `master`, and
