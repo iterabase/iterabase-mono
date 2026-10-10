@@ -29,14 +29,10 @@ checksum:
 sboms:
   - artifacts: archive
 
+# Release notes come from release.yml's Release step; GoReleaser only builds
+# the archives, so it never calls the GitHub changelog API.
 changelog:
-  use: github
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
+  disable: true
 
 # Homebrew tap: deferred. goreleaser deprecated the `brews` section; the tap
 # will be added once the replacement stabilizes (or via a manual formula).

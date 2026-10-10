@@ -150,7 +150,14 @@ jobs:
           while IFS=$'\t' read -r image version; do
             source="ghcr.io/iterabase/preview/$image:sha-$SHA"
             digest=$(crane digest "$source")
-            crane copy "$source@$digest" "ghcr.io/iterabase/$image:$version"
+            # Resumable and never mutating: an existing version tag is kept only
+            # when it already holds the tested digest; any other digest fails.
+            if existing=$(crane digest "ghcr.io/iterabase/$image:$version" 2>/dev/null); then
+              [[ "$existing" == "$digest" ]] || { echo "::error::ghcr.io/iterabase/$image:$version already holds $existing, tested $digest; fix forward with a new version"; exit 1; }
+              echo "$image:$version already promoted at the tested digest"
+            else
+              crane copy "$source@$digest" "ghcr.io/iterabase/$image:$version"
+            fi
             promoted=$(crane digest "ghcr.io/iterabase/$image:$version")
             [[ "$promoted" == "$digest" ]] || { echo "::error::$image promoted as $promoted, tested $digest"; exit 1; }
             echo "${image//-/_}=$digest" >> "$GITHUB_OUTPUT"
@@ -182,14 +189,29 @@ jobs:
           printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           .github/scripts/add_helm_repositories.sh
           make -C charts build-deps
-          while IFS=$'\t' read -r target chart; do
+          while IFS=$'\t' read -r target chart version; do
             mkdir -p "dist/$target"
-            helm package "charts/charts/$chart" --destination "dist/$target"
-            helm push "dist/$target/$chart-"*.tgz oci://ghcr.io/iterabase/iterabase-charts
-          done < <(jq -r '.[] | .target as $t | .artifacts[] | select(.chart) | [$t, .chart] | @tsv' <<<"$MEMBERS")
+            # Helm archives are not byte-reproducible, so a chart version already
+            # in the official registry is pulled back, never packaged and pushed
+            # again: a resumed release attests and ships the published bytes.
+            if crane manifest "ghcr.io/iterabase/iterabase-charts/$chart:$version" >/dev/null 2>&1; then
+              helm pull "oci://ghcr.io/iterabase/iterabase-charts/$chart" --version "$version" --destination "dist/$target"
+              echo "$chart $version already published; reusing it"
+            else
+              helm package "charts/charts/$chart" --destination "dist/$target"
+              helm push "dist/$target/$chart-$version.tgz" oci://ghcr.io/iterabase/iterabase-charts
+            fi
+          done < <(jq -r '.[] | .target as $t | .version as $v | .artifacts[] | select(.chart) | [$t, .chart, $v] | @tsv' <<<"$MEMBERS")
           version=$(jq -r '.[] | select(.target == "forge") | .version' <<<"$MEMBERS")
           if [[ -n "$version" ]]; then
-            (cd forge && GORELEASER_CURRENT_TAG="forge-v$version" goreleaser release --clean --skip=publish,validate)
+            # Release notes come from the Release step; GoReleaser only builds the
+            # archives, so give it notes and skip its GitHub changelog API call.
+            printf 'Forge %s from %s\n' "$version" "$SHA" > "$RUNNER_TEMP/forge-notes.md"
+            # GoReleaser (OSS) does not strip the namespaced tag prefix, so give it
+            # the bare semver: archives are forge_<version>_<os>_<arch> and
+            # `forge version` reports <version>, not forge-v<version>.
+            (cd forge && GORELEASER_CURRENT_TAG="v$version" goreleaser release --clean --skip=publish,validate \
+              --release-notes "$RUNNER_TEMP/forge-notes.md")
             mkdir -p dist/forge && cp forge/dist/*.tar.gz forge/dist/checksums.txt dist/forge/
           fi
           if compgen -G "dist/*/*" >/dev/null; then echo "any=true" >> "$GITHUB_OUTPUT"; fi
