@@ -79,7 +79,7 @@ pull request runs the install-readiness smoke (selector rule 3).
 
 Dispatch `release.yml` with:
 
-- `sha` — a full commit SHA on `master`;
+- `sha` — master's head: the full SHA of the commit the workflow runs from;
 - `targets` — a comma-separated, non-empty target set.
 
 ```bash
@@ -90,7 +90,10 @@ gh workflow run release.yml --repo iterabase/iterabase-mono --ref master \
 The workflow runs in one `release` concurrency group and never cancels a run in
 progress.
 
-1. **Plan.** It requires a 40-character SHA that is an ancestor of `master`, and
+1. **Plan.** It requires a 40-character SHA on `master` that is also the commit
+   the workflow runs from (`github.sha`), because full validation runs this ref's
+   CI definitions against the source and an older source can lack what they
+   call (DES-HOR-590-11). It also requires
    `CI / required` and `E2E / required` green at that SHA. `release/release_plan.py`
    reads each target's version at the SHA and the published tags, and then:
    - fails when any member's tag is already published (bump it first);
@@ -149,8 +152,8 @@ fix-forward only.
 
 ## Resuming a failed publish
 
-If `publish` fails **before any tag is pushed**, dispatch `release.yml` again
-for the **same SHA** and targets. The plan still passes, because no tag
+If `publish` fails **before any tag is pushed**, and `master` has not moved,
+dispatch `release.yml` again for the **same SHA** and targets. The plan still passes, because no tag
 exists. Full validation runs again, then you approve again. `publish` then
 picks up without changing anything already published:
 
@@ -168,6 +171,12 @@ picks up without changing anything already published:
 
 A mismatch in either check means the published artifact is not what this SHA
 validated: fix forward with a new version.
+
+If `master` has moved since the failed run, the plan refuses the old SHA.
+Release master's head instead: bump to new versions, or, only with founder
+approval and only when nothing has referenced them (no tag, Release or
+consumer), delete the partially published versions and reuse them
+(DES-HOR-590-11).
 
 **The boundary is the tag push.** Resume works through the attestation steps.
 Once any tag has been pushed, a re-dispatch fails its plan, because that target

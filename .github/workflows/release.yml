@@ -38,13 +38,16 @@ jobs:
         with:
           ref: ${{ inputs.sha }}
           fetch-depth: 0
-      - name: Require an exact commit on master
+      - name: Require an exact commit on master, the one this workflow runs from
         env:
           SHA: ${{ inputs.sha }}
         run: |
           set -euo pipefail
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be a full commit"; exit 1; }
           git merge-base --is-ancestor "$SHA" origin/master || { echo "::error::$SHA is not on master"; exit 1; }
+          # Full validation runs this ref's CI definitions against the source, so
+          # they must be the same commit (DES-HOR-590-11).
+          [[ "$SHA" == "$GITHUB_SHA" ]] || { echo "::error::$SHA is not the commit this workflow runs from ($GITHUB_SHA); release master's head"; exit 1; }
       - name: Require CI and E2E green at that commit
         env:
           GH_TOKEN: ${{ github.token }}
