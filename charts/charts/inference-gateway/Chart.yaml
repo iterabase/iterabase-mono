@@ -3,4 +3,4 @@ name: inference-gateway
 description: Inference Gateway service (model access) for the iterabase platform.
 type: application
 version: 0.2.14
-appVersion: "0.2.8"
+appVersion: "0.2.9"
