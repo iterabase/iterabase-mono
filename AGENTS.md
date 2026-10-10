@@ -32,7 +32,7 @@ See [`docs/source-authority.md`](docs/source-authority.md) for the cutover audit
 ## Dependency and supply-chain updates
 
 - Dependabot is configured security-updates-only in [`.github/dependabot.yml`](.github/dependabot.yml). Every entry sets `open-pull-requests-limit: 0`, which disables version updates for that ecosystem while security-update pull requests remain exempt. Version updates, auto-merge, and `docker`, `helm`, `docker-compose`, or `devcontainers` entries require a new recorded decision.
-- Dependency pull requests are ticket-backed and are never self-merged. A Dependabot pull request is a diff source; only the user approves and merges, and required CI is a floor, not an approval.
+- Dependency pull requests are ticket-backed and are never self-merged. Security-only Dependabot pull requests may be reviewed directly without copying their diffs to a human branch; generated bot branch/commit names are the narrow naming exception below. Keep a ticket-prefixed PR title, ticket linkage, normal review/validation/production-impact evidence, and explicit publication intent. Only the user approves and merges; required CI is a floor, not an approval (DES-HOR-642-02).
 - Security updates are grouped per configured directory. Leave `target-branch` unset, even for `master`: setting it makes the entry's options inapplicable to security updates, which always target the repository default branch. `make dependabot-check` guards this policy; post-merge observation still proves the actual PR shape. Do not add `group-by: dependency-name`, repository-level, or organization-level grouping that can converge components onto a version above the minimum patched version.
 - GitHub Actions SHAs are refreshed manually in a ticket-backed change, never by a scheduled version-update pull request.
 - Advisory disposition uses reachability evidence. Verify vendor-shrinkwrap-pinned packages against the installed and shipped on-disk version, not `npm audit`; dismiss untriggered advisories with the documented reason and record the evidence. Dismissed Moby daemon advisories and their re-entry triggers live in [`control-plane/docs/moby-test-dependency-risk.md`](control-plane/docs/moby-test-dependency-risk.md).
@@ -42,7 +42,7 @@ See [`docs/source-authority.md`](docs/source-authority.md) for the cutover audit
 ## Shared ticket and Git workflow
 
 - Direct pushes to `master` are prohibited. Work on one `<TICKET>-<short-description>` branch.
-- Branch names, commit messages, and pull request titles must include the Linear identifier, for example `HOR-123-short-description`, `HOR-123: describe change`, and `HOR-123 — Describe change`.
+- Branch names, commit messages, and pull request titles must include the Linear identifier, for example `HOR-123-short-description`, `HOR-123: describe change`, and `HOR-123 — Describe change`. Security-only Dependabot delivery may retain its generated bot branch/commit names; its PR title and delivery record must still link the ticket, and every review, CI, acceptance, and release gate still applies. See [`docs/dependencies.md`](docs/dependencies.md).
 - Keep commits coherent and limited to the ticket. Do not mix unrelated component cleanup into an atomic change.
 - Open a pull request when validation is complete; only the user may approve and merge it.
 - Pull request bodies use `## Summary`, `## Validation`, `## Production impact`, and `## Ticket state`, with real Markdown line breaks and `None`/`N/A` where appropriate.
