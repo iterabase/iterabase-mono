@@ -11,20 +11,29 @@ cannot reach an official artifact. Rules:
   - staging keeps its newest 10 `-main.` charts;
   - an image goes when it is older than 14 days, unless its commit is an open
     pull request's head or one of master's last 10 commits.
+
+The packages are named from the build recipes rather than listed: the job's
+repository token can manage these repository-linked packages but may not list
+the organisation's packages.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import json
+import pathlib
 import re
 import subprocess
 import sys
 import urllib.parse
 from typing import Any
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import preview  # noqa: E402
+
 ORG = "iterabase"
 PREFIX = "preview/"
+TARGETS = pathlib.Path(__file__).resolve().parents[2] / "release" / "targets.json"
 MAX_AGE = dt.timedelta(days=14)
 STAGING_KEPT = 10
 PR_CHART = re.compile(r"^\d+\.\d+\.\d+-pr\.(\d+)\.\d+$")
@@ -58,8 +67,23 @@ def plan(versions: list[dict[str, Any]], *, open_prs: set[int], keep_commits: se
     return deletions
 
 
+def package_names(recipes: dict[str, dict[str, Any]]) -> list[str]:
+    """Every preview package CI publishes: each image recipe and each preview chart."""
+    images = sorted(recipe["name"] for recipe in recipes.values() if recipe["kind"] == "image")
+    return [f"{PREFIX}{name}" for name in images] + [f"{PREFIX}charts/{chart}" for chart in preview.PREVIEW_CHART_NAMES]
+
+
+class NotFound(Exception):
+    pass
+
+
 def gh(*args: str) -> Any:
-    return json.loads(subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout or "null")
+    result = subprocess.run(["gh", "api", *args], capture_output=True, text=True)
+    if result.returncode != 0:
+        if "HTTP 404" in result.stderr:
+            raise NotFound(args[-1])
+        sys.exit(f"gh api {' '.join(args)} failed: {result.stderr.strip()}")
+    return json.loads(result.stdout or "null")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -71,15 +95,17 @@ def main(argv: list[str] | None = None) -> int:
     open_prs = {pull["number"] for pull in pulls}
     keep = {pull["head"]["sha"] for pull in pulls}
     keep |= {commit["sha"] for commit in gh(f"repos/{args.repository}/commits?sha=master&per_page={STAGING_KEPT}")}
-    packages = [package["name"] for package in gh("--paginate", f"orgs/{ORG}/packages?package_type=container&per_page=100")
-                if package["name"].startswith(PREFIX)]
+    packages = package_names(json.loads(TARGETS.read_text(encoding="utf-8"))["artifact_recipes"])
     now = dt.datetime.now(dt.timezone.utc)
     removed = []
     for package in packages:
         encoded = urllib.parse.quote(package, safe="")
+        try:
+            listed = gh("--paginate", f"orgs/{ORG}/packages/container/{encoded}/versions?per_page=100")
+        except NotFound:
+            continue  # never published yet
         versions = [{"id": version["id"], "created_at": version["created_at"],
-                     "tags": version["metadata"]["container"]["tags"]}
-                    for version in gh("--paginate", f"orgs/{ORG}/packages/container/{encoded}/versions?per_page=100")]
+                     "tags": version["metadata"]["container"]["tags"]} for version in listed]
         for version in plan(versions, open_prs=open_prs, keep_commits=keep, now=now):
             removed.append(f"{package} {','.join(version['tags']) or version['id']}: {version['reason']}")
             if not args.dry_run:

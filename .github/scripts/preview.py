@@ -34,6 +34,7 @@ import e2e_inputs  # noqa: E402
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CHARTS = ROOT / "charts" / "charts"
 PREVIEW_CHARTS = "oci://ghcr.io/iterabase/preview/charts"
+PREVIEW_CHART_NAMES = ("iterabase-platform", "cert-manager-substrate", "lvm-storage-substrate")
 # The preview overlay is the versioned E2E fixture plus the preview values,
 # committed on the host and served to Flux over read-only node SSH
 # (DES-HOR-632-01). No overlay token is involved.
@@ -91,12 +92,12 @@ def package_charts(version: str, workdir: pathlib.Path) -> dict[str, pathlib.Pat
     run("make", "-C", "charts", "build-deps")
     staged = workdir / "charts"
     shutil.copytree(CHARTS, staged)
-    for chart in ("iterabase-platform", "cert-manager-substrate", "lvm-storage-substrate"):
+    for chart in PREVIEW_CHART_NAMES:
         manifest = staged / chart / "Chart.yaml"
         manifest.write_text(re.sub(r"^version:.*$", f"version: {version}", manifest.read_text(encoding="utf-8"),
                                    count=1, flags=re.MULTILINE), encoding="utf-8")
     archives = {}
-    for chart in ("iterabase-platform", "cert-manager-substrate", "lvm-storage-substrate"):
+    for chart in PREVIEW_CHART_NAMES:
         run("helm", "package", str(staged / chart), "--destination", str(workdir / "packages"))
         archives[chart] = workdir / "packages" / f"{chart}-{version}.tgz"
         run("helm", "push", str(archives[chart]), PREVIEW_CHARTS)
