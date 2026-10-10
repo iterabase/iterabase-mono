@@ -149,17 +149,33 @@ fix-forward only.
 
 ## Resuming a failed publish
 
-If `publish` fails after some artifacts are already in the official registry,
-dispatch `release.yml` again for the same SHA and targets. The plan still
-passes, because no tag was pushed. Full validation runs again, then you approve
-again. `publish` then picks up without changing anything already published:
+If `publish` fails **before any tag is pushed**, dispatch `release.yml` again
+for the **same SHA** and targets. The plan still passes, because no tag
+exists. Full validation runs again, then you approve again. `publish` then
+picks up without changing anything already published:
 
-- an image version that already holds the tested digest is kept; any other
-  digest fails and needs a fix forward;
-- a chart version that is already in the registry is pulled back and attested
-  as published, never packaged and pushed again (Helm archives are not
-  byte-reproducible);
+- an image version is kept only if it already holds the tested `sha-<sha>`
+  digest; any other digest fails;
+- a chart version already in the registry is never pushed again (Helm archives
+  are not byte-reproducible). It is pulled back and reused only if its
+  content, nested dependency charts included, equals the chart packaged from
+  this SHA (`.github/scripts/chart_content_equal.sh`); any difference fails;
+- whether an artifact exists is decided by the registry's "not found" answer
+  only (`.github/scripts/registry_state.sh`). An auth, network or throttling
+  error stops the job instead of being read as "absent", so nothing is
+  overwritten during an outage;
 - Forge archives, attestations, tags and Releases are then produced as normal.
+
+A mismatch in either check means the published artifact is not what this SHA
+validated: fix forward with a new version.
+
+**The boundary is the tag push.** Resume works through the attestation steps.
+Once any tag has been pushed, a re-dispatch fails its plan, because that target
+is "already published". Re-pushing an annotated tag is also rejected, since the
+recreated tag is a new object. If `publish` fails during or after
+`Push protected namespaced tags`, create the missing GitHub Releases by hand
+from the pushed tags (with the same assets and notes), or fix forward with new
+versions.
 
 ## Protection and audit
 

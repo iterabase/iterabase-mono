@@ -152,7 +152,9 @@ jobs:
             digest=$(crane digest "$source")
             # Resumable and never mutating: an existing version tag is kept only
             # when it already holds the tested digest; any other digest fails.
-            if existing=$(crane digest "ghcr.io/iterabase/$image:$version" 2>/dev/null); then
+            state=$(.github/scripts/registry_state.sh "ghcr.io/iterabase/$image:$version")
+            if [[ "$state" == present ]]; then
+              existing=$(crane digest "ghcr.io/iterabase/$image:$version")
               [[ "$existing" == "$digest" ]] || { echo "::error::ghcr.io/iterabase/$image:$version already holds $existing, tested $digest; fix forward with a new version"; exit 1; }
               echo "$image:$version already promoted at the tested digest"
             else
@@ -190,15 +192,22 @@ jobs:
           .github/scripts/add_helm_repositories.sh
           make -C charts build-deps
           while IFS=$'\t' read -r target chart version; do
-            mkdir -p "dist/$target"
+            mkdir -p "dist/$target" "$RUNNER_TEMP/charts/$chart"
+            helm package "charts/charts/$chart" --destination "$RUNNER_TEMP/charts/$chart"
+            packaged="$RUNNER_TEMP/charts/$chart/$chart-$version.tgz"
             # Helm archives are not byte-reproducible, so a chart version already
-            # in the official registry is pulled back, never packaged and pushed
-            # again: a resumed release attests and ships the published bytes.
-            if crane manifest "ghcr.io/iterabase/iterabase-charts/$chart:$version" >/dev/null 2>&1; then
+            # in the official registry is never pushed again. It is reused only
+            # when its content equals this SHA's validated chart (nested
+            # dependency archives included); any difference fails like an image
+            # digest mismatch, and needs a fix forward with a new version.
+            state=$(.github/scripts/registry_state.sh "ghcr.io/iterabase/iterabase-charts/$chart:$version")
+            if [[ "$state" == present ]]; then
               helm pull "oci://ghcr.io/iterabase/iterabase-charts/$chart" --version "$version" --destination "dist/$target"
-              echo "$chart $version already published; reusing it"
+              .github/scripts/chart_content_equal.sh "$packaged" "dist/$target/$chart-$version.tgz" ||
+                { echo "::error::$chart $version is already published with different content than $SHA; fix forward with a new version"; exit 1; }
+              echo "$chart $version already published with this SHA's content; reusing it"
             else
-              helm package "charts/charts/$chart" --destination "dist/$target"
+              mv "$packaged" "dist/$target/"
               helm push "dist/$target/$chart-$version.tgz" oci://ghcr.io/iterabase/iterabase-charts
             fi
           done < <(jq -r '.[] | .target as $t | .version as $v | .artifacts[] | select(.chart) | [$t, .chart, $v] | @tsv' <<<"$MEMBERS")

@@ -101,6 +101,7 @@ release-check:
 	python3 .github/scripts/test_preview_packages.py
 	python3 .github/scripts/test_tailscale_services.py
 	python3 .github/scripts/test_workflow_permissions.py
+	python3 .github/scripts/test_release_publish.py
 	python3 release/test_bump.py
 	python3 release/test_release_plan.py
 	python3 .github/scripts/remote_content.py validate
