@@ -2,11 +2,15 @@
 """Preview package retention (C9)."""
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import io
 import json
 import pathlib
 import sys
 import unittest
+import urllib.parse
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import preview_packages  # noqa: E402
@@ -48,6 +52,33 @@ class PreviewRetentionTests(unittest.TestCase):
             "preview/charts/iterabase-platform", "preview/charts/cert-manager-substrate",
             "preview/charts/lvm-storage-substrate",
         ])
+
+
+class PreviewPruneRunTests(unittest.TestCase):
+    def run_main(self, missing: set[str]) -> tuple[int, str]:
+        def gh(*args: str):
+            path = args[-1]
+            if "/pulls?" in path or "/commits?" in path:
+                return []
+            package = urllib.parse.unquote(path.split("/container/")[1].split("/versions")[0])
+            if package in missing:
+                raise preview_packages.NotFound(path)
+            return []
+        out = io.StringIO()
+        with mock.patch.object(preview_packages, "gh", gh), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = preview_packages.main(["--repository", "iterabase/iterabase-mono", "--dry-run"])
+        return code, out.getvalue()
+
+    def test_an_inaccessible_package_is_reported_not_silent(self) -> None:
+        code, out = self.run_main({"preview/control-plane-runtime-fixture"})
+        self.assertEqual(code, 0)
+        self.assertIn("preview/control-plane-runtime-fixture: not found or not accessible, skipped", out)
+
+    def test_no_accessible_package_fails(self) -> None:
+        recipes = json.loads(preview_packages.TARGETS.read_text(encoding="utf-8"))["artifact_recipes"]
+        code, _ = self.run_main(set(preview_packages.package_names(recipes)))
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":

@@ -97,20 +97,28 @@ def main(argv: list[str] | None = None) -> int:
     keep |= {commit["sha"] for commit in gh(f"repos/{args.repository}/commits?sha=master&per_page={STAGING_KEPT}")}
     packages = package_names(json.loads(TARGETS.read_text(encoding="utf-8"))["artifact_recipes"])
     now = dt.datetime.now(dt.timezone.utc)
-    removed = []
+    removed, skipped = [], []
     for package in packages:
         encoded = urllib.parse.quote(package, safe="")
         try:
             listed = gh("--paginate", f"orgs/{ORG}/packages/container/{encoded}/versions?per_page=100")
         except NotFound:
-            continue  # never published yet
+            # GHCR answers 404 both for a package never published and for one
+            # this token cannot see, so a skip is always reported.
+            skipped.append(f"{package}: not found or not accessible, skipped")
+            continue
         versions = [{"id": version["id"], "created_at": version["created_at"],
                      "tags": version["metadata"]["container"]["tags"]} for version in listed]
         for version in plan(versions, open_prs=open_prs, keep_commits=keep, now=now):
             removed.append(f"{package} {','.join(version['tags']) or version['id']}: {version['reason']}")
             if not args.dry_run:
                 gh("-X", "DELETE", f"orgs/{ORG}/packages/container/{encoded}/versions/{version['id']}")
-    print("\n".join(removed) or "nothing to prune")
+    print("\n".join(removed + skipped) or "nothing to prune")
+    if len(skipped) == len(packages):
+        # Staging always publishes these packages, so seeing none is a token or
+        # naming regression, never an empty registry.
+        print("::error::no preview package was found or accessible", file=sys.stderr)
+        return 1
     return 0
 
 
