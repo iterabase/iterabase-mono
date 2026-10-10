@@ -27,8 +27,22 @@ build:
 
 test: test-unit
 
+# Tests must never touch the operator's ~/.forge (HOR-644). The suite runs with
+# a throwaway HOME and FORGE_HOME unset, so a test that falls back to the
+# default state root writes into the throwaway home and fails this target
+# instead of polluting the real audit log. Go keeps its real caches and config.
 test-unit:
-	$(GO) test -race -count=1 ./...
+	@tmp_home="$$(mktemp -d)" && trap 'rm -rf "$$tmp_home"' EXIT && \
+	go_cache="$$($(GO) env GOCACHE)" && go_modcache="$$($(GO) env GOMODCACHE)" && \
+	go_path="$$($(GO) env GOPATH)" && go_env="$$($(GO) env GOENV)" && \
+	echo "$(GO) test -race -count=1 ./... (HOME=$$tmp_home, FORGE_HOME unset)" && \
+	env -u FORGE_HOME HOME="$$tmp_home" GOCACHE="$$go_cache" GOMODCACHE="$$go_modcache" \
+		GOPATH="$$go_path" GOENV="$$go_env" $(GO) test -race -count=1 ./... && \
+	if [ -e "$$tmp_home/.forge" ]; then \
+		echo "a test wrote Forge state under the default \$$HOME/.forge root; isolate it with FORGE_HOME or t.TempDir():" >&2; \
+		find "$$tmp_home/.forge" >&2; \
+		exit 1; \
+	fi
 
 # The E2E module has one top-level TestE2E runner. -run selects an isolated
 # scenario; -v is required so capacity skips and named stages remain visible.
