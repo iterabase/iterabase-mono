@@ -14,7 +14,17 @@ fail() {
 admin_endpoints="${AUDIT_ADMIN_ENDPOINTS:-true}"
 write_key_title="not verified in this invocation"
 immutable_release_setting="not verified (admin-only)"
+org_deploy_keys="not verified (admin-only)"
 if [[ "$admin_endpoints" == true ]]; then
+  # The organization switch disables every deploy key, including the release
+  # tag key, without changing anything visible on the repository.
+  org_deploy_keys="not applicable (user-owned repository)"
+  if [[ "$(gh api "repos/$repository" --jq '.owner.type')" == Organization ]]; then
+    org_deploy_keys="$(gh api "orgs/${repository%%/*}" --jq '.deploy_keys_enabled_for_repositories')"
+    [[ "$org_deploy_keys" == true ]] || \
+      fail "organization ${repository%%/*} does not allow deploy keys (deploy_keys_enabled_for_repositories=$org_deploy_keys); the release tag key cannot push"
+  fi
+
   keys="$(gh api "repos/$repository/keys")"
   write_key_count="$(jq '[.[] | select(.read_only == false)] | length' <<<"$keys")"
   [[ "$write_key_count" == 1 ]] || fail "expected exactly one write deploy key, found $write_key_count"
@@ -132,6 +142,7 @@ done
 
 printf 'release security audit passed for %s\n' "$repository"
 printf 'write deploy key: %s\n' "$write_key_title"
+printf 'org deploy keys enabled: %s\n' "$org_deploy_keys"
 printf 'release ruleset id: %s\n' "$ruleset_id"
 printf 'repository writers: %s\n' "$writers"
 printf 'immutable releases setting: %s\n' "$immutable_release_setting"

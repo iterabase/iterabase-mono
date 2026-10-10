@@ -199,6 +199,8 @@ verifies, for `iterabase/iterabase-mono`:
 
 - the `release` environment protection, its `master`-only branch policy, and
   its deploy-key identity;
+- that the owning organization allows deploy keys
+  (`deploy_keys_enabled_for_repositories`; skipped for a user-owned repository);
 - the active release-tag ruleset and its bypass authority;
 - the immutable-releases setting (admin-authenticated runs only);
 - that the writer set is exactly the founder;
