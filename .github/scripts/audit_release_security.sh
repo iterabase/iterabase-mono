@@ -18,12 +18,16 @@ org_deploy_keys="not verified (admin-only)"
 if [[ "$admin_endpoints" == true ]]; then
   # The organization switch disables every deploy key, including the release
   # tag key, without changing anything visible on the repository.
-  org_deploy_keys="not applicable (user-owned repository)"
-  if [[ "$(gh api "repos/$repository" --jq '.owner.type')" == Organization ]]; then
-    org_deploy_keys="$(gh api "orgs/${repository%%/*}" --jq '.deploy_keys_enabled_for_repositories')"
-    [[ "$org_deploy_keys" == true ]] || \
-      fail "organization ${repository%%/*} does not allow deploy keys (deploy_keys_enabled_for_repositories=$org_deploy_keys); the release tag key cannot push"
-  fi
+  owner_type="$(gh api "repos/$repository" --jq '.owner.type')"
+  case "$owner_type" in
+    Organization)
+      org_deploy_keys="$(gh api "orgs/${repository%%/*}" --jq '.deploy_keys_enabled_for_repositories')"
+      [[ "$org_deploy_keys" == true ]] || \
+        fail "organization ${repository%%/*} does not allow deploy keys (deploy_keys_enabled_for_repositories=$org_deploy_keys); the release tag key cannot push"
+      ;;
+    User) org_deploy_keys="not applicable (user-owned repository)" ;;
+    *) fail "unexpected repository owner type: ${owner_type:-<empty>}" ;;
+  esac
 
   keys="$(gh api "repos/$repository/keys")"
   write_key_count="$(jq '[.[] | select(.read_only == false)] | length' <<<"$keys")"
