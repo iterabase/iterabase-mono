@@ -365,15 +365,18 @@ jobs:
         if: always()
         run: python3 .github/scripts/aws_ci.py cleanup-run --region '${{ vars.AWS_CI_REGION }}' --run-id "$FIXTURE_RUN_ID"
 
-  # One live preview per pull request with deployable changes and one staging
-  # environment on master (C6, C9, C12). Not a merge gate.
+  # One live preview per eligible pull request and staging on master (C6, C9,
+  # C12). Dependabot has no privileged preview secrets; use the PR author so a
+  # human rerun cannot enable its preview (DES-HOR-642-01). Not a merge gate.
   preview:
     name: preview
     needs: [select, images]
     if: >-
       needs.select.outputs.build != '[]' && !inputs.all &&
       (github.event_name == 'push' ||
-       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     concurrency:

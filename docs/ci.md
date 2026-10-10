@@ -21,7 +21,7 @@ job was skipped. A canceled, failed, or unexpectedly run job fails the aggregate
 | --- | --- | --- |
 | `ci.yml` | pull request, `merge_group`, push to `master`, manual, `workflow_call` | selector; lint, type, unit, integration and static checks for the selected owners; `CI / required` |
 | `e2e.yml` | pull request, `merge_group`, push to `master`, `workflow_call` | selector; build every image once; selected Kind and real-machine scenarios; the non-required preview deploy; `E2E / required` |
-| `preview.yml` | pull request closed | tears down the `pr-<N>` preview |
+| `preview.yml` | pull request closed | tears down an eligible same-repository, non-Dependabot PR's `pr-<N>` preview |
 | `full-validation.yml` | nightly at 02:17 UTC when `master` changed; manual; `full-validation` label; `workflow_call` from `release.yml` | the whole catalogue against one commit (C11) |
 | `release.yml` | manual, protected `release` environment | official release ([`release.md`](release.md)) |
 | `bake.yml` | push to `master` changing `.github/inputs/remote-content.json` or `forge/test/e2e/model-cache.json`; manual; `workflow_call` from `e2e.yml` | fixture AMIs and the model-cache snapshot (C1, `DES-HOR-590-03`) |
@@ -211,6 +211,15 @@ with their own containerd, so Kind scenarios also pass the pair to testkit,
 which adds the credentials to the nodes' containerd config. A missing token
 fails the login step instead of falling back to anonymous pulls.
 
+Dependabot-triggered workflows resolve secrets from the separate Dependabot
+secret store, not Actions secrets. Provision the same read-only Docker Hub token
+there as `DOCKERHUB_TOKEN`; the repository variable `DOCKERHUB_USERNAME` already
+applies. This enables the existing required CI/image-build/E2E jobs, not a
+privileged preview. Do not copy Tailscale, preview SSH, or inference credentials
+into Dependabot secrets. No `pull_request_target` or permission expansion is
+needed. Direct bot delivery retains the ticket/review/publication requirements
+in [`dependencies.md`](dependencies.md).
+
 ## Baked fixture images (`bake.yml`, `DES-HOR-590-03`)
 
 Fixture AMIs hold software inputs only: Ubuntu 24.04, host packages, and the
@@ -242,14 +251,22 @@ and of the model cache and deletes older AMIs and snapshots. Both support
 
 | Aspect | As built |
 | --- | --- |
-| Environments | `pr-<N>` for a same-repository pull request whose selection builds images; `staging` for every push to `master` that builds images. GitHub Deployments carry the "View deployment" link. |
+| Environments | `pr-<N>` for a same-repository, non-Dependabot pull request whose selection builds images; `staging` for every push to `master` that builds images. GitHub Deployments carry the "View deployment" link. |
 | Host | one spot `m6i.xlarge` per environment from the CPU fixture AMI, found or launched by `aws_ci.py preview-up`. Its host key is generated at creation and stored in the `iterabase-ci-host-key` tag; later runs read it through the authenticated EC2 API. Runner SSH uses the `PREVIEW_SSH_KEY` repository secret. |
 | Deploy | `.github/scripts/preview.py` builds the commit's Forge, imports the build-once images into the host's containerd (verified by config digest), re-versions the platform and substrate charts as `<version>-pr.<N>.<run>` or `<version>-main.<run>` and pushes them to `ghcr.io/iterabase/preview/charts`, and runs `forge apply` from host-local copies of those charts. The first deploy bootstraps k3s and data storage first; later pushes upgrade in place. |
 | Values | the versioned fixture overlay `forge/test/e2e/overlay` with the preview values appended, committed on the host as a `file://` repository. Forge serves it to Flux over read-only node SSH (DES-HOR-632-01), so no overlay token or external repository is involved. The F3 scenarios use the same fixture. |
 | Inference | an external `ModelBackend` to the internal-prod (opo1) gateway (DES-HOR-590-10: `PREVIEW_LLM_BASE_URL`, `PREVIEW_LLM_MODEL`, `PREVIEW_LLM_API_KEY`, a `gateway` key on the `preview-ci` service account; no rate cap until the V2 cutover). No GPU. QA seed data is deferred (DES-HOR-590-09): no QA identity is seeded because IdentityMapping is retired in V2 (HOR-584), and QA uses the preview's bootstrap admin key until the V2 People and credential APIs (HOR-454, HOR-514) land. |
 | Access | Tailscale only (DES-HOR-590-06). The workflow mints a one-hour, single-use, ephemeral `tag:preview` key and creates two Tailscale Services, `svc:<env>-app` and `svc:<env>-inference` (tagged `tag:preview-svc`), through the OAuth client (`TAILSCALE_OAUTH_CLIENT_ID`, `TAILSCALE_OAUTH_SECRET`). The host advertises both with `tailscale serve --service`, sending them to ingress-nginx, and the chart's Ingresses route `https://<env>-app.<tailnet>.ts.net` (Dashboard at `/`, API at `/v1`) and `https://<env>-inference.<tailnet>.ts.net/v1` (OpenAI-compatible inference). TLS ends at Tailscale. Teardown deletes both Services and the host's tailnet node, and the reaper deletes Services and nodes whose preview host is gone. Nothing is public. |
 | Concurrency | one group per environment; the latest push wins. |
-| Teardown | `preview.yml` terminates the host and marks its deployments inactive when the pull request closes or merges. Each deploy renews a 72-hour `iterabase-ci-deadline`, so the reaper removes a preview idle for 72 hours. `staging` is never TTL-expired. |
+| Teardown | `preview.yml` terminates the host and marks its deployments inactive when an eligible same-repository, non-Dependabot pull request closes or merges. Each deploy renews a 72-hour `iterabase-ci-deadline`, so the reaper removes a preview idle for 72 hours. `staging` is never TTL-expired. |
+
+Both creation and teardown exclude `dependabot[bot]` by the PR author, not the
+actor rerunning or closing it (DES-HOR-642-01). Dependabot has no preview secrets
+and creates no live preview. Human same-repository previews and master staging
+remain eligible; required CI, image builds, selected Kind/real-machine scenarios,
+and their aggregates have no bot exemption. The eligibility contract is tested
+in `.github/scripts/test_workflow_permissions.py`, run by `make release-check`
+in the required `ci-contract` job.
 
 Previews are evidence, not a gate. Full validation does not deploy them.
 

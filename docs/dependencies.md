@@ -3,7 +3,7 @@
 - **Owner:** repository root
 - **Governing config:** [`.github/dependabot.yml`](../.github/dependabot.yml)
 - **Last reviewed:** 2026-10-10
-- **Tracking:** HOR-608
+- **Tracking:** HOR-608 (security-only steering), HOR-642 (direct bot delivery)
 
 ## Posture
 
@@ -66,12 +66,22 @@ ecosystem label; the values in the config preserve the repository's existing
 
 ## Operating conventions
 
-- **Dependency changes are ticket-backed.** A Dependabot pull request is a diff
-  source, not a delivery. Adopt its diff on a `<TICKET>-<short-description>`
-  branch, keep the Linear identifier in the commits and pull-request title, and
-  run required CI and review on that branch.
-- **Dependabot pull requests are never self-merged.** Required CI is a floor,
-  not an approval; only the user may approve and merge.
+- **Dependency changes are ticket-backed.** Security-only Dependabot pull
+  requests may be reviewed directly; copying an ordinary security patch onto a
+  human branch is not required (DES-HOR-642-02). Link the delivery ticket, use a
+  `<TICKET> — <description>` PR title, and supplement the generated notes with
+  the normal `Summary`, `Validation`, `Production impact`, and `Ticket state`
+  sections before review. Generated bot branch/commit names are the only naming
+  exception; required CI, reviewer-owned terminal review, acceptance, and release
+  gates still apply. For authored fixes, major-version migrations, or updates
+  the bot cannot safely deliver (including vendor-shrinkwrap constraints), use
+  the normal `<TICKET>-<short-description>` branch and ticket-prefixed commits.
+- **Dependabot pull requests are never self-merged or auto-merged.** Required CI
+  is a floor, not an approval; only the user may approve and merge. Classify
+  semantic publication on every delivery as required, deferred, or none. A
+  dev-only tooling fix can require no dedicated release; a shipped dependency
+  fix reaches installations only through the approved publication/deployment
+  path. Merge is not publication.
 - **Vendor-shrinkwrap-pinned advisories are verified on disk, not with
   `npm audit`.** A vendored package can ship an `npm-shrinkwrap.json` that npm
   honours for its subtree (for example `@earendil-works/pi-coding-agent`). A
