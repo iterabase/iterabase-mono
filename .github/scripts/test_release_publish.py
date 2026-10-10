@@ -80,5 +80,11 @@ class RegistryStateTests(unittest.TestCase):
             self.assertNotIn("absent", result.stdout)
 
 
+class ReleaseSourceGuardTests(unittest.TestCase):
+    def test_plan_releases_only_the_commit_the_workflow_runs_from(self):
+        plan = (SCRIPTS.parent / "workflows" / "release.yml").read_text(encoding="utf-8").split("\n  validate:")[0]
+        self.assertIn('[[ "$SHA" == "$GITHUB_SHA" ]]', plan, "DES-HOR-590-11: sha must be the workflow's own commit")
+
+
 if __name__ == "__main__":
     unittest.main()
