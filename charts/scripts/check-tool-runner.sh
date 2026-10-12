@@ -52,4 +52,20 @@ grep -q 'name: runner-tls' <<<"$runner"
 ! grep -q 'name: kube-api' <<<"$runner"
 grep -q 'rm -f /control/runner-ready; exec node /app/dist/main.js run' <<<"$runner"
 
-echo "OK: tool runner renders with exact SPIFFE/Flux scoping, config-triggered gateway rollout, process-lifetime readiness, bounded generations, read-only artifacts, split credentials, and Prometheus scraping"
+grep -q 'name: FLUX_ENABLED, value: "true"' <<<"$materializer"
+
+# Product-only install (DES-HOR-651-01): the product layer ships in the image,
+# so disabling the overlay client layer removes every Flux credential surface.
+product_only=$(helm template runner-check charts/control-plane \
+  --set postgresql.enabled=false \
+  --set gateway.enabled=true \
+  --set toolRunner.enabled=true \
+  --set toolRunner.flux.enabled=false)
+grep -q 'app.kubernetes.io/component: tool-runner' <<<"$product_only"
+grep -q 'name: FLUX_ENABLED, value: "false"' <<<"$product_only"
+! grep -q 'source.toolkit.fluxcd.io' <<<"$product_only"
+! grep -q 'name: FLUX_SOURCE_NAME' <<<"$product_only"
+! grep -q 'name: kube-api' <<<"$product_only"
+! grep -q 'app.kubernetes.io/component: tool-materializer' <<<"$product_only"
+
+echo "OK: tool runner renders with exact SPIFFE/Flux scoping, a Flux-free product-only mode, config-triggered gateway rollout, process-lifetime readiness, bounded generations, read-only artifacts, split credentials, and Prometheus scraping"

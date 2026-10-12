@@ -524,13 +524,18 @@ gateway observability pattern.
 Configure exact dotted tool-name namespaces through
 `control-plane.toolRunner.allowedToolNamespaces`; wildcards are not supported.
 Defaults retain at most eight generations / 512 MiB and drain old pins for up to
-24 hours. Invalid revisions leave the last valid generation serving. Product and
-client bundle authoring is documented in the overlay's `tools/README.md`.
+24 hours. Invalid revisions leave the last valid generation serving. Product
+tools ship inside the runner image with each control-plane release; the overlay
+carries only customer `tools/client` bundles, and an overlay `tools/product` is
+rejected. The layer contract is documented in
+[`control-plane/tool-runner/tools/README.md`](../control-plane/tool-runner/tools/README.md).
 
-A valid, Ready Flux `GitRepository` named `overlay` must exist before installing
-with the runner enabled because readiness intentionally requires a validated
-first generation. Forge establishes and gates on the exact source revision and
-digest before Helm. Generic chart-only CI disables the runner because it has no
+With `control-plane.toolRunner.flux.enabled=true` (default), a valid, Ready Flux
+`GitRepository` named `overlay` must exist before installing with the runner
+enabled, because readiness intentionally requires a validated first generation.
+Forge establishes and gates on the exact source revision and digest before Helm.
+With `flux.enabled=false` the runner serves the image product layer alone and
+the chart renders no Flux RBAC or Kubernetes API credential. Generic chart-only CI disables the runner because it has no
 cross-repository runner image or Flux source; the dedicated kind+Flux contract
 covers the enabled runtime path.
 

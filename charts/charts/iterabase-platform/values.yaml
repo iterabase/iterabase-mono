@@ -70,7 +70,7 @@ control-plane:
     # defaultModel.id/api are CUSTOMER-SPECIFIC and set by the overlay (a
     # dispatch enabled without them fails closed at startup) — not baked here.
   toolRunner:
-    enabled: true # Node 24 runner + exact Flux GitRepository artifact generations (HOR-397)
+    enabled: true # Node 24 runner: image product tools + exact Flux GitRepository client tools (HOR-397, HOR-651)
     allowedToolNamespaces: [platform] # overlays add reviewed namespaces (for example graph/client)
   artifact:
     enabled: true

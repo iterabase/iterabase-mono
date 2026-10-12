@@ -88,7 +88,7 @@ dispatch:
       memory: 512Mi
 
 toolRunner:
-  enabled: false # umbrella enables; requires gateway + Flux GitRepository
+  enabled: false # umbrella enables; requires gateway (+ Flux GitRepository when flux.enabled)
   image:
     repository: ghcr.io/iterabase/control-plane-tool-runner
     tag: "" # default: the chart appVersion, which equals control-plane/VERSION
@@ -97,7 +97,12 @@ toolRunner:
   # Exact first segment(s) of dotted tool names this reviewed runner may publish.
   # No wildcard/empty approval is accepted. Client overlays add namespaces here.
   allowedToolNamespaces: [platform]
+  # Product tools ship in the runner image with each platform release
+  # (DES-HOR-651-01). Flux supplies only the overlay's customer tools/client
+  # layer; an overlay tools/product is rejected. Disable for a product-only
+  # install with no overlay GitRepository (no Flux RBAC is rendered).
   flux:
+    enabled: true
     namespace: flux-system
     sourceName: overlay
     pollMs: 5000

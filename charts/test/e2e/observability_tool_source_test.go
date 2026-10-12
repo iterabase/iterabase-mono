@@ -156,8 +156,8 @@ func buildObservabilityToolArchive() ([]byte, string, error) {
 		name string
 		data []byte
 	}{
-		{name: "tools/product/observability-fixture/index.mjs", data: bundle},
-		{name: "tools/product/observability-fixture/manifest.json", data: manifest},
+		{name: "tools/client/observability-fixture/index.mjs", data: bundle},
+		{name: "tools/client/observability-fixture/manifest.json", data: manifest},
 	}
 	for _, file := range files {
 		header := &tar.Header{Name: file.name, Mode: 0o444, Size: int64(len(file.data)), ModTime: time.Unix(0, 0)}
@@ -208,8 +208,8 @@ func TestUnitObservabilityToolFixturePublishesCanonicalArchive(t *testing.T) {
 		}
 		entries[header.Name] = data
 	}
-	bundle := entries["tools/product/observability-fixture/index.mjs"]
-	manifestBytes := entries["tools/product/observability-fixture/manifest.json"]
+	bundle := entries["tools/client/observability-fixture/index.mjs"]
+	manifestBytes := entries["tools/client/observability-fixture/manifest.json"]
 	if len(bundle) == 0 || len(manifestBytes) == 0 {
 		t.Fatalf("tool archive entries=%v", entries)
 	}
