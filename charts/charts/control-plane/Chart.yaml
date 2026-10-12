@@ -9,6 +9,6 @@ dependencies:
   # overridden to pgvector because the control-plane's first migration creates
   # the pgvector extension.
   - name: postgresql
-    version: 0.2.4
+    version: 0.2.5
     repository: file://../postgresql
     condition: postgresql.enabled
