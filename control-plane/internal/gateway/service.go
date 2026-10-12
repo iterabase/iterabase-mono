@@ -374,7 +374,9 @@ func (s *Service) InvokeTool(ctx context.Context, req *connect.Request[v1.Invoke
 	}
 	inv, inserted, err := s.store.BeginInvocation(ctx, key, tv, &res.Pool.ID, msg.ArgumentsJson, marshalArtifactRefs(msg.ArtifactInputRefs), consequenceSummary, leaseExpiresAt, s.cfg.GatewayInstanceID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		// ErrScopeDenied: the turn was settled (interrupted or aborted) after
+		// scope resolution; no ledger row and no effect.
+		return nil, mapErr(err)
 	}
 	if !inserted {
 		return connect.NewResponse(invocationToResponse(inv)), nil

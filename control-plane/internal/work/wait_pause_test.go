@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gateway"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/testutil"
 	workstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/work"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
@@ -247,6 +248,46 @@ func TestWait_DeadlineRoutesWithPartialEvents(t *testing.T) {
 	assert.Equal(t, workstore.StateInProgress, e.item(t, item.ID).State)
 	late := e.post(t, "m3", "t3")
 	assert.Equal(t, workstore.EventLate, late.Disposition)
+}
+
+// An event arriving after the deadline, before the sweep ran, never changes
+// the outcome: the wait routes `deadline` with what arrived in time.
+func TestWait_EventAfterDeadlineBeforeSweepRoutesDeadline(t *testing.T) {
+	e := newWaitEnv(t, workflow.WaitCompletionAll)
+	item := e.start(t, "deadline-race")
+	node := e.enterWait(t, item, "t1", "t2", "t3")
+	e.post(t, "m1", "t1")
+	e.post(t, "m2", "t2")
+	_, err := e.pool.Exec(e.ctx, `UPDATE runtime.waits SET deadline_at=now()-interval '1 second' WHERE node_execution_id=$1`, node.ID)
+	require.NoError(t, err)
+
+	late := e.post(t, "m3", "t3")
+	assert.Equal(t, workstore.EventLate, late.Disposition, "a post-deadline event is evidence only")
+	outcome, out := waitOutput(t, e, item.CurrentAttemptID)
+	assert.Equal(t, workflow.WaitOutcomeDeadline, outcome)
+	assert.EqualValues(t, 2, out["received"])
+	require.Len(t, out["missing"], 1)
+	assert.Equal(t, "t3", out["missing"].([]any)[0].(map[string]any)["correlationKey"])
+	completed, err := e.store.CompleteDueWaits(e.ctx, time.Now().Add(73*time.Hour), 10)
+	require.NoError(t, err)
+	assert.Zero(t, completed, "the arrival already completed the wait")
+}
+
+// Late evidence for a stopped wait is never claimed by a later wait that
+// reuses the correlation key.
+func TestWait_LateEvidenceIsNotClaimedByALaterWait(t *testing.T) {
+	e := newWaitEnv(t, workflow.WaitCompletionAll)
+	first := e.start(t, "late-first")
+	e.enterWait(t, first, "k")
+	_, err := e.store.StopWaiting(e.ctx, workstore.StopWaitingInput{WorkItemID: first.ID, ActorIdentityID: e.actorID})
+	require.NoError(t, err)
+	assert.Equal(t, workstore.EventLate, e.post(t, "late-1", "k").Disposition)
+
+	second := e.start(t, "late-second")
+	e.enterWait(t, second, "k")
+	assert.Equal(t, workstore.StateWaiting, e.item(t, second.ID).State, "the old late event does not complete the new wait")
+	assert.Zero(t, e.count(t, `SELECT count(*) FROM runtime.wait_expectations WHERE attempt_id=$1 AND state='received'`, second.CurrentAttemptID))
+	assert.Equal(t, workstore.EventMatched, e.post(t, "fresh-1", "k").Disposition, "a new event for the key still matches")
 }
 
 func TestWait_StopWaitingRoutesCancelledAndLaterEventsAreEvidence(t *testing.T) {
@@ -558,6 +599,103 @@ func TestInterrupt_TurnWithAnyWriteStopsWithoutRepeating(t *testing.T) {
 			assert.Len(t, writes, 1, "the ledger evidence that decided the stop is retained")
 		})
 	}
+}
+
+// beginWrite starts a write-class invocation through the real gateway ledger
+// entry point for the given turn.
+func (e *waitEnv) beginWrite(attemptID, turnID string) error {
+	pool := e.poolID
+	_, _, err := gateway.NewStore(e.pool).BeginInvocation(e.ctx, gateway.InvocationKey{
+		AttemptID: attemptID, CallerScope: gateway.CallerScopeTurn, CallerScopeID: turnID,
+		ToolCallID: "call-race", ToolVersionDigest: "sha256:excel-v1", IdempotencyKey: "race",
+	}, gateway.ToolVersion{Name: "graph.excel.write", Digest: "sha256:excel-v1", EffectClass: gateway.EffectIdempotentWrite},
+		&pool, []byte(`{}`), []byte(`[]`), []byte(`{"en":"Update workbook","pt":"Atualizar livro"}`), time.Now().Add(time.Minute), "gw-test")
+	return err
+}
+
+// The classifier and write-invocation creation are serialized on the turn row
+// (DES-HOR-649-04): whichever commits first decides, and a write can never
+// commit after a rerun was chosen.
+func TestInterrupt_SerializedWithWriteInvocationCreation(t *testing.T) {
+	t.Run("write wins", func(t *testing.T) {
+		e := newWaitEnv(t, workflow.WaitCompletionAll)
+		item := e.start(t, "race-write")
+		_, turn, _, err := e.store.PrepareNode(e.ctx, item.CurrentAttemptID)
+		require.NoError(t, err)
+		// An in-flight invocation holds the fence it takes before inserting.
+		tx, err := e.pool.Begin(e.ctx)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback(e.ctx) }()
+		_, err = tx.Exec(e.ctx, `SELECT 1 FROM runtime.turns WHERE id=$1 FOR SHARE`, turn.ID)
+		require.NoError(t, err)
+
+		result := make(chan string, 1)
+		go func() {
+			state, err := e.store.InterruptTurn(e.ctx, turn.ID, workstore.InterruptWorkerLost)
+			if err != nil {
+				state = "error: " + err.Error()
+			}
+			result <- state
+		}()
+		select {
+		case state := <-result:
+			t.Fatalf("classifier did not wait for the in-flight invocation: %s", state)
+		case <-time.After(300 * time.Millisecond):
+		}
+		_, err = tx.Exec(e.ctx, `
+			INSERT INTO toolgateway.invocations
+			(attempt_id,caller_scope,caller_scope_id,tool_call_id,tool_name,tool_version_digest,idempotency_key,effect_class,pool_id,consequence_summary,state)
+			VALUES($1,'turn',$2,'call-race','graph.excel.write','sha256:excel-v1','race','idempotent_write',$3,'{"en":"x","pt":"x"}','dispatching')`,
+			item.CurrentAttemptID, turn.ID, e.poolID)
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit(e.ctx))
+		assert.Equal(t, "failed", <-result, "the committed write stops the attempt")
+		assert.Equal(t, 1, e.count(t, `SELECT count(*) FROM runtime.turn_interruptions WHERE turn_id=$1 AND decision='stop_after_write'`, turn.ID))
+	})
+
+	t.Run("classifier wins", func(t *testing.T) {
+		e := newWaitEnv(t, workflow.WaitCompletionAll)
+		item := e.start(t, "race-rerun")
+		_, turn, _, err := e.store.PrepareNode(e.ctx, item.CurrentAttemptID)
+		require.NoError(t, err)
+		// The classifier holds the turn while it reads the ledger.
+		tx, err := e.pool.Begin(e.ctx)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback(e.ctx) }()
+		_, err = tx.Exec(e.ctx, `SELECT 1 FROM runtime.turns WHERE id=$1 FOR UPDATE`, turn.ID)
+		require.NoError(t, err)
+
+		result := make(chan error, 1)
+		go func() { result <- e.beginWrite(item.CurrentAttemptID, turn.ID) }()
+		select {
+		case err := <-result:
+			t.Fatalf("invocation did not wait for the classifier: %v", err)
+		case <-time.After(300 * time.Millisecond):
+		}
+		_, err = tx.Exec(e.ctx, `UPDATE runtime.turns SET state='aborted', settled_at=now() WHERE id=$1`, turn.ID)
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit(e.ctx))
+		assert.ErrorIs(t, <-result, gateway.ErrScopeDenied, "a write is refused once the turn is settled")
+		assert.Equal(t, 0, e.count(t, `SELECT count(*) FROM toolgateway.invocations WHERE caller_scope_id=$1`, turn.ID))
+	})
+
+	t.Run("sequential orders", func(t *testing.T) {
+		e := newWaitEnv(t, workflow.WaitCompletionAll)
+		item := e.start(t, "race-seq")
+		_, turn, _, err := e.store.PrepareNode(e.ctx, item.CurrentAttemptID)
+		require.NoError(t, err)
+		state, err := e.store.InterruptTurn(e.ctx, turn.ID, workstore.InterruptWorkerLost)
+		require.NoError(t, err)
+		assert.Equal(t, "running", state)
+		assert.ErrorIs(t, e.beginWrite(item.CurrentAttemptID, turn.ID), gateway.ErrScopeDenied, "the old turn cannot write after a rerun")
+
+		_, rerun, _, err := e.store.PrepareNode(e.ctx, item.CurrentAttemptID)
+		require.NoError(t, err)
+		require.NoError(t, e.beginWrite(item.CurrentAttemptID, rerun.ID))
+		state, err = e.store.InterruptTurn(e.ctx, rerun.ID, workstore.InterruptWorkerLost)
+		require.NoError(t, err)
+		assert.Equal(t, "failed", state, "a write committed first stops the attempt")
+	})
 }
 
 func TestInterrupt_RepeatedInterruptionStopsAfterThree(t *testing.T) {

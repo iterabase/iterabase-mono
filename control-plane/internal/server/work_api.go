@@ -234,7 +234,8 @@ func (h *Handler) respondWorkBlocker(w http.ResponseWriter, r *http.Request) {
 }
 
 // stopWorkWait ends the item's open wait through its `cancelled` outcome
-// (DES-HOR-649-02). It carries the same authority as a blocker response and
+// (DES-HOR-649-02). It carries exactly the blocker-response authority
+// (DES-HOR-649-06; both move to cookie+CSRF together) and
 // does not cancel the work item.
 func (h *Handler) stopWorkWait(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeWork(w, r, "respond") {
