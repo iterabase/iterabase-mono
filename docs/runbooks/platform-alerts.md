@@ -114,7 +114,7 @@ Identify the PVC and growth source. Confirm backups and retention policy before 
 
 ## IterabaseContainerOOMKilled
 
-The kernel killed the container at its memory limit. Identify the workload and what it was doing (harness turn, extraction, query, scrape) from logs and the `kube_pod_container_status_restarts_total` history. Compare its working set with its limit and with the single-node budget in [`charts/docs/sizing.md`](../../charts/docs/sizing.md). Raise a limit only within that budget, through a reviewed chart or overlay change; on a full node, reduce concurrency (AgentPool replicas, browser/extraction pools) instead. AgentPool workers and ModelBackends get a memory limit only from their own `spec.resources`; the release-namespace LimitRange defaults requests, never limits.
+The kernel killed the container at its memory limit within the last 15 minutes. The alert covers regular and init containers, including a kill that predates the first scrape and a `restartPolicy: Never` Job container left terminated. Identify the workload and what it was doing (harness turn, extraction, query, scrape) from logs and the `kube_pod_container_status_restarts_total` history. Compare its working set with its limit and with the single-node budget in [`charts/docs/sizing.md`](../../charts/docs/sizing.md). Raise a limit only within that budget, through a reviewed chart or overlay change; on a full node, reduce concurrency (AgentPool replicas, browser/extraction pools) instead. AgentPool workers and ModelBackends get a memory limit only from their own `spec.resources`; the release-namespace LimitRange defaults requests, never limits.
 
 ## IterabaseContainerMemoryNearLimit
 

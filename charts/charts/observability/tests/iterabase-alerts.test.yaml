@@ -401,7 +401,6 @@ tests:
               namespace: default
               pod: opo1-postgresql-0
               container: postgresql
-              reason: OOMKilled
             exp_annotations:
               summary: "Container default/opo1-postgresql-0/postgresql was OOM-killed"
               description: "The container exceeded its memory limit and was killed by the kernel within the last 15 minutes. Work it was serving may have been interrupted."
@@ -417,6 +416,84 @@ tests:
         values: '1x30'
     alert_rule_test:
       - eval_time: 30m
+        alertname: IterabaseContainerOOMKilled
+        exp_alerts: []
+
+  - name: an OOM kill before the first scrape fires without an observed restart delta
+    interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="default",pod="opo1-control-plane-gateway-0",container="gateway",reason="OOMKilled"}'
+        values: '1x30'
+      - series: 'kube_pod_container_status_restarts_total{namespace="default",pod="opo1-control-plane-gateway-0",container="gateway"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: IterabaseContainerOOMKilled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: capacity
+              namespace: default
+              pod: opo1-control-plane-gateway-0
+              container: gateway
+            exp_annotations:
+              summary: "Container default/opo1-control-plane-gateway-0/gateway was OOM-killed"
+              description: "The container exceeded its memory limit and was killed by the kernel within the last 15 minutes. Work it was serving may have been interrupted."
+              first_action: "Check the container's memory trend against its limit and the node budget in charts/docs/sizing.md before raising the limit."
+              runbook_url: "https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabasecontaineroomkilled"
+      - eval_time: 20m
+        alertname: IterabaseContainerOOMKilled
+        exp_alerts: []
+
+  - name: a restartPolicy Never container terminated by OOM fires
+    interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_terminated_reason{namespace="default",pod="opo1-migrate-abcde",container="migrate",reason="OOMKilled"}'
+        values: '_ _ 1x30'
+      - series: 'kube_pod_container_status_restarts_total{namespace="default",pod="opo1-migrate-abcde",container="migrate"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: IterabaseContainerOOMKilled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: capacity
+              namespace: default
+              pod: opo1-migrate-abcde
+              container: migrate
+            exp_annotations:
+              summary: "Container default/opo1-migrate-abcde/migrate was OOM-killed"
+              description: "The container exceeded its memory limit and was killed by the kernel within the last 15 minutes. Work it was serving may have been interrupted."
+              first_action: "Check the container's memory trend against its limit and the node budget in charts/docs/sizing.md before raising the limit."
+              runbook_url: "https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabasecontaineroomkilled"
+      - eval_time: 25m
+        alertname: IterabaseContainerOOMKilled
+        exp_alerts: []
+
+  - name: an OOM-killed init container fires while its restart is recent
+    interval: 1m
+    input_series:
+      - series: 'kube_pod_init_container_status_last_terminated_reason{namespace="default",pod="opo1-control-plane-api-0",container="migrate",reason="OOMKilled"}'
+        values: '0 0 1x30'
+      - series: 'kube_pod_init_container_status_restarts_total{namespace="default",pod="opo1-control-plane-api-0",container="migrate"}'
+        values: '0 0 1x30'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: IterabaseContainerOOMKilled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: capacity
+              namespace: default
+              pod: opo1-control-plane-api-0
+              container: migrate
+            exp_annotations:
+              summary: "Container default/opo1-control-plane-api-0/migrate was OOM-killed"
+              description: "The container exceeded its memory limit and was killed by the kernel within the last 15 minutes. Work it was serving may have been interrupted."
+              first_action: "Check the container's memory trend against its limit and the node budget in charts/docs/sizing.md before raising the limit."
+              runbook_url: "https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabasecontaineroomkilled"
+      - eval_time: 25m
         alertname: IterabaseContainerOOMKilled
         exp_alerts: []
 

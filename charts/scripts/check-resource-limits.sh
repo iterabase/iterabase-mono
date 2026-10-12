@@ -40,6 +40,31 @@ render edge opo1 "$umbrella" --namespace portable-system \
   --set metallb.enabled=true --set metallb-config.enabled=true \
   --set 'metallb-config.addresses={192.0.2.10/32}' \
   --set external-dns.enabled=true --set 'external-dns.domainFilters={example.com.}'
+# Upgrade-only recovery Jobs render only when `lookup` finds live objects, which
+# offline `helm template` never does. Render a copy whose lookups return
+# fixtures for an earlier attempt's admission webhook and a RollingUpdate Loki
+# gateway, so both Jobs face the same contract. A missing lookup string fails.
+upgrade=$tmp/upgrade-chart
+cp -R "$umbrella" "$upgrade"
+python3 - "$upgrade/templates" <<'PY_FIXTURE'
+import pathlib, sys
+fixtures = {
+    "loki-gateway-rollout-recovery.yaml": (
+        'lookup "apps/v1" "Deployment" $namespace $gatewayName',
+        'dict "spec" (dict "strategy" (dict "type" "RollingUpdate"))'),
+    "internal-ingress-admission-recovery.yaml": (
+        'lookup "admissionregistration.k8s.io/v1" "ValidatingWebhookConfiguration" "" $admissionName',
+        'dict "metadata" (dict "name" $admissionName)'),
+}
+for name, (call, fixture) in fixtures.items():
+    path = pathlib.Path(sys.argv[1]) / name
+    source = path.read_text()
+    if call not in source:
+        sys.exit(f"{name}: lookup fixture target changed: {call}")
+    path.write_text(source.replace(call, fixture))
+PY_FIXTURE
+render upgrade-recovery opo1 "$upgrade" --namespace portable-system \
+  -f values-observability.yaml -f values-tls.yaml -f values-internal-observability.yaml
 render control-plane control-plane charts/control-plane
 render control-plane-full control-plane charts/control-plane \
   --set gateway.enabled=true --set dispatch.enabled=true --set toolRunner.enabled=true \
@@ -92,7 +117,7 @@ EXEMPT = {
     ("DaemonSet", "cert-manager-csi-driver", "liveness-probe"),
 }
 
-failures, checked, limitranges, exempted = [], 0, {}, set()
+failures, checked, limitranges, exempted, recovery_jobs = [], 0, {}, set(), set()
 for path in sys.argv[1:]:
     profile = os.path.basename(path)[:-5]
     with open(path) as f:
@@ -103,6 +128,8 @@ for path in sys.argv[1:]:
             if kind == "LimitRange":
                 limitranges.setdefault(profile, []).append(doc)
                 continue
+            if profile == "upgrade-recovery" and kind == "Job":
+                recovery_jobs.add(name)
             targets = []
             spec = pod_spec(doc)
             if spec is not None:
@@ -134,6 +161,11 @@ for profile in ("default", "kind", "observability-tls", "internal-observability"
     for bound in ("default", "max", "min", "maxLimitRequestRatio"):
         if bound in entry:
             failures.append(f"{profile}: LimitRange must only default requests (DES-HOR-602-02), found {bound}")
+
+# The lookup fixtures must keep rendering both upgrade recovery Jobs.
+for job in ("opo1-loki-gateway-rollout-recovery", "opo1-internal-ingress-nginx-admission-recovery"):
+    if job not in recovery_jobs:
+        failures.append(f"upgrade-recovery: Job/{job} no longer renders under its lookup fixture")
 
 for stale in sorted(EXEMPT - exempted):
     failures.append(f"stale exemption no longer rendered: {stale}")

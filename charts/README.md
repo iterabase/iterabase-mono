@@ -68,12 +68,12 @@ your values/overlay:
 
 ```sh
 helm install iterabase-cert-manager \
-  oci://ghcr.io/nunocgoncalves/iterabase-charts/cert-manager-substrate \
+  oci://ghcr.io/iterabase/iterabase-charts/cert-manager-substrate \
   --version 0.4.8 -n iterabase-system --create-namespace --wait
 helm install iterabase-lvm-storage \
-  oci://ghcr.io/nunocgoncalves/iterabase-charts/lvm-storage-substrate \
+  oci://ghcr.io/iterabase/iterabase-charts/lvm-storage-substrate \
   --version 0.4.8 -n iterabase-system --wait
-helm install iterabase oci://ghcr.io/nunocgoncalves/iterabase-charts/iterabase-platform \
+helm install iterabase oci://ghcr.io/iterabase/iterabase-charts/iterabase-platform \
   --version 0.4.8 -n iterabase-system \
   --set inference-gateway.ingress.host=gateway.opo1.example.com \
   --set inference-gateway.ingress.tls.clusterIssuer=letsencrypt-prod \
@@ -305,7 +305,7 @@ kubectl get secret "$edge_secret" -n "$namespace"
 # Phase 2: run the normal upgrade with the deployment's complete values. Update
 # any explicit ingress.tls.secretName override to $edge_secret first.
 helm upgrade "$release" \
-  oci://ghcr.io/nunocgoncalves/iterabase-charts/iterabase-platform \
+  oci://ghcr.io/iterabase/iterabase-charts/iterabase-platform \
   --version <target-version> -n "$namespace" -f /path/to/values.yaml --wait
 kubectl wait -n "$namespace" --for=condition=Ready \
   "certificate/$edge_secret" --timeout=10m
