@@ -2074,9 +2074,14 @@ func (x *StepArtifactRef) GetMetadataJson() string {
 }
 
 type WorkerOutcome struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Outcome       Outcome                `protobuf:"varint,1,opt,name=outcome,proto3,enum=iterabase.harness.v1.Outcome" json:"outcome,omitempty"`
-	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"` // human/audit detail
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Outcome Outcome                `protobuf:"varint,1,opt,name=outcome,proto3,enum=iterabase.harness.v1.Outcome" json:"outcome,omitempty"`
+	Message string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"` // human/audit detail
+	// abort_reason is the bounded supervisor ChildAbortReason when the worker
+	// aborted the turn itself (for example worker_drain or stream_loss); empty
+	// otherwise. The control plane classifies worker_drain/stream_loss as worker
+	// loss under the interrupted-step rule (HOR-649).
+	AbortReason   string `protobuf:"bytes,3,opt,name=abort_reason,json=abortReason,proto3" json:"abort_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2121,6 +2126,13 @@ func (x *WorkerOutcome) GetOutcome() Outcome {
 func (x *WorkerOutcome) GetMessage() string {
 	if x != nil {
 		return x.Message
+	}
+	return ""
+}
+
+func (x *WorkerOutcome) GetAbortReason() string {
+	if x != nil {
+		return x.AbortReason
 	}
 	return ""
 }
@@ -3326,10 +3338,11 @@ const file_iterabase_harness_v1_harness_proto_rawDesc = "" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12\x12\n" +
 	"\x04role\x18\x02 \x01(\tR\x04role\x12#\n" +
-	"\rmetadata_json\x18\x03 \x01(\tR\fmetadataJson\"b\n" +
+	"\rmetadata_json\x18\x03 \x01(\tR\fmetadataJson\"\x85\x01\n" +
 	"\rWorkerOutcome\x127\n" +
 	"\aoutcome\x18\x01 \x01(\x0e2\x1d.iterabase.harness.v1.OutcomeR\aoutcome\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\x95\x01\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12!\n" +
+	"\fabort_reason\x18\x03 \x01(\tR\vabortReason\"\x95\x01\n" +
 	"\n" +
 	"TokenDelta\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\tR\x06turnId\x12#\n" +

@@ -264,6 +264,11 @@ message StepArtifactRef {
 message WorkerOutcome {
   Outcome outcome = 1;
   string message = 2;  // human/audit detail
+  // abort_reason is the bounded supervisor ChildAbortReason when the worker
+  // aborted the turn itself (for example worker_drain or stream_loss); empty
+  // otherwise. The control plane classifies worker_drain/stream_loss as worker
+  // loss under the interrupted-step rule (HOR-649).
+  string abort_reason = 3;
 }
 
 enum Outcome {

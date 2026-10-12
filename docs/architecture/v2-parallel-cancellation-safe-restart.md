@@ -1328,7 +1328,7 @@ Fan-out stays a pattern, not an engine feature: one agent step sends N requests 
 
 ### 24.3 Interrupted steps (DES-HOR-649-04, amending DES-HOR-457-04/07)
 
-When a graph turn is lost through worker stream loss, lease expiry, reconnect fencing, or an ambiguous assignment send, `InterruptTurn` settles it in one transaction. The Tool Gateway invocation ledger decides the outcome:
+When a graph turn is lost through worker stream loss, lease expiry, reconnect fencing, an ambiguous assignment send, or a worker that aborts the turn itself because it is draining or lost its stream (`WorkerOutcome.abort_reason` `worker_drain` or `stream_loss`, for example on pod termination), `InterruptTurn` settles it in one transaction. Other worker-reported aborts (watchdog, protocol, or a control-plane cancel or timeout) still fail the step. The Tool Gateway invocation ledger decides the outcome:
 
 | Lost turn | Decision | Result |
 | --- | --- | --- |

@@ -43,16 +43,43 @@ import {
   type WorkerMessage,
 } from "./gen/iterabase/harness/v1/harness_pb.js";
 import type { HarnessConfig } from "./config.js";
-import { createWorkTransport, openWorkStream, type WorkStream, type Welcome } from "./work-client.js";
-import { WorkerState as WorkerStateMachine, ProtocolError } from "./worker-state.js";
-import { resolveSandboxRoot, validateSandbox, provisionSandbox, reapSandbox, resolveWorkingDir, SandboxError, type SandboxPaths } from "./sandbox.js";
+import {
+  createWorkTransport,
+  openWorkStream,
+  type WorkStream,
+  type Welcome,
+} from "./work-client.js";
+import {
+  WorkerState as WorkerStateMachine,
+  ProtocolError,
+} from "./worker-state.js";
+import {
+  resolveSandboxRoot,
+  validateSandbox,
+  provisionSandbox,
+  reapSandbox,
+  resolveWorkingDir,
+  SandboxError,
+  type SandboxPaths,
+} from "./sandbox.js";
 import type { Probes } from "./probes.js";
 import { EventOutbox, OutboxOverflow, AckError } from "./event-outbox.js";
-import { createGatewayClient, type GatewayClient, type AssignmentScope } from "./gateway-client.js";
+import {
+  createGatewayClient,
+  type GatewayClient,
+  type AssignmentScope,
+} from "./gateway-client.js";
 import { streamModel } from "./model-bridge.js";
 import { InvokeState } from "./gen/iterabase/gateway/v1/gateway_pb.js";
-import type { ArtifactInputRefFrame, AuditChannelEvidence, GatewayToolDescriptor } from "./ipc.js";
-import { materializeArtifacts, publishWorkspaceArtifact } from "./artifact-files.js";
+import type {
+  ArtifactInputRefFrame,
+  AuditChannelEvidence,
+  GatewayToolDescriptor,
+} from "./ipc.js";
+import {
+  materializeArtifacts,
+  publishWorkspaceArtifact,
+} from "./artifact-files.js";
 import type { HarnessMetrics } from "./metrics.js";
 
 /** A durable TurnEvent payload (the oneof) the supervisor sequences + sends. */
@@ -60,7 +87,12 @@ export type TurnEventPayload = TurnEvent["kind"];
 
 export type ChildEvent =
   | { kind: "event"; payload: TurnEventPayload }
-  | { kind: "tokenDelta"; contentIndex: number; deltaType: "TEXT" | "THINKING"; delta: string };
+  | {
+      kind: "tokenDelta";
+      contentIndex: number;
+      deltaType: "TEXT" | "THINKING";
+      delta: string;
+    };
 
 /** Machine-searchable reason for a supervisor-initiated child abort (HOR-551). */
 export type ChildAbortReason =
@@ -117,11 +149,40 @@ export interface ChildResult {
 /** A child→supervisor RPC request (fd 4) — model/tool/cancel (HOR-395). */
 export type ChildRpcRequest =
   | { type: "modelRequest"; requestId: string; body: unknown }
-  | { type: "toolCall"; requestId: string; toolCallId: string; toolName: string; toolVersionDigest: string; argumentsJson: string; artifactInputRefs?: ArtifactInputRefFrame[]; idempotencyKey?: string }
-  | { type: "publishArtifact"; requestId: string; relativePath: string; mimeType: string }
-  | { type: "stepCompletion"; requestId: string; outcome: string; summary: string; outputJson: string; artifactRefs: Array<{artifactId:string;role:string;metadataJson:string}> }
+  | {
+      type: "toolCall";
+      requestId: string;
+      toolCallId: string;
+      toolName: string;
+      toolVersionDigest: string;
+      argumentsJson: string;
+      artifactInputRefs?: ArtifactInputRefFrame[];
+      idempotencyKey?: string;
+    }
+  | {
+      type: "publishArtifact";
+      requestId: string;
+      relativePath: string;
+      mimeType: string;
+    }
+  | {
+      type: "stepCompletion";
+      requestId: string;
+      outcome: string;
+      summary: string;
+      outputJson: string;
+      artifactRefs: Array<{
+        artifactId: string;
+        role: string;
+        metadataJson: string;
+      }>;
+    }
   | { type: "cancel"; requestId: string }
-  | { type: "auditBacklogOverflow"; requestId: string; evidence: AuditChannelEvidence };
+  | {
+      type: "auditBacklogOverflow";
+      requestId: string;
+      evidence: AuditChannelEvidence;
+    };
 export interface Child {
   /** Begin bounded abort escalation (SIGTERM → SIGKILL after abortGraceMs) with a machine-searchable reason (HOR-551). */
   abort(reason: ChildAbortReason, detail?: string): void;
@@ -140,7 +201,11 @@ export interface Child {
   rpcOnDrain: (listener: () => void) => () => void;
   result: Promise<ChildResult>;
 }
-export type ChildFactory = (assignment: AssignTurn, sandbox: SandboxPaths, cwd: string) => Child;
+export type ChildFactory = (
+  assignment: AssignTurn,
+  sandbox: SandboxPaths,
+  cwd: string,
+) => Child;
 
 export class SupervisorError extends Error {}
 
@@ -202,7 +267,10 @@ export class Supervisor {
   private workspaceStatus: WorkspaceStatus | undefined;
 
   constructor(private readonly d: SupervisorDeps) {
-    this.tokens = new TokenDeltaForwarder(() => this.stream, d.cfg.tokenDelta.sendBufferBytes);
+    this.tokens = new TokenDeltaForwarder(
+      () => this.stream,
+      d.cfg.tokenDelta.sendBufferBytes,
+    );
     this.gatewayClient = d.gatewayClient ?? createGatewayClient(d.cfg);
     this.modelStream = d.modelStream ?? streamModel;
     this.workspaceStatus = d.workspaceStatus;
@@ -223,7 +291,11 @@ export class Supervisor {
     let backoff = this.d.cfg.reconnect.initialBackoffMs;
     const min = this.d.cfg.reconnect.initialBackoffMs;
     const max = this.d.cfg.reconnect.maxBackoffMs;
-    while (this.running && (this.state.phase as string) !== "fatal" && (this.state.phase as string) !== "draining") {
+    while (
+      this.running &&
+      (this.state.phase as string) !== "fatal" &&
+      (this.state.phase as string) !== "draining"
+    ) {
       const connectedAt = Date.now();
       try {
         await this.connectAndServe();
@@ -234,7 +306,8 @@ export class Supervisor {
         await this.failClosed(err);
         const after = this.state.phase as string;
         if (!this.running || after === "fatal" || after === "draining") return;
-        if (Date.now() - connectedAt >= this.d.cfg.reconnect.resetAfterMs) backoff = min;
+        if (Date.now() - connectedAt >= this.d.cfg.reconnect.resetAfterMs)
+          backoff = min;
         await sleep(jitter(backoff, min));
         backoff = Math.min(backoff * 2, max);
       }
@@ -255,7 +328,9 @@ export class Supervisor {
     // Re-read mTLS credentials on each reconnect (certificate rotation) —
     // matches the documented guarantee for the tool-gateway transport.
     this.gatewayClient.resetTransport();
-    const transport = (this.d.transport ?? (() => createWorkTransport(this.d.cfg)))();
+    const transport = (
+      this.d.transport ?? (() => createWorkTransport(this.d.cfg))
+    )();
     this.state.onConnecting();
     const conn = await openWorkStream(this.d.hello, transport);
     this.stream = conn.stream;
@@ -273,7 +348,10 @@ export class Supervisor {
       const phase = this.state.phase as string;
       if (phase === "draining" || phase === "fatal") break;
     }
-    if ((this.state.phase as string) !== "draining" && (this.state.phase as string) !== "fatal") {
+    if (
+      (this.state.phase as string) !== "draining" &&
+      (this.state.phase as string) !== "fatal"
+    ) {
       throw new SupervisorError("control stream ended");
     }
   }
@@ -291,10 +369,14 @@ export class Supervisor {
         void this.handleAssignTurn(msg.kind.value);
         return;
       case "abortTurn":
-        if (this.turn && this.turn.turnId === msg.kind.value.turnId) this.abortActiveTurn("control_plane_cancel");
+        if (this.turn && this.turn.turnId === msg.kind.value.turnId)
+          this.abortActiveTurn("control_plane_cancel");
         return;
       case "eventAck": {
-        this.onEventAck(msg.kind.value.turnId, Number(msg.kind.value.throughSequence));
+        this.onEventAck(
+          msg.kind.value.turnId,
+          Number(msg.kind.value.throughSequence),
+        );
         return;
       }
       case "sessionEnd":
@@ -312,7 +394,11 @@ export class Supervisor {
     if (replayIdx >= 0) {
       const r = this.pendingReplay[replayIdx]!;
       if (through > r.lastSeq) {
-        this.fatal(new ProtocolError(`replay ack ${through} > last seq ${r.lastSeq} for turn ${turnId}`));
+        this.fatal(
+          new ProtocolError(
+            `replay ack ${through} > last seq ${r.lastSeq} for turn ${turnId}`,
+          ),
+        );
         return;
       }
       if (through >= r.lastSeq) {
@@ -356,7 +442,11 @@ export class Supervisor {
 
   private sendWorkspaceStatus(): void {
     if (!this.workspaceStatus) return;
-    this.stream?.send(create(WorkerMessageSchema, { kind: { case: "workspaceStatus", value: this.workspaceStatus } }));
+    this.stream?.send(
+      create(WorkerMessageSchema, {
+        kind: { case: "workspaceStatus", value: this.workspaceStatus },
+      }),
+    );
   }
 
   /** Advertise a Ready credit only when idle, not draining/fatal, replay-free,
@@ -366,7 +456,11 @@ export class Supervisor {
     if (this.workspaceStatus?.creditGated) return;
     if (!this.state.canAdvertiseCredit) return;
     this.state.advertiseCredit();
-    this.stream?.send(create(WorkerMessageSchema, { kind: { case: "ready", value: create(ReadySchema, {}) } }));
+    this.stream?.send(
+      create(WorkerMessageSchema, {
+        kind: { case: "ready", value: create(ReadySchema, {}) },
+      }),
+    );
     this.d.onCreditAdvertised?.();
   }
 
@@ -384,8 +478,19 @@ export class Supervisor {
     }
     let resolveAck!: () => void;
     const acked = new Promise<void>((r) => (resolveAck = r));
-    this.turn = { turnId: at.turnId, aborted: false, completionReported: false, acked, resolveAck, discoveryAc: null };
-    this.outbox = new EventOutbox(this.d.cfg.walDir, at.turnId, this.d.cfg.outbox.bound);
+    this.turn = {
+      turnId: at.turnId,
+      aborted: false,
+      completionReported: false,
+      acked,
+      resolveAck,
+      discoveryAc: null,
+    };
+    this.outbox = new EventOutbox(
+      this.d.cfg.walDir,
+      at.turnId,
+      this.d.cfg.outbox.bound,
+    );
     this.startHeartbeat(at.turnId);
     try {
       const sandbox = this.resolveSandbox(at);
@@ -394,23 +499,47 @@ export class Supervisor {
       // Durable execution boundary — observed before child lifecycle events.
       this.sendChildEvent({
         case: "executionStarted",
-        value: create(ExecutionStartedSchema, { sessionId: at.sessionId, sandbox: at.sandbox ?? undefined }),
+        value: create(ExecutionStartedSchema, {
+          sessionId: at.sessionId,
+          sandbox: at.sandbox ?? undefined,
+        }),
       });
-      const cwd = resolveWorkingDir(sandbox.root, at.sandbox?.workingDir || "home");
-      const scope = { turnId: at.turnId, runId: at.runId, fencingGeneration: this.welcome?.fencingGeneration ?? 0n };
+      const cwd = resolveWorkingDir(
+        sandbox.root,
+        at.sandbox?.workingDir || "home",
+      );
+      const scope = {
+        turnId: at.turnId,
+        runId: at.runId,
+        fencingGeneration: this.welcome?.fencingGeneration ?? 0n,
+      };
       const materializeAc = new AbortController();
       if (this.turn) this.turn.discoveryAc = materializeAc;
-      const materializeDeadline = setTimeout(() => materializeAc.abort(), MATERIALIZATION_DEADLINE_MS);
+      const materializeDeadline = setTimeout(
+        () => materializeAc.abort(),
+        MATERIALIZATION_DEADLINE_MS,
+      );
       materializeDeadline.unref?.();
       try {
-        await materializeArtifacts(this.gatewayClient, scope, at.materializations, sandbox.workspace, at.sandbox?.uid ?? 0, at.sandbox?.gid ?? 0, materializeAc.signal);
+        await materializeArtifacts(
+          this.gatewayClient,
+          scope,
+          at.materializations,
+          sandbox.workspace,
+          at.sandbox?.uid ?? 0,
+          at.sandbox?.gid ?? 0,
+          materializeAc.signal,
+        );
       } catch (err) {
-        throw new SandboxError(`artifact materialization failed: ${err instanceof Error ? err.message : String(err)}`);
+        throw new SandboxError(
+          `artifact materialization failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       } finally {
         clearTimeout(materializeDeadline);
         if (this.turn) this.turn.discoveryAc = null;
       }
-      if (this.turn?.aborted) throw new SandboxError("aborted during artifact materialization");
+      if (this.turn?.aborted)
+        throw new SandboxError("aborted during artifact materialization");
       // Discover the effective gateway tools BEFORE spawning the child and pass
       // the non-secret descriptors to the child (ARCH-006). Discovery is
       // bounded (deadline) and cancellable (aborted on AbortTurn): a hanging
@@ -420,11 +549,17 @@ export class Supervisor {
       // failure terminates the per-turn child lifecycle).
       const discoveryAc = new AbortController();
       if (this.turn) this.turn.discoveryAc = discoveryAc;
-      const deadline = setTimeout(() => discoveryAc.abort(), DISCOVERY_DEADLINE_MS);
+      const deadline = setTimeout(
+        () => discoveryAc.abort(),
+        DISCOVERY_DEADLINE_MS,
+      );
       deadline.unref?.();
       let descriptors: GatewayToolDescriptor[];
       try {
-        descriptors = await this.gatewayClient.discover(scope, discoveryAc.signal);
+        descriptors = await this.gatewayClient.discover(
+          scope,
+          discoveryAc.signal,
+        );
       } catch (err) {
         throw new SandboxError(
           `gateway discovery failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -433,37 +568,48 @@ export class Supervisor {
         clearTimeout(deadline);
         if (this.turn) this.turn.discoveryAc = null;
       }
-      if (this.turn?.aborted) throw new SandboxError("aborted during discovery");
+      if (this.turn?.aborted)
+        throw new SandboxError("aborted during discovery");
       const child = this.d.childFactory(at, sandbox, cwd);
       this.d.metrics?.childProcesses.labels("started").inc();
       this.currentChild = child;
       child.rpcSend({ type: "gatewayTools", descriptors });
       // Drain the child's model/tool RPC requests (fd 4) concurrently with the
       // audit event stream (fd 3). Both close when the child exits.
-      const rpcDone = this.dispatchChildRpc(child, at, descriptors, sandbox).catch(() => {
+      const rpcDone = this.dispatchChildRpc(
+        child,
+        at,
+        descriptors,
+        sandbox,
+      ).catch(() => {
         /* errors surface as tool/model error frames; logged only as outcome */
       });
       for await (const ev of child.events) {
         if (this.turn?.aborted) break;
         if (ev.kind === "event") this.sendChildEvent(ev.payload);
-        else this.tokens.push(at.turnId, ev.contentIndex, ev.deltaType, ev.delta);
+        else
+          this.tokens.push(at.turnId, ev.contentIndex, ev.deltaType, ev.delta);
       }
       const result = await child.result;
       await rpcDone;
-      if (result.abort) this.d.metrics?.childAborts.labels(result.abort.reason).inc();
+      if (result.abort)
+        this.d.metrics?.childAborts.labels(result.abort.reason).inc();
       observedResult = outcomeMetric(result.outcome);
       this.d.metrics?.childProcesses.labels(observedResult).inc();
-      this.emitOutcome(result.outcome, result.message);
+      this.emitOutcome(result.outcome, result.message, result.abort?.reason);
     } catch (err) {
       observedResult = this.turn?.aborted ? "aborted" : "failed";
-      if (this.currentChild) this.d.metrics?.childProcesses.labels("runtime_error").inc();
+      if (this.currentChild)
+        this.d.metrics?.childProcesses.labels("runtime_error").inc();
       this.failTurn(err);
     } finally {
       this.stopHeartbeat();
       this.currentChild = null;
       this.d.metrics?.activeTurns.dec();
       this.d.metrics?.turns.labels(observedResult).inc();
-      this.d.metrics?.turnDuration.labels(observedResult).observe((Date.now() - observedAt) / 1000);
+      this.d.metrics?.turnDuration
+        .labels(observedResult)
+        .observe((Date.now() - observedAt) / 1000);
     }
     await this.turn.acked;
     if ((this.state.phase as string) === "cleaning") {
@@ -486,8 +632,17 @@ export class Supervisor {
    * the in-flight upstream call (ARCH-014 — cannot undo an effect already
    * started; the gateway classifies per effect class on caller disconnect).
    */
-  private async dispatchChildRpc(child: Child, at: AssignTurn, descriptors: GatewayToolDescriptor[], sandbox: SandboxPaths): Promise<void> {
-    const scope = { turnId: at.turnId, runId: at.runId, fencingGeneration: this.welcome?.fencingGeneration ?? 0n };
+  private async dispatchChildRpc(
+    child: Child,
+    at: AssignTurn,
+    descriptors: GatewayToolDescriptor[],
+    sandbox: SandboxPaths,
+  ): Promise<void> {
+    const scope = {
+      turnId: at.turnId,
+      runId: at.runId,
+      fencingGeneration: this.welcome?.fencingGeneration ?? 0n,
+    };
     const assignedModel = at.model?.id ?? "";
     // The effective gateway tools discovered for this turn (ARCH-006). The
     // supervisor rejects a toolCall whose name is not in this set BEFORE
@@ -519,7 +674,10 @@ export class Supervisor {
         // durable outcome attributes the stall (never a bare stale-heartbeat
         // reap). This is a notice, not a request: no response frame is sent.
         child.noteAuditChannelEvidence(req.evidence);
-        this.abortActiveTurn("audit_backlog_overflow", "child reported an fd-3 audit backlog overflow (supervisor not draining the audit channel)");
+        this.abortActiveTurn(
+          "audit_backlog_overflow",
+          "child reported an fd-3 audit backlog overflow (supervisor not draining the audit channel)",
+        );
         continue;
       }
       if (req.type === "cancel") {
@@ -528,8 +686,15 @@ export class Supervisor {
         continue;
       }
       if (req.type === "stepCompletion") {
-        if (!at.nodeExecutionId || !at.completionOutcomes.includes(req.outcome) || !this.turn || this.turn.completionReported) {
-          this.failTurn(new ProtocolError("invalid or duplicate complete_step report"));
+        if (
+          !at.nodeExecutionId ||
+          !at.completionOutcomes.includes(req.outcome) ||
+          !this.turn ||
+          this.turn.completionReported
+        ) {
+          this.failTurn(
+            new ProtocolError("invalid or duplicate complete_step report"),
+          );
           break;
         }
         this.turn.completionReported = true;
@@ -549,7 +714,9 @@ export class Supervisor {
             outcome: req.outcome,
             summary: req.summary,
             outputJson: req.outputJson,
-            artifactRefs: req.artifactRefs.map((ref) => create(StepArtifactRefSchema, ref)),
+            artifactRefs: req.artifactRefs.map((ref) =>
+              create(StepArtifactRefSchema, ref),
+            ),
           }),
         });
         child.noteStepCompletionDurable();
@@ -561,29 +728,66 @@ export class Supervisor {
       // in-flight cap counts real work and cancellation stays unambiguous.
       if (controllers.has(req.requestId)) {
         if (req.type === "modelRequest") {
-          child.rpcSend({ type: "modelEnd", requestId: req.requestId, status: "error", errorMessage: "duplicate request id" });
+          child.rpcSend({
+            type: "modelEnd",
+            requestId: req.requestId,
+            status: "error",
+            errorMessage: "duplicate request id",
+          });
         } else if (req.type === "publishArtifact") {
-          child.rpcSend({ type: "artifactPublished", requestId: req.requestId, errorMessage: "duplicate request id" });
+          child.rpcSend({
+            type: "artifactPublished",
+            requestId: req.requestId,
+            errorMessage: "duplicate request id",
+          });
         } else {
-          child.rpcSend({ type: "toolResult", requestId: req.requestId, isError: true, errorMessage: "duplicate request id" });
+          child.rpcSend({
+            type: "toolResult",
+            requestId: req.requestId,
+            isError: true,
+            errorMessage: "duplicate request id",
+          });
         }
         continue;
       }
       if (inflight >= MAX_INFLIGHT_RPC) {
         // Fail-closed overflow: bound queued/in-flight work.
         if (req.type === "modelRequest") {
-          child.rpcSend({ type: "modelEnd", requestId: req.requestId, status: "error", errorMessage: "too many in-flight model/tool requests" });
+          child.rpcSend({
+            type: "modelEnd",
+            requestId: req.requestId,
+            status: "error",
+            errorMessage: "too many in-flight model/tool requests",
+          });
         } else if (req.type === "publishArtifact") {
-          child.rpcSend({ type: "artifactPublished", requestId: req.requestId, errorMessage: "too many in-flight requests" });
+          child.rpcSend({
+            type: "artifactPublished",
+            requestId: req.requestId,
+            errorMessage: "too many in-flight requests",
+          });
         } else {
-          child.rpcSend({ type: "toolResult", requestId: req.requestId, isError: true, errorMessage: "too many in-flight model/tool requests" });
+          child.rpcSend({
+            type: "toolResult",
+            requestId: req.requestId,
+            isError: true,
+            errorMessage: "too many in-flight model/tool requests",
+          });
         }
         continue;
       }
       inflight += 1;
-      const done = (): void => { inflight -= 1; };
+      const done = (): void => {
+        inflight -= 1;
+      };
       if (req.type === "modelRequest") {
-        void this.handleModelRequest(child, req, assignedModel, at, controllers, done);
+        void this.handleModelRequest(
+          child,
+          req,
+          assignedModel,
+          at,
+          controllers,
+          done,
+        );
         continue;
       }
       if (req.type === "publishArtifact") {
@@ -591,19 +795,46 @@ export class Supervisor {
         // is not gated by the AgentPool workspace-tools switch.
         if (this.turn?.completionReported) {
           done();
-          child.rpcSend({ type: "artifactPublished", requestId: req.requestId, errorMessage: "artifact publication is not permitted after complete_step" });
+          child.rpcSend({
+            type: "artifactPublished",
+            requestId: req.requestId,
+            errorMessage:
+              "artifact publication is not permitted after complete_step",
+          });
           continue;
         }
-        void this.handlePublishArtifact(child, req, scope, at, sandbox, controllers, done);
+        void this.handlePublishArtifact(
+          child,
+          req,
+          scope,
+          at,
+          sandbox,
+          controllers,
+          done,
+        );
         continue;
       }
       if (req.type === "toolCall") {
         if (this.turn?.completionReported) {
           done();
-          child.rpcSend({ type: "toolResult", requestId: req.requestId, isError: true, errorMessage: "customer-system tools are disabled after complete_step" });
+          child.rpcSend({
+            type: "toolResult",
+            requestId: req.requestId,
+            isError: true,
+            errorMessage:
+              "customer-system tools are disabled after complete_step",
+          });
           continue;
         }
-        void this.handleToolCall(child, req, scope, at, discovered, controllers, done);
+        void this.handleToolCall(
+          child,
+          req,
+          scope,
+          at,
+          discovered,
+          controllers,
+          done,
+        );
         continue;
       }
     }
@@ -627,17 +858,37 @@ export class Supervisor {
         { cfg: this.d.cfg },
         { body: req.body },
         assignedModel,
-        { runId: at.runId, turnId: at.turnId, fencingGeneration: this.welcome?.fencingGeneration ?? 0n },
+        {
+          runId: at.runId,
+          turnId: at.turnId,
+          fencingGeneration: this.welcome?.fencingGeneration ?? 0n,
+        },
         ac.signal,
         {
-          onChunk: (data) => child.rpcSend({ type: "modelChunk", requestId: req.requestId, data }),
+          onChunk: (data) =>
+            child.rpcSend({
+              type: "modelChunk",
+              requestId: req.requestId,
+              data,
+            }),
           onDrain: (listener) => child.rpcOnDrain(listener),
           onEnd: (status, httpStatus, errorMessage) =>
-            child.rpcSend({ type: "modelEnd", requestId: req.requestId, status, ...(httpStatus !== undefined ? { httpStatus } : {}), ...(errorMessage !== undefined ? { errorMessage } : {}) }),
+            child.rpcSend({
+              type: "modelEnd",
+              requestId: req.requestId,
+              status,
+              ...(httpStatus !== undefined ? { httpStatus } : {}),
+              ...(errorMessage !== undefined ? { errorMessage } : {}),
+            }),
         },
       );
     } catch (err) {
-      child.rpcSend({ type: "modelEnd", requestId: req.requestId, status: "error", errorMessage: err instanceof Error ? err.message : String(err) });
+      child.rpcSend({
+        type: "modelEnd",
+        requestId: req.requestId,
+        status: "error",
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       controllers.delete(req.requestId);
       onDone();
@@ -648,7 +899,15 @@ export class Supervisor {
    * fail-closed before calling the gateway (acceptance criterion). */
   private async handleToolCall(
     child: Child,
-    req: { requestId: string; toolCallId: string; toolName: string; toolVersionDigest: string; argumentsJson: string; artifactInputRefs?: ArtifactInputRefFrame[]; idempotencyKey?: string },
+    req: {
+      requestId: string;
+      toolCallId: string;
+      toolName: string;
+      toolVersionDigest: string;
+      argumentsJson: string;
+      artifactInputRefs?: ArtifactInputRefFrame[];
+      idempotencyKey?: string;
+    },
     scope: AssignmentScope,
     at: AssignTurn,
     discovered: Map<string, GatewayToolDescriptor>,
@@ -657,14 +916,22 @@ export class Supervisor {
   ): Promise<void> {
     const pinned = discovered.get(req.toolName);
     if (!pinned) {
-      child.rpcSend({ type: "toolResult", requestId: req.requestId, isError: true, errorMessage: `tool not permitted: ${req.toolName}` });
+      child.rpcSend({
+        type: "toolResult",
+        requestId: req.requestId,
+        isError: true,
+        errorMessage: `tool not permitted: ${req.toolName}`,
+      });
       onDone();
       return;
     }
     const ac = new AbortController();
     controllers.set(req.requestId, ac);
     try {
-      const canonicalRefs = canonicalToolArtifactInputs(at, req.artifactInputRefs ?? []);
+      const canonicalRefs = canonicalToolArtifactInputs(
+        at,
+        req.artifactInputRefs ?? [],
+      );
       const resp = await this.gatewayClient.invokeTool(
         scope,
         {
@@ -675,11 +942,15 @@ export class Supervisor {
           toolVersionDigest: pinned.digest,
           argumentsJson: req.argumentsJson,
           artifactInputRefs: canonicalRefs,
-          ...(req.idempotencyKey !== undefined ? { idempotencyKey: req.idempotencyKey } : {}),
+          ...(req.idempotencyKey !== undefined
+            ? { idempotencyKey: req.idempotencyKey }
+            : {}),
         },
         ac.signal,
       );
-      const resultJson = resp.resultJson.length ? new TextDecoder().decode(resp.resultJson) : undefined;
+      const resultJson = resp.resultJson.length
+        ? new TextDecoder().decode(resp.resultJson)
+        : undefined;
       const isError = resp.state !== InvokeState.SUCCEEDED;
       const errorMessage = resp.error ? resp.error.message : undefined;
       child.rpcSend({
@@ -687,11 +958,21 @@ export class Supervisor {
         requestId: req.requestId,
         isError,
         ...(resultJson !== undefined ? { resultJson } : {}),
-        artifactRefs: resp.artifactOutputRefs.map((ref) => ({ artifactId: ref.artifactId, mimeType: ref.mimeType, sizeBytes: Number(ref.sizeBytes), digest: ref.digest })),
+        artifactRefs: resp.artifactOutputRefs.map((ref) => ({
+          artifactId: ref.artifactId,
+          mimeType: ref.mimeType,
+          sizeBytes: Number(ref.sizeBytes),
+          digest: ref.digest,
+        })),
         ...(errorMessage !== undefined ? { errorMessage } : {}),
       });
     } catch (err) {
-      child.rpcSend({ type: "toolResult", requestId: req.requestId, isError: true, errorMessage: err instanceof Error ? err.message : String(err) });
+      child.rpcSend({
+        type: "toolResult",
+        requestId: req.requestId,
+        isError: true,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       controllers.delete(req.requestId);
       onDone();
@@ -721,7 +1002,8 @@ export class Supervisor {
         ac.signal,
       );
       const ref = metadata.ref;
-      if (!ref) throw new SandboxError("artifact service returned no reference");
+      if (!ref)
+        throw new SandboxError("artifact service returned no reference");
       child.rpcSend({
         type: "artifactPublished",
         requestId: req.requestId,
@@ -731,7 +1013,11 @@ export class Supervisor {
         digest: ref.digest,
       });
     } catch (err) {
-      child.rpcSend({ type: "artifactPublished", requestId: req.requestId, errorMessage: err instanceof Error ? err.message : String(err) });
+      child.rpcSend({
+        type: "artifactPublished",
+        requestId: req.requestId,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       controllers.delete(req.requestId);
       onDone();
@@ -762,7 +1048,11 @@ export class Supervisor {
    */
   private handleSessionEnd(msg: SessionEnd): void {
     if (this.state.hasActiveTurn) {
-      this.fatal(new ProtocolError(`SessionEnd for ${msg.sandboxId} during active turn ${this.state.activeTurnId}`));
+      this.fatal(
+        new ProtocolError(
+          `SessionEnd for ${msg.sandboxId} during active turn ${this.state.activeTurnId}`,
+        ),
+      );
       return;
     }
     if (!msg.sandboxId) {
@@ -781,7 +1071,9 @@ export class Supervisor {
   private validatePoolScope(at: AssignTurn): void {
     const pool = this.d.cfg.poolScopeIdentityId;
     if (pool && at.scopeIdentityId !== pool) {
-      throw new SandboxError(`scope identity ${at.scopeIdentityId ?? "(none)"} != pool scope ${pool}`);
+      throw new SandboxError(
+        `scope identity ${at.scopeIdentityId ?? "(none)"} != pool scope ${pool}`,
+      );
     }
   }
 
@@ -818,16 +1110,27 @@ export class Supervisor {
     this.sendTerminal({
       case: "harnessError",
       value: create(HarnessErrorSchema, {
-        error: create(ErrorDetailSchema, { message, retryability: Retryability.NON_RETRYABLE }),
+        error: create(ErrorDetailSchema, {
+          message,
+          retryability: Retryability.NON_RETRYABLE,
+        }),
       }),
     });
   }
 
-  private emitOutcome(outcome: Outcome, message?: string): void {
+  private emitOutcome(
+    outcome: Outcome,
+    message?: string,
+    abortReason?: ChildAbortReason,
+  ): void {
     if (!this.outbox) return;
     this.sendTerminal({
       case: "workerOutcome",
-      value: create(WorkerOutcomeSchema, { outcome, message: message ?? "" }),
+      value: create(WorkerOutcomeSchema, {
+        outcome,
+        message: message ?? "",
+        abortReason: abortReason ?? "",
+      }),
     });
     try {
       this.state.onChildExited();
@@ -839,8 +1142,10 @@ export class Supervisor {
   /** Fail the turn on a setup/runtime error: terminal HarnessError + FAILED outcome (no re-entry). */
   private failTurn(err: unknown): void {
     const message = err instanceof Error ? err.message : String(err);
-    if (err instanceof SandboxError) this.sendHarnessError(`sandbox invalid: ${message}`);
-    if (err instanceof OutboxOverflow) this.sendHarnessError(`outbox overflow: ${message}`);
+    if (err instanceof SandboxError)
+      this.sendHarnessError(`sandbox invalid: ${message}`);
+    if (err instanceof OutboxOverflow)
+      this.sendHarnessError(`outbox overflow: ${message}`);
     this.emitOutcome(Outcome.FAILED, message);
   }
 
@@ -860,7 +1165,8 @@ export class Supervisor {
 
   private startHeartbeat(turnId: string): void {
     this.stopHeartbeat();
-    const interval = this.welcome?.heartbeatIntervalMs ?? this.d.cfg.child.livenessIntervalMs;
+    const interval =
+      this.welcome?.heartbeatIntervalMs ?? this.d.cfg.child.livenessIntervalMs;
     this.heartbeat = setInterval(() => {
       const ob = this.outbox;
       this.stream?.send(
@@ -900,7 +1206,11 @@ export class Supervisor {
       // Append ABORTED so the replay tail carries the terminal outcome.
       this.outbox.appendTerminal({
         case: "workerOutcome",
-        value: create(WorkerOutcomeSchema, { outcome: Outcome.ABORTED, message: "stream loss" }),
+        value: create(WorkerOutcomeSchema, {
+          outcome: Outcome.ABORTED,
+          message: "stream loss",
+          abortReason: "stream_loss",
+        }),
       });
       this.pendingReplay.push({
         turnId: this.turn.turnId,
@@ -918,14 +1228,17 @@ export class Supervisor {
     }
     this.d.probes.setReady(false);
     this.state.onStreamLost();
-    if (err instanceof Error) console.error(`harness: stream lost: ${err.message}`);
+    if (err instanceof Error)
+      console.error(`harness: stream lost: ${err.message}`);
   }
 
   private fatal(err: unknown): void {
     this.state.fatal();
     this.d.probes.setHealthy(false);
     this.d.probes.setReady(false);
-    console.error(`harness: fatal: ${err instanceof Error ? err.message : err}`);
+    console.error(
+      `harness: fatal: ${err instanceof Error ? err.message : err}`,
+    );
   }
 }
 
@@ -941,7 +1254,12 @@ class TokenDeltaForwarder {
     private readonly getStream: () => WorkStream | null,
     private readonly boundBytes: number,
   ) {}
-  push(turnId: string, contentIndex: number, deltaType: "TEXT" | "THINKING", delta: string): void {
+  push(
+    turnId: string,
+    contentIndex: number,
+    deltaType: "TEXT" | "THINKING",
+    delta: string,
+  ): void {
     const msg = create(WorkerMessageSchema, {
       kind: {
         case: "tokenDelta",
@@ -962,9 +1280,14 @@ class TokenDeltaForwarder {
     // Stream unavailable (reconnecting) — buffer with drop-oldest on byte bound.
     this.pending.push(msg);
     this.bytes += delta.length;
-    while (this.boundBytes > 0 && this.bytes > this.boundBytes && this.pending.length > 1) {
+    while (
+      this.boundBytes > 0 &&
+      this.bytes > this.boundBytes &&
+      this.pending.length > 1
+    ) {
       const dropped = this.pending.shift()!;
-      const d = dropped.kind.case === "tokenDelta" ? dropped.kind.value.delta : "";
+      const d =
+        dropped.kind.case === "tokenDelta" ? dropped.kind.value.delta : "";
       this.bytes -= d.length;
     }
   }
@@ -980,16 +1303,28 @@ class TokenDeltaForwarder {
 
 /** Revalidate child-supplied tool refs against the immutable assignment. The
  * child may narrow the set for one invocation but can never add or alter a ref. */
-function canonicalToolArtifactInputs(at: AssignTurn, requested: ArtifactInputRefFrame[]): ArtifactInputRefFrame[] {
-  const assigned = new Map(at.materializations.flatMap((m) => m.ref ? [[m.ref.artifactId, m.ref] as const] : []));
+function canonicalToolArtifactInputs(
+  at: AssignTurn,
+  requested: ArtifactInputRefFrame[],
+): ArtifactInputRefFrame[] {
+  const assigned = new Map(
+    at.materializations.flatMap((m) =>
+      m.ref ? [[m.ref.artifactId, m.ref] as const] : [],
+    ),
+  );
   const seen = new Set<string>();
   for (const ref of requested) {
     const canonical = assigned.get(ref.artifactId);
     if (
-      !canonical || seen.has(ref.artifactId) || canonical.mimeType !== ref.mimeType ||
-      canonical.sizeBytes.toString() !== ref.sizeBytes || canonical.digest !== ref.digest
+      !canonical ||
+      seen.has(ref.artifactId) ||
+      canonical.mimeType !== ref.mimeType ||
+      canonical.sizeBytes.toString() !== ref.sizeBytes ||
+      canonical.digest !== ref.digest
     ) {
-      throw new SupervisorError(`tool artifact input is not canonical for this assignment: ${ref.artifactId}`);
+      throw new SupervisorError(
+        `tool artifact input is not canonical for this assignment: ${ref.artifactId}`,
+      );
     }
     seen.add(ref.artifactId);
   }
@@ -998,7 +1333,9 @@ function canonicalToolArtifactInputs(at: AssignTurn, requested: ArtifactInputRef
 
 /** Wrap a TurnEvent in a WorkerMessage (no re-sequencing — preserves the WAL'd sequence for dedup). */
 function turnEventMessage(te: TurnEvent): WorkerMessage {
-  return create(WorkerMessageSchema, { kind: { case: "turnEvent", value: te } });
+  return create(WorkerMessageSchema, {
+    kind: { case: "turnEvent", value: te },
+  });
 }
 
 function outcomeMetric(outcome: Outcome): string {
