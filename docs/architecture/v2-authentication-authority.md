@@ -298,7 +298,7 @@ A suspended/expired/revoked version never returns to active. Rotation/reissue pr
 - A person signed in through Entra SSO is linked to the Iterabase Teams apps by their Entra object ID automatically. There is no separate confirmation step.
 - Teams requires Entra SSO on the installation, and a publicly reachable installation. Otherwise Teams is shown as unavailable.
 - A Teams user without a linked person receives only a "sign in to Iterabase with your Microsoft account" message.
-- Linking never creates or widens Iterabase access. Every Teams action (answers, confirmations on cards that show the exact content, chief-of-staff DMs) is attributed to the linked person with channel `teams`. It goes through the same blocker, confirmation, and Chat services as the app, under the person's current authority (HOR-248, HOR-659).
+- Linking never creates or widens Iterabase access. Every Teams action (answers, confirmations on cards that show the exact content, cancellation, revision and restart per DES-HOR-663-01, and chief-of-staff DMs) is attributed to the linked person with channel `teams`. It goes through the same blocker, confirmation, and Chat services as the app, under the person's current authority (HOR-248, HOR-659).
 
 ## 7. Target data contract
 
@@ -557,8 +557,8 @@ Presets may be combined and reduced to supported subsets. Catalogue growth never
 | Work list/detail/dashboard/attempt/node/timeline/consequence/blocker/feedback/link metadata and work-event SSE | Personal + automation | `work.read`. Value fields additionally require current Admin + `value.read`. Automation receives Operator-safe projection. |
 | `POST /v1/work-items/{id}/feedback` | Personal only | `work.feedback.write`; saving starts no work. |
 | Blocker response/confirmation | Cookie session, or a Teams card from an SSO-linked person (HOR-248); bearer deferred | Current body can confirm consequential invocation IDs. No V2 key action. |
-| Revision/restart | Cookie session; bearer deferred | Consequence-safe confirmation owned by HOR-463. No V2 key action. |
-| Cancellation | Cookie session; bearer deferred | Consequence-safe confirmation owned by HOR-464. No V2 key action. |
+| Revision/restart | Cookie session, or a Teams card from an SSO-linked person (DES-HOR-663-01); bearer deferred | Consequence-safe confirmation owned by HOR-463. No V2 key action. |
+| Cancellation | Cookie session, or a Teams card from an SSO-linked person (DES-HOR-663-01); bearer deferred | Consequence-safe confirmation owned by HOR-464. No V2 key action. |
 | Artifact list/search/recent/status/metadata/get/head/download | Personal + automation | `artifacts.read`; unavailable/quarantined bytes remain denied. |
 | Artifact upload | Personal + automation | `artifacts.upload`; security/size/type policy applies. |
 | Artifact delete | Personal current Admin only | Both `artifacts.read` and `artifacts.delete`; active-reference block/tombstone/audit; no UI, Operator, or automation. |
@@ -808,6 +808,7 @@ The migration is rehearsed against a copy of OPO1's database before it runs.
 - Non-allowed tenant/domain refused; ID-token validation negatives; IdP email change keeps the subject binding.
 - Admin break-glass local sign-in with SSO enabled; local sign-in disabled for Operators.
 - An Entra-signed-in person is linked in Teams automatically; an unlinked Teams user or a forged Bot Framework request cannot act.
+- Live portal login handoff (HOR-655) is the only operation with no Teams path; Teams links to the app for it.
 
 ### Migration/release tests
 
@@ -834,7 +835,7 @@ The migration is rehearsed against a copy of OPO1's database before it runs.
 | HOR-455 | Confirmed Chat effects plus personal/automation `workflows.start` handoff/attribution. |
 | HOR-459 | Routed shell, Settings slots, workflow/work/value role-safe projections. |
 | HOR-461/HOR-462 | Artifact read/upload/delete and status/browser-retry boundaries. |
-| HOR-463/HOR-464 | Cookie-session consequence-safe restart/revision/cancellation; bearer remains denied. |
+| HOR-463/HOR-464 | Consequence-safe restart/revision/cancellation from the browser session or Teams cards (DES-HOR-663-01); bearer remains denied. |
 | HOR-467 | Complete shared release matrix and immutable evidence. |
 
 ## 18. Production and release classification
