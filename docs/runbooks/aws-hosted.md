@@ -1,0 +1,288 @@
+# Hosted AWS account operations
+
+Authority: HOR-603 and its approved decisions `DES-HOR-603-01`..`08`, recorded on
+the HOR-603 ticket. The Terraform lives in [`infra/hosted-aws/`](../../infra/hosted-aws)
+and its invariants in [`infra/AGENTS.md`](../../infra/AGENTS.md). The CI account
+is separate and documented in [`aws-ci.md`](aws-ci.md).
+
+`iterabase-hosted` is the AWS account that runs hosted customer environments.
+This runbook creates it, applies the shared baseline, and proves every
+acceptance item. Per-customer environments are created later by the Forge AWS
+provider (HOR-593), which reads the baseline only through its SSM contract.
+
+## Boundary
+
+| Surface | Contract |
+| --- | --- |
+| Account | A member account `iterabase-hosted` in the Organization created for CI (HOR-591), separate from `iterabase-ci`. Region `eu-west-1` only (`DES-HOR-603-04`). |
+| Who applies | The founder, locally, with an IAM Identity Center admin session (`DES-HOR-603-02`). CI only runs `make infra-check` and holds no credentials for this account. |
+| State | `iterabase-hosted-tfstate-<account-id>`, created by `bootstrap/` (local state). The baseline uses key `baseline/terraform.tfstate`; Forge uses `envs/<name>/`. S3-native locking (`use_lockfile`). |
+| Consumer contract | SSM parameters under `/iterabase/hosted/baseline/v1/*` (`DES-HOR-603-03`). See [Contract keys](#contract-keys). |
+| Forge role | `iterabase-hosted-forge`: tagged-only EC2 lifecycle in the shared subnets (allowed instance types, IMDSv2, Canonical or own AMIs), `envs/*` state, backup-prefix teardown, node roles only under `/iterabase/env/` with the boundary (`DES-HOR-603-08`), SSH and port-forwarding sessions to tagged instances. |
+| Support role | `iterabase-hosted-support`: interactive Session Manager shells (logged) and break-glass SSH over SSM to tagged instances. |
+| Session audit | Interactive shells: content to `iterabase-hosted-session-logs-<account-id>` (`sessions/`) and `/iterabase/hosted/ssm-sessions`, 365 days. SSH and port forwarding: CloudTrail `StartSession`/`TerminateSession` events in `iterabase-hosted-audit-<account-id>` (`cloudtrail/`) and `/iterabase/hosted/cloudtrail`, 365 days. AWS does not log SSH session content (`DES-HOR-603-07`). |
+| Network | `iterabase-hosted-shared` VPC `10.40.0.0/16`, one public `/20` per AZ tagged `kubernetes.io/role/elb=1`, S3 gateway endpoint, default security group with no rules. No inbound SSH anywhere; SSM uses the instances' internet egress, so no SSM interface endpoints. |
+| Backups | `iterabase-hosted-backups-<account-id>`, prefix `envs/<name>/`, SSE-KMS with `alias/iterabase-hosted-backup`. Only administrators, the Forge role and `/iterabase/env/` node roles reach the bucket and key. |
+| Image mirror | ECR pull-through cache prefix `ghcr` for `ghcr.io` (`DES-HOR-603-05`), 30 most recent images per repository. |
+| Security | Multi-region CloudTrail with log-file validation, AWS Config recording every supported resource, GuardDuty with severity ≥ 7 findings to the alert topic. |
+| Cost | `iterabase-hosted-monthly` gross cost budget (credits excluded), forecast alert at 80% and actual alert at 100% to the `iterabase-hosted-alerts` SNS topic. Cost allocation tags `iterabase-hosted` and `iterabase-env`. |
+| DNS and mail | Cloudflare zone (`PIVOT-ARCH-003`), SES identity for the mail domain with Easy DKIM, `bounce.<mail-domain>` MAIL FROM (SPF) and DMARC. A scoped Cloudflare token (DNS Write + Zone Read on the zone only) for external-dns and cert-manager, published as a SecureString in the contract. |
+
+## Recorded identities
+
+Fill this in while executing and copy the completed table to the HOR-603 ticket.
+
+| Item | Value |
+| --- | --- |
+| Hosted account ID | |
+| Identity Center admin permission set / role ARN pattern | |
+| Support plan | |
+| State bucket | |
+| Forge role ARN | |
+| Support role ARN | |
+| Node boundary ARN | |
+| ECR pull-through prefix | |
+| SES identity / production access case ID | |
+| Cloudflare zone ID / cluster token name | |
+| Budget name / SNS subscription confirmed | |
+
+## Part 1 — Console and out-of-band setup (founder)
+
+1. **Create the account.** In the Organization's management account: AWS
+   Organizations → Add an AWS account → Create, name `iterabase-hosted`. Record
+   the account ID.
+2. **Identity Center access.** Assign the founder's admin user the
+   `AdministratorAccess` permission set on `iterabase-hosted`. Every step below
+   runs as that session (`aws sts get-caller-identity` must show the hosted
+   account and an `AWSReservedSSO_AdministratorAccess_*` role), never as root.
+3. **Support plan.** Billing and Cost Management → Support plans: subscribe the
+   plan budgeted in the financial model's AWS sheet (shared lines). Record it.
+4. **Quotas** in `eu-west-1`: request "Running On-Demand Standard (A, C, D, H,
+   I, M, R, T, Z) instances" (`L-1216C47A`) sized for the trial plan. Record the
+   request IDs.
+5. **GHCR credential** for the pull-through cache. Create a GitHub fine-grained
+   or classic token with `read:packages` only, then:
+
+   ```bash
+   aws secretsmanager create-secret --region eu-west-1 \
+     --name ecr-pullthroughcache/ghcr \
+     --secret-string '{"username":"<github-user>","accessToken":"<token>"}'
+   ```
+
+   The value never enters Terraform state; the baseline only reads the
+   secret's ARN.
+6. **Cloudflare.** Make sure the hosted zone exists in the Cloudflare account
+   (add it and move the registrar's name servers if not). Create a founder
+   token for the apply with *Zone → DNS → Edit* on that zone and *Account →
+   Account API Tokens → Edit*; export it as `CLOUDFLARE_API_TOKEN` for the
+   apply only. Record the account ID and zone ID.
+
+## Part 2 — Terraform (founder)
+
+Use the pinned Terraform (`ci_tools` in `.github/inputs/remote-content.json`).
+
+```bash
+cd infra/hosted-aws/bootstrap
+terraform init
+terraform apply                 # creates iterabase-hosted-tfstate-<account-id>
+terraform output state_bucket   # keep bootstrap/terraform.tfstate safe; it is not in Git
+
+cd ../baseline
+cp terraform.tfvars.example terraform.tfvars   # fill in; ignored by Git
+terraform init -backend-config="bucket=iterabase-hosted-tfstate-<account-id>"
+terraform plan -out baseline.tfplan
+terraform apply baseline.tfplan
+```
+
+If any of these already exist in the account, import them instead of letting
+the apply fail:
+
+| Resource | Import |
+| --- | --- |
+| Session Manager preferences | `terraform import aws_ssm_document.session_preferences SSM-SessionManagerRunShell` |
+| Config service-linked role | `terraform import aws_iam_service_linked_role.config arn:aws:iam::<account-id>:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig` |
+| GuardDuty detector | `terraform import aws_guardduty_detector.hosted <detector-id>` |
+
+After the first apply:
+
+1. Confirm the SNS email subscription sent to `alert_email`.
+2. **Leave the SES sandbox.** SES → Account dashboard → Request production
+   access: transactional mail, the mail domain, bounce and complaint handling
+   through the MAIL FROM domain. Record the case ID.
+3. **Cost allocation tags.** Once billing has seen `iterabase-hosted` and
+   `iterabase-env` (up to 24 hours after tagged resources exist), set
+   `activate_cost_allocation_tags = true` and apply again.
+4. Revoke or narrow the founder Cloudflare token if it was created only for
+   the apply.
+
+## Contract keys
+
+`/iterabase/hosted/baseline/v1/<key>` — `region`, `account-id`, `vpc-id`,
+`subnet-ids` (StringList), `env-tag-key`, `allowed-instance-types`
+(StringList), `state-bucket`, `state-prefix`, `backup-bucket`, `backup-prefix`,
+`backup-kms-key-arn`, `forge-role-arn`, `support-role-arn`, `node-role-path`,
+`node-permissions-boundary-arn`, `session-log-bucket`, `session-log-group`,
+`audit-log-group`, `image-registry-prefix`, `mail-domain`, `mail-identity-arn`,
+`cloudflare-zone-id`, and `cloudflare-dns-token` (SecureString).
+
+## Part 3 — Validation
+
+Record each result on HOR-603. `A=<account-id>`, region `eu-west-1`.
+
+### 1. Forge role and a throwaway environment
+
+```bash
+eval "$(aws configure export-credentials --format env)"   # admin session
+creds=$(aws sts assume-role --role-arn arn:aws:iam::$A:role/iterabase-hosted-forge \
+  --role-session-name hor-603-smoke --query Credentials --output json)
+export AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$creds") \
+  AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<<"$creds") \
+  AWS_SESSION_TOKEN=$(jq -r .SessionToken <<<"$creds")
+
+aws ssm get-parameters-by-path --path /iterabase/hosted/baseline/v1 --with-decryption \
+  --query 'Parameters[].Name'                                  # every contract key
+aws s3api put-object --bucket iterabase-hosted-tfstate-$A --key envs/hor-603-smoke/probe --body /dev/null  # allowed
+aws s3api put-object --bucket iterabase-hosted-tfstate-$A --key baseline/probe --body /dev/null           # AccessDenied
+```
+
+Throwaway environment, still as the Forge role (also proves `DES-HOR-603-08`):
+
+```bash
+boundary=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/node-permissions-boundary-arn --query Parameter.Value --output text)
+aws iam create-role --path /iterabase/env/ --role-name hor-603-smoke --permissions-boundary "$boundary" \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+aws iam create-role --path /iterabase/env/ --role-name hor-603-no-boundary \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[]}'      # AccessDenied
+aws iam attach-role-policy --role-name hor-603-smoke --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+aws iam create-instance-profile --path /iterabase/env/ --instance-profile-name hor-603-smoke
+aws iam add-role-to-instance-profile --instance-profile-name hor-603-smoke --role-name hor-603-smoke
+
+subnet=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/subnet-ids --query Parameter.Value --output text | cut -d, -f1)
+vpc=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/vpc-id --query Parameter.Value --output text)
+sg=$(aws ec2 create-security-group --group-name hor-603-smoke --description "no inbound" --vpc-id "$vpc" \
+  --tag-specifications 'ResourceType=security-group,Tags=[{Key=iterabase-env,Value=hor-603-smoke}]' --query GroupId --output text)
+ami=$(aws ssm get-parameter --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id --query Parameter.Value --output text)
+aws ec2 run-instances --image-id "$ami" --instance-type m7i-flex.large --subnet-id "$subnet" \
+  --security-group-ids "$sg" --iam-instance-profile Name=hor-603-smoke --metadata-options HttpTokens=required \
+  --user-data file://smoke-user-data.yaml \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=iterabase-env,Value=hor-603-smoke}]' \
+                       'ResourceType=volume,Tags=[{Key=iterabase-env,Value=hor-603-smoke}]'
+```
+
+`smoke-user-data.yaml` adds your SSH public key to the `ubuntu` user. Also
+record that an untagged `run-instances` and an `m7i.4xlarge` launch are denied.
+`aws ec2 describe-security-groups --group-ids "$sg"` must show no ingress.
+
+### 2. Support sessions and their audit
+
+As the support role (assume `iterabase-hosted-support` the same way):
+
+```bash
+aws ssm start-session --target <instance-id>        # logged shell; run `id; hostname; exit`
+ssh -o ProxyCommand='aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p' \
+  ubuntu@<instance-id> 'hostname'                    # break-glass SSH over SSM
+```
+
+Evidence, as the admin session:
+
+```bash
+aws s3 ls s3://iterabase-hosted-session-logs-$A/sessions/            # the shell transcript
+aws logs filter-log-events --log-group-name /iterabase/hosted/ssm-sessions --filter-pattern hostname
+aws logs filter-log-events --log-group-name /iterabase/hosted/cloudtrail \
+  --filter-pattern '{ $.eventSource = "ssm.amazonaws.com" && ($.eventName = "StartSession" || $.eventName = "TerminateSession") }'
+aws s3 ls s3://iterabase-hosted-audit-$A/cloudtrail/AWSLogs/$A/CloudTrail/eu-west-1/ --recursive | tail
+```
+
+The shell transcript appears in S3 and CloudWatch; the SSH session appears as
+`StartSession` with `documentName=AWS-StartSSHSession` in both CloudTrail
+destinations.
+
+### 3. Budget, GuardDuty, Config
+
+```bash
+aws budgets describe-notifications-for-budget --account-id $A --budget-name iterabase-hosted-monthly
+aws sns publish --topic-arn arn:aws:sns:eu-west-1:$A:iterabase-hosted-alerts --message "HOR-603 delivery proof"  # email arrives
+aws guardduty create-sample-findings --detector-id <detector-id> --finding-types Backdoor:EC2/C\&CActivity.B
+aws guardduty get-detector --detector-id <detector-id> --query Status            # ENABLED
+aws configservice describe-configuration-recorder-status                          # recording: true, lastStatus SUCCESS
+```
+
+The sample finding (severity 8) reaches the alert email through EventBridge.
+
+### 4. Image mirror
+
+From the throwaway instance (its node role carries the ECR actions inside the
+boundary once the smoke role has `AmazonEC2ContainerRegistryReadOnly` plus
+`ecr:BatchImportUpstreamImage`/`ecr:CreateRepository`):
+
+```bash
+aws ecr validate-pull-through-cache-rule --ecr-repository-prefix ghcr
+prefix=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/image-registry-prefix --query Parameter.Value --output text)
+aws ecr get-login-password | sudo docker login --username AWS --password-stdin "${prefix%%/*}"
+sudo docker pull "$prefix/iterabase/control-plane@sha256:<published digest>"
+```
+
+The pulled digest equals the GHCR digest.
+
+### 5. Cloudflare token
+
+```bash
+token=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/cloudflare-dns-token --with-decryption --query Parameter.Value --output text)
+curl -sf -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  "https://api.cloudflare.com/client/v4/zones/<zone-id>/dns_records" \
+  --data '{"type":"TXT","name":"hor-603-smoke","content":"\"ok\"","ttl":60}'
+```
+
+Then delete the record with the same token, and record that a request against
+any other zone returns an authorization error.
+
+### 6. SES outside the sandbox
+
+```bash
+aws sesv2 get-account --query '{production:ProductionAccessEnabled,sending:SendingEnabled}'
+aws sesv2 get-email-identity --email-identity <mail-domain> --query '{verified:VerifiedForSendingStatus,dkim:DkimAttributes.Status,mailFrom:MailFromAttributes.MailFromDomainStatus}'
+aws sesv2 send-email --from-email-address noreply@<mail-domain> \
+  --destination ToAddresses=<an address that is not verified in SES> \
+  --content 'Simple={Subject={Data=HOR-603},Body={Text={Data=delivery proof}}}'
+```
+
+The received message shows `dkim=pass`, `spf=pass` (MAIL FROM) and `dmarc=pass`.
+
+### 7. Restricted buckets and key
+
+As the support role, and as an IAM principal outside the allowed patterns, each
+of these returns `AccessDenied`:
+
+```bash
+aws s3 ls s3://iterabase-hosted-tfstate-$A/
+aws s3 ls s3://iterabase-hosted-backups-$A/
+aws kms encrypt --key-id alias/iterabase-hosted-backup --plaintext aGk=
+```
+
+As the Forge role, `envs/` in the state bucket works and `baseline/` is denied
+(step 1); as the throwaway node role, `kms encrypt` succeeds once its role
+policy grants it, and is denied for any role outside `/iterabase/env/`.
+
+### Teardown of the throwaway environment
+
+As the Forge role: terminate the instance, delete the security group, remove
+the role from the instance profile, delete the instance profile, detach the
+policy, delete the role, and delete `envs/hor-603-smoke/` from the state
+bucket. Then confirm zero leftovers:
+
+```bash
+aws resourcegroupstaggingapi get-resources --tag-filters Key=iterabase-env,Values=hor-603-smoke \
+  --query 'ResourceTagMappingList[].ResourceARN'
+```
+
+## Operations
+
+- **Changing the baseline:** a ticket-backed PR changes `infra/`; after merge
+  the founder runs `terraform plan`/`apply` from `master` and records the plan
+  summary on the ticket. Never apply from an unmerged branch.
+- **Granting or revoking access:** change `forge_operator_principal_arns` or
+  `support_principal_arns` and apply, or remove the Identity Center
+  assignment. Support access to every environment is revoked in one place.
+- **Lockout recovery:** a wrong `admin_principal_arns` denies administrators on
+  the state and backup buckets and the backup key. Sign in as the hosted
+  account root (MFA) and correct the bucket and key policies, then re-apply.
