@@ -101,7 +101,6 @@ type deployedState struct {
 	inferenceImage    deployedImage
 	runtimeImage      deployedImage
 	toolDigests       map[string]string
-	toolV1            []toolFixture
 	toolV2            []toolFixture
 	fluxRevision      string
 	fluxDigest        string

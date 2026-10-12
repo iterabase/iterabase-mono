@@ -31,7 +31,6 @@ func installExecutionFixtureStage(t *testing.T, state *deployedState) {
 	// The platform installs product-only first (HOR-651): no Flux, no overlay
 	// source, no client tools. enableClientToolLayerStage adds them later.
 	state.toolDigests = map[string]string{productDiagnosticTool: productToolDigest(t, "diagnostic")}
-	state.toolV1 = writeToolGeneration(t, "1.0.0", false)
 	state.toolV2 = writeToolGeneration(t, "2.0.0", true)
 }
 
@@ -43,7 +42,9 @@ func enableClientToolLayerStage(t *testing.T, state *deployedState) {
 	state.kubectl(t, 3*time.Minute, "apply", "-f", fluxInstallManifest)
 	state.kubectl(t, 4*time.Minute, "wait", "-n", "flux-system", "--for=condition=Available",
 		"deployment/source-controller", "deployment/kustomize-controller", "--timeout=180s")
-	installToolGitServer(t, state, state.toolV1)
+	// Written here: the seed files live in this stage's t.TempDir().
+	v1 := writeToolGeneration(t, "1.0.0", false)
+	installToolGitServer(t, state, v1)
 	state.applyYAML(t, "tool-source.yaml", `apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
@@ -85,7 +86,7 @@ spec:
 
 	state.installPlatformValues(t, "execution-platform-client-values.json", executionPlatformValues(state, true), 18*time.Minute)
 	state.kubectl(t, 7*time.Minute, "rollout", "status", "deployment/iterabase-tool-runner", "-n", controlPlaneNamespace, "--timeout=6m")
-	for _, tool := range state.toolV1 {
+	for _, tool := range v1 {
 		state.toolDigests[tool.name] = tool.digest
 	}
 	for name, digest := range state.toolDigests {
