@@ -63,4 +63,17 @@ describe("release-versioned product layer", () => {
     await writeFile(join(root, "product", "diagnostic", "index.mjs"), "export const identity={name:'platform.diagnostic',version:'1.0.0'};export async function invoke(){return {result:'tampered'}};");
     await expect(loadLayers(join(root, "product"), null, root, metadata)).rejects.toThrow("digest mismatch");
   });
+
+  it("fails validation when a correctly digested product write tool has a consequence template the gateway rejects", async () => {
+    const root = await mkdtemp(join(tmpdir(), "product-template-"));
+    roots.push(root);
+    await cp(productRoot, join(root, "product"), { recursive: true });
+    const dir = join(root, "product", "diagnostic");
+    const projection = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8")) as Record<string, unknown>;
+    delete projection.digest;
+    projection.effectClass = "non_idempotent_write";
+    projection.consequenceSummaryTemplate = { localizedTemplates: { en: "Send to {{recipient}}", pt: "Enviar para {{recipient}}" }, argumentPaths: {} };
+    await writeFile(join(dir, "manifest.json"), JSON.stringify({ ...projection, digest: toolDigest(projection, await readFile(join(dir, "index.mjs"))) }));
+    await expect(loadLayers(join(root, "product"), null, root, metadata)).rejects.toThrow("requires an RFC 6901 argument path");
+  });
 });

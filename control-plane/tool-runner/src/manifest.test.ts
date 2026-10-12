@@ -60,6 +60,37 @@ describe("immutable tool generation loading", () => {
     await expect(loadGeneration(root, { revision: "r", artifactDigest: "d" })).rejects.toThrow("requires en and pt templates");
   });
 
+  // The gateway rejects these at RegisterToolVersion (consequence.go), so the
+  // build gate must reject them before a release can carry them.
+  it.each([
+    ["blank EN/PT", { en: " ", pt: "" }, {}, "non-blank en and pt"],
+    ["an unbound placeholder", { en: "Send to {{recipient}}", pt: "Enviar para {{recipient}}" }, {}, "requires an RFC 6901 argument path"],
+    ["a relative argument path", { en: "Send to {{recipient}}", pt: "Enviar para {{recipient}}" }, { recipient: "recipient" }, "requires an RFC 6901 argument path"],
+    ["an invalid ~ escape", { en: "Send to {{recipient}}", pt: "Enviar para {{recipient}}" }, { recipient: "/bad~2path" }, "invalid ~ escape"],
+    ["a malformed placeholder", { en: "Send to {{ recipient }}", pt: "Enviar" }, {}, "invalid placeholder"],
+    ["a binding one locale does not use", { en: "Send to {{recipient}}", pt: "Enviar" }, { recipient: "/to" }, "is not used by locale \"pt\""],
+    ["an oversized template", { en: "x".repeat(1001), pt: "Enviar" }, {}, "exceeds 1000 bytes"],
+  ])("rejects a write tool with %s in its consequence template", async (_case, localizedTemplates, argumentPaths, message) => {
+    const { root, dir } = await fixture("product");
+    const manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8")) as Record<string, unknown>;
+    manifest.effectClass = "non_idempotent_write";
+    manifest.consequenceSummaryTemplate = { localizedTemplates, argumentPaths };
+    await writeFile(join(dir, "manifest.json"), JSON.stringify(manifest));
+    await expect(loadGeneration(root, { revision: "r", artifactDigest: "d" })).rejects.toThrow(message);
+  });
+
+  it("accepts a write tool whose EN/PT placeholders are bound to RFC 6901 paths", async () => {
+    const projection = {
+      apiVersion: "iterabase.io/tool/v1", name: "test.echo", version: "1.0.0", description: "Send", bundle: "index.mjs", inputSchema: { type: "object" }, effectClass: "non_idempotent_write", timeoutMs: 1000,
+      consequenceSummaryTemplate: { localizedTemplates: { en: "Send to {{recipient}}", pt: "Enviar para {{recipient}}" }, argumentPaths: { recipient: "/to~1cc/0" } },
+    };
+    const { root, dir } = await fixture("product");
+    const bundle = await readFile(join(dir, "index.mjs"));
+    await writeFile(join(dir, "manifest.json"), JSON.stringify({ ...projection, digest: toolDigest(projection, bundle) }));
+    const generation = await loadGeneration(root, { revision: "r", artifactDigest: "d" });
+    expect(generation.tools[0].manifest.effectClass).toBe("non_idempotent_write");
+  });
+
   it("rejects an unknown effect class", async () => {
     const { root, dir } = await fixture("product");
     const manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8")) as Record<string, unknown>;
