@@ -12,10 +12,12 @@ Multi-node sizing, autoscaling and Graviton are out of scope.
   lower than that request. This covers init containers, hook Jobs, upstream
   subcharts, and the Prometheus/Alertmanager specs the operator manages.
   `scripts/check-resource-limits.sh` (part of `make check`) renders every
-  supported values profile and fails on a missing field. There are two
-  exemptions: the `cert-manager-csi-driver` `node-driver-registrar` and
-  `liveness-probe` sidecars, which have no upstream resources value. The check
-  fails if either exemption stops rendering.
+  supported values profile, plus lookup fixtures for the upgrade-only
+  recovery Jobs, and fails on a missing field. There are no exemptions. The
+  upstream `cert-manager-csi-driver` chart has no resources value for its
+  `node-driver-registrar` and `liveness-probe` sidecars, so the build patches
+  the checksum-verified archive to add one
+  (`scripts/prepare-sized-csi-driver-chart.py`, DES-HOR-602-03).
 - **Memory limits make failure visible.** A container that exceeds its limit
   is OOM-killed inside its own cgroup, and `IterabaseContainerOOMKilled` fires.
   It cannot starve Postgres, the kubelet or k3s. `IterabaseContainerMemoryNearLimit`

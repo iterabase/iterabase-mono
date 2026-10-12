@@ -18,3 +18,14 @@ if [[ "$(basename "$chart")" == lvm-storage-substrate ]]; then
   helm package "$dependency_dir/lvm-localpv" --destination "$dependency_dir" >/dev/null
   rm -rf -- "$dependency_dir/lvm-localpv"
 fi
+
+if [[ "$(basename "$chart")" == cert-manager-substrate ]]; then
+  # DES-HOR-602-03: size the upstream csi-driver sidecars, which have no
+  # resources value, from the checksum-verified archive.
+  dependency_dir="$chart/charts"
+  archive="$dependency_dir/cert-manager-csi-driver-v0.15.0.tgz"
+  python3 "$repo_root/charts/scripts/prepare-sized-csi-driver-chart.py" "$archive" "$dependency_dir"
+  rm -f -- "$archive"
+  helm package "$dependency_dir/cert-manager-csi-driver" --destination "$dependency_dir" >/dev/null
+  rm -rf -- "$dependency_dir/cert-manager-csi-driver"
+fi

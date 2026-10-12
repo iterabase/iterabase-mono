@@ -80,15 +80,26 @@ cert-manager:
       enabled: false
 
 cert-manager-csi-driver:
-  # Upstream exposes resources only for the driver container; its
-  # node-driver-registrar and liveness-probe sidecars have no hook (see
-  # charts/docs/sizing.md and scripts/check-resource-limits.sh).
   resources:
     requests:
       cpu: 10m
       memory: 32Mi
     limits:
       memory: 128Mi
+  # Sidecar resources exist only in the build-time patched chart
+  # (scripts/prepare-sized-csi-driver-chart.py, DES-HOR-602-03).
+  nodeDriverRegistrarResources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 64Mi
+  livenessProbeResources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 64Mi
   image:
     digest: sha256:49c82164a9b4ae13eb2ab74f57d07efe13edfbf40766975f062bcce48230ce87
   nodeDriverRegistrarImage:
