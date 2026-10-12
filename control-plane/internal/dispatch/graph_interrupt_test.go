@@ -180,3 +180,33 @@ func TestDispatch_GraphWorkerLossAfterWriteStopsAttempt(t *testing.T) {
 	require.NoError(t, env.pgpool.QueryRow(ctx, `SELECT count(*) FROM runtime.turns WHERE run_id=$1`, item.CurrentAttemptID).Scan(&turns))
 	assert.Equal(t, 1, turns, "no step is rerun after a write")
 }
+
+// TestDispatch_GraphWorkerDrainAbortIsWorkerLoss covers a pod termination: the
+// draining worker aborts its turn and reports ABORTED with abort_reason
+// worker_drain over a live stream. That is worker loss, so the read-only step
+// reruns in a fresh session instead of failing the attempt.
+func TestDispatch_GraphWorkerDrainAbortIsWorkerLoss(t *testing.T) {
+	env := newDispatchEnv(t)
+	ctx := context.Background()
+	item := seedGraphWaitItem(t, env)
+
+	w := env.connectWorker(t)
+	defer w.close()
+	require.NoError(t, w.ready())
+	lost := w.recvControl(t, func(c *v1.ControlMessage) bool { return c.GetAssignTurn() != nil }).GetAssignTurn()
+	require.NoError(t, w.sendEvent(&v1.TurnEvent{TurnId: lost.GetTurnId(), Sequence: 1,
+		Kind: &v1.TurnEvent_WorkerOutcome{WorkerOutcome: &v1.WorkerOutcome{
+			Outcome: v1.Outcome_OUTCOME_ABORTED, Message: "aborted [abort=worker_drain]", AbortReason: "worker_drain"}}}))
+	w.recvControl(t, func(c *v1.ControlMessage) bool { return c.GetEventAck().GetThroughSequence() == 1 })
+
+	require.NoError(t, w.ready())
+	rerun := w.recvControl(t, func(c *v1.ControlMessage) bool { return c.GetAssignTurn() != nil }).GetAssignTurn()
+	assert.Equal(t, "send", rerun.GetNodeKey())
+	assert.NotEqual(t, lost.GetSessionId(), rerun.GetSessionId(), "the rerun uses a fresh session")
+	var decision string
+	require.NoError(t, env.pgpool.QueryRow(ctx, `SELECT decision FROM runtime.turn_interruptions WHERE turn_id=$1`, lost.GetTurnId()).Scan(&decision))
+	assert.Equal(t, "rerun", decision)
+	current, err := workstore.NewStore(env.pgpool).GetWorkItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, workstore.StateInProgress, current.State)
+}

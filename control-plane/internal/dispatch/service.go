@@ -673,6 +673,15 @@ func (s *Service) appendAfterTerminal(ctx context.Context, turnID string, te *v1
 // to re-drive for a replayed WorkerOutcome (first-terminal-writer + idempotent
 // assignment terminalization).
 func (s *Service) terminalizeTurnOutcome(ctx context.Context, a Assignment, wo *v1.WorkerOutcome) (string, error) {
+	// A worker that drains (pod termination) or loses its stream aborts the
+	// turn itself and reports it. That is worker loss, so a graph turn follows
+	// the interrupted-step rule rather than failing (DES-HOR-649-04).
+	if wo.GetOutcome() == v1.Outcome_OUTCOME_ABORTED && isWorkerLossAbort(wo.GetAbortReason()) {
+		runState, err := s.interruptLostTurn(ctx, a)
+		if err != nil || runState != "" {
+			return runState, err
+		}
+	}
 	var reason string
 	switch wo.GetOutcome() {
 	case v1.Outcome_OUTCOME_COMPLETED:
@@ -712,22 +721,48 @@ func (s *Service) finishTurnOutcome(ctx context.Context, a Assignment, runState 
 // sent (v1 leak-and-reconcile); the lost session UID stays in-use
 // (non-recyclable) until a later reaper reaps the leaked sandbox.
 func (s *Service) terminalizeTurnLoss(ctx context.Context, a Assignment) error {
+	runState, err := s.interruptLostTurn(ctx, a)
+	if err != nil || runState != "" {
+		return err
+	}
+	_, err = s.commitTurnTerminal(ctx, a, "aborted")
+	return err
+}
+
+// isWorkerLossAbort reports whether a worker-reported abort reason is the
+// worker going away rather than a cancel, timeout, or child failure.
+func isWorkerLossAbort(reason string) bool {
+	return reason == "worker_drain" || reason == "stream_loss"
+}
+
+// interruptLostTurn applies the interrupted-step rule to a graph turn lost
+// with its worker and terminalizes its assignment. It returns "" for a chat
+// turn, which the caller aborts as before.
+func (s *Service) interruptLostTurn(ctx context.Context, a Assignment) (string, error) {
 	isGraph, err := s.work.IsGraphAttempt(ctx, a.RunID)
 	if err != nil {
-		return fmt.Errorf("resolve graph attempt: %w", err)
+		return "", fmt.Errorf("resolve graph attempt: %w", err)
 	}
 	if !isGraph {
-		_, err := s.commitTurnTerminal(ctx, a, "aborted")
-		return err
+		return "", nil
 	}
 	runState, iErr := s.work.InterruptTurn(ctx, a.TurnID, workstore.InterruptWorkerLost)
 	if iErr != nil && !errors.Is(iErr, workstore.ErrInvalidTransition) {
-		return fmt.Errorf("interrupt turn %s: %w", a.TurnID, iErr)
+		return "", fmt.Errorf("interrupt turn %s: %w", a.TurnID, iErr)
 	}
 	if tErr := s.store.TerminalizeAssignment(ctx, a.TurnID); tErr != nil {
-		return fmt.Errorf("terminalize assignment %s: %w", a.TurnID, tErr)
+		return "", fmt.Errorf("terminalize assignment %s: %w", a.TurnID, tErr)
 	}
-	if iErr == nil && s.metrics != nil {
+	if iErr != nil {
+		// Already settled by another path (first terminal writer); report the
+		// attempt's current state so callers sequence cleanup correctly.
+		run, rErr := s.store.Runtime().GetRun(ctx, a.RunID)
+		if rErr != nil {
+			return "", rErr
+		}
+		return run.State, nil
+	}
+	if s.metrics != nil {
 		decision := "rerun"
 		if runtime.IsTerminalRun(runState) {
 			decision = "stopped"
@@ -735,7 +770,7 @@ func (s *Service) terminalizeTurnLoss(ctx context.Context, a Assignment) error {
 		s.metrics.DispatchTurns.WithLabelValues("interrupted", decision).Inc()
 	}
 	s.kickReconciler()
-	return nil
+	return runState, nil
 }
 
 // commitTurnTerminal settles the turn + advances the step/run ATOMICALLY
