@@ -859,28 +859,67 @@ func TestGateway_OAuthClientCredentialsHandsRunnerOnlyAccessToken(t *testing.T) 
 	assert.NotContains(t, got.durableRecord(), "graph-access-token")
 }
 
-// TestGateway_OAuthGrantFailureNeverExposesSecret: a token endpoint that echoes
-// submitted values in its error body must not leak the client secret into the
-// caller response or the durable invocation record, and nothing is dispatched.
+// TestGateway_OAuthGrantFailureNeverExposesSecret: whatever a failing token
+// endpoint echoes back (body, status reason, redirect location) must not leak
+// the client secret into the caller response or the durable invocation record,
+// a redirect must not replay the secret elsewhere, and nothing is dispatched.
 func TestGateway_OAuthGrantFailureNeverExposesSecret(t *testing.T) {
-	for name, body := range map[string]string{
-		"rfc6749 error with echoing description": `{"error":"invalid_client","error_description":"bad secret ` + oauthClientSecret + `"}`,
-		"free-text body":                         "invalid_client: " + oauthClientSecret,
-		"secret as error code":                   `{"error":"` + oauthClientSecret + `"}`,
+	var replayed atomic.Bool
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ParseForm() == nil && r.PostForm.Get("client_secret") != "" {
+			replayed.Store(true)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"redirected-token"}`))
+	}))
+	t.Cleanup(redirectTarget.Close)
+
+	for name, tc := range map[string]struct {
+		status   string
+		endpoint http.HandlerFunc
+	}{
+		"rfc6749 error with echoing description": {"HTTP 401: invalid_client", tokenErrorBody(`{"error":"invalid_client","error_description":"bad secret ` + oauthClientSecret + `"}`)},
+		"free-text body":                         {"HTTP 401", tokenErrorBody("invalid_client: " + oauthClientSecret)},
+		"secret as error code":                   {"HTTP 401", tokenErrorBody(`{"error":"` + oauthClientSecret + `"}`)},
+		"status reason echoing the secret":       {"HTTP 401", rawResponse("HTTP/1.1 401 Unauthorized " + oauthClientSecret + "\r\nContent-Length: 0\r\n\r\n")},
+		"malformed redirect location":            {"request failed", rawResponse("HTTP/1.1 302 Found\r\nLocation: http://[" + oauthClientSecret + "\r\nContent-Length: 0\r\n\r\n")},
+		"redirect replaying the form": {"HTTP 307", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, redirectTarget.URL+"/token?echo="+oauthClientSecret, http.StatusTemporaryRedirect)
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := invokeOAuthTool(t, func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusUnauthorized)
-				_, _ = w.Write([]byte(body))
-			})
+			got := invokeOAuthTool(t, tc.endpoint)
 			require.Equal(t, v1.InvokeState_INVOKE_STATE_FAILED, got.resp.State)
 			require.NotNil(t, got.resp.Error)
 			assert.Equal(t, "credential_resolution_failed", got.resp.Error.Code)
-			assert.Contains(t, got.resp.Error.Message, "401")
+			assert.Contains(t, got.resp.Error.Message, tc.status)
 			assert.NotContains(t, got.resp.Error.Message, oauthClientSecret)
 			assert.NotContains(t, got.durableRecord(), oauthClientSecret)
 			assert.Nil(t, got.dispatched, "a failed grant must not dispatch")
 		})
+	}
+	assert.False(t, replayed.Load(), "the client secret must never be replayed to a redirect target")
+}
+
+// tokenErrorBody is a token endpoint failing with HTTP 401 and the given body.
+func tokenErrorBody(b string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(b))
+	}
+}
+
+// rawResponse is a token endpoint writing a verbatim HTTP/1.1 response, for
+// status lines and headers net/http would not emit itself.
+func rawResponse(raw string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		conn, buf, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			panic(err)
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString(raw)
+		_ = buf.Flush()
 	}
 }
 
