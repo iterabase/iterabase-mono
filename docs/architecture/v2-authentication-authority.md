@@ -38,8 +38,8 @@ The founder design review of 2026-10-11/12 amended this record. Each amendment's
 
 | Amends | Amendment | Deciding ticket |
 | --- | --- | --- |
-| `DES-HOR-451-03`, `DES-HOR-451-12` | **One path, no cutover.** Every installation runs V2 authority from first boot. Sign-in is always on: there is no `auth.enabled: false` and no API-key board mode, and the work UI is reached only through a browser session. Legacy scoped keys (`scope=work\|admin\|token\|gateway`), `POST /v1/token`, `/.well-known/jwks.json`, the epoch/preflight/cutover lifecycle, the legacy-credential mapping manifest, the delegated-token drain window, and the `IdentityMapping`, `PermissionPolicy` and stale `EgressRoute` CRDs are deleted, not kept inert for a compatibility release. OPO1, the only existing installation, moves through one forward database migration or a reinstall (section 15). | [HOR-582](https://linear.app/horizonshift/issue/HOR-582) |
-| `DES-HOR-451-11` | **First Admin from the overlay.** The customer overlay names the first Admin's email. On first boot the platform emails that person a one-time setup link through the normal setup channel. Everyone else uses the access-request flow. | [HOR-582](https://linear.app/horizonshift/issue/HOR-582) |
+| `DES-HOR-451-03`, `DES-HOR-451-12` | **One path, no cutover.** Every installation runs V2 authority from first boot. Sign-in is always on: there is no `auth.enabled: false` and no API-key board mode, and the work UI is reached only through a browser session. Legacy scoped keys (`scope=work\|admin\|token\|gateway`), `POST /v1/token`, `/.well-known/jwks.json`, the epoch/preflight/cutover lifecycle, the legacy-credential mapping manifest, the delegated-token drain window, and the `IdentityMapping`, `PermissionPolicy` and stale `EgressRoute` CRDs are deleted, not kept inert for a compatibility release. OPO1, the only existing installation, moves through one forward database migration, not a reinstall; work, artifact and attribution history is preserved, and rollback is roll-forward or catastrophic restore (`DES-HOR-582-02`, section 15). | [HOR-582](https://linear.app/horizonshift/issue/HOR-582) |
+| `DES-HOR-451-11` | **First Admin from the overlay.** The customer overlay names the first Admin's email. Bootstrap runs whenever no bootstrap marker exists, not only on an empty installation: it creates that person as a `setup_pending` Admin, or converts an existing local user with that email, and emails a one-time setup link through the normal setup channel. Everyone else, including OPO1's other existing humans, uses the access-request flow (`DES-HOR-582-03`, section 12). | [HOR-582](https://linear.app/horizonshift/issue/HOR-582) |
 | `DES-HOR-451-09` | **Hosted mail sender.** Hosted installations send authentication email through Amazon SES in the hosted AWS account (EU region), with one verified sending domain for all hosted installations and credentials per environment. Self-hosted installations configure their own SMTP. The hash-only outbox contract is unchanged. | [HOR-582](https://linear.app/horizonshift/issue/HOR-582), [HOR-603](https://linear.app/horizonshift/issue/HOR-603) |
 | `DES-HOR-451-04`, section 2 non-goals | **Single sign-on is V2 scope, and Iterabase keeps authority.** Microsoft Entra ID and Google sign-in (OIDC) can be enabled per installation. SSO proves who someone is; Iterabase decides their access. A first-time SSO user goes through the normal access request, and the role is chosen at approval. A person is matched once by verified email and then bound to the IdP subject. Admins keep a break-glass local password. There is no group sync, JIT role provisioning, or SCIM (section 6.6). | [HOR-314](https://linear.app/horizonshift/issue/HOR-314) |
 | Section 2 non-goals | **Teams linking uses the Entra identity.** A person signed in through Entra SSO is linked to Teams by Entra object ID automatically, with no separate confirmation step. Teams requires Entra SSO on the installation. Linking never creates or widens Iterabase access (section 6.7). | [HOR-248](https://linear.app/horizonshift/issue/HOR-248), [HOR-314](https://linear.app/horizonshift/issue/HOR-314) |
@@ -655,16 +655,16 @@ Core identity audit does not duplicate work/runtime/tool/inference payloads. Dom
 
 ## 12. Bootstrap and recovery
 
-### Fresh install
+### First-Admin bootstrap (`DES-HOR-582-03`)
 
 A locked, RBAC-less `api bootstrap` init container:
 
 1. Reads the first-Admin email (and locale) from the customer overlay value rendered by the chart (HOR-582).
 2. Requires valid exact public HTTPS origin and verified-TLS SMTP configuration (Amazon SES on hosted installations).
 3. Takes a database advisory lock.
-4. Only if no local users and no bootstrap marker exist, atomically creates one canonical `setup_pending` Admin, queues normal setup email, records marker, and audits.
+4. Runs whenever no bootstrap marker exists, whether or not local users exist (so OPO1's first boot of this release qualifies). In one transaction it creates the overlay-named person as one canonical `setup_pending` Admin or, if a local user with that email already exists, converts that user to a `setup_pending` Admin (preserving their canonical UUID and history, clearing any old password, and revoking their sessions and owned keys); then it queues normal setup email, records the marker, and audits. Other existing users are not touched and use the access-request flow.
 5. Never creates or prints an Admin API key or raw setup token.
-6. Is a strict no-op on a consistent restart; inconsistent user/marker state fails closed.
+6. Is a strict no-op once the marker exists; it never re-sends or re-converts on restart. A missing or invalid overlay email, or a marker without the Admin it recorded, fails closed.
 
 ### Recovery
 
@@ -724,7 +724,7 @@ Normal customer Settings and APIs never reveal secret or internal configuration 
 | GeoIP/UA parsing fails | Auth succeeds without location/labels; never widen/deny based on advisory metadata. |
 | Session revoke races in-flight request | Subsequent authorization denied; already completed effect stands. |
 | Role/account change races API request | The transactionally resolved current authority controls that request; next boundary observes committed change; audit retains decision snapshot. |
-| OPO1 forward migration fails | The migration transaction rolls back; OPO1 stays on its prior release or is reinstalled. There is never a mixed authority (section 15). |
+| OPO1 forward migration fails | The migration transaction rolls back and OPO1 stays on its prior release until a corrected migration rolls forward; there is no reinstall path (`DES-HOR-582-02`). There is never a mixed authority (section 15). |
 | IdP unavailable or ID token invalid | SSO sign-in fails closed. Admin break-glass local sign-in still works (HOR-314). |
 | IdP account disabled | SSO sign-in is refused. The Iterabase person remains until an Admin disables them. |
 | Teams request without an SSO-linked person or current authority | Refused; the user receives only the link-your-account message (HOR-248). |
@@ -745,7 +745,7 @@ The 2026-08-23 expand → preflight → token drain → maintenance cutover → 
 
 ### 15.2 OPO1
 
-OPO1 moves through one forward database migration, or a documented reinstall if that is simpler:
+OPO1 moves through one forward database migration, not a reinstall (`DES-HOR-582-02`, approved 2026-10-12):
 
 - Preserve canonical UUIDs. Map role `admin→admin`, `user→operator`. Existing humans complete email setup rather than receiving invented passwords.
 - Revoke every legacy key. Automation is reissued through HOR-514 with an active Admin owner and a distinct service actor.
@@ -757,7 +757,7 @@ The migration is rehearsed against a copy of OPO1's database before it runs.
 ### 15.3 Rollback boundary
 
 - Before the migration commits: the prior release and database remain as they were.
-- After it commits: roll forward, or reinstall. No binary restarts a legacy writer, wildcard grant, delegated issuance, or CRD authority.
+- After it commits: roll forward, or catastrophic restore from backup (`DES-HOR-582-02`). There is no reinstall path, because it would lose work, artifact and attribution history. No binary restarts a legacy writer, wildcard grant, delegated issuance, or CRD authority.
 
 ## 16. Validation plan
 
@@ -776,7 +776,7 @@ The migration is rehearsed against a copy of OPO1's database before it runs.
 - Trusted-proxy spoofing/malformed chains, bounded UA, GeoIP failure, activity coalescing, retention purge.
 - Security mutation/audit atomicity and insert-only grants.
 - SMTP accepted/definite failure/ambiguous acceptance and multi-replica leasing.
-- Bootstrap restart/inconsistency and no-active-Admin recovery/last-Admin invariant.
+- Bootstrap keyed on the marker: empty install, existing install with no marker (create or convert the overlay-named user, other users untouched), restart no-op, and marker inconsistency; no-active-Admin recovery/last-Admin invariant.
 
 ### Role/key/endpoint tests
 

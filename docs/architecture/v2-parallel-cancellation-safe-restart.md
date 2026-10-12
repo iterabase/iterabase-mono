@@ -971,8 +971,8 @@ Operator runtime events retain exact lane/branch/node/turn/assignment/fence/targ
 | --- | --- | --- | --- | --- |
 | Scheduler dies before node/turn commit | Pending node + expired lease | Another scheduler claims it | Still In progress | Safe claim recovery; no execution occurred. |
 | Scheduler dies after turn commit before assignment | Same unassigned turn | Dispatch assigns that exact turn once | In progress | No replacement turn. |
-| Assignment commits but send is lost | Assigned turn delivery uncertain; fenced | Interrupted-step rule: no write invocation → new visit in a fresh session; any write → fail attempt and stop siblings | In progress, or Stopped/failed | Old turn never reassigned. After a write: new attempt only. |
-| Worker disconnects mid-turn (root or branch) | Assignment fenced | Interrupted-step rule as above | In progress, or Stopped/failed | Old turn never reassigned. After a write: new attempt only. |
+| Assignment commits but send is lost | Assigned turn delivery uncertain; fenced; invocation ledger decides (section 8) | No write invocation → pause with the cause as reason, then a new visit in a fresh session once it clears; any write → fail attempt and stop siblings | Paused with reason, then In progress; or Stopped/failed | Old turn never reassigned or replayed. After a write: restart (section 13) only. |
+| Worker disconnects mid-turn (root or branch) | Assignment fenced; invocation ledger decides (section 8) | Same split: no write → pause, then a fresh-session rerun once the cause clears; any write → fail attempt and stop siblings | Paused with reason, then In progress; or Stopped/failed | Old turn never reassigned or replayed. After a write: restart (section 13) only. |
 | Model provider or customer runner unavailable mid-turn | Turn interrupted; pause reason recorded | Classified retry, then pause; rerun without writes on resume, or stop after a write | Paused with reason, or Stopped/failed | Automatic resume when the cause clears. |
 | Trial expires | Pause reason recorded | Pause each item at its next step boundary | Paused: trial ended | Resume on conversion. |
 | Wait receives all expected events | Immutable events + `received` route | Continue same attempt | In progress | None. |
@@ -1075,7 +1075,7 @@ Run at least two scheduler replicas and many goroutines with deterministic failp
 - concurrent branch arrivals create one join in declaration order;
 - review cycles create increasing visit/lane sequence until terminal/bound;
 - scheduler crash at every transaction boundary converges without execution redelivery;
-- worker reconnect/loss fails the attempt and cannot reassign the turn;
+- worker reconnect/loss never reassigns or replays the turn, and follows the ledger split of the interrupted-step rule (section 8, tested in 18.8): with no write invocation the item pauses and reruns as a new visit in a fresh session; with any write invocation the attempt fails;
 - cancel/failure/timeout/root-terminal races satisfy section 9.4.
 
 ### 18.4 Gateway/dispatch/harness tests
