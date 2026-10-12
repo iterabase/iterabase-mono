@@ -110,7 +110,7 @@ type ValueTrendPoint struct {
 //nolint:gocyclo // Counts, relevant immutable model snapshots, totals, and trend form one read projection.
 func (s *Store) Dashboard(ctx context.Context, from, to time.Time) (DashboardSummary, error) {
 	out := DashboardSummary{
-		Counts: map[string]int64{StateTodo: 0, StateInProgress: 0, StateBlocked: 0, StateDone: 0, StateFailed: 0},
+		Counts: map[string]int64{StateTodo: 0, StateInProgress: 0, StateWaiting: 0, StatePaused: 0, StateBlocked: 0, StateDone: 0, StateFailed: 0},
 		Trend:  make([]ValueTrendPoint, 0),
 	}
 	// Active work remains on the board regardless of age; terminal work is

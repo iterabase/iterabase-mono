@@ -22,12 +22,19 @@ const (
 	StateBlocked    = "blocked"
 	StateDone       = "done"
 	StateFailed     = "failed"
+	// StateWaiting and StatePaused are never Blocked (DES-HOR-649-05).
+	StateWaiting = "waiting"
+	StatePaused  = "paused"
 
 	NodePending   = "pending"
 	NodeRunning   = "running"
 	NodeBlocked   = "blocked"
+	NodeWaiting   = "waiting"
 	NodeSucceeded = "succeeded"
 	NodeFailed    = "failed"
+	// NodeInterrupted is a visit whose turn was lost mid-way; a rerun is a new
+	// visit (DES-HOR-649-04).
+	NodeInterrupted = "interrupted"
 )
 
 // MaxSourceBytes bounds a single work-item start source payload (private
@@ -145,6 +152,8 @@ type WorkItem struct {
 	Presentation       WorkPresentation   `json:"presentation"`
 	CurrentStep        *BusinessStep      `json:"currentStep,omitempty"`
 	Blocker            *BlockerSummary    `json:"blocker,omitempty"`
+	Wait               *WaitSummary       `json:"wait,omitempty"`
+	Pause              *PauseSummary      `json:"pause,omitempty"`
 	CurrentAttemptID   string             `json:"currentAttemptId"`
 	State              string             `json:"state"`
 	RuntimeState       string             `json:"-"`
@@ -182,6 +191,20 @@ type BlockerSummary struct {
 	ID    string          `json:"id"`
 	Kind  string          `json:"kind"`
 	Title json.RawMessage `json:"title"`
+}
+
+// WaitSummary is the customer-safe progress of the current attempt's open wait.
+type WaitSummary struct {
+	Completion string    `json:"completion"`
+	Expected   int       `json:"expected"`
+	Received   int       `json:"received"`
+	DeadlineAt time.Time `json:"deadlineAt"`
+}
+
+// PauseSummary is the customer-safe reason the current attempt is paused.
+type PauseSummary struct {
+	Reason string    `json:"reason"`
+	Since  time.Time `json:"since"`
 }
 
 // Attempt is one immutable graph/version snapshot and one runtime run.

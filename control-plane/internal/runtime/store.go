@@ -54,9 +54,12 @@ const (
 	RunPending          = "pending"
 	RunRunning          = "running"
 	RunAwaitingApproval = "awaiting_approval"
-	RunSucceeded        = "succeeded"
-	RunFailed           = "failed"
-	RunAborted          = "aborted"
+	// RunWaiting is a graph attempt whose active node waits for external
+	// events; it holds no turn and the dispatch reconciler skips it.
+	RunWaiting   = "waiting"
+	RunSucceeded = "succeeded"
+	RunFailed    = "failed"
+	RunAborted   = "aborted"
 
 	StepPending   = "pending"
 	StepRunning   = "running"
@@ -98,6 +101,13 @@ const (
 	EvRunAborted          = "run_aborted"
 	EvRunAwaitingApproval = "run_awaiting_approval"
 	EvRunResumed          = "run_resumed"
+	// Graph wait/pause/interruption evidence (HOR-649).
+	EvTurnInterrupted   = "turn_interrupted"
+	EvWaitEntered       = "wait_entered"
+	EvWaitEventReceived = "wait_event_received"
+	EvWaitCompleted     = "wait_completed"
+	EvAttemptPaused     = "attempt_paused"
+	EvAttemptResumed    = "attempt_resumed"
 )
 
 // Run is a row from runtime.workflow_runs: an execution instance.

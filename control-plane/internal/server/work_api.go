@@ -233,6 +233,22 @@ func (h *Handler) respondWorkBlocker(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, b)
 }
 
+// stopWorkWait ends the item's open wait through its `cancelled` outcome
+// (DES-HOR-649-02). It carries the same authority as a blocker response and
+// does not cancel the work item.
+func (h *Handler) stopWorkWait(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeWork(w, r, "respond") {
+		return
+	}
+	actor, _ := h.workActor(r)
+	item, err := h.work.StopWaiting(r.Context(), workstore.StopWaitingInput{WorkItemID: chi.URLParam(r, "id"), ActorIdentityID: actor.ID})
+	if err != nil {
+		writeWorkError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 func (h *Handler) listWorkFeedback(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeWork(w, r, "read") {
 		return

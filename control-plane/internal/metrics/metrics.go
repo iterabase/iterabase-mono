@@ -114,7 +114,7 @@ func New(component, version, commit string) *Metrics {
 			Name: "control_plane_dispatch_worker_streams_total", Help: "Harness worker streams by bounded terminal result.",
 		}, []string{"result"}),
 		DispatchWorkers: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "control_plane_dispatch_workers", Help: "Connected workers by bounded availability state.",
+			Name: "control_plane_dispatch_workers", Help: "Connected workers by bounded availability state (connected; busy/idle as of the last reconcile pass).",
 		}, []string{"state"}),
 		DispatchAssignments: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "control_plane_dispatch_assignments_total", Help: "Dispatch assignment attempts by bounded result.",
