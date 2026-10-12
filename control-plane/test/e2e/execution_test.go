@@ -883,6 +883,9 @@ func waitForDatabaseValue(t *testing.T, state *deployedState, query, expected st
 	}
 }
 
+// waitWorkflowYAML marks each agent prompt with an E2E_MODE so the
+// deterministic model scopes its transcript to the current turn of the
+// shared session and completes each step.
 func waitWorkflowYAML() string {
 	return `apiVersion: platform.iterabase.com/v1alpha1
 kind: Workflow
@@ -900,7 +903,7 @@ spec:
       - key: send
         label: {en: Send requests, pt: Enviar pedidos}
         kind: agent_task
-        prompt: "Send the requests"
+        prompt: "E2E_MODE:wait-send Send the requests"
         outcomes: [completed]
         outputSchema:
           type: object
@@ -917,7 +920,7 @@ spec:
       - key: decide
         label: {en: Decide, pt: Decidir}
         kind: agent_task
-        prompt: "Decide with the replies"
+        prompt: "E2E_MODE:wait-decide Decide with the replies"
         outcomes: [completed]
         outputSchema:
           type: object
