@@ -133,6 +133,9 @@ Record each result on HOR-603. `A=<account-id>`, region `eu-west-1`.
 
 ```bash
 eval "$(aws configure export-credentials --format env)"   # admin session
+# Public parameters are outside the Forge role's contract path (DES-HOR-603-03),
+# so resolve the image while still the administrator.
+ami=$(aws ssm get-parameter --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id --query Parameter.Value --output text)
 creds=$(aws sts assume-role --role-arn arn:aws:iam::$A:role/iterabase-hosted-forge \
   --role-session-name hor-603-smoke --query Credentials --output json)
 export AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$creds") \
@@ -154,6 +157,16 @@ aws iam create-role --path /iterabase/env/ --role-name hor-603-smoke --permissio
 aws iam create-role --path /iterabase/env/ --role-name hor-603-no-boundary \
   --assume-role-policy-document '{"Version":"2012-10-17","Statement":[]}'      # AccessDenied
 aws iam attach-role-policy --role-name hor-603-smoke --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+# Session transcripts and image pulls; the boundary caps both.
+log_bucket=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/session-log-bucket --query Parameter.Value --output text)
+log_group=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/session-log-group --query Parameter.Value --output text)
+aws iam put-role-policy --role-name hor-603-smoke --policy-name smoke-node --policy-document "$(jq -n \
+  --arg b "arn:aws:s3:::$log_bucket" --arg g "arn:aws:logs:eu-west-1:$A:log-group:$log_group" '{Version:"2012-10-17",Statement:[
+    {Effect:"Allow",Action:["s3:PutObject"],Resource:"\($b)/sessions/*"},
+    {Effect:"Allow",Action:["s3:GetEncryptionConfiguration"],Resource:$b},
+    {Effect:"Allow",Action:["logs:CreateLogStream","logs:PutLogEvents","logs:DescribeLogStreams"],Resource:["\($g)","\($g):*"]},
+    {Effect:"Allow",Action:["logs:DescribeLogGroups"],Resource:"*"},
+    {Effect:"Allow",Action:["ecr:GetAuthorizationToken","ecr:BatchGetImage","ecr:GetDownloadUrlForLayer","ecr:BatchCheckLayerAvailability","ecr:BatchImportUpstreamImage","ecr:CreateRepository"],Resource:"*"}]}')"
 aws iam create-instance-profile --path /iterabase/env/ --instance-profile-name hor-603-smoke
 aws iam add-role-to-instance-profile --instance-profile-name hor-603-smoke --role-name hor-603-smoke
 
@@ -161,7 +174,6 @@ subnet=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/subnet-ids -
 vpc=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/vpc-id --query Parameter.Value --output text)
 sg=$(aws ec2 create-security-group --group-name hor-603-smoke --description "no inbound" --vpc-id "$vpc" \
   --tag-specifications 'ResourceType=security-group,Tags=[{Key=iterabase-env,Value=hor-603-smoke}]' --query GroupId --output text)
-ami=$(aws ssm get-parameter --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id --query Parameter.Value --output text)
 aws ec2 run-instances --image-id "$ami" --instance-type m7i-flex.large --subnet-id "$subnet" \
   --security-group-ids "$sg" --iam-instance-profile Name=hor-603-smoke --metadata-options HttpTokens=required \
   --user-data file://smoke-user-data.yaml \
@@ -211,12 +223,16 @@ The sample finding (severity 8) reaches the alert email through EventBridge.
 
 ### 4. Image mirror
 
-From the throwaway instance (its node role carries the ECR actions inside the
-boundary once the smoke role has `AmazonEC2ContainerRegistryReadOnly` plus
-`ecr:BatchImportUpstreamImage`/`ecr:CreateRepository`):
+As the admin session, check the rule reaches GHCR with the stored credential
+(node roles cannot, by the boundary):
 
 ```bash
-aws ecr validate-pull-through-cache-rule --ecr-repository-prefix ghcr
+aws ecr validate-pull-through-cache-rule --ecr-repository-prefix ghcr   # isValid: true
+```
+
+Then from the throwaway instance, whose `smoke-node` policy grants the pull:
+
+```bash
 prefix=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/image-registry-prefix --query Parameter.Value --output text)
 aws ecr get-login-password | sudo docker login --username AWS --password-stdin "${prefix%%/*}"
 sudo docker pull "$prefix/iterabase/control-plane@sha256:<published digest>"
@@ -266,9 +282,22 @@ policy grants it, and is denied for any role outside `/iterabase/env/`.
 ### Teardown of the throwaway environment
 
 As the Forge role: terminate the instance, delete the security group, remove
-the role from the instance profile, delete the instance profile, detach the
-policy, delete the role, and delete `envs/hor-603-smoke/` from the state
-bucket. Then confirm zero leftovers:
+the role from the instance profile, delete the instance profile, delete the
+`smoke-node` inline policy, detach the managed policy, and delete the role.
+The state bucket is versioned, so purge every version and delete marker under
+the environment's prefix rather than deleting only the current objects:
+
+```bash
+bucket=iterabase-hosted-tfstate-$A
+aws s3api list-object-versions --bucket "$bucket" --prefix envs/hor-603-smoke/ \
+  --query '{Objects: [Versions, DeleteMarkers][][].{Key: Key, VersionId: VersionId}, Quiet: `true`}' \
+  --output json > purge.json
+aws s3api delete-objects --bucket "$bucket" --delete file://purge.json
+aws s3api list-object-versions --bucket "$bucket" --prefix envs/hor-603-smoke/   # empty
+aws s3api list-object-versions --bucket "$bucket" --prefix baseline/             # AccessDenied
+```
+
+Then confirm zero tagged leftovers:
 
 ```bash
 aws resourcegroupstaggingapi get-resources --tag-filters Key=iterabase-env,Values=hor-603-smoke \

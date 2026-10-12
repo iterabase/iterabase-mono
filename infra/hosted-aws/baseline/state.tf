@@ -41,12 +41,30 @@ data "aws_iam_policy_document" "state_bucket" {
   statement {
     sid           = "DenyForgeOutsideEnvironments"
     effect        = "Deny"
-    actions       = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    actions       = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:GetObjectVersion", "s3:DeleteObjectVersion"]
     not_resources = ["arn:${local.partition}:s3:::${var.state_bucket}/${local.env_prefix}*"]
 
     principals {
       type        = "AWS"
       identifiers = [aws_iam_role.forge.arn]
+    }
+  }
+
+  statement {
+    sid       = "DenyForgeListingOutsideEnvironments"
+    effect    = "Deny"
+    actions   = ["s3:ListBucket", "s3:ListBucketVersions"]
+    resources = ["arn:${local.partition}:s3:::${var.state_bucket}"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [aws_iam_role.forge.arn]
+    }
+
+    condition {
+      test     = "StringNotLike"
+      variable = "s3:prefix"
+      values   = ["${local.env_prefix}*"]
     }
   }
 }
