@@ -784,13 +784,25 @@ func toolResultPID(t *testing.T, state *deployedState, attemptID string) string 
 	return pids[0]
 }
 
+// toolResultPIDs returns each disposable child's process identity as
+// worker/generation/pid. A PID alone is only unique within one worker's PID
+// namespace: children on different AgentPool workers (or on a replaced pod in
+// the same slot, which gets a new fencing generation) may share a number.
 func toolResultPIDs(t *testing.T, state *deployedState, attemptID string) []string {
 	t.Helper()
-	raw := state.databaseQuery(t, fmt.Sprintf(`SELECT string_agg(payload::text,E'\n' ORDER BY seq) FROM runtime.events WHERE run_id='%s'::uuid AND kind='tool_result' AND payload::text LIKE '%%child=%%'`, attemptID))
-	matches := regexp.MustCompile(`child=([0-9]+)`).FindAllStringSubmatch(raw, -1)
-	out := make([]string, 0, len(matches))
-	for _, match := range matches {
-		out = append(out, match[1])
+	raw := state.databaseQuery(t, fmt.Sprintf(`
+		SELECT string_agg(a.worker_id || '/' || a.fencing_generation || ' ' || e.payload::text, E'\n' ORDER BY e.seq)
+		FROM runtime.events e JOIN runtime.turn_assignments a ON a.turn_id=e.turn_id
+		WHERE e.run_id='%s'::uuid AND e.kind='tool_result' AND e.payload::text LIKE '%%child=%%'`, attemptID))
+	out := make([]string, 0)
+	for _, line := range strings.Split(raw, "\n") {
+		owner, payload, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		for _, match := range regexp.MustCompile(`child=([0-9]+)`).FindAllStringSubmatch(payload, -1) {
+			out = append(out, owner+"/"+match[1])
+		}
 	}
 	return out
 }
