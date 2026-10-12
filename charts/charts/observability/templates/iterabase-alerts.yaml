@@ -282,8 +282,26 @@ spec:
             description: "A platform persistent volume is approaching exhaustion."
             first_action: "Identify growth, confirm retention/backup, and expand or clean the volume safely."
             runbook_url: {{ printf "%s#iterabasepersistentvolumealmostfull" $runbook | quote }}
+        {{- /*
+        An OOM kill within the last 15 minutes, for regular and init containers:
+        a restart after an OOM (the reason may already have been OOMKilled), an
+        OOMKilled reason first seen in the window (the kill predates the first
+        scrape, so no restart delta is ever observed), or a container that
+        stays terminated by OOM (restartPolicy Never Jobs). A long-standing
+        OOMKilled reason without a new restart stays quiet.
+        */}}
+        {{- $ns := .Release.Namespace }}
+        {{- $oom := list }}
+        {{- range $family := list "kube_pod_container" "kube_pod_init_container" }}
+        {{- $last := printf "%s_status_last_terminated_reason{namespace=\"%s\",reason=\"OOMKilled\"}" $family $ns }}
+        {{- $term := printf "%s_status_terminated_reason{namespace=\"%s\",reason=\"OOMKilled\"}" $family $ns }}
+        {{- $restarts := printf "%s_status_restarts_total{namespace=\"%s\"}" $family $ns }}
+        {{- $oom = append $oom (printf "((%s == 1) and on (namespace, pod, container) (increase(%s[15m]) > 0))" $last $restarts) }}
+        {{- $oom = append $oom (printf "((%s == 1) unless on (namespace, pod, container) (%s offset 15m == 1))" $last $last) }}
+        {{- $oom = append $oom (printf "((%s == 1) unless on (namespace, pod, container) (%s offset 15m == 1))" $term $term) }}
+        {{- end }}
         - alert: IterabaseContainerOOMKilled
-          expr: (kube_pod_container_status_last_terminated_reason{namespace="{{ .Release.Namespace }}",reason="OOMKilled"} == 1) and on (namespace, pod, container) (increase(kube_pod_container_status_restarts_total{namespace="{{ .Release.Namespace }}"}[15m]) > 0)
+          expr: max by (namespace, pod, container) ({{ join " or " $oom }})
           labels: {severity: critical, component: capacity}
           annotations:
             summary: "Container {{`{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}`}} was OOM-killed"
