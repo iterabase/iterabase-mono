@@ -33,6 +33,7 @@ spec:
       port: {{ .Values.toolRunner.metrics.runnerPort }}
       targetPort: run-metrics
 {{- end }}
+{{- if .Values.toolRunner.flux.enabled }}
 ---
 # The materializer polls one exact GitRepository by name in one exact Flux
 # namespace. Keep both constraints in a namespaced Role: resourceNames alone
@@ -67,6 +68,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ $name }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -130,10 +132,15 @@ spec:
           imagePullPolicy: {{ .Values.toolRunner.image.pullPolicy }}
           args: ["materialize"]
           env:
+            # The product tool layer ships in this image (/app/tools/product).
+            # Flux supplies only the optional overlay client layer.
+            - {name: FLUX_ENABLED, value: {{ .Values.toolRunner.flux.enabled | quote }}}
+            {{- if .Values.toolRunner.flux.enabled }}
             - {name: FLUX_SOURCE_NAMESPACE, value: {{ .Values.toolRunner.flux.namespace | quote }}}
             - {name: FLUX_SOURCE_NAME, value: {{ .Values.toolRunner.flux.sourceName | quote }}}
             - {name: FLUX_POLL_MS, value: {{ .Values.toolRunner.flux.pollMs | quote }}}
             - {name: FLUX_MAX_ARCHIVE_BYTES, value: {{ .Values.toolRunner.flux.maxArchiveBytes | quote }}}
+            {{- end }}
             - {name: TOOL_RUNNER_MAX_GENERATIONS, value: {{ .Values.toolRunner.maxGenerations | quote }}}
             - {name: TOOL_RUNNER_MAX_LOADED_BYTES, value: {{ .Values.toolRunner.maxLoadedBytes | quote }}}
             - {name: ARTIFACTS_ROOT, value: /artifacts}
@@ -144,7 +151,9 @@ spec:
           volumeMounts:
             - {name: artifacts, mountPath: /artifacts}
             - {name: control, mountPath: /control}
+            {{- if .Values.toolRunner.flux.enabled }}
             - {name: kube-api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+            {{- end }}
           readinessProbe:
             exec: {command: ["test", "-f", "/control/materializer-ready"]}
             periodSeconds: 5
@@ -214,6 +223,7 @@ spec:
             secretName: {{ include "control-plane.gatewayCASecretName" . }}
             items:
               - {key: ca.crt, path: ca.crt}
+        {{- if .Values.toolRunner.flux.enabled }}
         - name: kube-api
           projected:
             sources:
@@ -228,4 +238,5 @@ spec:
                   items:
                     - path: namespace
                       fieldRef: {fieldPath: metadata.namespace}
+        {{- end }}
 {{- end }}
