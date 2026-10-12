@@ -547,20 +547,48 @@ func exerciseImmutableToolGenerationStage(t *testing.T, state *deployedState) {
 	state.toolDigests["platform.fixture_read"] = v2Digest
 }
 
+// exerciseProductOnlyInstallStage proves HOR-651's fresh-install criterion:
+// with toolRunner.flux.enabled=false, no overlay source and no client tools,
+// the first generation is product-only and a workflow runs the reference
+// product tool from the tool-runner image.
+func exerciseProductOnlyInstallStage(t *testing.T, state *deployedState) {
+	t.Helper()
+	// Flux is not even installed yet, so no overlay source can exist.
+	if crd := state.kubectl(t, 30*time.Second, "get", "crd", "gitrepositories.source.toolkit.fluxcd.io", "-o", "name", "--ignore-not-found"); crd != "" {
+		t.Fatalf("product-only install has a Flux source API: %s", crd)
+	}
+	env := state.kubectl(t, 30*time.Second, "get", "deployment/iterabase-tool-runner", "-n", controlPlaneNamespace, "-o",
+		`jsonpath={range .spec.template.spec.containers[?(@.name=="materializer")].env[*]}{.name}={.value}{"\n"}{end}`)
+	if !strings.Contains(env, "FLUX_ENABLED=false") || strings.Contains(env, "FLUX_SOURCE_NAME") {
+		t.Fatalf("product-only materializer env still configures a Flux client: %s", env)
+	}
+	active := state.databaseQuery(t, "SELECT string_agg(DISTINCT tool_name, ',') FROM toolgateway.runner_registrations WHERE active")
+	if active != productDiagnosticTool {
+		t.Fatalf("product-only generation registered %q, want only %q", active, productDiagnosticTool)
+	}
+	runProductDiagnostic(t, state, "Product-only fresh install")
+}
+
 // exerciseProductToolLayerStage proves the release-versioned product layer
-// (HOR-651): the overlay source carries only customer tools, yet a workflow
-// runs the reference product tool served from the tool-runner image.
+// (HOR-651) after the overlay is enabled: the overlay source carries only
+// customer tools, yet a workflow still runs the reference product tool served
+// from the tool-runner image.
 func exerciseProductToolLayerStage(t *testing.T, state *deployedState) {
 	t.Helper()
 	pod := state.kubectl(t, 30*time.Second, "get", "pods", "-n", "default", "-l", "app=tool-git", "-o", "jsonpath={.items[0].metadata.name}")
 	state.kubectl(t, 30*time.Second, "exec", "-n", "default", pod, "--", "/bin/sh", "-ceu", "test -d /git/repo/tools/client && test ! -e /git/repo/tools/product")
+	runProductDiagnostic(t, state, "Product tool layer")
+}
+
+func runProductDiagnostic(t *testing.T, state *deployedState, title string) {
+	t.Helper()
 	digest := state.toolDigests[productDiagnosticTool]
 	waitForDatabaseValue(t, state, fmt.Sprintf("SELECT count(*) FROM toolgateway.runner_registrations WHERE tool_name='%s' AND tool_digest='%s' AND active AND accepting_new", productDiagnosticTool, digest), "1", 3*time.Minute)
 
 	state.applyYAML(t, "product-diagnostic.yaml", workflowYAML("product-diagnostic", "e2e/product-diagnostic", "1", "E2E_MODE:product-diagnostic", false,
 		[]string{productDiagnosticTool}, "", ""))
 	waitForWorkflowReady(t, state, "product-diagnostic", 30*time.Second)
-	item := startWorkflow(t, state, "e2e/product-diagnostic", "Product tool layer")
+	item := startWorkflow(t, state, "e2e/product-diagnostic", title)
 	item = waitForWorkState(t, state, item.ID, "done", 4*time.Minute)
 	ledger := state.databaseQuery(t, fmt.Sprintf(`SELECT tool_version_digest || '|' || state || '|' || (result_json->>'layer') FROM toolgateway.invocations WHERE attempt_id='%s' AND tool_name='%s'`, item.CurrentAttemptID, productDiagnosticTool))
 	if want := digest + "|succeeded|product"; ledger != want {
