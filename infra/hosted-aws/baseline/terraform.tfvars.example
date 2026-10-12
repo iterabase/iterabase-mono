@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars (ignored by Git) and fill in. Account-identifying
+# values stay out of committed code (DES-HOR-603-01).
+state_bucket = "iterabase-hosted-tfstate-<account-id>"
+
+admin_principal_arns = [
+  "arn:aws:iam::<account-id>:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess_*",
+]
+forge_operator_principal_arns = [
+  "arn:aws:iam::<account-id>:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess_*",
+]
+support_principal_arns = [
+  "arn:aws:iam::<account-id>:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess_*",
+]
+
+alert_email        = "<alerts@example.com>"
+dmarc_report_email = "<dmarc@example.com>"
+
+cloudflare_account_id = "<cloudflare-account-id>"
+cloudflare_zone_id    = "<cloudflare-zone-id>"
+mail_domain           = "<mail.example.com>"
