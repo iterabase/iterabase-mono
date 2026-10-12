@@ -106,10 +106,37 @@ export function parseManifest(value: unknown): ToolManifest {
     const summary = record(m.consequenceSummaryTemplate, "consequenceSummaryTemplate");
     exactKeys(summary, ["localizedTemplates", "argumentPaths"], "consequenceSummaryTemplate");
     const localized = stringRecord(summary.localizedTemplates, "consequenceSummaryTemplate.localizedTemplates");
-    stringRecord(summary.argumentPaths, "consequenceSummaryTemplate.argumentPaths");
+    const argumentPaths = stringRecord(summary.argumentPaths, "consequenceSummaryTemplate.argumentPaths");
     if (typeof localized.en !== "string" || typeof localized.pt !== "string") throw new Error("consequenceSummaryTemplate requires en and pt templates");
+    validateConsequenceTemplate(localized, argumentPaths, m.effectClass !== "read_only");
   }
   return m as unknown as ToolManifest;
+}
+
+const maxConsequenceTemplateBytes = 1000;
+const consequencePlaceholder = /\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/g;
+
+// Mirrors the gateway's RegisterToolVersion contract (ARCH-022,
+// internal/gateway/consequence.go validateConsequenceTemplate) so a template
+// the gateway would reject fails the build, not a released runner's install.
+function validateConsequenceTemplate(localized: Record<string, string>, argumentPaths: Record<string, string>, write: boolean) {
+  if (write && (!localized.en.trim() || !localized.pt.trim())) throw new Error("consequenceSummaryTemplate requires non-blank en and pt templates");
+  for (const locale of Object.keys(localized).sort()) {
+    const text = localized[locale];
+    if (Buffer.byteLength(text, "utf8") > maxConsequenceTemplateBytes) throw new Error(`consequence template ${JSON.stringify(locale)} exceeds ${maxConsequenceTemplateBytes} bytes`);
+    const stripped = text.replace(consequencePlaceholder, "");
+    if (stripped.includes("{{") || stripped.includes("}}")) throw new Error(`consequence template ${JSON.stringify(locale)} contains an invalid placeholder`);
+    const used = new Set<string>();
+    for (const [, field] of text.matchAll(consequencePlaceholder)) {
+      const path = Object.hasOwn(argumentPaths, field) ? argumentPaths[field] : undefined;
+      if (path === undefined || !path.startsWith("/")) throw new Error(`consequence placeholder ${JSON.stringify(field)} requires an RFC 6901 argument path`);
+      if (/~(?![01])/.test(path)) throw new Error(`consequence argument path for ${JSON.stringify(field)} contains an invalid ~ escape`);
+      used.add(field);
+    }
+    for (const field of Object.keys(argumentPaths)) {
+      if (!used.has(field)) throw new Error(`consequence argument path ${JSON.stringify(field)} is not used by locale ${JSON.stringify(locale)}`);
+    }
+  }
 }
 
 async function loadTool(directory: string, layer: LoadedTool["layer"], maxBundleBytes: number): Promise<LoadedTool> {
