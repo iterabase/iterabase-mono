@@ -218,7 +218,11 @@ arguments/results, including when the write becomes `outcome_unknown`
 The gateway resolves logical credential slots to K8s Secret values via the
 in-cluster API (Secret-read RBAC scoped to `gateway.kube_namespace`) and hands a
 short-lived `CredentialContext` to the trusted runner over mTLS. Raw values
-never enter Postgres, logs, tool results, or the sandbox (ARCH-008). Large
+never enter Postgres, logs, tool results, or the sandbox (ARCH-008). For
+`oauth_client_credentials` slots the gateway alone holds the client secret and
+performs the grant; the tool receives only the short-lived access token as
+`credentials.<slot>.accessToken` (bearer slots use `credentials.<slot>.value`).
+Large
 inputs/outputs are `ArtifactRef`s (the MinIO-backed artifact service is
 HOR-399).
 
