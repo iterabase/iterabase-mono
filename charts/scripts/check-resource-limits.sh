@@ -107,17 +107,7 @@ def problems(resources):
         out.append(f"limits.memory {lim['memory']} below requests.memory {req['memory']}")
     return out
 
-# Upstream containers with no resources value to set. Each entry needs a reason
-# and is re-reviewed on every dependency bump; keep this list empty when possible.
-EXEMPT = {
-    # cert-manager-csi-driver v0.15.0 sizes only its driver container. Both
-    # sidecars are small static binaries; the platform release-namespace
-    # LimitRange gives them a default request whenever their pods are recreated.
-    ("DaemonSet", "cert-manager-csi-driver", "node-driver-registrar"),
-    ("DaemonSet", "cert-manager-csi-driver", "liveness-probe"),
-}
-
-failures, checked, limitranges, exempted, recovery_jobs = [], 0, {}, set(), set()
+failures, checked, limitranges, recovery_jobs = [], 0, {}, set()
 for path in sys.argv[1:]:
     profile = os.path.basename(path)[:-5]
     with open(path) as f:
@@ -138,9 +128,6 @@ for path in sys.argv[1:]:
             elif kind in ("Prometheus", "Alertmanager"):
                 targets.append(("<spec>", doc["spec"].get("resources")))
             for container, resources in targets:
-                if (kind, name, container) in EXEMPT:
-                    exempted.add((kind, name, container))
-                    continue
                 checked += 1
                 for p in problems(resources):
                     failures.append(f"{profile}: {kind}/{name} container {container}: {p}")
@@ -166,9 +153,6 @@ for profile in ("default", "kind", "observability-tls", "internal-observability"
 for job in ("opo1-loki-gateway-rollout-recovery", "opo1-internal-ingress-nginx-admission-recovery"):
     if job not in recovery_jobs:
         failures.append(f"upgrade-recovery: Job/{job} no longer renders under its lookup fixture")
-
-for stale in sorted(EXEMPT - exempted):
-    failures.append(f"stale exemption no longer rendered: {stale}")
 
 if failures:
     print("FAIL: resource contract violations:", file=sys.stderr)
