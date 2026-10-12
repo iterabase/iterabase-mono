@@ -1,13 +1,13 @@
 # V2 local authentication, API access, and identity-authority contract
 
-- **Status:** Approved design; implementation is owned by follow-on tickets.
-- **Approval date:** 2026-08-23
+- **Status:** Approved design, amended by the founder design review of 2026-10-11/12 (section 1.1); implementation is owned by follow-on tickets.
+- **Approval date:** 2026-08-23; amended 2026-10-12 ([HOR-663](https://linear.app/horizonshift/issue/HOR-663/docs-amend-the-v2-architecture-docs-to-the-2026-10-design-review))
 - **Architecture ticket:** [HOR-451](https://linear.app/horizonshift/issue/HOR-451/v2-approve-local-authentication-browser-session-role-and-identity)
-- **Product contract:** Obsidian `Platform V2 — Managed Digital Workforce — Product Requirements`, especially `REQ-004`, `REQ-010`–`REQ-014`, `REQ-033`, `REQ-035`–`REQ-037`, `SCN-001`, `SCN-002`, `SCN-009`, `SCN-018`, and `SCN-021`
-- **Design handoff:** Obsidian `Designs/Platform V2 — API Access Designer Brief`
-- **Implementation owners:** HOR-453, HOR-454, HOR-513, HOR-514, plus the endpoint-owning tickets identified below
+- **Product contract:** Obsidian `Platform V2 — Product Requirements` (2026-10-12), especially `REQ-010`–`REQ-014`, `REQ-033`, `REQ-036`, `REQ-037`, `REQ-040`, `REQ-060`, `SCN-001`, `SCN-002`, `SCN-018`, `SCN-021`, and `SCN-034`. The 2026-08-10 PRD is history.
+- **Design handoff:** product design happens in code in the V2 app (HOR-459) and is reviewed on `pr-<N>` previews; the 2026-08 `Designs/Platform V2 — API Access Designer Brief` is reference only
+- **Implementation owners:** HOR-453 and HOR-454 (delivered), HOR-582, HOR-585, HOR-314, HOR-248, HOR-513, HOR-514, plus the endpoint-owning tickets identified below
 
-This record is the single repository authority for the V2 local-authentication, browser-session, customer-role, customer API-credential, Inference Gateway authorization, attribution, and legacy-authority migration design. It does not implement the design.
+This record is the single repository authority for the V2 local-authentication, single-sign-on, browser-session, customer-role, customer API-credential, Inference Gateway authorization, attribution, and legacy-authority removal design. It does not implement the design. Where a 2026-08-23 decision below conflicts with section 1.1, section 1.1 wins.
 
 ## 1. Approved decisions
 
@@ -17,20 +17,33 @@ The founder approved these decisions for HOR-451. Product behavior changes requi
 | --- | --- |
 | `DES-HOR-451-01` | Personal API keys may remain human-owned; service identities must not remove durable human accountability. |
 | `DES-HOR-451-02` | Every API key has a required accountable human owner and a request actor. Personal owner and actor are the same human; automation uses a distinct service actor. Service actors inherit no owner role. |
-| `DES-HOR-451-03` | V2 browser authority is opaque server-backed sessions plus current database `operator|admin` roles. API keys use explicit actions. Delegated JWT/JWKS issuance, `POST /v1/token`, customer `IdentityMapping`/`PermissionPolicy` authority, and wildcard customer grants retire at cutover. |
-| `DES-HOR-451-04` | A future verified external identity maps to the canonical human. Trusted resource/tool boundaries re-evaluate the initiating human's current authority intersected with request-actor and workflow/agent capability. |
+| `DES-HOR-451-03` | V2 browser authority is opaque server-backed sessions plus current database `operator|admin` roles. API keys use explicit actions. Delegated JWT/JWKS issuance, `POST /v1/token`, customer `IdentityMapping`/`PermissionPolicy` authority, and wildcard customer grants retire at cutover. *Amended by HOR-582: they are deleted, with no cutover (section 1.1).* |
+| `DES-HOR-451-04` | A future verified external identity maps to the canonical human. *Delivered in V2 by HOR-314 SSO (section 1.1).* Trusted resource/tool boundaries re-evaluate the initiating human's current authority intersected with request-actor and workflow/agent capability. |
 | `DES-HOR-451-05` | New customer-originated work persists initiating human, request actor, and executing workflow/agent as separate principals. |
 | `DES-HOR-451-06` | Use the approved Argon2id password floor, opaque session cookie, bounded session lifetime, exact-origin/session-bound CSRF, persistent throttling, and live account/role checks. |
 | `DES-HOR-451-07` | Active-session metadata is privacy-aware: trusted-proxy client derivation, server-only bounded raw IP, local advisory GeoIP, normalized UA labels, coalesced activity, caller-only listing, and immediate audited revocation. |
 | `DES-HOR-451-08` | `identity.security_events` is the append-only identity security audit; independently purgeable network evidence is separate. Domain ledgers remain authoritative for work/runtime/tool effects. |
-| `DES-HOR-451-09` | Authentication email uses a hash-only transactional outbox. Tokens are generated at send time, raw values are never persisted, SMTP uncertainty is explicit, and successful reset atomically changes password/revokes sessions without implicitly revoking API keys. |
+| `DES-HOR-451-09` | Authentication email uses a hash-only transactional outbox. Tokens are generated at send time, raw values are never persisted, SMTP uncertainty is explicit, and successful reset atomically changes password/revokes sessions without implicitly revoking API keys. *Hosted sender amended by HOR-582 (section 1.1).* |
 | `DES-HOR-451-10` | Verified access-request state is separate from durable account state. Approval creates `setup_pending`; setup activates without creating a browser session. |
-| `DES-HOR-451-11` | First Admin bootstrap and no-active-Admin recovery use the normal email setup channel and never print or create a bootstrap Admin API key. |
-| `DES-HOR-451-12` | The V2 authority epoch is an irreversible `expand → preflight/setup → maintenance cutover → verify/cleanup` transition. Post-epoch recovery is roll-forward or catastrophic full restore, never legacy-writer rollback. |
+| `DES-HOR-451-11` | First Admin bootstrap and no-active-Admin recovery use the normal email setup channel and never print or create a bootstrap Admin API key. *First-Admin source amended by HOR-582 (section 1.1).* |
+| `DES-HOR-451-12` | ~~The V2 authority epoch is an irreversible `expand → preflight/setup → maintenance cutover → verify/cleanup` transition. Post-epoch recovery is roll-forward or catastrophic full restore, never legacy-writer rollback.~~ *Superseded by HOR-582 (section 1.1 and section 15).* |
 | `DES-HOR-451-13` | Customer API access uses the complete fixed action catalogue in this record. Security/credential lifecycle is browser-only; consequence-sensitive bearer access is deferred; workload/internal and admin/debug surfaces are never customer actions. Customer model listing/chat invocation have separate actions, current per-request authority, operator-managed model/rate policy, and payload-free attributable usage. Delivery is split into HOR-514 and HOR-513. |
 | `DES-HOR-451-14` | Customer Inference Gateway authorization uses indexed live reads over its existing dedicated shared-PostgreSQL connection, with no request-authority cache. For the customer-authority surface, the existing role adds `SELECT` only on the bounded credential/catalogue projections and `INSERT` only on payload-free usage events; failures deny before backend invocation. The same role retains separately approved exact object-level routing/workload reads. A future Redis authorization-cache worker is deferred and requires a separate architecture decision preserving immediate revocation semantics. |
 
 The full approval metadata for `DES-HOR-451-14` is durable in Obsidian `HOR-451 — Direct PostgreSQL inference authority decision`: Nuno Gonçalves approved it on 2026-08-23 for the customer inference request path, with the exact transport, grants, failure/isolation consequences, deferred alternative, HOR-451 link, and PR #58 review evidence.
+
+### 1.1 Design review amendments (2026-10-11/12)
+
+The founder design review of 2026-10-11/12 amended this record. Each amendment's detailed contract is the "Decisions (design review)" section of the ticket named in the right-hand column; the Obsidian `Platform V2 — Product Requirements` note maps requirements to those tickets.
+
+| Amends | Amendment | Deciding ticket |
+| --- | --- | --- |
+| `DES-HOR-451-03`, `DES-HOR-451-12` | **One path, no cutover.** Every installation runs V2 authority from first boot. Sign-in is always on: there is no `auth.enabled: false` and no API-key board mode, and the work UI is reached only through a browser session. Legacy scoped keys (`scope=work\|admin\|token\|gateway`), `POST /v1/token`, `/.well-known/jwks.json`, the epoch/preflight/cutover lifecycle, the legacy-credential mapping manifest, the delegated-token drain window, and the `IdentityMapping`, `PermissionPolicy` and stale `EgressRoute` CRDs are deleted, not kept inert for a compatibility release. OPO1, the only existing installation, moves through one forward database migration or a reinstall (section 15). | [HOR-582](https://linear.app/horizonshift/issue/HOR-582) |
+| `DES-HOR-451-11` | **First Admin from the overlay.** The customer overlay names the first Admin's email. On first boot the platform emails that person a one-time setup link through the normal setup channel. Everyone else uses the access-request flow. | [HOR-582](https://linear.app/horizonshift/issue/HOR-582) |
+| `DES-HOR-451-09` | **Hosted mail sender.** Hosted installations send authentication email through Amazon SES in the hosted AWS account (EU region), with one verified sending domain for all hosted installations and credentials per environment. Self-hosted installations configure their own SMTP. The hash-only outbox contract is unchanged. | [HOR-582](https://linear.app/horizonshift/issue/HOR-582), [HOR-603](https://linear.app/horizonshift/issue/HOR-603) |
+| `DES-HOR-451-04`, section 2 non-goals | **Single sign-on is V2 scope, and Iterabase keeps authority.** Microsoft Entra ID and Google sign-in (OIDC) can be enabled per installation. SSO proves who someone is; Iterabase decides their access. A first-time SSO user goes through the normal access request, and the role is chosen at approval. A person is matched once by verified email and then bound to the IdP subject. Admins keep a break-glass local password. There is no group sync, JIT role provisioning, or SCIM (section 6.6). | [HOR-314](https://linear.app/horizonshift/issue/HOR-314) |
+| Section 2 non-goals | **Teams linking uses the Entra identity.** A person signed in through Entra SSO is linked to Teams by Entra object ID automatically, with no separate confirmation step. Teams requires Entra SSO on the installation. Linking never creates or widens Iterabase access (section 6.7). | [HOR-248](https://linear.app/horizonshift/issue/HOR-248), [HOR-314](https://linear.app/horizonshift/issue/HOR-314) |
+| Section 2 non-goals | **Managed hosting and managed inference are V2 scope.** Hosted single-tenant installations are the main offer, and managed inference goes through the central Iterabase gateway. That gateway authenticates installations by per-installation mTLS and meters credits centrally; its contract is owned by HOR-661 and is outside this record. This record still governs the installation's own customer inference API. | [HOR-593](https://linear.app/horizonshift/issue/HOR-593), [HOR-661](https://linear.app/horizonshift/issue/HOR-661) |
 
 ## 2. Scope and non-goals
 
@@ -42,25 +55,29 @@ The full approval metadata for `DES-HOR-451-14` is durable in Obsidian `HOR-451 
 - Complete customer HTTP endpoint classification for control-plane and Inference Gateway.
 - Current-authority and three-principal attribution contracts for direct API starts and inference.
 - Identity security audit, transactional authentication email, first-Admin bootstrap/recovery, chart/configuration prerequisites, and failure semantics.
-- One-way migration from legacy local roles, broad grants, delegated JWT, API-key purposes, and identity/permission CRD customer authority.
+- Microsoft Entra ID and Google OIDC sign-in, IdP-subject binding, and Teams person linking through the Entra identity (HOR-314, HOR-248).
+- Removal of legacy local roles, broad grants, delegated JWT, API-key purposes, the auth-disabled mode, and identity/permission CRD customer authority, plus the OPO1 forward migration (HOR-582).
 
 ### Non-goals
 
 - Runtime, API, schema, controller, UI, chart, or gateway implementation in HOR-451.
-- SSO, linked identities, Teams/Graph identity, notifications, or scheduled starts.
+- Group or role sync, JIT role provisioning, SCIM, SAML, and identity providers other than Entra ID and Google.
+- Scheduled starts.
+- The central Iterabase inference gateway's installation authentication and credit metering (HOR-661).
 - Customer permission/policy builders or per-user/per-workflow resource grants.
 - Customer workflow, tool, AgentPool, capability, provider, backend, routing, model-exposure, rate-policy, or runtime-credential configuration.
 - New OpenAI-compatible endpoints beyond customer model listing and chat completions.
 - Bearer Chat, blocker approval, revision, cancellation, restart, consequence confirmation, extraction retry, password/session/key lifecycle, bootstrap, or recovery.
-- Managed hosting or hosted inference.
 
 ## 3. Authority and trust boundaries
 
-### 3.1 Authorities after the V2 epoch
+### 3.1 V2 authorities
 
-| Concern | Authoritative source | Non-authoritative after cutover |
+| Concern | Authoritative source | Never authoritative |
 | --- | --- | --- |
-| Human identity, email, role, account state | PostgreSQL `identity.identities` + `identity.local_users` | `IdentityMapping`, `PermissionPolicy`, browser claims, UI state |
+| Human identity, email, role, account state | PostgreSQL `identity.identities` + `identity.local_users` | Removed `IdentityMapping`/`PermissionPolicy` CRDs, IdP claims, browser claims, UI state |
+| SSO identity | Immutable binding of the canonical human to the IdP subject (Entra object ID or Google `sub`) + current local-user state | IdP email after binding, IdP groups or roles, any token claim beyond issuer/tenant/subject |
+| Teams person link | Entra object ID from the person's SSO binding | Teams display name or email, Bot Framework claims alone |
 | Browser authentication | Hashed opaque `identity.browser_sessions` row + current local-user state | JWT browser cookie, cached role, user-supplied identity |
 | Customer API credential | Hashed `identity.api_keys` row + current owner/actor/account/role + immutable actions + API catalogue | Key-supplied scope, owner role snapshot, wildcard grant |
 | Automation accountability | Required active Admin owner + immutable service actor + permanent ownership history | Operator/inactive owner, service actor alone, mutable audit text |
@@ -113,7 +130,8 @@ An automation request is authorized only while its current owner remains an acti
 - Human identity, email, role, account, session, key ownership, and service-actor authority.
 - Customer work, artifacts, value data, exposed model aliases, inference capacity, and usage attribution.
 - Authentication email links and SMTP credentials.
-- Audit, ownership, migration-epoch, and historical principal evidence.
+- Audit, ownership, and historical principal evidence.
+- IdP subject bindings and SSO client credentials.
 - Runtime/tool/provider credentials and infrastructure details that must never enter customer Settings or normal product responses.
 
 ### 4.2 Threat actors
@@ -127,7 +145,9 @@ An automation request is authorized only while its current owner remains an acti
 - Reverse-proxy metadata spoofer.
 - Compromised customer key attempting internal/debug/workload access.
 - Compromised application/gateway process attempting broader database access.
-- Upgrade/cutover operator accidentally restoring a legacy writer or ambiguous grant.
+- Upgrade operator or old binary reintroducing a removed legacy path or ambiguous grant.
+- IdP-authenticated user from a non-allowed tenant or domain, or without an approved access request.
+- Forged Teams Bot Framework request or a Teams user without an SSO-linked person.
 
 ### 4.3 Abuse cases and required controls
 
@@ -148,7 +168,10 @@ An automation request is authorized only while its current owner remains an acti
 | Spoofed session location/device | Trusted-proxy chain validation; local advisory GeoIP; normalized bounded UA; metadata never authorizes. |
 | SMTP duplicate/unknown effect | Transactional hash-only outbox; leased sender; retry only before definite acceptance; explicit `outcome_unknown`; resend invalidates earlier unused tokens. |
 | Last Admin removed | Product APIs reject disable/demotion leaving zero active Admins; recovery command only when no active Admin exists. |
-| Legacy split-brain | Durable epoch, maintenance cutover, fingerprint preflight, one transaction, immediate writer/RBAC removal, inert compatibility only. |
+| Legacy authority reintroduced | Legacy keys, token issuance, auth-disabled mode, and the identity/permission CRDs are deleted from code and chart (HOR-582). No compatibility reader exists. A static test fails on any unclassified customer route. |
+| SSO bypasses approval | SSO proves identity only. A first-time subject enters the normal access request and receives a role only at Admin approval. No group sync, JIT provisioning, or SCIM. Tenant/domain allow-list and ID-token validation (HOR-314). |
+| IdP email change or reuse | Match by verified email once, then bind to the immutable IdP subject; later sign-ins use the subject, never the email (HOR-314). |
+| Teams link widens access | Link only by Entra object ID from an SSO binding. Linking creates no access. Every card action rechecks current authority and the content digest; forged Bot Framework requests are rejected (HOR-248). |
 | Gateway DB compromise blast radius | `DES-HOR-451-14` adds only the bounded customer credential/catalogue reads and content-free usage inserts. The same role retains separately approved exact object-level routing/workload reads, but no schema-wide/default read privilege, identity mutation grant, or customer-authority use of those internal objects. |
 | Prompt/response usage surveillance | `usage.inference_events` contains identifiers/counts/outcome only, never request or response payload. |
 
@@ -170,7 +193,7 @@ An automation request is authorized only while its current owner remains an acti
 - Idle lifetime: 12 hours.
 - Absolute lifetime: 30 days.
 - Unsafe methods require exact configured-origin validation and a session-bound `X-CSRF-Token` supplied outside the cookie.
-- Login always creates a new session/token and invalidates any supplied pre-login session token.
+- Login always creates a new session/token and invalidates any supplied pre-login session token. Local and SSO sign-in create the same kind of session (HOR-314).
 - Password reset completion, account disablement, and role change revoke all browser sessions.
 - Sign-out/revoke is idempotent and prevents the next authorization.
 - An already-authorized in-flight side effect is not described as reversed.
@@ -261,6 +284,22 @@ active --> retiring --> revoked
 
 A suspended/expired/revoked version never returns to active. Rotation/reissue produces a new version/secret and preserves safe historical metadata.
 
+### 6.6 Single sign-on (HOR-314)
+
+- **Providers:** Microsoft Entra ID and Google, using OIDC authorization code + PKCE with ID-token validation. An Admin enables SSO and its providers per installation. The customer's Entra app or Google client is configured in Settings → Integrations (HOR-652). Sign-in is restricted to the allowed tenant or domain.
+- **Authority stays in Iterabase.** A successful SSO sign-in proves identity only. A first-time subject with no bound person enters the access-request flow in section 6.1, and an Admin chooses `operator|admin` at approval (HOR-585). There is no group sync, JIT role provisioning, or SCIM.
+- **Binding:** an existing person is matched once by IdP-verified email, then bound to the IdP subject (Entra object ID or Google `sub`, scoped by issuer/tenant). Later sign-ins match the subject, not the email, so an email change at the IdP does not break the binding.
+- **Sessions:** SSO sign-in creates the same opaque browser session as local sign-in (section 5.2), and the same current account/role checks apply on every request.
+- **Break-glass:** local password sign-in remains for Admins, and for every user on installations without SSO. With SSO on, an Admin may disable local sign-in for non-Admins.
+- **Deprovisioning:** an account disabled at the IdP cannot sign in through SSO. The Iterabase person stays until an Admin disables them; there is no sync.
+
+### 6.7 Teams person linking (HOR-248)
+
+- A person signed in through Entra SSO is linked to the Iterabase Teams apps by their Entra object ID automatically. There is no separate confirmation step.
+- Teams requires Entra SSO on the installation, and a publicly reachable installation. Otherwise Teams is shown as unavailable.
+- A Teams user without a linked person receives only a "sign in to Iterabase with your Microsoft account" message.
+- Linking never creates or widens Iterabase access. Every Teams action (answers, confirmations on cards that show the exact content, chief-of-staff DMs) is attributed to the linked person with channel `teams`. It goes through the same blocker, confirmation, and Chat services as the app, under the person's current authority (HOR-248, HOR-659).
+
 ## 7. Target data contract
 
 Names below are the required logical contract. Migrations may preserve existing physical tables where compatible, but implementations must not create competing authorities.
@@ -339,15 +378,9 @@ Successful security mutations and core audit append commit atomically and fail c
 
 One-to-one independently purgeable network evidence for security event: raw source IP and bounded derived location. Retain at most 30 days.
 
-### 7.11 `identity.authority_state`
+### 7.11 `identity.authority_state` (removed)
 
-Singleton durable epoch and migration evidence:
-
-- epoch `legacy|v2` (no transition back from `v2`).
-- source fingerprint, cutover ID/time/operator/release.
-- preflight/result metadata and verification completion.
-
-Every V2 customer-authority writer/consumer checks the epoch contract. V2 binaries refuse a contradictory legacy-writer configuration.
+Removed by HOR-582. There is no authority epoch: V2 authority is the only path from first boot, and no binary carries a legacy-writer configuration to refuse.
 
 ### 7.12 `identity.inference_api_credentials`
 
@@ -358,7 +391,6 @@ A bounded read projection for the dedicated Inference Gateway database role. It 
 - owner human UUID and current owner account state and role.
 - actor UUID/kind and current personal actor role where applicable.
 - effective suspension reason and credential/actor rate identifiers/limits.
-- authority epoch.
 
 It exposes no email, password/session/reset hash, security-event detail, ownership history, runtime credential, provider/backend route, or non-inference action payload beyond boolean action membership. It is backed by indexed base-key lookup and live joins; it is not a stale gateway snapshot. An automation row is effective only when its owner is currently an active Admin; owner demotion/disablement yields a suspended result before action evaluation.
 
@@ -404,9 +436,20 @@ New customer-originated work item and `runtime.workflow_run` retain:
 - `initiating_human_identity_id`.
 - `request_actor_identity_id`.
 - existing `scope_identity_id` as executing workflow/agent.
-- source `chat|api`, optional browser session/API key, and authorization snapshot references.
+- source `chat|api|mailbox` (mailbox starts per HOR-595) and channel `browser|api|chat|teams` (`REQ-014`), optional browser session/API key, and authorization snapshot references. A mailbox start records its mailbox binding and message identity as source evidence (HOR-595).
 
 Active assignment resolves the run; callers cannot supply trusted principal UUIDs. Historical rows are immutable evidence. Current dynamic authorization is re-evaluated at the trusted boundary.
+
+### 7.16 IdP subject bindings (HOR-314)
+
+Logical contract; HOR-314 chooses the physical shape:
+
+- canonical human identity, provider `entra|google`, issuer/tenant, and immutable IdP subject (Entra object ID or Google `sub`);
+- unique `(provider, issuer, subject)`, and at most one binding per provider per human;
+- bound time and binding evidence (first-sign-in verified-email match or access-request approval);
+- no IdP tokens, refresh tokens, or group claims.
+
+The Entra object ID from this binding is the only Teams link key (section 6.7).
 
 ## 8. Authentication and lifecycle APIs
 
@@ -418,6 +461,7 @@ Exact path spelling may follow repository conventions, but endpoint ownership an
 - Verify access-request email.
 - Complete first-time password setup.
 - Sign in.
+- SSO sign-in start and callback for each enabled provider (HOR-314).
 - Request/resend/complete password reset.
 
 These endpoints accept only their submitted credential/token, use enumeration-resistant responses, and never accept an API key as substitute authority.
@@ -429,6 +473,7 @@ These endpoints accept only their submitted credential/token, use enumeration-re
 - Session list/current/revoke/sign-out.
 - Admin verified-access-request read/review.
 - Admin role/account/session-security mutations.
+- Admin SSO settings: enable or disable SSO, providers, and local sign-in policy (HOR-314).
 - Personal API-key and Admin automation lifecycle.
 - Chat, blocker response/confirmation, extraction retry, cancellation, revision, and restart according to their owning product contracts.
 
@@ -438,7 +483,7 @@ Unsafe calls require CSRF. Security/lifecycle calls requiring recent password pr
 
 1. Require exactly one supported Authorization bearer value.
 2. Hash it using the API-key domain.
-3. Resolve active key, owner, actor, current account/role, actions, expiry/suspension, and epoch.
+3. Resolve active key, owner, actor, current account/role, actions, and expiry/suspension.
 4. Require the exact route action and any documented prerequisite action.
 5. Apply current product resource/model policy and mandatory rate policy.
 6. Record/coalesce last use without turning an audit failure into silent authorization.
@@ -504,12 +549,14 @@ Presets may be combined and reduced to supported subsets. Catalogue growth never
 | --- | --- | --- |
 | Product shell `/`, `/assets/*` | Browser/public shell | Not a key action. |
 | `/healthz`, `/readyz`, metrics | Workload/internal | Probe/operations only. |
-| `/.well-known/jwks.json`, `POST /v1/token` | Legacy/internal then removed | Bounded delegated-token drain only; no V2 customer action. |
+| `/.well-known/jwks.json`, `POST /v1/token` | Removed (HOR-582) | Not served. No drain window and no V2 customer action. |
+| SSO sign-in start/callback | Public browser journey | Only enabled providers and allowed tenant/domain; creates a browser session or an access request; never accepts an API key (HOR-314). |
+| Teams bot messaging endpoints (one per agent) | Bot Framework authenticated | Not a customer key action. Acts only for an SSO-linked person, with channel `teams`, through the same blocker/confirmation/Chat services (HOR-248, HOR-659). |
 | Workflow catalogue/summary/detail/process reads | Personal + automation | `workflows.read`; customer-safe projection only. |
 | `POST /v1/work-items` | Personal + automation | `workflows.start`; mandatory idempotency and three-principal attribution. |
 | Work list/detail/dashboard/attempt/node/timeline/consequence/blocker/feedback/link metadata and work-event SSE | Personal + automation | `work.read`. Value fields additionally require current Admin + `value.read`. Automation receives Operator-safe projection. |
 | `POST /v1/work-items/{id}/feedback` | Personal only | `work.feedback.write`; saving starts no work. |
-| Blocker response/confirmation | Cookie session; bearer deferred | Current body can confirm consequential invocation IDs. No V2 key action. |
+| Blocker response/confirmation | Cookie session, or a Teams card from an SSO-linked person (HOR-248); bearer deferred | Current body can confirm consequential invocation IDs. No V2 key action. |
 | Revision/restart | Cookie session; bearer deferred | Consequence-safe confirmation owned by HOR-463. No V2 key action. |
 | Cancellation | Cookie session; bearer deferred | Consequence-safe confirmation owned by HOR-464. No V2 key action. |
 | Artifact list/search/recent/status/metadata/get/head/download | Personal + automation | `artifacts.read`; unavailable/quarantined bytes remain denied. |
@@ -520,7 +567,7 @@ Presets may be combined and reduced to supported subsets. Catalogue growth never
 | People/access-request reads | Personal current Admin only | `people.read`; bounded projection. |
 | Access approve/decline, role/account/session-security mutations | Cookie + recent auth only | Bearer always denied. |
 | Profile/password/session/key/automation lifecycle | Cookie (+ recent auth where specified) only | Bearer always denied. |
-| Chat conversation/message/search/stream/tool/confirmation | Cookie session only | No V2 Chat bearer action. |
+| Chat conversation/message/stream/tool/confirmation/memory | Cookie session, or a Teams DM from an SSO-linked person (HOR-659) | No V2 Chat bearer action. |
 | Value projections/export | Personal current Admin only | `value.read` plus owning resource read. |
 | Value-model writes | Iterabase/operator internal | No customer action. |
 | Permission/identity debug | Cluster admin/debug | No customer action. |
@@ -595,7 +642,7 @@ The implementation may retain the repository's existing Redis limiter substrate 
 - personal/automation key created/revealed-completion/rotated/expired/suspended/revoked.
 - automation owner transferred.
 - bootstrap/recovery attempted/completed/denied.
-- authority preflight/cutover/verification/cleanup.
+- SSO sign-in succeeded/refused (tenant, domain, or unapproved), IdP subject bound, SSO and local sign-in policy changed (HOR-314).
 
 Core identity audit does not duplicate work/runtime/tool/inference payloads. Domain ledgers carry domain effects with principal snapshots.
 
@@ -612,8 +659,8 @@ Core identity audit does not duplicate work/runtime/tool/inference payloads. Dom
 
 A locked, RBAC-less `api bootstrap` init container:
 
-1. Reads first-Admin email/locale from an operator-created Secret.
-2. Requires valid exact public HTTPS origin and verified-TLS SMTP configuration.
+1. Reads the first-Admin email (and locale) from the customer overlay value rendered by the chart (HOR-582).
+2. Requires valid exact public HTTPS origin and verified-TLS SMTP configuration (Amazon SES on hosted installations).
 3. Takes a database advisory lock.
 4. Only if no local users and no bootstrap marker exist, atomically creates one canonical `setup_pending` Admin, queues normal setup email, records marker, and audits.
 5. Never creates or prints an Admin API key or raw setup token.
@@ -650,8 +697,9 @@ Startup/chart validation must require or validate:
 - session/CSRF and API-key hashing domain configuration where required by implementation.
 - trusted proxy CIDRs and one forwarded-address header/chain contract.
 - optional operator-mounted local GeoIP database path/version behavior.
-- verified-TLS SMTP host/port/mode/from address and Secret-backed credentials.
-- first-Admin Secret email/locale for fresh install; no synthetic default.
+- verified-TLS SMTP host/port/mode/from address and Secret-backed credentials: Amazon SES SMTP in the hosted AWS account for hosted installations, the customer's SMTP for self-hosted ones (HOR-582, HOR-603).
+- first-Admin email/locale from the customer overlay for a fresh install; no synthetic default.
+- SSO enablement and allowed tenant/domain; the IdP client credentials live in a Settings → Integrations credential slot (HOR-314, HOR-652).
 - Inference Gateway dedicated database DSN/credentials with the `DES-HOR-451-14` customer-authority additions plus the retained exact routing/workload grants in section 7.12.
 - mandatory installation/customer actor/credential/model rate policy; absence cannot imply unlimited inference.
 - operator-managed customer API model exposure catalogue.
@@ -676,81 +724,40 @@ Normal customer Settings and APIs never reveal secret or internal configuration 
 | GeoIP/UA parsing fails | Auth succeeds without location/labels; never widen/deny based on advisory metadata. |
 | Session revoke races in-flight request | Subsequent authorization denied; already completed effect stands. |
 | Role/account change races API request | The transactionally resolved current authority controls that request; next boundary observes committed change; audit retains decision snapshot. |
-| Cutover preflight mismatch | Do not enter maintenance cutover; no partial epoch. |
-| Post-epoch legacy binary/writer | Refuse startup/write; roll forward. |
+| OPO1 forward migration fails | The migration transaction rolls back; OPO1 stays on its prior release or is reinstalled. There is never a mixed authority (section 15). |
+| IdP unavailable or ID token invalid | SSO sign-in fails closed. Admin break-glass local sign-in still works (HOR-314). |
+| IdP account disabled | SSO sign-in is refused. The Iterabase person remains until an Admin disables them. |
+| Teams request without an SSO-linked person or current authority | Refused; the user receives only the link-your-account message (HOR-248). |
 
-## 15. One-way V2 authority migration
+## 15. Legacy removal and the OPO1 forward migration
 
-### 15.1 Expand
+The 2026-08-23 expand → preflight → token drain → maintenance cutover → verify/cleanup plan, and its one-release inert CRD compatibility, are superseded by HOR-582. The only existing installation is OPO1 (internal), so V2 removes the legacy authority outright.
 
-- Add target tables/columns/projections/indexes without switching authority.
-- Add epoch state and compatibility readers.
-- Deploy code capable of preflight but keep legacy writers authoritative.
-- Rehearse backup/restore and migration against a production-shaped copy.
+### 15.1 Removed
 
-### 15.2 Preflight/setup
+- Legacy scoped keys (`scope=work|admin|token|gateway`) and the `identity.active_api_keys` customer lookup.
+- `POST /v1/token`, `/.well-known/jwks.json`, and delegated-token validation.
+- The epoch/preflight/cutover code and `identity.authority_state` (section 7.11).
+- The auth-disabled mode and the API-key board mode.
+- `POST|GET /v1/users*`, `/v1/api-keys*`, `GET /v1/permissions/identities/{id}`, and `POST /v1/value-models` on the customer surface.
+- The `IdentityMapping`, `PermissionPolicy`, and stale `EgressRoute` CRDs, types, and reconcilers, from the chart and the manager in the same release.
+- The broad `*/*` active-user behavior.
 
-Block cutover on:
+### 15.2 OPO1
 
-- canonical email collisions or non-deliverable/synthetic active Admin identity.
-- no valid future active Admin/setup path.
-- active key without an accountable human owner or valid actor.
-- automation key whose owner is not a current active Admin, including an owner mapped or demoted to Operator.
-- wildcard/unknown action or legacy admin/token key not marked for revocation.
-- absent/malformed rate policy where required.
-- a gateway grant plan that leaves schema-wide/default customer-authority reads or removes any required exact routing/workload grant from section 7.12.
-- unresolved mapping into the fixed V2 action catalogue.
-- delegated JWT lifetime beyond the bounded drain.
-- source fingerprint drift.
-- unrehearsed backup restore or failed compatibility verification.
+OPO1 moves through one forward database migration, or a documented reinstall if that is simpler:
 
-Preserve canonical UUIDs. Map role `admin→admin`, `user→operator`. Existing humans complete email setup rather than receiving invented passwords. Do not invent unavailable historical role snapshots.
+- Preserve canonical UUIDs. Map role `admin→admin`, `user→operator`. Existing humans complete email setup rather than receiving invented passwords.
+- Revoke every legacy key. Automation is reissued through HOR-514 with an active Admin owner and a distinct service actor.
+- Replace the gateway's legacy schema-wide/default reads and `identity.active_api_keys` lookup with the exact grant union in section 7.12, in the same migration.
+- Keep work, artifact, and attribution history readable.
 
-Legacy key disposition:
+The migration is rehearsed against a copy of OPO1's database before it runs.
 
-- legacy `admin` and `token` keys: revoke.
-- legacy wildcard/unknown key: block until revoked or explicitly remapped.
-- legacy personal `work` key: preserve human owner/actor and map only the approved fixed work/start subset supported by its verified use; never infer Admin/security actions.
-- legacy service key: require an operator-supplied active Admin owner and distinct service-actor manifest.
-- legacy `gateway` key: map only to `inference.models.read` and `inference.chat.invoke` with an explicit active Admin owner, distinct service actor, and materialized mandatory rates.
-- when mapping is ambiguous, cutover blocks rather than widening.
+### 15.3 Rollback boundary
 
-### 15.3 Delegated JWT drain
-
-- Clamp new delegated token lifetime to 15 minutes.
-- Wait out previously longer valid tokens.
-- Stop issuance.
-- Permit only the final bounded validation/JWKS drain.
-- Quiesce customer ingress/identity consumers before the epoch transaction.
-
-### 15.4 Maintenance cutover
-
-Under one advisory lock and source fingerprint:
-
-1. Quiesce customer ingress and legacy identity consumers/writers.
-2. Verify backup/restore evidence.
-3. In one transaction, backfill V2 local roles/account state, API-key owners/actors/actions/rates/history, security audit, inert CR-derived evidence, retired-key revocations, removal of broad customer wildcard grants, and `identity.authority_state.epoch=v2`.
-4. Replace the gateway's legacy schema-wide/default reads and `identity.active_api_keys` customer lookup with the exact customer-authority plus retained routing/workload grant union in section 7.12.
-5. Start only V2 consumers and verify current-authority reads plus workload-mTLS model/chat authorization and routing.
-6. Remove legacy reconcilers/finalizers/writer RBAC immediately.
-
-There is no interval with two customer-authority writers.
-
-### 15.5 Verify/cleanup
-
-- Verify reference Admin/Operator login/session/role boundaries.
-- Verify personal/service key mappings, revocation, and three-principal API start.
-- Verify gateway current-authority, model filter, rate, and usage behavior.
-- Verify legacy issuance/writers/grants are unavailable.
-- Keep legacy CR objects/types inert and deprecated for one compatibility release.
-- Remove served legacy CRDs/types in the next semantic release under the release process.
-
-### 15.6 Rollback boundary
-
-- Before epoch flip: restore previous release/database as rehearsed.
-- After epoch flip: roll forward with V2-compatible binaries.
-- Never restart legacy writers, wildcard grants, delegated issuance, or customer CR authority.
-- Full pre-cutover database/release restore is catastrophic disaster recovery only, with explicit outage and loss of all post-cutover writes.
+- Before the migration commits: the prior release and database remain as they were.
+- After it commits: roll forward, or reinstall. No binary restarts a legacy writer, wildcard grant, delegated issuance, or CRD authority.
 
 ## 16. Validation plan
 
@@ -795,13 +802,18 @@ There is no interval with two customer-authority writers.
 - Workload-mTLS and admin/debug listener isolation regressions.
 - Every unsupported OpenAI-compatible route denied.
 
+### SSO and Teams linking tests
+
+- Entra test-tenant and Google test-domain sign-in; a new user lands in an access request and an approved user gets the chosen role.
+- Non-allowed tenant/domain refused; ID-token validation negatives; IdP email change keeps the subject binding.
+- Admin break-glass local sign-in with SSO enabled; local sign-in disabled for Operators.
+- An Entra-signed-in person is linked in Teams automatically; an unlinked Teams user or a forged Bot Framework request cannot act.
+
 ### Migration/release tests
 
-- Production-shaped preflight matrix and source-fingerprint drift.
-- Email collision, owner/actor manifest, wildcard/unknown action, rate, JWT drain, and no-Admin blockers.
-- Atomic epoch switch and failure injection at every phase.
-- Inert CR compatibility then semantic-release removal.
-- Pre-epoch rollback and post-epoch roll-forward/catastrophic-restore rehearsal.
+- Fresh install: no auth-disabled option, no legacy key path, no token issuance; the overlay's first Admin receives a setup link, signs in, and sees their work.
+- Retired routes and removed CRDs absent from the chart and the manager.
+- OPO1 forward migration against a copy of OPO1's database: history readable, legacy keys revoked, exact gateway grants.
 - HOR-467 fresh install/upgrade with reference Admin/Operator, personal keys, automation actor, model filtering/rates/usage, and direct negative endpoint matrix.
 
 ## 17. Ticket ownership
@@ -809,11 +821,16 @@ There is no interval with two customer-authority writers.
 | Ticket | Owns |
 | --- | --- |
 | HOR-451 | This approved architecture/decision contract only. |
-| HOR-453 | Access request, verification/setup/reset, local password, browser session/CSRF, recent password evidence, auth email/bootstrap packaging and journeys. |
-| HOR-454 | Role/People enforcement, browser-only identity mutations, target authority schema/migration, key owner/actor/action substrate, inference credential projection, and exact grant-union migration preserving routing/workload reads. |
+| HOR-453 (delivered) | Access request, verification/setup/reset, local password, browser session/CSRF, recent password evidence, auth email/bootstrap packaging and journeys. |
+| HOR-454 (delivered) | Role/People enforcement, browser-only identity mutations, target authority schema, key owner/actor/action substrate, inference credential projection, and exact grant union preserving routing/workload reads. |
+| HOR-582 | One-path V2 authority: `requireAction` on every customer route, legacy removal (section 15.1), three principals from the authenticated boundary, overlay first Admin, SES configuration, OPO1 migration, static route-classification test. |
+| HOR-585 | Admin People UI over the delivered People API. |
+| HOR-314 | Entra ID and Google SSO, IdP-subject binding, SSO settings and local sign-in policy, Entra object ID for Teams linking. |
+| HOR-248 / HOR-659 | Teams agents, person linking by Entra object ID, Teams card actions, and the chief-of-staff Teams DM. |
+| HOR-652 | Settings → Integrations credential slots, including the SSO client configuration. |
 | HOR-514 | Personal/automation Settings and browser-only credential lifecycle, presets, one-time reveal, rotate/revoke/transfer/suspension UI/API. |
 | HOR-513 | Inference Gateway exact actions, `DES-HOR-451-14` live PostgreSQL lookup/bounded customer grants/no authority cache, model filter, mandatory rates, usage ledger, retained routing/workload regression, listener isolation, charts/tests. |
-| HOR-452/HOR-456 | Cookie-session-only Chat contract/implementation; no bearer Chat action. |
+| HOR-452/HOR-456 | Cookie-session Chat contract/implementation (plus the HOR-659 Teams DM surface); no bearer Chat action. |
 | HOR-455 | Confirmed Chat effects plus personal/automation `workflows.start` handoff/attribution. |
 | HOR-459 | Routed shell, Settings slots, workflow/work/value role-safe projections. |
 | HOR-461/HOR-462 | Artifact read/upload/delete and status/browser-retry boundaries. |
@@ -822,4 +839,4 @@ There is no interval with two customer-authority writers.
 
 ## 18. Production and release classification
 
-HOR-451 is design-only and has no runtime/data impact. Follow-on implementation changes authentication/authorization authority, customer credentials, gateway database access, rate behavior, usage evidence, and a one-way migration. Their semantic publication is deferred to the founder-approved `release.yml` flow in `docs/release.md`; merge alone is not a release.
+HOR-451 and HOR-663 are design-only and have no runtime/data impact. Follow-on implementation changes authentication/authorization authority, customer credentials, SSO, gateway database access, rate behavior, usage evidence, and the OPO1 forward migration. Their semantic publication is deferred to the founder-approved `release.yml` flow in `docs/release.md`; merge alone is not a release.

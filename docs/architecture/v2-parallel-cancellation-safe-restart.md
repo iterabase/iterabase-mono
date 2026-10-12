@@ -1,15 +1,15 @@
 # V2 parallel execution, cancellation, and safe-restart contract
 
-- **Status:** Approved design; implementation is owned by follow-on tickets.
-- **Approval date:** 2026-08-24
+- **Status:** Approved design, amended by the founder design review of 2026-10-11/12 (section 1.1); implementation is owned by follow-on tickets.
+- **Approval date:** 2026-08-24; amended 2026-10-12 ([HOR-663](https://linear.app/horizonshift/issue/HOR-663/docs-amend-the-v2-architecture-docs-to-the-2026-10-design-review))
 - **Architecture ticket:** [HOR-457](https://linear.app/horizonshift/issue/HOR-457/v2-approve-parallel-cancellation-and-safe-restart-runtime-contract)
-- **Product contract:** Obsidian `Platform V2 — Managed Digital Workforce — Product Requirements`, especially `REQ-018`–`REQ-024`, `SCN-012`–`SCN-015`, and `SCN-018`
+- **Product contract:** Obsidian `Platform V2 — Product Requirements` (2026-10-12), especially `REQ-018`–`REQ-025`, `REQ-045`, `REQ-046`, `SCN-012`–`SCN-016`, `SCN-018`, `SCN-028`, `SCN-029`, and `SCN-030`. The 2026-08-10 PRD is history.
 - **Related authority:** [`v2-authentication-authority.md`](v2-authentication-authority.md), [`v2-chat-tool-confirmation.md`](v2-chat-tool-confirmation.md), and [`v2-artifact-processing.md`](v2-artifact-processing.md)
-- **Implementation owners:** HOR-468, HOR-466, HOR-464, HOR-463, HOR-516, HOR-538, and the release-validation owner identified in section 22
+- **Implementation owners:** HOR-468, HOR-649, HOR-466, HOR-464, HOR-463, HOR-545 (storage, accepted), and the release-validation owner identified in section 22. The HOR-516 prototype is reference only.
 
-This record is the repository authority for V2 structured parallel graphs, execution lanes, branch sessions and outputs, join-all scheduling, cyclic review/remediation, customer work projections, required-branch failure, cancellation fencing, consequence handling, declared checkpoints, immutable-output reuse, fresh-attempt restart, and the OPO1 runtime reset boundary. It does not implement, deploy, reset, or delete data.
+This record is the repository authority for V2 structured parallel graphs, the `wait` node, the paused-with-reason state, the interrupted-step rule, execution lanes, branch sessions and outputs, join-all scheduling, cyclic review/remediation, customer work projections, required-branch failure, cancellation fencing, consequence handling, declared checkpoints, immutable-output reuse, fresh-attempt restart, and the OPO1 runtime reset boundary. It does not implement, deploy, reset, or delete data.
 
-The current runtime is deliberately single-active-node. This record replaces that assumption only for runtime implementation after the clean cutover in section 19. It preserves PostgreSQL authority, append-only V2 attempt evidence, per-turn dispatch fencing, Tool Gateway consequence authority, and the prohibition on silent execution replay.
+The current runtime is deliberately single-active-node. This record replaces that assumption only for runtime implementation after the clean cutover in section 19. It preserves PostgreSQL authority, append-only V2 attempt evidence, per-turn dispatch fencing, Tool Gateway consequence authority, and the prohibition on silent execution replay. The only rerun is the interrupted-step rule in section 8, which creates a new node visit in a fresh session and applies only when the interrupted turn made no write.
 
 ## 1. Approved design decisions
 
@@ -31,6 +31,7 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 - **Scope:** V2 workflow graph schema and static validation.
 - **Decision:** Add explicit `parallel_fork` and paired `parallel_join` control nodes. A fork declares its join and 2–16 statically named required branch entry nodes; the join back-references the fork, declares only policy `all`, and emits the reserved deterministic outcome `joined`. Branch regions are node-disjoint; every branch path must terminate at its paired join; only the fork may enter a branch; only that branch may reach its join; nested/overlapping parallel regions, dynamic fan-out, and joins other than `all` are rejected. Directed cycles remain explicitly supported in two places: (a) wholly inside an ordinary root/sequential region, and (b) wholly inside exactly one parallel branch. Therefore `review -> address_review -> review` may repeat until `review` emits a terminal outcome both in a sequential workflow region and inside one parallel branch; each traversal creates new immutable node visits. Cycles may not contain a `parallel_fork` or `parallel_join`, cross from pre-fork to post-join and back, leave/re-enter a branch, or span branches. Validation rejects every strongly connected component that crosses one of those boundaries. In a branch review loop, only the terminal review outcome may route to the paired join.
 - **Consequences:** V2 supports bounded review/remediation loops but deliberately excludes cycles through or across parallel-region boundaries and excludes nested/dynamic parallelism.
+- **Amended (HOR-649, HOR-468):** the schema adds the `wait` node kind, and fan-out to many external parties uses one sending step plus one `wait`, not parallel branches (section 1.1).
 - **Evidence:** Founder approval recorded in HOR-457 on 2026-08-24 before repository edits.
 
 ### DES-HOR-457-03 — Durable lanes, branch identity, sessions, and storage boundary
@@ -49,6 +50,7 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 - **Scope:** Multi-scheduler eligibility, transition limits, crash recovery, and retry fencing.
 - **Decision:** Activating a fork atomically records the completed fork visit, activation, all required branch/lane records, and all branch entry eligibility. All branches become logically runnable; existing one-credit worker capacity bounds simultaneous turns rather than changing branch correctness. Multiple scheduler replicas claim eligible node work with PostgreSQL locks/leases and attempt/lane compare-and-swap counters, so exactly one node visit/turn is created per eligibility. The existing transition bound applies independently to each lane; a review/remediation cycle may intentionally create successive visits until its terminal outcome, but exceeding the bound fails the attempt. An explicit graph cycle is a configured transition, not a retry. A pending node with no committed turn may be reclaimed after a scheduler crash; once a node visit/turn is committed or dispatched it is never redelivered or silently retried. Worker/dispatch loss uses the failure contract in DES-HOR-457-07.
 - **Consequences:** Concurrency remains bounded by worker credits; configured graph loops remain valid while started work preserves at-most-once/no-silent-retry semantics.
+- **Amended (HOR-649):** worker/dispatch loss now follows the interrupted-step rule (section 1.1 and section 8).
 - **Evidence:** Founder approval recorded in HOR-457 on 2026-08-24 before repository edits.
 
 ### DES-HOR-457-05 — Join-all and deterministic output
@@ -64,9 +66,10 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 
 - **Approved by:** Nuno Gonçalves
 - **Approved on:** 2026-08-24
-- **Scope:** Work-item state and action-required projection consumed by HOR-466/HOR-516.
+- **Scope:** Work-item state and action-required projection consumed by HOR-466.
 - **Decision:** A nonterminal attempt is `In progress` whenever any lane is running, runnable, waiting only for worker capacity, or able to complete a control transition/join. Customer action required is an independent projection and may coexist with `In progress`. The work item is `Blocked` only when every remaining nonterminal lane is waiting on an open customer-action blocker and no lane/control transition can advance. Each active human gate has its own durable blocker, so parallel branches may expose multiple open blockers. Technical failures never project `Blocked`; failed and canceled attempts project in the stopped-work area with subtype, plain-language reason, retry eligibility, known completed effects, and outcome-unknown effects. `Done` means only that the root lane reached the workflow terminal rule after all required joins, never that the business result is correct.
 - **Consequences:** Status derives from all lanes rather than one active node and permits multiple simultaneous customer blockers without mislabeling technical failure.
+- **Amended (HOR-466):** adds the customer-visible `Waiting` and `Paused` states. Neither is ever `Blocked` (section 1.1 and section 7).
 - **Evidence:** Founder approval recorded in HOR-457 on 2026-08-24 before repository edits.
 
 ### DES-HOR-457-07 — Required failure, timeout, and no branch retry
@@ -76,6 +79,7 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 - **Scope:** Branch/turn failure, timeout, sibling shutdown, and terminal races.
 - **Decision:** Any required branch node failure, worker/dispatch loss after turn commitment, lane transition-limit breach, or declared parallel-region timeout fails the whole attempt under an attempt-row first-terminal-writer fence. An optional fork timeout is wall-clock from durable activation and includes worker waiting, agent work, configured review/remediation cycles, and human-gate waiting. Failure atomically stops new scheduling, preserves all committed visits/outputs/arrivals/effects, records the failing evidence, and creates stop targets for safe active siblings. Siblings may finish only if completion wins the terminal fence first; otherwise late results are evidence and cannot advance the graph. Neither a failed branch nor a lost started turn is retried; recovery requires an explicit new attempt under DES-HOR-457-12.
 - **Consequences:** Required-branch availability is fail-fast and evidence-preserving; long human review loops consume a configured region wall-clock budget.
+- **Amended (HOR-649, HOR-468):** worker/dispatch loss after turn commitment fails the attempt, and "a lost started turn is not retried", only when that turn made a write tool invocation. A lost turn with no write invocation reruns as a new visit in a fresh session (section 1.1 and section 8).
 - **Evidence:** Founder approval recorded in HOR-457 on 2026-08-24 before repository edits.
 
 ### DES-HOR-457-08 — Generalized stop boundary and cancellation races
@@ -85,6 +89,7 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 - **Scope:** Attempt cancellation/failure fencing, dispatch assignments, gateway invocation creation, and stop propagation.
 - **Decision:** User cancellation and failure-driven sibling shutdown share one durable stop-intent/stop-target outbox. Confirmed user cancellation locks the attempt and uses first-terminal-writer/CAS semantics: if completion/failure committed first the proposal is stale; if cancellation commits first it immediately marks the attempt canceled, increments the scheduling fence, denies queued work, terminalizes active assignments, and records exact active turn/invocation targets before commit. Tool Gateway work-scoped invocation creation must serialize its run-active check and ledger insert against the same attempt stop boundary: an invocation that commits first is captured as in flight; a stop that commits first causes invocation creation to fail closed. After commit, leased outbox workers send best-effort `AbortTurn` and gateway/tool cancellation and retry only those control messages—not business execution. Late turn/tool completion is retained but cannot reopen or advance the attempt.
 - **Consequences:** Cancellation is durable and race-deterministic but remains best effort after the scheduling/effect boundary; only control-message delivery may retry.
+- **Extended (HOR-464):** cancellation also applies to waiting and paused work. An event or resume arriving after cancellation is evidence only (section 1.1).
 - **Evidence:** Founder approval recorded in HOR-457 on 2026-08-24 before repository edits.
 
 ### DES-HOR-457-09 — Consequence authority and outcome uncertainty
@@ -103,6 +108,7 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 - **Scope:** Customer command channel, authorization, CSRF, and stale-confirmation behavior.
 - **Decision:** Cancellation, revision, restart, blocker responses, and consequence confirmation are browser-cookie-only for a current Operator or Admin authorized to view/operate the installation work item. Bearer and mixed credentials are denied; exact-origin CSRF is required; recent-password authentication is not required because these are operational rather than account-security mutations. Cancel/restart is two-step: proposal creation writes an immutable digest and ten-minute expiry; confirmation performs no client-trusted recomputation and atomically rechecks authority plus the digest. The digest covers work item/attempt/version, terminal fence, active lanes/turns, known succeeded/running/unknown consequences, selected checkpoint, canonical input/guidance/artifact digests, and repeated-consequence set. Any relevant drift makes the proposal stale and requires a new review.
 - **Consequences:** V2 API keys cannot cancel/restart or confirm consequences; operational commands avoid recent-auth friction but require an exact durable review/confirm boundary.
+- **Amended (HOR-248):** blocker answers and send/submission confirmations may also come from a Teams card shown to an SSO-linked person. Cancellation, revision, and restart stay browser-only (section 1.1 and section 11).
 - **Evidence:** Founder approval recorded in HOR-457 on 2026-08-24 before repository edits.
 
 ### DES-HOR-457-11 — Workflow-declared safe checkpoints only
@@ -112,6 +118,7 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 - **Scope:** Workflow checkpoint declarations, static safety, attainment, and reusable evidence.
 - **Decision:** An immutable workflow definition may declare checkpoints with a stable key, exact completed root-lane edge anchor `(node, outcome)`, the edge’s exact resume node, and named reusable output/artifact sources. A checkpoint is attained only when that edge commits while no parallel region is open. It may follow an ordinary root node or a completed join. It may also sit on an edge inside a root/sequential review cycle; every traversal creates a separate immutable attainment and restart selects the latest applicable one. A checkpoint may not be inside a parallel branch (including a branch review cycle), at a fork, between partial branch arrivals, or inferred from runtime state. Reusable root sources must be the anchor or statically dominate it; branch data is reusable only through the completed join aggregate, never by selecting an inner branch visit directly. Attainment snapshots exact source execution IDs, canonical output digests, and immutable artifact IDs/digests; it never copies or mutates prior evidence.
 - **Consequences:** Expert workflow authors must declare safe resumptions explicitly; partial branch recovery and inferred resume remain unsupported.
+- **Clarified (HOR-463):** the expert authors are Iterabase. Checkpoints are declared in each customer overlay's workflow definitions; customers do not author them.
 - **Evidence:** Founder approval recorded in HOR-457 on 2026-08-24 before repository edits.
 
 ### DES-HOR-457-12 — Fresh-attempt restart and immutable reuse
@@ -132,14 +139,34 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 - **Consequences:** Follow-on implementation is simpler and deliberately abandons old runtime/work compatibility; deployment requires an outage, a clean drain, a cold snapshot, and fresh definition validation.
 - **Evidence:** Founder approval recorded in HOR-457 on 2026-08-24 before repository edits.
 
+## 1.1 Design review amendments (2026-10-11/12)
+
+The founder design review of 2026-10-11/12 amended this record. Each amendment's detailed contract is the "Decisions (design review)" section of the ticket in the right-hand column; the Obsidian `Platform V2 — Product Requirements` note maps requirements to those tickets.
+
+| Amends | Amendment | Deciding ticket |
+| --- | --- | --- |
+| `DES-HOR-457-02` | **`wait` node.** A new, explicit node kind waits durably for one or more expected events. Each event has a source and a correlation key produced by an earlier step. Completion is `all` or `any`, with an absolute or relative deadline. Outcomes `received`, `deadline` (carrying whatever arrived), and `cancelled` route to next nodes. The worker is released while waiting, and arriving events are committed as immutable evidence and passed to the next node. The attempt continues in the **same attempt** (section 4.5). | [HOR-649](https://linear.app/horizonshift/issue/HOR-649) |
+| `DES-HOR-457-02`, non-goals | **Fan-out without dynamic parallelism.** One agent step sends N requests and records N correlation keys, then one `wait` collects the replies. Parallel branches stay static (2–16), and the engine still has no dynamic fan-out. A missed deadline routes through `deadline`; there are no automatic chase emails. | [HOR-649](https://linear.app/horizonshift/issue/HOR-649), [HOR-468](https://linear.app/horizonshift/issue/HOR-468), [HOR-654](https://linear.app/horizonshift/issue/HOR-654) |
+| `DES-HOR-457-06` | **Paused with reason.** There is one pause mechanism, used for trial expiry (HOR-648), model provider unavailable (HOR-597, HOR-661), customer runner offline (HOR-596), and later causes. Pausing happens at a step boundary: new scheduling for the item stops and the reason is recorded. Resume is automatic when the reason clears, or explicit for a trial conversion (section 8). | [HOR-649](https://linear.app/horizonshift/issue/HOR-649) |
+| `DES-HOR-457-06` | **Waiting and Paused are customer states, never Blocked.** For example, "Waiting for supplier replies (2 of 3), deadline 14 Oct 17:00", or "Paused: trial ended". Neither needs customer action (section 7). | [HOR-466](https://linear.app/horizonshift/issue/HOR-466) |
+| `DES-HOR-457-04`, `DES-HOR-457-07` | **Interrupted-step rule.** It covers a provider outage mid-turn, an offline runner needed mid-turn, and worker or dispatch loss. If the interrupted turn made **no write tool invocation** (only `read_only` or none), the step reruns from its start in a **fresh session** once the cause clears, pausing meanwhile. That rerun is a new node visit, never a replay of the old turn. If it made any `idempotent_write` or `non_idempotent_write` invocation, whatever its outcome (succeeded, failed, or `outcome_unknown`), the attempt **stops**, and recovery is the restart with explicit confirmation of repeated consequences (`DES-HOR-457-12`). The Tool Gateway invocation ledger decides which case applies. Branch lanes follow the same rule (section 8). | [HOR-649](https://linear.app/horizonshift/issue/HOR-649), [HOR-468](https://linear.app/horizonshift/issue/HOR-468), [HOR-463](https://linear.app/horizonshift/issue/HOR-463) |
+| `DES-HOR-457-08`, `DES-HOR-457-09` | **Cancelling waiting and paused work.** Cancel also applies to work that is waiting or paused. A reply or resume arriving after cancellation is evidence only and never advances the attempt. | [HOR-464](https://linear.app/horizonshift/issue/HOR-464) |
+| `DES-HOR-457-10` | **Teams confirmation channel.** A workflow agent's Teams card lets an SSO-linked person answer questions and approvals, and confirm sends and submissions. The card shows the exact content and is rechecked against current authority and the content digest when pressed. Stale cards show "already handled by …". Bearer credentials stay denied, and cancellation, revision, and restart stay browser-only (section 11). | [HOR-248](https://linear.app/horizonshift/issue/HOR-248) |
+| `DES-HOR-457-11` | **Checkpoints are declared by Iterabase** in each customer overlay's workflow definitions. Customers do not author them. | [HOR-463](https://linear.app/horizonshift/issue/HOR-463) |
+| `DES-HOR-457-03` | **Storage.** The session substrate is the OpenEBS LVM LocalPV RWO claim (HOR-545, accepted). The old "production RWX" line is obsolete. | [HOR-468](https://linear.app/horizonshift/issue/HOR-468) |
+
+`DES-HOR-457-01`, `-05`, `-12`, and `-13` are unchanged.
+
 ## 2. Scope, non-goals, and invariants
 
 ### In scope
 
 - Explicit structured `parallel_fork` and paired `parallel_join` with `all` semantics.
+- The `wait` node, the expected-event registry it consumes, and the paused-with-reason state (HOR-649).
+- The interrupted-step rule: rerun in a fresh session without writes, stop with writes (HOR-649).
 - Sequential and single-branch cycles, including repeated review/remediation visits.
 - Durable root/branch lanes, fork activations, branch identities, arrivals, outputs, sessions, counters, and leases.
-- One-credit worker scheduling, multi-scheduler fencing, process recovery, worker loss, and no execution redelivery.
+- One-credit worker scheduling, multi-scheduler fencing, process recovery, worker loss under the interrupted-step rule, and no execution redelivery.
 - Parallel human gates, multiple blockers, customer status/action-required derivation, and stopped-work evidence.
 - User cancellation, required-branch failure, queued/running/turn/tool/session stop targets, terminal races, and late evidence.
 - Workflow-declared checkpoints, exact applicability, immutable output/artifact references, entry fallback, repeated-consequence confirmation, and new-attempt lineage.
@@ -151,9 +178,10 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 - Deployment, database reset, or deletion of OPO1 data in this ticket.
 - Partial, `any`, quorum, race, conditional, or dynamically selected joins.
 - Dynamic fan-out, map/reduce, nested or overlapping parallel regions, or cycles through a fork/join boundary.
-- Branch/node/turn automatic retry, stopped-attempt resume in place, session resurrection, or inferred checkpoints.
+- Automatic chase emails, and the email-specific reply-matching rules (HOR-654).
+- Branch/node/turn automatic retry, stopped-attempt resume in place, session resurrection, or inferred checkpoints. The interrupted-step rerun is not an exception to this: it is a new visit in a fresh session, allowed only when the interrupted turn made no write.
 - Compensation, universal undo, reversal claims, or a second consequence ledger.
-- Customer graph/checkpoint authoring or customer configuration of workers, sessions, storage, tools, or models.
+- Customer graph/checkpoint authoring or customer configuration of workers, sessions, storage, tools, or models. Iterabase declares workflows and checkpoints in each customer overlay.
 - Selection or provisioning of the OpenEBS LVM LocalPV RWO workspace substrate.
 
 ### Non-negotiable invariants
@@ -166,7 +194,7 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 6. A branch reaches exactly its paired join once. No branch or graph terminal bypasses its required join.
 7. Join readiness is all declared arrivals for one exact activation; completion order cannot alter aggregate order.
 8. Branch live filesystems are isolated. Only committed output and artifact references cross lanes.
-9. A committed or dispatched node turn is never assigned as a replacement execution. Worker loss fails the attempt.
+9. A committed or dispatched node turn is never assigned as a replacement execution. An interrupted turn with no write invocation reruns as a new visit in a fresh session; one with any write invocation stops the attempt (section 8).
 10. Every graph mutation, tool-invocation creation, and stop boundary observes the same attempt terminal fence.
 11. Stop propagation retries control delivery only. It never replays a branch, node, turn, or business invocation.
 12. Tool Gateway invocation state is the only external-effect outcome. Runtime stop state cannot rewrite it.
@@ -174,8 +202,10 @@ The founder approved the exact revised package below on 2026-08-24. The complete
 14. Restart always creates a new attempt and new sessions. Reuse is by exact immutable reference, never by synthetic successful visits.
 15. Any changed canonical execution input invalidates checkpoint reuse and forces entry.
 16. A checkpoint is attained only on its declared root-lane edge with no open parallel activation.
-17. Customer `Blocked` means no remaining lane/control transition can advance without customer action; action-required alone never implies `Blocked`.
+17. Customer `Blocked` means no remaining lane/control transition can advance without customer action; action-required alone never implies `Blocked`. `Waiting` and `Paused` are never `Blocked`.
 18. The pre-V2 OPO1 reset is the only approved history-erasure exception. It cannot be reused as a normal retention or recovery mechanism.
+19. A `wait` node holds no worker, turn, or session while it waits, and continues the same attempt.
+20. Pausing and resuming happen only at step boundaries and never rewrite history.
 
 ## 3. Existing foundation and exact gaps
 
@@ -349,6 +379,37 @@ Rules:
 - The source output/artifact shape must be valid for the node kind. Forks have no reusable output.
 - Terminal outcomes cannot anchor a checkpoint because there is no exact resume edge.
 
+Checkpoints are declared by Iterabase in each customer overlay's workflow definitions (HOR-463).
+
+### 4.5 `wait` node (HOR-649)
+
+A `wait` node is an explicit control point in the graph. Logical shape (HOR-649 owns the exact field names):
+
+```yaml
+- key: collect_replies
+  kind: wait
+  label: {en: Wait for supplier replies, pt: Aguardar respostas dos fornecedores}
+  wait:
+    expects:
+      - source: email_reply            # event source; email matching rules belong to HOR-654
+        correlationFrom:               # keys recorded by an earlier step
+          node: send_requests
+          output: correlationKeys
+    completion: all                    # all | any
+    deadline: {relative: 72h}          # or an absolute deadline
+  outcomes: [received, deadline, cancelled]
+```
+
+Rules:
+
+- Static validation checks that every correlation key comes from an earlier step, that the deadline is bounded, and that every outcome is routed.
+- `received` routes when the completion rule is met. `deadline` routes when the deadline passes first and carries whatever arrived. The workflow decides what happens next, for example an agent proceeding with partial replies or a human gate asking an Operator. There is no automatic chaser.
+- Entering the node registers its expected events in a durable expected-event registry. Event sources post events by correlation key, idempotently. Duplicates are ignored.
+- While waiting, the worker is released: no turn, assignment, or session is held.
+- Arriving events are committed as immutable evidence and become the next node's input. The attempt continues as the same attempt.
+- An event arriving after the wait closed, or after the attempt reached a terminal state, is kept as evidence only and never reopens or advances anything.
+- **Fan-out pattern:** one agent step sends N requests and records N correlation keys, then one `wait` collects the replies. This is how LusoPanarcos requests quotes from several vendors. It does not use parallel branches.
+
 ## 5. Durable execution model
 
 ### 5.1 Logical records
@@ -463,7 +524,7 @@ A branch receives the root context as of fork activation plus branch-local later
 - Every claim includes attempt terminal-fence generation and lane fence generation. Commit fails if either changed.
 - A pending agent node may create exactly one turn. If the scheduler crashes before a turn commit, the node lease expires and another scheduler may prepare it.
 - If a turn commits before first assignment, dispatch may assign that same turn once. It does not create a replacement turn.
-- Once assignment commits, failure to deliver or worker loss is delivery uncertainty and fails the attempt; the turn is not assigned to another worker.
+- Once assignment commits, the turn is never assigned to another worker. Failure to deliver or worker loss follows the interrupted-step rule in section 8: a new visit in a fresh session when the turn made no write invocation, otherwise the attempt stops.
 - Human nodes create one durable blocker and become `blocked`. Control nodes execute database-only transactions.
 - Worker `Ready` remains one credit. A worker receives at most one active assignment; more runnable branches wait without changing correctness.
 
@@ -561,9 +622,13 @@ Projection precedence for the current attempt:
 
 1. `succeeded` -> `Done`.
 2. `failed|canceled` -> `Stopped`, subtype `failed|canceled`.
-3. Any progress-capable lane/control transition -> `In progress`.
-4. No progress-capable lane and at least one open customer blocker -> `Blocked`.
-5. Otherwise fail closed to an operator-visible inconsistent state; never invent `Blocked` or `Done`.
+3. An active pause reason -> `Paused` with that reason, for example "Paused: trial ended" (HOR-649, HOR-466).
+4. Any progress-capable lane/control transition -> `In progress`.
+5. No progress-capable lane and at least one open `wait` -> `Waiting`, with what is awaited, progress, and deadline, for example "Waiting for supplier replies (2 of 3), deadline 14 Oct 17:00" (HOR-466).
+6. No progress-capable lane, no open `wait`, and at least one open customer blocker -> `Blocked`.
+7. Otherwise fail closed to an operator-visible inconsistent state; never invent `Blocked` or `Done`.
+
+`Waiting` and `Paused` never count as `Blocked`, because neither needs customer action. An open blocker still sets `actionRequired` alongside them. HOR-466 owns the exact projection table for every combination of branches, blockers, waits, and pauses.
 
 `progress-capable` includes running, runnable, waiting only for worker credit, a fork ready to activate, or a join ready to commit. An open blocker yields `actionRequired=true` and contributes to `openBlockerCount`; it does not override another progress-capable branch. Multiple open blockers are ordered by branch declaration then creation time for stable customer presentation.
 
@@ -596,11 +661,27 @@ The failing branch remains `failed`; siblings are `canceled` unless they had alr
 ### Worker and process loss
 
 - Worker disconnect/reconnect fences the exact assignment generation as today.
-- A committed assigned turn lost before settlement fails the required branch/attempt; it is never assigned to a replacement worker.
+- A committed assigned turn lost before settlement is never assigned to a replacement worker. It follows the interrupted-step rule below.
 - A scheduler crash before node/turn commit is safe lease recovery, not execution retry.
 - A process crash after branch arrival commit observes the immutable arrival and may complete the join once.
 - Late worker events use existing after-terminal append/dedup evidence and cannot mutate branch/attempt state.
 - The Tool Gateway independently reconciles orphaned writes to `outcome_unknown` and reads to failed under its existing authority.
+
+### Interrupted-step rule (HOR-649)
+
+It applies when a turn is interrupted mid-way by a model provider outage, a customer runner going offline, or worker or dispatch loss, in the root lane or a branch lane:
+
+1. The Tool Gateway invocation ledger for the interrupted turn decides the case.
+2. **No write invocation** (only `read_only` effect class, or no invocation): the item pauses with the cause as its reason (below). Once the cause clears, the step reruns from its start as a **new node visit in a fresh session**. The old turn is never replayed or resumed.
+3. **Any `idempotent_write` or `non_idempotent_write` invocation**, whether it succeeded, failed, or is `outcome_unknown`: the attempt stops, with the failure transaction above, and an interrupted-step reason. Recovery is the restart in section 13, which requires explicit confirmation of every repeated consequence. No write is repeated automatically.
+
+### Paused with reason (HOR-649)
+
+- One mechanism with a reason catalogue: trial ended (HOR-648), model provider unavailable (HOR-597, HOR-661), customer runner offline (HOR-596), and later causes.
+- Pausing happens at a step boundary. New scheduling for the item stops, the reason is recorded, and running work finishes its current step first. An interrupted turn with no write invocation also leads to a pause.
+- Resume is automatic when the reason clears, or explicit for a trial conversion. Resuming schedules the next step, or the interrupted-step rerun, without duplicating any effect.
+- A pause is not a terminal state and does not fail or cancel the attempt. Pause and resume are timeline events and are visible through the API and SSE.
+- A region timeout keeps counting wall-clock time while paused.
 
 A Tool Gateway's existing same-invocation policy for proven-idempotent transport remains separately governed by its immutable descriptor and ledger. It does not create another branch/node/turn or another invocation and is not branch retry.
 
@@ -629,7 +710,7 @@ A Tool Gateway's existing same-invocation policy for proven-idempotent transport
 - state `pending|leased|delivered|settled|unreachable`, lease generation/owner/expiry, bounded attempt count and last control error;
 - unique `(stop_intent_id,target_kind,target_id)`.
 
-Queued/pending nodes, blockers, and assignments are terminalized in the stop transaction and are not network outbox targets.
+Queued/pending nodes, blockers, open waits and their expected-event registrations, pauses, and assignments are terminalized in the stop transaction and are not network outbox targets. Cancellation applies equally to waiting and paused work; an event or resume arriving afterwards is evidence only (HOR-464).
 
 Target lifecycle and terminal evidence are exact:
 
@@ -718,7 +799,9 @@ For a `failed|canceled` source attempt, both restart proposal creation and confi
 
 ## 11. Browser authorization and confirmation
 
-All blocker, cancellation, restart/revision, and consequence-decision routes:
+Amended by HOR-248: blocker answers and send/submission confirmations may also come from a workflow agent's Teams card shown to an SSO-linked person (`docs/architecture/v2-authentication-authority.md` section 6.7). The card shows the exact content. Pressing it rechecks the person's current authority, the item's current state, and the content digest through the same blocker and confirmation services, attributed with channel `teams`. A stale card shows "already handled by …". Cancellation, revision, and restart stay browser-only, and every bearer credential stays denied.
+
+All browser blocker, cancellation, restart/revision, and consequence-decision routes:
 
 - require one current opaque browser cookie for an active Operator/Admin authorized for the installation work item;
 - reject any `Authorization` header before cookie fallback, including a valid mixed request;
@@ -867,6 +950,13 @@ checkpoint.attained
 restart.proposed
 restart.started_from_checkpoint
 restart.started_from_entry
+wait.started
+wait.event_received
+wait.received
+wait.deadline_reached
+work.paused
+work.resumed
+step.rerun_after_interruption
 ```
 
 Events contain business labels, branch declaration keys/order, attempt/checkpoint identity, safe reason codes, counts, and immutable artifact refs where approved. They contain no prompt, model/provider, raw tool arguments/results, runner, worker, lease, database, filesystem, or internal endpoint detail.
@@ -879,8 +969,13 @@ Operator runtime events retain exact lane/branch/node/turn/assignment/fence/targ
 | --- | --- | --- | --- | --- |
 | Scheduler dies before node/turn commit | Pending node + expired lease | Another scheduler claims it | Still In progress | Safe claim recovery; no execution occurred. |
 | Scheduler dies after turn commit before assignment | Same unassigned turn | Dispatch assigns that exact turn once | In progress | No replacement turn. |
-| Assignment commits but send is lost | Assigned turn delivery uncertain | Fence/terminalize; fail attempt; stop siblings | Stopped/failed | No turn/branch retry. |
-| Worker disconnects during branch turn | Assignment fenced; turn/branch failed | Stop siblings | Stopped/failed | New attempt only. |
+| Assignment commits but send is lost | Assigned turn delivery uncertain; fenced | Interrupted-step rule: no write invocation → new visit in a fresh session; any write → fail attempt and stop siblings | In progress, or Stopped/failed | Old turn never reassigned. After a write: new attempt only. |
+| Worker disconnects mid-turn (root or branch) | Assignment fenced | Interrupted-step rule as above | In progress, or Stopped/failed | Old turn never reassigned. After a write: new attempt only. |
+| Model provider or customer runner unavailable mid-turn | Turn interrupted; pause reason recorded | Classified retry, then pause; rerun without writes on resume, or stop after a write | Paused with reason, or Stopped/failed | Automatic resume when the cause clears. |
+| Trial expires | Pause reason recorded | Pause each item at its next step boundary | Paused: trial ended | Resume on conversion. |
+| Wait receives all expected events | Immutable events + `received` route | Continue same attempt | In progress | None. |
+| Wait deadline passes first | Arrived events + `deadline` route | Continue same attempt on `deadline` | In progress | Workflow decides; no chaser. |
+| Duplicate or late event | Ignored, or evidence only | None | Unchanged | Never reopens or advances. |
 | Worker late completion after stop | After-terminal event | ACK/dedup evidence only | Stopped remains | Never advances graph. |
 | Process dies during fork transaction | All or none | Reclaim pending fork or observe complete activation | In progress | Unique activation converges. |
 | Process dies after one branch arrival | Immutable arrival | Join waits/reconciles remaining arrivals | In progress/action required as applicable | No branch replay. |
@@ -900,7 +995,7 @@ Operator runtime events retain exact lane/branch/node/turn/assignment/fence/targ
 | Restart path has running invocation | Restart ineligible | Wait for ledger reconciliation | Stopped; effect still in flight | Re-propose after terminal/unknown. |
 | Crash during new-attempt transaction | Old attempt remains current or full new attempt exists | Idempotent proposal decision returns committed result | One new attempt at most | No partial reuse/session. |
 | PostgreSQL unavailable | No authoritative transition | Fail closed; send no new work/effect | Temporary unavailable | Retry command/claim before effect boundary. |
-| Dedicated workspace mount/class/PV unavailable or ambiguous | Parallel production preflight fails | Do not activate production parallel work | Operator-visible unavailable | HOR-538 remediation. |
+| Dedicated workspace mount/class/PV unavailable or ambiguous | Parallel production preflight fails | Do not activate production parallel work | Operator-visible unavailable | HOR-545 substrate remediation. |
 
 ## 16. Security and privacy boundaries
 
@@ -1021,7 +1116,16 @@ Assert exact customer status, action-required flag/count, blocker order, stopped
 
 Use deterministic barriers before/after fork commit, turn creation, assignment commit/send, completion report, branch arrival, join commit, stop commit, stop delivery, gateway ledger insert/send/result, checkpoint attainment, and restart commit. For each barrier, kill/restart the responsible process and assert PostgreSQL convergence, exact ledger counts, no repeated external write, and honest customer state.
 
-### 18.8 OPO1 reset rehearsal
+### 18.8 Wait, pause, and interrupted-step tests (HOR-649)
+
+- A workflow sends 3 requests, then waits `all` with a deadline: all 3 events continue the same attempt; 2 events plus the deadline route `deadline` with both; a duplicate is ignored; an event after cancellation is evidence only.
+- Pool metrics show no worker held during a wait.
+- Each pause cause pauses at the step boundary, shows its reason, and resumes automatically when cleared; trial conversion resumes without duplicate effects.
+- Worker killed mid-turn: a read-only turn reruns in a fresh session and completes; a turn with a write stops the attempt with an explicit restart path, and no write is repeated.
+- Process restart at every wait, pause, and resume boundary leaves one coherent history.
+- Projection tables show `Waiting` and `Paused` and never `Blocked` for them.
+
+### 18.9 OPO1 reset rehearsal
 
 On a disposable OPO1 database and dedicated-workspace copy:
 
@@ -1141,10 +1245,12 @@ sequenceDiagram
 | `REQ-022`, `SCN-014` honest cancellation | Sections 9–11 and race/failure tests; DES-HOR-457-08 through 10. |
 | `REQ-023` stopped and outcome-unknown work | Sections 7, 10, 14, and 15. |
 | `REQ-024`, `SCN-015` declared checkpoint, fresh attempt, immutable reuse/entry fallback | Sections 12–13 and 18.6; DES-HOR-457-11/12. |
+| `REQ-045`, `SCN-029` waiting for external events in the same attempt | Sections 1.1, 4.5, 7, 15, and 18.8. |
+| `REQ-046`, `SCN-028`, `SCN-030` paused with reason; interrupted steps | Sections 1.1, 8, 15, and 18.8. |
 | `SCN-018` crash recovery without duplicate consequence | Sections 6, 8–10, 15, and 18.7. |
 | Product preserve-history principle | Post-V2 invariants, append-only logical records, and restart by reference. |
 | Founder-approved cyclic review clarification | Sections 4.2/4.3, scheduler bound, tests, and reset smoke suite. |
-| Founder-approved OPO1 reset exception | Sections 18.8/19 and DES-HOR-457-13. |
+| Founder-approved OPO1 reset exception | Sections 18.9/19 and DES-HOR-457-13. |
 
 ## 22. Ownership and delivery sequence
 
@@ -1152,11 +1258,14 @@ sequenceDiagram
 - **HOR-466:** customer-safe multi-branch/process projections, action-required versus Blocked, multiple blockers, timeline/SSE, EN/PT, responsive/accessibility behavior.
 - **HOR-464:** cookie-only cancel proposals/confirmation, attempt stop transaction, dispatch/gateway/session target outbox, stopped subtype/retry eligibility, late consequence projection, and race tests.
 - **HOR-463:** checkpoint schema/validation/attainment, input digest, restart proposal/confirmation, lineage selection, immutable reuse references, entry fallback, path-reachable consequence review, and UI/API attempt history.
-- **HOR-516:** interaction/presentation design must consume these status, blocker, consequence, checkpoint, and stopped-work semantics without redefining them.
+- **HOR-649:** `wait` node schema/validation/scheduling, expected-event registry, paused-with-reason state and reason catalogue, and the interrupted-step classifier and fresh-session rerun.
+- **HOR-654, HOR-648, HOR-597/HOR-661, HOR-596:** event sources and pause causes: email replies, trial expiry, model provider unavailable, and customer runner offline.
+- **HOR-248:** Teams card answers and confirmations through the same blocker/confirmation services.
+- UI is designed in code in the HOR-459 app and reviewed on `pr-<N>` previews. The HOR-516 prototype is reference only; these semantics are not redefined by presentation.
 - **HOR-545:** prepare and validate the fixed OpenEBS LVM LocalPV thick-XFS RWO substrate; they do not redefine lane/session semantics.
 - **Shared release validation:** exact same-node multi-worker RWO E2E, process recovery, consequence integrity, clean-reset rehearsal, deployment evidence, and rollback boundary.
 
-HOR-468 should establish the schema and attempt-terminal lock seam consumed by HOR-464/HOR-463. HOR-464 must land before restart execution is enabled, because restart eligibility depends on settled stop/consequence state. HOR-466 may build projections after the runtime records are stable. No Todo/cycle placement bypasses these dependency gates.
+HOR-468 and HOR-649 land in either order; the second builds on the first. HOR-468 should establish the schema and attempt-terminal lock seam consumed by HOR-464/HOR-463. HOR-464 must land before restart execution is enabled, because restart eligibility depends on settled stop/consequence state. HOR-466 may build projections after the runtime records are stable. No Todo/cycle placement bypasses these dependency gates.
 
 ## 23. Acceptance checklist
 

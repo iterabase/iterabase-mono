@@ -1,12 +1,12 @@
 # V2 artifact quarantine, extraction/OCR, and derived-artifact contract
 
-- **Status:** Approved design; implementation is owned by follow-on tickets.
-- **Approval date:** 2026-08-23
+- **Status:** Approved design, amended by the founder design review of 2026-10-11/12 (section 1.1); implementation is owned by follow-on tickets.
+- **Approval date:** 2026-08-23; amended 2026-10-12 ([HOR-663](https://linear.app/horizonshift/issue/HOR-663/docs-amend-the-v2-architecture-docs-to-the-2026-10-design-review))
 - **Architecture ticket:** [HOR-460](https://linear.app/horizonshift/issue/HOR-460/v2-approve-artifact-quarantine-extractionocr-and-derived-artifact)
-- **Product contract:** Obsidian `Platform V2 — Managed Digital Workforce — Product Requirements`, especially `REQ-028`–`REQ-033` and `SCN-005`–`SCN-007`
+- **Product contract:** Obsidian `Platform V2 — Product Requirements` (2026-10-12), especially `REQ-028`–`REQ-033`, `REQ-038`, `REQ-044`, and `SCN-005`–`SCN-007`. The 2026-08-10 PRD is history.
 - **Related authority:** [`v2-authentication-authority.md`](v2-authentication-authority.md), especially `DES-HOR-451-05`, `DES-HOR-451-13`, and the artifact endpoint classification
 - **Related Chat contract:** [`v2-chat-tool-confirmation.md`](v2-chat-tool-confirmation.md), especially `DES-HOR-456-10`, sections 12 and 16, and artifact-drift staleness
-- **Implementation owners:** HOR-461, HOR-462, HOR-458, HOR-517, and HOR-467 as bounded in section 22
+- **Implementation owners:** HOR-461, HOR-462, HOR-458, and HOR-467 as bounded in section 22. The HOR-517 prototype is reference only.
 
 This record is the repository authority for V2 artifact admission, quarantine, MIME and malware clearance, deterministic extraction/OCR, immutable derivatives, shared library/search registration, raw-compatible workflow use, retention, and deletion. It does not implement the design. Where the pre-V2 artifact service uses one `pending -> available -> deleting -> deleted` state and treats caller-declared MIME as authoritative, this record supersedes those semantics only after the V2 artifact epoch described in section 19.
 
@@ -48,6 +48,7 @@ The founder approved the original complete package below for HOR-460 on 2026-08-
 - **Scope:** Customer uploads, Chat attachment count, MIME/container validation, and parser admission.
 - **Decision:** The exact V2 set is PDF, DOCX, CSV, XLSX, UTF-8 TXT, JPEG, PNG, and TIFF. Each file is limited to 25 MiB (26,214,400 bytes), and each Chat message may reference at most six distinct artifacts, including new uploads, pasted captures, and reused artifacts. Detected canonical type plus bounded structural validation is authoritative. Conflicting extension/type, archives other than validated OOXML containers, executables, macro-enabled or embedded-active containers, encrypted files, and unsupported formats are permanently rejected.
 - **Consequences:** Both early `Content-Length` checks and streaming hard limits apply. Workflow or API-specific inputs may narrow but never widen this set without a new product and architecture decision.
+- **Amended (HOR-461):** email bodies and `.eml` / `.msg` containers are admitted (section 1.1 and section 6).
 - **Evidence:** Founder approval recorded in HOR-460.
 
 ### DES-HOR-460-05 — Use ClamAV 1.4.6 LTS as the malware verdict engine
@@ -66,6 +67,7 @@ The founder approved the original complete package below for HOR-460 on 2026-08-
 - **Scope:** MIME detection support, document/table extraction, OCR, derived evidence, and any future LLM role.
 - **Decision:** Pin Apache Tika 3.3.1 and Tesseract 5.5.0 with English, Portuguese, and orientation data as the V2 extraction/OCR baseline. Deterministic parser/OCR output, processor configuration, coverage, and lineage are the only extraction authority. An LLM may later be useful downstream for bounded semantic interpretation, labeling, or workflow reasoning over an already security-cleared immutable derivative, but it is not needed for byte parsing or OCR and cannot silently repair, replace, certify, or enrich the canonical derivative or search index in V2. Any LLM-based extraction fallback, document-vision/OCR provider, canonical enrichment, or claim that changes extracted evidence, lineage, retention, network/data handling, or failure semantics requires a separate approved architecture and, where customer behavior changes, product decision.
 - **Consequences:** Extraction remains reproducible, customer-controlled, attributable, and testable without hosted inference. Chat may reason over ready derivatives but must cite deterministic coverage and never claim unread content.
+- **Amended (HOR-462):** the pipeline also renders page images, which an agent may read with the installation's vision-capable model. That is workflow reasoning, not extraction: Tika/Tesseract stay the only canonical extraction (section 1.1 and section 9).
 - **Evidence:** Founder approval and explicit LLM-role clarification recorded in HOR-460.
 
 ### DES-HOR-460-07 — Isolate untrusted parsers behind credentialless mTLS services
@@ -111,6 +113,7 @@ The founder approved the original complete package below for HOR-460 on 2026-08-
 - **Scope:** Chat context, workflow definitions, confirmation/start validation, materialization, and extraction failure.
 - **Decision:** Chat reads only a ready deterministic derivative. A security-cleared original may be supplied as raw bytes only when the exact immutable workflow version and input field explicitly declare raw compatibility for the canonical MIME. Compatibility and security are rechecked at proposal, confirmation or start, and materialization. Raw use may proceed independently of extraction but never implies content was extracted or read.
 - **Consequences:** Extraction failure preserves useful safe originals without widening arbitrary workflow inputs or allowing Chat to claim unavailable content.
+- **Amended (HOR-462, HOR-458):** "ready deterministic derivative" includes the page-image derivatives an allowed agent or the chief of staff may read (section 1.1).
 - **Evidence:** Founder approval recorded in HOR-460.
 
 ### DES-HOR-460-12 — Purge bytes safely and retain only an attributable tombstone
@@ -122,11 +125,25 @@ The founder approved the original complete package below for HOR-460 on 2026-08-
 - **Consequences:** Partial object-store failure remains `deleting` and retries without restoring availability. Completed historical work remains attributable but bytes cannot be recovered through the product.
 - **Evidence:** Founder approval recorded in HOR-460.
 
+## 1.1 Design review amendments (2026-10-11/12)
+
+The founder design review of 2026-10-11/12 amended this record. Each amendment's detailed contract is the "Decisions (design review)" section of the ticket in the right-hand column; the Obsidian `Platform V2 — Product Requirements` note maps requirements to those tickets. The rest of the HOR-460 contract stays: ClamAV 1.4.6 LTS, storage-level quarantine, PostgreSQL search, and tombstone deletion.
+
+| Amends | Amendment | Deciding ticket |
+| --- | --- | --- |
+| `DES-HOR-460-04` | **Email formats.** An email body is stored as sanitised UTF-8 text, and the original HTML is kept as a quarantined source that is never rendered unsanitised. `.eml` and `.msg` files are admitted as **containers**: the container is scanned, then its body and every inner attachment become their own child artifacts. Each child goes through the same scan and type policy and keeps its lineage to the container. Expansion depth is 1 and the child count is bounded. All other limits are unchanged (section 6). | [HOR-461](https://linear.app/horizonshift/issue/HOR-461) |
+| `DES-HOR-460-06`, `DES-HOR-460-11` | **Page images for agents.** For PDFs and images, the pipeline also renders page images as immutable derived artifacts, at a bounded resolution and page count. A workflow node may declare that its agent can view them, and the chief of staff may read them for scanned or handwritten pages (HOR-458). The agent reads them with the installation's vision-capable model (DeepSeek V4.1 Flash, HOR-597). What the agent reads is **workflow reasoning, not extraction**: it never overwrites or enriches the canonical derivative or the search index, and it consumes credits like any inference (HOR-648). This is the path for handwritten or poorly scanned content (section 9). | [HOR-462](https://linear.app/horizonshift/issue/HOR-462) |
+| `DES-HOR-460-03`, section 2 | **One quarantine path for every source.** Artifacts are admitted from user uploads, mailboxes (system actor plus mailbox/message lineage), customer-network runners and tool output (tool-invocation lineage), workflows, and Teams attachments. Every source goes through the same quarantine, scan, and type policy. | [HOR-461](https://linear.app/horizonshift/issue/HOR-461), [HOR-595](https://linear.app/horizonshift/issue/HOR-595), [HOR-596](https://linear.app/horizonshift/issue/HOR-596), [HOR-659](https://linear.app/horizonshift/issue/HOR-659) |
+| `DES-HOR-460-12` | **Teardown is not deletion.** Trial and installation teardown destroys the whole environment (HOR-593) and does not use this deletion path. The Admin-key deletion path is for in-product deletion only. | [HOR-461](https://linear.app/horizonshift/issue/HOR-461) |
+| Section 11 sizing | **Memory sizing.** ClamAV needs 1.5–3 GiB; HOR-602 accounts for it on the 16 GiB hosted instance. | [HOR-461](https://linear.app/horizonshift/issue/HOR-461) |
+
 ## 2. Scope, non-goals, and invariants
 
 ### In scope
 
-- Customer, Chat, workflow, sandbox, and tool-produced bytes that enter the V2 shared artifact domain.
+- Customer, Chat, Teams, mailbox, runner, workflow, sandbox, and tool-produced bytes that enter the V2 shared artifact domain, all through one quarantine path.
+- Email bodies and `.eml` / `.msg` container expansion into child artifacts with lineage.
+- Page-image derivatives for agents allowed to read them with the vision model.
 - Upload admission, digest and size verification, content-derived MIME and container validation, malware scan, quarantine, promotion, and security re-scan.
 - Deterministic extraction of text and tables and OCR for supported image/scanned-document content.
 - Independent durable state and append-only processing evidence.
@@ -139,12 +156,12 @@ The founder approved the original complete package below for HOR-460 on 2026-08-
 
 - Runtime, schema, API, worker, UI, chart, or image implementation in HOR-460 itself.
 - Private or per-user libraries, sharing grants, cross-installation access, or a top-level Artifact Library.
-- Arbitrary archives, executables, legacy DOC/XLS, macro-enabled Office formats, HTML/SVG/RTF, audio/video, password-protected content, or customer-added parsers.
+- Arbitrary archives, executables, legacy DOC/XLS, macro-enabled Office formats, standalone HTML/SVG/RTF uploads, audio/video, password-protected content, or customer-added parsers. Email HTML bodies are handled only as described in section 6.
 - Hosted file processing, hosted OCR, or an LLM/document-vision service as extraction authority.
 - Customer configuration of scanner, parser, OCR engine, signatures, security limits, or search backend.
 - Sanitizing or rewriting the immutable original, format conversion, content disarm and reconstruction, or claiming that malware clearance makes business content correct.
-- Preview rendering, thumbnail generation, semantic entity extraction, embeddings/vector search, translation, classification, summarization, or accuracy guarantees.
-- Self-service deletion UI; V2 deletion remains the approved personal Admin API/runbook operation.
+- Customer preview rendering, thumbnail generation, semantic entity extraction, embeddings/vector search, translation, classification, summarization, or accuracy guarantees. Page images are agent inputs, not a preview feature.
+- Self-service deletion UI; V2 deletion remains the approved personal Admin API/runbook operation. Environment teardown (HOR-593) is separate from this path.
 
 ### Non-negotiable invariants
 
@@ -155,7 +172,7 @@ The founder approved the original complete package below for HOR-460 on 2026-08-
 5. A clean scan does not imply extraction success, business correctness, or permission to widen a workflow input.
 6. A ready extraction does not override a rejected, withdrawn, deleting, or deleted security/storage state.
 7. Derived bytes are immutable children of one immutable original and one exact successful attempt; no derivative becomes a new independent uploaded original by implication.
-8. Chat context contains only a ready derivative and its coverage/lineage reference, never raw bytes or a false claim that extraction occurred.
+8. Chat and agent context contains only ready derivatives (text, tables, and page images where the node or the chief of staff is allowed them) and their coverage/lineage reference, never raw bytes or a false claim that extraction occurred.
 9. Raw workflow materialization requires both current security clearance and an exact immutable workflow-input declaration for the canonical MIME.
 10. Shared list/recent/search queries filter registration and current security/storage eligibility before ranking, counting, or generating snippets.
 11. Deletion gates reads and search before object deletion begins and never returns to available after the transition starts.
@@ -297,6 +314,9 @@ Trust rules:
 | `image/jpeg` | `.jpg`, `.jpeg` | Complete decoder validation and bounded dimensions | Tesseract `eng+por` with orientation detection |
 | `image/png` | `.png` | Complete decoder validation and bounded dimensions; no active ancillary behavior | Tesseract `eng+por` with orientation detection |
 | `image/tiff` | `.tif`, `.tiff` | Complete bounded multi-page decoder validation | Per-page Tesseract `eng+por` with orientation detection |
+| Email body (`text/plain` canonical) | none; created from a received message | Sanitised UTF-8 text produced from the message body. The original HTML, if any, is kept as source evidence through the same quarantine path and is never rendered unsanitised (HOR-461) | Normalized UTF-8 text; sanitised HTML is text-extracted (HOR-462) |
+| `message/rfc822` | `.eml` | Admitted only as a **container** (HOR-461). The container is scanned; its body and every inner attachment become child artifacts with lineage to the container; expansion depth 1 and a bounded child count | The container has no extraction of its own; each child is extracted by its own type |
+| `application/vnd.ms-outlook` | `.msg` | As `.eml`. The OLE structure is read only to expand the container into children; embedded OLE objects inside a child stay rejected | As `.eml` |
 
 Rules:
 
@@ -304,7 +324,8 @@ Rules:
 - Caller `Content-Type` may match the canonical type or be `application/octet-stream`. Any other conflicting claim is rejection evidence, not a request to coerce the parser.
 - Detection must agree with the extension family. A missing extension may be accepted only when the customer channel supplies a safe generated name for pasted TXT; other ambiguous names are rejected.
 - ZIP is never a customer-visible accepted MIME. DOCX/XLSX acceptance requires the exact package type and bounded entries. Legacy DOC/XLS, DOCM/XLSM, generic ZIP, gzip/tar/7z/RAR, and nested archives are rejected.
-- SVG and HTML are rejected despite being text because they can carry active/external behavior. GIF/WebP/BMP are outside the complete V2 image set.
+- SVG and HTML are rejected as standalone artifacts despite being text because they can carry active/external behavior. An email HTML body is never admitted as a usable HTML artifact: only its sanitised text is usable, and the original HTML stays quarantined source evidence. GIF/WebP/BMP are outside the complete V2 image set.
+- An `.eml` / `.msg` child is a separate artifact with its own scan, type policy, state, and lineage to its container. A rejected child (for example malware) never affects its siblings or the container's other children. A container inside a container is not expanded further (depth 1); it stays a rejected or unexpanded child.
 - CSV/XLSX values are data. Extraction never executes formulas, DDE, macros, links, queries, or external connections. Customer rendering escapes values and never treats derived text/table content as HTML.
 - Parser resource-limit failure is an extraction failure only after security clearance. A type/container policy violation is a permanent security rejection.
 
@@ -403,7 +424,7 @@ Extraction state never changes security state. A security withdrawal gates a pre
 | Security cleared; extraction ready | `ready` | Shared metadata/download/search; Chat uses exact derivative; raw-compatible workflow may still choose declared raw mode |
 | Storage deleting/deleted or security withdrawn | `unavailable`/`deleted` | Tombstone/reference-safe projection only; no byte/derivative/search use |
 
-These stable semantic codes are localized by HOR-458/HOR-517. Customer messages never expose ClamAV/Tika/Tesseract, pod, queue, storage key, signature database, or technical error names.
+These stable semantic codes are localized by HOR-458 and the HOR-459 app. Customer messages never expose ClamAV/Tika/Tesseract, pod, queue, storage key, signature database, or technical error names.
 
 ## 8. Logical data contract
 
@@ -414,7 +435,7 @@ Names below are normative logical contracts. A migration may extend the current 
 Required identity and attribution:
 
 - stable artifact UUID and installation scope;
-- source type and immutable source reference;
+- source type (`upload|chat|teams|mailbox|runner|tool|workflow`) and immutable source reference: mailbox and message identity for mailbox sources, tool invocation for runner and tool output, and the parent container for `.eml` / `.msg` children (HOR-461);
 - initiating-human identity, request-actor identity, optional executing identity;
 - optional browser session/API key, credential kind, and owner snapshot required by HOR-451;
 - uploader/customer-safe display name while content exists;
@@ -439,7 +460,7 @@ Identity/source/digest/size/canonical MIME/attribution become immutable once est
 One append-only metadata row per physical object:
 
 - object UUID, artifact UUID, optional derivative-set UUID;
-- zone exactly `quarantine|original|derived` and kind exactly `original|text|tables`;
+- zone exactly `quarantine|original|derived` and kind exactly `original|text|tables|page_image`;
 - unique opaque storage key, digest, size, content type, created time;
 - lifecycle `writing|committed|purging|purged` and purge evidence;
 - upload/promotion/extraction attempt generation that created it.
@@ -483,7 +504,8 @@ A derivative set is immutable after `complete`:
 - status `building|complete|abandoned|purged`;
 - processor/config/language/image identity and created system actor;
 - complete coverage summary and content-safety projection version;
-- one required text derivative when text exists and zero/one table derivative when tables exist.
+- one required text derivative when text exists and zero/one table derivative when tables exist;
+- for PDFs and images, page-image derivatives at a bounded resolution and page count (HOR-462).
 
 Each derived-artifact row points to one `artifact.objects(zone='derived')` row and records kind, MIME, digest, size, logical encoding/schema version, page/sheet/table span, and coverage. No customer can upload or independently delete/reference a derivative ID. The original artifact ref plus selected set and kind resolve it.
 
@@ -559,9 +581,10 @@ A repeated request with the same upload idempotency key and exact committed payl
 2. Stream the exact safe original over mTLS to the extractor adapter. No URL, storage key, owner, credential, or workflow context enters the parser.
 3. Tika deterministically parses text and table structure. Tesseract runs only for supported images or PDF pages without usable extracted text, with `eng+por+osd` and the section 6 limits. It never calls a network model or external resource.
 4. The adapter emits versioned bounded UTF-8 text/table streams plus coverage and deterministic diagnostics. Coordinator validates schemas, computes digests, and writes unique building derivative objects.
-5. Complete the set and select it atomically as defined in section 8.5, then update the content-search projection from the selected immutable set.
-6. A deterministic parser, password, malformed, or resource-limit error commits permanent extraction failure without changing clearance, registration, original download, or raw-compatible use.
-7. A service, lease, transport, or process failure uses the bounded retry contract. Partial objects remain inaccessible and are swept.
+5. For PDFs and images, render page images at the bounded resolution and page count as part of the same derivative set (HOR-462). Page images are never indexed for search.
+6. Complete the set and select it atomically as defined in section 8.5, then update the content-search projection from the selected immutable text/table derivatives.
+7. A deterministic parser, password, malformed, or resource-limit error commits permanent extraction failure without changing clearance, registration, original download, or raw-compatible use.
+8. A service, lease, transport, or process failure uses the bounded retry contract. Partial objects remain inaccessible and are swept.
 
 ### LLM role and boundary
 
@@ -570,12 +593,21 @@ LLMs can be useful **after** this pipeline for workflow-specific semantic work s
 LLMs are deliberately not part of V2 extraction because they would add nondeterministic evidence, model/prompt/version lineage, false repair risk, different network and payload-retention boundaries, additional failure/cost states, and potentially hosted data processing. Therefore V2 does not use an LLM to:
 
 - decide MIME or malware safety;
-- OCR or parse raw bytes;
+- OCR or parse raw bytes into the canonical derivative (an agent reading page images is reasoning, above);
 - repair corrupt/encrypted/unsupported documents;
 - fill missing text/cells or choose a canonical value;
 - create or silently enrich the artifact search index;
 - certify extraction completeness or business correctness;
 - replace Tika/Tesseract after a failure.
+
+### Page images for agents (HOR-462)
+
+Approved by the founder on 2026-10-11 as an amendment to `DES-HOR-460-06`:
+
+- A workflow node may declare that its agent can view page images. The harness gives that agent the selected page images as image inputs on request, within per-node limits. A node without the declaration cannot obtain them. The chief of staff may read page images for scanned or handwritten pages (HOR-458).
+- The agent reads them with the installation's vision-capable model (DeepSeek V4.1 Flash, HOR-597), under the normal inference authority, attribution, and credit metering (HOR-648).
+- What the agent reads is workflow reasoning, not extraction. It never overwrites or enriches the canonical text/table derivative or the search index, and it is not recorded as extraction evidence.
+- Page images are only available once the artifact is cleared and the derivative set is selected, like every other derivative.
 
 A future proposal may add a separate, immutable, non-canonical semantic derivative while preserving deterministic source evidence, but it first requires an approved decision covering model location, exact data path, prompt/output schema, reproducibility, confidence/customer copy, lineage, retention, authorization, network, cost, fallback, and failure semantics. It cannot overwrite a deterministic derivative or weaken security clearance.
 
@@ -652,7 +684,7 @@ These are the approved starting limits for implementation sizing, not a throughp
 | --- | --- | --- | --- |
 | Coordinator | 250m CPU / 256 MiB | 1 CPU / 512 MiB | 2 leased streams; 128 MiB scratch/buffers |
 | Scanner adapter | 100m / 128 MiB | 500m / 256 MiB | 1 stream |
-| ClamAV engine | 500m / 1536 MiB | 2 CPU / 3 GiB | 1 scan; 512 MiB scratch |
+| ClamAV engine | 500m / 1536 MiB | 2 CPU / 3 GiB | 1 scan; 512 MiB scratch. HOR-602 accounts for this on the 16 GiB hosted instance |
 | Extractor adapter + Tika/Tesseract pod | 1 CPU / 1 GiB | 2 CPU / 2 GiB | 1 extraction; JVM `-Xmx1g`; 1 GiB scratch |
 | Signature updater | 100m / 128 MiB | 500m / 256 MiB | one atomic bundle publish at a time; 512 MiB staging |
 
@@ -743,7 +775,7 @@ Rules:
 - Before registration, a browser status read requires a current Operator/Admin plus the initiating-human or Admin-security predicate. A bearer status read always requires `artifacts.read` and additionally the same initiating human for personal keys or the exact automation credential; its accountable Admin owner may inspect through the browser security path. Other callers, including an upload-only key, receive not found/forbidden without learning row state.
 - `recent` orders registered eligible artifacts by library registration or last safe reference time using a stable cursor. It is not an activity feed containing quarantined attempts.
 - Work-item source/result artifacts remain visible through work views under their owning work projection. Shared-library visibility is additional and never bypasses work-field safety.
-- There is no top-level library screen in V2. HOR-458/HOR-517 consume these APIs contextually from Chat and work evidence.
+- There is no top-level library screen in V2. HOR-458 and the HOR-459 app consume these APIs contextually from Chat and work evidence.
 
 ### Search fields
 
@@ -804,7 +836,7 @@ The handle has no canonical MIME, digest, size, or artifact-ref semantics. It ma
 
 - The composer accepts no more than six distinct provisional handles or canonical refs. A Chat message accepts no more than six canonical refs and preserves them immutably.
 - Message submission is gated until every selected provisional handle has either promoted to a canonical ref or been removed/replaced. Submitting `checking_security`, transient-failed, or rejected handles returns stable `attachments_not_cleared` and creates no message/execution. A security-cleared canonical ref may be submitted while extraction is pending, but model context receives no content until a complete selected derivative exists.
-- When ready, Chat context points to the exact derivative set, digest, coverage, and page/sheet spans supplied. It never copies raw bytes into conversation tables.
+- When ready, Chat context points to the exact derivative set, digest, coverage, and page/sheet spans supplied. It never copies raw bytes into conversation tables. For scanned or handwritten pages, the chief of staff may read the page images (HOR-458, section 9).
 - Safe extraction failure is explicit. Chat may state that a file is attached and safe but not that it read, summarized, or understood unavailable content.
 - Artifact security, extraction selection, library, workflow version, or raw compatibility drift makes a pending confirmation stale under HOR-456.
 - LLM reasoning over ready deterministic content is normal Chat inference, not extraction. Its answer remains model output and cannot mutate the derivative or search authority.
@@ -821,6 +853,8 @@ artifactInputs:
     consumption: derived_text # derived_text | derived_tables | raw
     required: true
 ```
+
+Separately, an agent node may declare page-image access (HOR-462). The declaration is validated with the workflow, and the agent receives page images only within the node's limits (section 9).
 
 Rules:
 
@@ -844,6 +878,8 @@ Rules:
 | Cleared original and derivatives | Installation policy captured on artifact; default indefinite | Retention expiry uses the same active-reference and purge state machine as Admin deletion |
 | Building/orphan processor object | 24-hour reconciliation hold | Never visible; purge after DB/object reconciliation |
 | Tombstone | Indefinite while retained domain references require it | Content-free minimum in section 8.8; a later approved installation audit policy may lengthen, not restore content |
+
+Environment teardown (trial end without conversion, or `forge destroy`) destroys the whole installation, including every byte and tombstone (HOR-593). It does not use the deletion path below, which is for in-product deletion only.
 
 Changing installation retention affects newly created artifacts unless an approved migration explicitly recalculates existing deadlines. Derived objects inherit the parent's deadline and cannot outlive or be independently retained through the product.
 
@@ -1088,11 +1124,12 @@ Required scenario evidence:
 | --- | --- |
 | HOR-460 | This approved architecture/decision record only. |
 | HOR-454 | Current Operator/Admin and owner/actor/credential schema and server authority consumed by artifact routes. |
-| HOR-461 | Admission/quarantine/security states and attempts, ClamAV/signature pipeline, split MinIO credentials/zones, shared registration/list/recent/search, exact customer actions/routes, active-reference deletion, tombstones, metrics/charts/runbook, and v1 artifact epoch migration. |
-| HOR-462 | Tika/Tesseract extractor, immutable derivative sets/lineage, extraction retry/status/results, workflow input-mode schema, raw/derived materialization, content search contribution, resources/metrics/tests. |
+| HOR-461 | One quarantine path for every source, email body and `.eml` / `.msg` container admission, admission/quarantine/security states and attempts, ClamAV/signature pipeline, split MinIO credentials/zones, shared registration/list/recent/search, exact customer actions/routes, active-reference deletion, tombstones, metrics/charts/runbook, and v1 artifact epoch migration. |
+| HOR-462 | Tika/Tesseract extractor, page-image derivatives and the node declaration for agent access, immutable derivative sets/lineage, extraction retry/status/results, workflow input-mode schema, raw/derived materialization, content search contribution, resources/metrics/tests. |
 | HOR-452/HOR-455 | Chat context and confirmation/start enforcement using the current artifact/derivative state; no raw Chat content. |
-| HOR-458 | Contextual browser upload/paste/reuse chips, six-reference/25 MiB customer behavior, status/retry/ref handoff; no architecture change. |
-| HOR-517 | Binding interaction/presentation design for approved quarantine/extraction/raw/deletion states; no processor/runtime implementation. |
+| HOR-458 | Contextual browser upload/paste/reuse chips, six-reference/25 MiB customer behavior, status/retry/ref handoff, chief-of-staff page-image reading; no architecture change. |
+| HOR-595, HOR-654, HOR-596, HOR-659 | Mailbox, reply, runner, and Teams sources handing bytes to the one quarantine path. |
+| HOR-517 | Reference-only prototype. UI is designed in code in the HOR-459 app and reviewed on `pr-<N>` previews; it consumes these states without redefining them. |
 | HOR-467 | Exact image/SBOM/license/signature, malicious corpus, isolation/network, fresh install/upgrade/restore, EN/PT/accessibility, and `SCN-005`–`007` release evidence. |
 
 `control-plane/` owns artifact domain/API/coordinator/workflow/reference integration. `charts/` owns scanner/extractor/signature/MinIO/mTLS/network/resource packaging. Those named contract surfaces are cross-component only because HOR-460 explicitly selects deployment topology. `inference-gateway/` and Forge require no HOR-460 design change; a future LLM extractor, new substrate, or external service would require separate scope and approval.
