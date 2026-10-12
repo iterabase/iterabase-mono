@@ -85,9 +85,9 @@ func deployedExecutionContractsScenario() sharede2e.Definition {
 	return sharede2e.Define(sharede2e.Scenario[*deployedState]{
 		Metadata: deployedExecutionMetadata(
 			"deployed-execution-contracts",
-			"Proves source-built AgentPool, dispatch, disposable harness children, model/tool gateways, immutable tools and artifacts, consequences, isolation, and durable recovery on fresh Kind.",
-			"test-e2e-execution", 55,
-			[]string{"HOR-477", "HOR-438", "HOR-488", "HOR-489", "HOR-545", "REQ-005", "REQ-009", "REQ-010", "REQ-018", "REQ-035", "SCN-008", "SCN-009", "SCN-012"},
+			"Proves source-built AgentPool, dispatch, disposable harness children, model/tool gateways, immutable tools and artifacts, consequences, isolation, durable waits, and interrupted-step recovery on fresh Kind.",
+			"test-e2e-execution", 60,
+			[]string{"HOR-477", "HOR-438", "HOR-488", "HOR-489", "HOR-545", "HOR-649", "REQ-005", "REQ-009", "REQ-010", "REQ-018", "REQ-035", "REQ-045", "REQ-046", "SCN-008", "SCN-009", "SCN-012", "SCN-030"},
 		),
 		NewState: newDeployedState,
 		Stages: []sharede2e.Stage[*deployedState]{
@@ -108,6 +108,7 @@ func deployedExecutionContractsScenario() sharede2e.Definition {
 			{Name: "exercise-isolation-composition", DependsOn: []string{"exercise-idempotent-invocation-race"}, Run: exerciseIsolationCompositionStage},
 			{Name: "exercise-outcome-unknown-recovery", DependsOn: []string{"exercise-isolation-composition"}, Run: exerciseOutcomeUnknownRecoveryStage},
 			{Name: "exercise-consequence-confirmation", DependsOn: []string{"exercise-outcome-unknown-recovery"}, Run: exerciseConsequenceConfirmationStage},
+			{Name: "exercise-wait-and-write-interruption", DependsOn: []string{"exercise-consequence-confirmation"}, Run: exerciseWaitAndWriteInterruptionStage},
 		},
 		Diagnostics: diagnostics, Cleanup: cleanup,
 	})

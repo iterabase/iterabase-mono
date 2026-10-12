@@ -416,8 +416,8 @@ func exerciseWorkerLossCancellationStage(t *testing.T, state *deployedState) {
 		t.Fatalf("assigned worker %q has AgentPool label %q", pod, poolLabel)
 	}
 	oldUID := state.kubectl(t, 30*time.Second, "get", "pod", pod, "-n", controlPlaneNamespace, "-o", "jsonpath={.metadata.uid}")
+	lostTurn := state.databaseQuery(t, fmt.Sprintf(`SELECT t.id::text || '|' || t.session_id FROM runtime.turn_assignments a JOIN runtime.turns t ON t.id=a.turn_id WHERE a.attempt_id='%s' AND a.state='active'`, item.CurrentAttemptID))
 	state.kubectl(t, time.Minute, "delete", "pod", pod, "-n", controlPlaneNamespace, "--wait=true")
-	item = waitForWorkState(t, state, item.ID, "failed", 2*time.Minute)
 	err = poll.Until(state.ctx, 30*time.Second, 250*time.Millisecond, func(_ context.Context) (bool, string, error) {
 		current := stats()
 		return current.Cancelled > before.Cancelled, fmt.Sprintf("cancelled=%d", current.Cancelled), nil
@@ -425,9 +425,27 @@ func exerciseWorkerLossCancellationStage(t *testing.T, state *deployedState) {
 	if err != nil {
 		t.Fatalf("worker loss did not cancel in-flight model work: %v", err)
 	}
-	assignment := state.databaseQuery(t, fmt.Sprintf(`SELECT state FROM runtime.turn_assignments WHERE run_id='%s'::uuid`, item.CurrentAttemptID))
+	// DES-HOR-649-04: the lost read-only turn is never redelivered; the step
+	// reruns as a new visit in a fresh session in the same attempt and completes.
+	rerun := waitForWorkState(t, state, item.ID, "done", 4*time.Minute)
+	if rerun.CurrentAttemptID != item.CurrentAttemptID {
+		t.Fatalf("worker loss on a read-only step started a new attempt: before=%s after=%s", item.CurrentAttemptID, rerun.CurrentAttemptID)
+	}
+	lostParts := strings.Split(lostTurn, "|")
+	if len(lostParts) != 2 {
+		t.Fatalf("lost turn evidence is malformed: %q", lostTurn)
+	}
+	interruption := state.databaseQuery(t, fmt.Sprintf(`SELECT decision || '|' || cause || '|' || lost_session_id || '|' || rerun_session_id FROM runtime.turn_interruptions WHERE turn_id='%s'`, lostParts[0]))
+	parts := strings.Split(interruption, "|")
+	if len(parts) != 4 || parts[0] != "rerun" || parts[1] != "worker_lost" || parts[2] != lostParts[1] || parts[3] == lostParts[1] {
+		t.Fatalf("read-only interruption evidence = %q, want rerun in a fresh session (lost session %s)", interruption, lostParts[1])
+	}
+	assignment := state.databaseQuery(t, fmt.Sprintf(`SELECT state FROM runtime.turn_assignments WHERE turn_id='%s'::uuid`, lostParts[0]))
 	if assignment != "terminal" {
 		t.Fatalf("lost worker assignment state=%q want terminal", assignment)
+	}
+	if visits := state.databaseQuery(t, fmt.Sprintf(`SELECT string_agg(state, ',' ORDER BY execution_seq) FROM runtime.node_executions WHERE attempt_id='%s'`, item.CurrentAttemptID)); visits != "interrupted,succeeded" {
+		t.Fatalf("worker-loss visits = %q, want interrupted,succeeded", visits)
 	}
 	var replacement string
 	err = poll.Until(state.ctx, 3*time.Minute, time.Second, func(_ context.Context) (bool, string, error) {
@@ -850,5 +868,115 @@ func waitForDatabaseValue(t *testing.T, state *deployedState, query, expected st
 	})
 	if err != nil {
 		t.Fatalf("database value did not reach %q for %s: %v", expected, query, err)
+	}
+}
+
+func waitWorkflowYAML() string {
+	return `apiVersion: platform.iterabase.com/v1alpha1
+kind: Workflow
+metadata: {name: wait-for-replies, namespace: iterabase-system}
+spec:
+  key: e2e/wait-for-replies
+  version: "1"
+  poolRef: execution-pool
+  defaultModelRef: e2e-model
+  source: {type: manual_api}
+  graph:
+    entryNode: send
+    maxTransitions: 8
+    nodes:
+      - key: send
+        label: {en: Send requests, pt: Enviar pedidos}
+        kind: agent_task
+        prompt: "Send the requests"
+        outcomes: [completed]
+        outputSchema:
+          type: object
+          additionalProperties: false
+          required: [result]
+          properties: {result: {type: string}}
+      - key: collect
+        label: {en: Wait for replies, pt: Aguardar respostas}
+        kind: wait
+        wait:
+          events: [{source: email_reply, correlation: {node: send, path: [result]}}]
+          completion: all
+          deadline: {after: 1h}
+      - key: decide
+        label: {en: Decide, pt: Decidir}
+        kind: agent_task
+        prompt: "Decide with the replies"
+        outcomes: [completed]
+        outputSchema:
+          type: object
+          additionalProperties: false
+          required: [result]
+          properties: {result: {type: string}}
+        resultPresentation:
+          outcomes: [{outcome: completed, summary: {en: Replies handled, pt: Respostas tratadas}}]
+          fields: [{path: [result], label: {en: Result, pt: Resultado}}]
+    edges:
+      - {from: send, outcome: completed, to: collect}
+      - {from: collect, outcome: received, to: decide}
+      - {from: collect, outcome: deadline, to: decide}
+      - {from: collect, outcome: cancelled, to: decide}
+    terminalOutcomes: [{node: decide, outcome: completed}]
+  presentation: {workflowTitle: Wait for replies, personaName: E2E Operator, locale: en}
+`
+}
+
+// exerciseWaitAndWriteInterruptionStage proves the HOR-649 runtime on the
+// deployed composition: a wait holds no worker and continues the same attempt
+// on an Operator's stop-waiting command, and a worker lost after a write stops
+// the attempt without repeating the write.
+func exerciseWaitAndWriteInterruptionStage(t *testing.T, state *deployedState) {
+	t.Helper()
+	state.applyYAML(t, "wait-for-replies.yaml", waitWorkflowYAML())
+	waitForWorkflowReady(t, state, "wait-for-replies", 30*time.Second)
+	item := startWorkflow(t, state, "e2e/wait-for-replies", "Wait for supplier replies")
+	item = waitForWorkState(t, state, item.ID, "waiting", 3*time.Minute)
+	if active := state.databaseQuery(t, `SELECT count(*) FROM runtime.turn_assignments WHERE state='active'`); active != "0" {
+		t.Fatalf("a waiting item holds %s active worker assignments", active)
+	}
+	if expected := state.databaseQuery(t, fmt.Sprintf(`SELECT expected_count FROM runtime.waits WHERE attempt_id='%s' AND completed_at IS NULL`, item.CurrentAttemptID)); expected != "1" {
+		t.Fatalf("open wait expects %q events, want 1", expected)
+	}
+	status, body := state.request(t, http.MethodPost, "/v1/work-items/"+item.ID+"/wait/stop", state.workKey, nil, nil)
+	requireStatus(t, status, http.StatusOK, body)
+	done := waitForWorkState(t, state, item.ID, "done", 3*time.Minute)
+	if done.CurrentAttemptID != item.CurrentAttemptID {
+		t.Fatalf("stop waiting started a new attempt: before=%s after=%s", item.CurrentAttemptID, done.CurrentAttemptID)
+	}
+	if outcome := state.databaseQuery(t, fmt.Sprintf(`SELECT completion_outcome FROM runtime.node_executions WHERE attempt_id='%s' AND node_key='collect'`, item.CurrentAttemptID)); outcome != "cancelled" {
+		t.Fatalf("stopped wait outcome = %q, want cancelled", outcome)
+	}
+	status, body = state.request(t, http.MethodPost, "/v1/work-items/"+item.ID+"/wait/stop", state.workKey, nil, nil)
+	requireStatus(t, status, http.StatusBadRequest, body)
+
+	state.applyYAML(t, "write-interruption.yaml", workflowYAML("write-interruption", "e2e/write-interruption", "1", "E2E_MODE:consequence E2E_SLOW", false,
+		[]string{"platform.fixture_write"}, "", ""))
+	waitForWorkflowReady(t, state, "write-interruption", 30*time.Second)
+	written := startWorkflow(t, state, "e2e/write-interruption", "Worker lost after a write")
+	invocations := fmt.Sprintf(`SELECT count(*) FROM toolgateway.invocations WHERE attempt_id='%s' AND tool_name='platform.fixture_write' AND state='succeeded'`, written.CurrentAttemptID)
+	waitForDatabaseValue(t, state, invocations, "1", 3*time.Minute)
+	pod := state.databaseQuery(t, fmt.Sprintf(`SELECT worker_id FROM runtime.turn_assignments WHERE attempt_id='%s' AND state='active'`, written.CurrentAttemptID))
+	if pod == "" {
+		t.Fatal("the turn that wrote has no active assigned worker to lose")
+	}
+	state.kubectl(t, time.Minute, "delete", "pod", pod, "-n", controlPlaneNamespace, "--wait=true")
+	stopped := waitForWorkState(t, state, written.ID, "failed", 3*time.Minute)
+	if decision := state.databaseQuery(t, fmt.Sprintf(`SELECT decision FROM runtime.turn_interruptions WHERE attempt_id='%s'`, stopped.CurrentAttemptID)); decision != "stop_after_write" {
+		t.Fatalf("write interruption decision = %q, want stop_after_write", decision)
+	}
+	if code := state.databaseQuery(t, fmt.Sprintf(`SELECT customer_failure_summary->>'code' FROM work.attempts WHERE id='%s'`, stopped.CurrentAttemptID)); code != "interrupted_after_write" {
+		t.Fatalf("stopped item reason = %q, want interrupted_after_write", code)
+	}
+	waitForAgentPoolReady(t, state, "execution-pool", 3*time.Minute)
+	time.Sleep(5 * time.Second) // several dispatch passes with a Ready replacement worker
+	if count := state.databaseQuery(t, fmt.Sprintf(`SELECT count(*) FROM toolgateway.invocations WHERE attempt_id='%s'`, stopped.CurrentAttemptID)); count != "1" {
+		t.Fatalf("an interrupted write was repeated: %s invocations", count)
+	}
+	if turns := state.databaseQuery(t, fmt.Sprintf(`SELECT count(*) FROM runtime.turns WHERE run_id='%s'`, stopped.CurrentAttemptID)); turns != "1" {
+		t.Fatalf("a step that wrote was rerun: %s turns", turns)
 	}
 }

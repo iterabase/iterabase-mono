@@ -398,8 +398,14 @@ HOR-398 / DEC-041 interim residual.
 Trigger adapters remain separate slices: email (HOR-356) and operator-artifact
 (HOR-393) call the idempotent work-start API. HOR-254's graph service prepares
 the active node; `cmd/dispatch` assigns only `agent_task` nodes to workers while
-`human_gate` and consequence-confirmation nodes remain durable control-plane
-state. Worker fencing/ACK semantics remain the HOR-249 boundary.
+`human_gate`, consequence-confirmation, and `wait` nodes remain durable
+control-plane state that holds no worker. Each reconcile pass also routes
+expired waits through `deadline` and derives `runner_offline` pause conditions
+from runner heartbeats. A lost graph turn (stream loss, lease expiry, reconnect
+fencing, ambiguous send) is classified by the Tool Gateway ledger
+(DES-HOR-649-04): with no write invocation its step reruns as a new visit in a
+fresh session, otherwise the attempt stops. Worker fencing/ACK semantics remain
+the HOR-249 boundary.
 
 ## CRD landscape
 
@@ -431,10 +437,19 @@ value-model reference, and a single-active-node directed graph.
   `operator_artifact` (XBS), and `manual_api` (API-backed operator source, ARCH-026) —
   no customer-specific schema — and a recognized type becomes Ready only when its
   adapter is installed in the deployment.
-- `spec.graph` declares one entry node, `agent_task`/`human_gate` nodes,
+- `spec.graph` declares one entry node, `agent_task`/`human_gate`/`wait` nodes,
   outcome-routed edges, explicit terminal outcomes, and a bounded transition
   count. Cycles are supported; parallel branches/joins are not. Every visit is
   append-only. Gateway tools are agent-callable capabilities, never graph nodes.
+- A `wait` node (HOR-649) collects correlated external events without holding a
+  worker: `wait.events[]` names a `source` and a `correlation` output path of a
+  dominating earlier node (string or array of strings), `completion` is
+  `all`/`any`, and `deadline` is `after` (1m–90d) or `at` an RFC3339 output
+  field. Its reserved outcomes `received`, `deadline`, and `cancelled` must each
+  be routed. Event sources post through `work.Store.PostExternalEvent`, keyed
+  idempotently by `(source, eventKey)`. See
+  [`docs/architecture/v2-parallel-cancellation-safe-restart.md`](../docs/architecture/v2-parallel-cancellation-safe-restart.md)
+  section 24.
 - Every agent node finishes through the reserved `complete_step` control
   function. Its declared outcome and JSON output are validated before the
   engine atomically follows an edge. A clean worker outcome is also required.
@@ -480,10 +495,15 @@ and XBS `operator_artifact` examples.
 ## Durable customer work (HOR-254)
 
 One customer work item owns one or more attempts; each attempt shares its UUID
-with exactly one `runtime.workflow_run`. Current To do / In progress / Blocked /
-Done / Failed presentation is projected from the current attempt plus its open
-actionable blocker, avoiding a duplicate mutable state machine. Failed remains
-outside the four normal columns.
+with exactly one `runtime.workflow_run`. Current To do / In progress / Waiting /
+Paused / Blocked / Done / Failed presentation is projected from the current
+attempt plus its open actionable blocker, open pause, and open wait, avoiding a
+duplicate mutable state machine. Waiting and Paused are never Blocked; the
+Dashboard shows them in the In progress column with their own state chip.
+Failed remains outside the four normal columns. A pause holds the next step of
+matching work while a live `work.pause_conditions` cause (`trial_ended`,
+`provider_unavailable`, `runner_offline`) applies, and resumes it automatically
+when the cause clears.
 
 Work APIs require a `work`-scope bearer key and operation capability
 (`work:read`, `work:start`, `work:respond`, `work:feedback`, or `work:retry`):
@@ -499,6 +519,7 @@ Work APIs require a `work`-scope bearer key and operation capability
 | `GET` | `/v1/work-items/{id}/consequences` | Customer-safe external-action tokens required by a revision |
 | `GET` | `/v1/work-items/{id}/blocker` | Current actionable request |
 | `POST` | `/v1/work-blockers/{id}/responses` | Resolve human/consequence gate |
+| `POST` | `/v1/work-items/{id}/wait/stop` | Stop the open wait and continue through its `cancelled` outcome (`work:respond`) |
 | `GET` | `/v1/work-items/{id}/feedback` / `/v1/work-items/{id}/feedback/{feedbackID}` | Original-attempt feedback and revised-attempt association |
 | `POST` | `/v1/work-items/{id}/feedback` | Save feedback without starting work |
 | `POST` | `/v1/work-items/{id}/revisions` | Explicit revised attempt with exact consequence confirmation |
