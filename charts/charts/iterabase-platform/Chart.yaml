@@ -6,15 +6,15 @@ version: 0.4.8
 appVersion: "0.4.8"
 dependencies:
   - name: redis
-    version: 0.2.4
+    version: 0.2.5
     repository: file://../redis
     condition: redis.enabled
   - name: minio
-    version: 0.2.7
+    version: 0.2.8
     repository: file://../minio
     condition: minio.enabled
   - name: inference-gateway
-    version: 0.2.14
+    version: 0.2.15
     repository: file://../inference-gateway
     condition: inference-gateway.enabled
   - name: control-plane
@@ -65,6 +65,6 @@ dependencies:
   # metrics.enabled to wire its ServiceMonitor(s) / exporter (see
   # values-observability.yaml).
   - name: observability
-    version: 0.1.8
+    version: 0.1.9
     repository: file://../observability
     condition: observability.enabled
