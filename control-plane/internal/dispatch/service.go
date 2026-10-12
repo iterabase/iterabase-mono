@@ -703,14 +703,39 @@ func (s *Service) finishTurnOutcome(ctx context.Context, a Assignment, runState 
 	s.kickReconciler()
 }
 
-// terminalizeTurnLoss terminalizes a turn as worker loss (aborted) — used on
-// reconnect-fencing and stream-loss. CP is first-terminal-writer; a late worker
+// terminalizeTurnLoss terminalizes a turn lost with its worker — used on
+// reconnect-fencing, stream-loss, and lease expiry. A graph turn is classified
+// by the interrupted-step rule (DES-HOR-649-04): with no write invocation its
+// step reruns as a new visit in a fresh session; with any write the attempt
+// stops. Chat turns are aborted. CP is first-terminal-writer; a late worker
 // outcome is after-terminal audit. The worker is gone, so SessionEnd is not
-// sent (v1 leak-and-reconcile); the session UID stays in-use (non-recyclable)
-// until a later reaper reaps the leaked sandbox.
+// sent (v1 leak-and-reconcile); the lost session UID stays in-use
+// (non-recyclable) until a later reaper reaps the leaked sandbox.
 func (s *Service) terminalizeTurnLoss(ctx context.Context, a Assignment) error {
-	_, err := s.commitTurnTerminal(ctx, a, "aborted")
-	return err
+	isGraph, err := s.work.IsGraphAttempt(ctx, a.RunID)
+	if err != nil {
+		return fmt.Errorf("resolve graph attempt: %w", err)
+	}
+	if !isGraph {
+		_, err := s.commitTurnTerminal(ctx, a, "aborted")
+		return err
+	}
+	runState, iErr := s.work.InterruptTurn(ctx, a.TurnID, workstore.InterruptWorkerLost)
+	if iErr != nil && !errors.Is(iErr, workstore.ErrInvalidTransition) {
+		return fmt.Errorf("interrupt turn %s: %w", a.TurnID, iErr)
+	}
+	if tErr := s.store.TerminalizeAssignment(ctx, a.TurnID); tErr != nil {
+		return fmt.Errorf("terminalize assignment %s: %w", a.TurnID, tErr)
+	}
+	if iErr == nil && s.metrics != nil {
+		decision := "rerun"
+		if runtime.IsTerminalRun(runState) {
+			decision = "stopped"
+		}
+		s.metrics.DispatchTurns.WithLabelValues("interrupted", decision).Inc()
+	}
+	s.kickReconciler()
+	return nil
 }
 
 // commitTurnTerminal settles the turn + advances the step/run ATOMICALLY
@@ -838,9 +863,10 @@ func (s *Service) CancelTurn(ctx context.Context, turnID string, reason v1.Abort
 		}}})
 	}
 	// CP first-terminal-writer: fence (generation-qualified CAS) + terminalize
-	// as aborted. A late worker outcome is after-terminal audit.
+	// as aborted. An explicit cancel is never an interruption to rerun. A late
+	// worker outcome is after-terminal audit.
 	if _, ferr := s.store.FenceWorkerGenerationIf(ctx, a.PoolID, a.WorkerID, a.FencingGeneration); ferr == nil {
-		if tErr := s.terminalizeTurnLoss(ctx, a); tErr != nil {
+		if _, tErr := s.commitTurnTerminal(ctx, a, "aborted"); tErr != nil {
 			s.log.Warn("cancel: terminalize turn", "turn", a.TurnID, "error", tErr)
 		}
 	}
@@ -934,10 +960,14 @@ func (s *Service) reconcileOnce(ctx context.Context) {
 	}
 	defer func() {
 		if s.metrics != nil {
+			busy, idle := s.pool.availability()
+			s.metrics.DispatchWorkers.WithLabelValues("busy").Set(float64(busy))
+			s.metrics.DispatchWorkers.WithLabelValues("idle").Set(float64(idle))
 			s.metrics.DispatchReconciles.WithLabelValues(result).Inc()
 			s.metrics.DispatchReconcileDuration.WithLabelValues(result).Observe(time.Since(started).Seconds())
 		}
 	}()
+	s.reconcileWaitsAndPauses(ctx, started)
 	// Start pending runs (pending -> running + start first step).
 	pending, err := s.store.Runtime().ListRunsByState(ctx, runtime.RunPending)
 	if err != nil {
@@ -982,6 +1012,18 @@ func (s *Service) reconcileOnce(ctx context.Context) {
 		} else {
 			s.dispatchRun(ctx, run)
 		}
+	}
+}
+
+// reconcileWaitsAndPauses routes expired waits through their deadline outcome
+// and derives runner-offline pause conditions before scheduling, so the same
+// pass already sees the resulting runnable or held nodes.
+func (s *Service) reconcileWaitsAndPauses(ctx context.Context, now time.Time) {
+	if _, err := s.work.CompleteDueWaits(ctx, now, 100); err != nil {
+		s.log.Warn("complete due waits", "error", err)
+	}
+	if err := s.work.ReconcileRunnerPauseConditions(ctx); err != nil {
+		s.log.Warn("reconcile runner pause conditions", "error", err)
 	}
 }
 

@@ -25,19 +25,22 @@ func (s *Store) IsGraphAttempt(ctx context.Context, runID string) (bool, error) 
 	return exists, nil
 }
 
-// ActiveNode returns the attempt's one pending/running/blocked execution.
+// ActiveNode returns the attempt's one pending/running/blocked/waiting execution.
 func (s *Store) ActiveNode(ctx context.Context, attemptID string) (NodeExecution, error) {
 	n, err := scanNodeExecution(s.pool.QueryRow(ctx, nodeExecutionSelect+`
-		WHERE attempt_id=$1 AND state IN ('pending','running','blocked')`, attemptID))
+		WHERE attempt_id=$1 AND state IN ('pending','running','blocked','waiting')`, attemptID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return NodeExecution{}, ErrNotFound
 	}
 	return n, err
 }
 
-// PrepareNode makes the active graph node executable. Agent nodes become
-// running and get exactly one turn; human/reentry nodes become durable blockers.
-// dispatch=false means no worker assignment is required.
+// PrepareNode makes the active graph node executable. A pending node first
+// passes the pause gate (DES-HOR-649-03): a matching live pause cause holds it
+// at this step boundary. Agent nodes become running and get exactly one turn;
+// human/reentry nodes become durable blockers; wait nodes register their
+// expected events and release the run. dispatch=false means no worker
+// assignment is required.
 //
 //nolint:gocyclo // Preparation atomically covers re-entry safety, human gates, and agent turn creation.
 func (s *Store) PrepareNode(ctx context.Context, attemptID string) (NodeExecution, runtimestore.Turn, bool, error) {
@@ -48,14 +51,14 @@ func (s *Store) PrepareNode(ctx context.Context, attemptID string) (NodeExecutio
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	node, err := scanNodeExecution(tx.QueryRow(ctx, nodeExecutionSelect+`
-		WHERE attempt_id=$1 AND state IN ('pending','running','blocked') FOR UPDATE`, attemptID))
+		WHERE attempt_id=$1 AND state IN ('pending','running','blocked','waiting') FOR UPDATE`, attemptID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return NodeExecution{}, runtimestore.Turn{}, false, ErrNotFound
 	}
 	if err != nil {
 		return NodeExecution{}, runtimestore.Turn{}, false, err
 	}
-	if node.State == NodeBlocked {
+	if node.State == NodeBlocked || node.State == NodeWaiting {
 		return node, runtimestore.Turn{}, false, tx.Commit(ctx)
 	}
 
@@ -77,6 +80,32 @@ func (s *Store) PrepareNode(ctx context.Context, attemptID string) (NodeExecutio
 	def, ok := findNode(graph, node.NodeKey)
 	if !ok {
 		return NodeExecution{}, runtimestore.Turn{}, false, fmt.Errorf("graph node %q missing from snapshot", node.NodeKey)
+	}
+
+	if node.State == NodePending {
+		held, err := holdForPauseTx(ctx, tx, itemID, attemptID, node)
+		if err != nil {
+			return NodeExecution{}, runtimestore.Turn{}, false, err
+		}
+		if held {
+			return node, runtimestore.Turn{}, false, tx.Commit(ctx)
+		}
+	}
+
+	if def.Kind == workflow.NodeWait {
+		runState, err := s.enterWaitTx(ctx, tx, itemID, attemptID, node, def)
+		if err != nil {
+			return NodeExecution{}, runtimestore.Turn{}, false, err
+		}
+		switch runState {
+		case runtimestore.RunWaiting:
+			node.State = NodeWaiting
+		case runtimestore.RunFailed:
+			node.State = NodeFailed
+		default:
+			node.State = NodeSucceeded // events already met the rule; the graph moved on
+		}
+		return node, runtimestore.Turn{}, false, tx.Commit(ctx)
 	}
 
 	if node.State == NodePending && node.Visit > 1 && def.Kind == workflow.NodeAgentTask {
@@ -438,14 +467,7 @@ func (s *Store) advanceGraphTx(ctx context.Context, tx pgx.Tx, in graphAdvanceIn
 		return "", err
 	}
 	if transitionCount >= int(graph.MaxTransitions) {
-		if _, err := tx.Exec(ctx, `UPDATE runtime.workflow_runs SET state='failed', finished_at=now() WHERE id=$1`, in.AttemptID); err != nil {
-			return "", err
-		}
-		failure, _ := json.Marshal(map[string]any{"code": "transition_limit", "message": "The workflow could not complete within its configured transition limit."})
-		if _, err := tx.Exec(ctx, `UPDATE work.attempts SET finished_at=now(), customer_failure_summary=$2 WHERE id=$1`, in.AttemptID, failure); err != nil {
-			return "", err
-		}
-		if err := appendTimelineTx(ctx, tx, in.ItemID, in.AttemptID, in.Node.ID, "work_failed", map[string]any{"reason": "transition_limit"}, nil, in.ActorID); err != nil {
+		if err := failAttemptTx(ctx, tx, in.ItemID, in.AttemptID, in.Node.ID, "", StopTransitionLimit, in.ActorID, nil); err != nil {
 			return "", err
 		}
 		return runtimestore.RunFailed, nil
@@ -493,7 +515,7 @@ func (s *Store) advanceGraphTx(ctx context.Context, tx pgx.Tx, in graphAdvanceIn
 	if _, err := tx.Exec(ctx, `INSERT INTO runtime.graph_transitions (attempt_id,from_execution_id,outcome,to_execution_id,terminal) VALUES ($1,$2,$3,$4,false)`, in.AttemptID, in.Node.ID, *in.Node.CompletionOutcome, nextID); err != nil {
 		return "", err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE runtime.workflow_runs SET state='running' WHERE id=$1 AND state IN ('running','awaiting_approval')`, in.AttemptID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE runtime.workflow_runs SET state='running' WHERE id=$1 AND state IN ('running','awaiting_approval','waiting')`, in.AttemptID); err != nil {
 		return "", err
 	}
 	return runtimestore.RunRunning, nil

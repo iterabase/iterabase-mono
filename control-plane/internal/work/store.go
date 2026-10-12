@@ -283,7 +283,9 @@ const workItemSelect = `
 	       v.amount::text, v.currency,
 	       EXISTS (SELECT 1 FROM work.value_ledger d WHERE d.work_item_id=c.id AND d.kind='feedback_deduction'),
 	       step.node_key, step.business_label, step.state, step.started_at,
-	       blocker.id::text, blocker.kind, blocker.title
+	       blocker.id::text, blocker.kind, blocker.title,
+	       wt.completion, wt.expected_count, wt.received, wt.deadline_at,
+	       ps.cause, ps.paused_at
 	FROM work.current_work_items c
 	JOIN work.work_items wi ON wi.id=c.id
 	JOIN work.attempts a ON a.id=c.current_attempt_id
@@ -296,7 +298,17 @@ const workItemSelect = `
 	) step ON true
 	LEFT JOIN LATERAL (
 		SELECT id,kind,title FROM work.blockers WHERE work_item_id=c.id AND state='open'
-	) blocker ON true`
+	) blocker ON true
+	LEFT JOIN LATERAL (
+		SELECT w.completion, w.expected_count, w.deadline_at,
+		       (SELECT COUNT(*)::int FROM runtime.wait_expectations x
+		        WHERE x.node_execution_id=w.node_execution_id AND x.state='received') AS received
+		FROM runtime.waits w WHERE w.attempt_id=c.current_attempt_id AND w.completed_at IS NULL
+	) wt ON true
+	LEFT JOIN LATERAL (
+		SELECT cause, paused_at FROM work.attempt_pauses
+		WHERE attempt_id=c.current_attempt_id AND resumed_at IS NULL
+	) ps ON true`
 
 // GetWorkItem returns the customer-safe current projection and value status.
 func (s *Store) GetWorkItem(ctx context.Context, id string) (WorkItem, error) {
@@ -340,12 +352,22 @@ func scanWorkItem(row pgx.Row) (WorkItem, error) {
 	var stepKey, stepState, blockerID, blockerKind *string
 	var stepLabel, blockerTitle []byte
 	var stepStartedAt *time.Time
+	var waitCompletion, pauseCause *string
+	var waitExpected, waitReceived *int
+	var waitDeadline, pausedAt *time.Time
 	if err := row.Scan(&out.ID, &out.WorkflowKey, &out.ScopeIdentityID, &out.Title, &out.Source,
 		&sourcePresentation, &presentation, &out.CurrentAttemptID, &out.State, &out.RuntimeState,
 		&out.CreatedAt, &out.UpdatedAt, &out.StartedAt, &out.FinishedAt, &failure,
 		&out.ValueConfigured, &out.ValueModel, &out.EstimatedValue, &out.ValueCurrency, &out.ValueDisputed,
-		&stepKey, &stepLabel, &stepState, &stepStartedAt, &blockerID, &blockerKind, &blockerTitle); err != nil {
+		&stepKey, &stepLabel, &stepState, &stepStartedAt, &blockerID, &blockerKind, &blockerTitle,
+		&waitCompletion, &waitExpected, &waitReceived, &waitDeadline, &pauseCause, &pausedAt); err != nil {
 		return WorkItem{}, err
+	}
+	if waitCompletion != nil && out.State == StateWaiting {
+		out.Wait = &WaitSummary{Completion: *waitCompletion, Expected: *waitExpected, Received: *waitReceived, DeadlineAt: *waitDeadline}
+	}
+	if pauseCause != nil && out.State == StatePaused {
+		out.Pause = &PauseSummary{Reason: *pauseCause, Since: *pausedAt}
 	}
 	if err := json.Unmarshal(sourcePresentation, &out.SourcePresentation); err != nil {
 		return WorkItem{}, err

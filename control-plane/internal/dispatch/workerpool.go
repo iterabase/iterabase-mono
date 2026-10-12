@@ -358,6 +358,24 @@ func (p *workerPool) all() []*workerConn {
 }
 
 // lastSeenAt returns the worker's last message time under its lock.
+// availability counts connected workers holding an assigned turn (busy) and
+// those with no turn (idle). A waiting or paused graph node holds no turn, so
+// it never appears as busy (DES-HOR-649-02).
+func (p *workerPool) availability() (busy, idle int) {
+	for _, w := range p.all() {
+		w.mu.Lock()
+		if !w.closed {
+			if w.activeTurn != "" {
+				busy++
+			} else {
+				idle++
+			}
+		}
+		w.mu.Unlock()
+	}
+	return busy, idle
+}
+
 func (w *workerConn) lastSeenAt() time.Time {
 	w.mu.Lock()
 	defer w.mu.Unlock()
