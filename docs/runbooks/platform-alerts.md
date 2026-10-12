@@ -112,6 +112,14 @@ Inspect ModelBackend/Model status, serving pod startup/readiness, GPU allocation
 
 Identify the PVC and growth source. Confirm backups and retention policy before cleanup. Expand storage or publish an approved retention change; never delete Postgres/MinIO/Prometheus/Loki files directly.
 
+## IterabaseContainerOOMKilled
+
+The kernel killed the container at its memory limit. Identify the workload and what it was doing (harness turn, extraction, query, scrape) from logs and the `kube_pod_container_status_restarts_total` history. Compare its working set with its limit and with the single-node budget in [`charts/docs/sizing.md`](../../charts/docs/sizing.md). Raise a limit only within that budget, through a reviewed chart or overlay change; on a full node, reduce concurrency (AgentPool replicas, browser/extraction pools) instead. For AgentPool workers, size `AgentPool.spec.resources` explicitly rather than relying on the release-namespace LimitRange default.
+
+## IterabaseContainerMemoryNearLimit
+
+The container's working set has stayed above 90% of its memory limit for 15 minutes. Treat it as an imminent OOM kill: find the load or leak driving growth, check the trend on the component dashboard, and decide between reducing load and a reviewed limit change within the [`charts/docs/sizing.md`](../../charts/docs/sizing.md) budget.
+
 ## IterabaseControlPlaneDatabasePoolSaturated
 
 Identify the component target, then correlate request/reconciliation load, acquire wait, slow queries, and Postgres connection capacity. Do not raise limits without checking server capacity and query behavior.

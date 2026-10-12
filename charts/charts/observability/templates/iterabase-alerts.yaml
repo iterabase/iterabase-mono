@@ -282,6 +282,23 @@ spec:
             description: "A platform persistent volume is approaching exhaustion."
             first_action: "Identify growth, confirm retention/backup, and expand or clean the volume safely."
             runbook_url: {{ printf "%s#iterabasepersistentvolumealmostfull" $runbook | quote }}
+        - alert: IterabaseContainerOOMKilled
+          expr: (kube_pod_container_status_last_terminated_reason{namespace="{{ .Release.Namespace }}",reason="OOMKilled"} == 1) and on (namespace, pod, container) (increase(kube_pod_container_status_restarts_total{namespace="{{ .Release.Namespace }}"}[15m]) > 0)
+          labels: {severity: critical, component: capacity}
+          annotations:
+            summary: "Container {{`{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}`}} was OOM-killed"
+            description: "The container exceeded its memory limit and was killed by the kernel within the last 15 minutes. Work it was serving may have been interrupted."
+            first_action: "Check the container's memory trend against its limit and the node budget in charts/docs/sizing.md before raising the limit."
+            runbook_url: {{ printf "%s#iterabasecontaineroomkilled" $runbook | quote }}
+        - alert: IterabaseContainerMemoryNearLimit
+          expr: (max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="{{ .Release.Namespace }}",container!="",container!="POD"}) / on (namespace, pod, container) max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="{{ .Release.Namespace }}",resource="memory"})) > 0.90
+          for: 15m
+          labels: {severity: warning, component: capacity}
+          annotations:
+            summary: "Container {{`{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}`}} is above 90% of its memory limit"
+            description: "Sustained working set close to the memory limit; the next allocation spike will OOM-kill the container."
+            first_action: "Identify the load driving memory growth and compare it with the reviewed budget in charts/docs/sizing.md."
+            runbook_url: {{ printf "%s#iterabasecontainermemorynearlimit" $runbook | quote }}
         - alert: IterabaseControlPlaneDatabasePoolSaturated
           expr: control_plane_database_pool_connections{state="total"} / clamp_min(control_plane_database_pool_max_connections, 1) > 0.90
           for: 10m
