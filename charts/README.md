@@ -69,12 +69,12 @@ your values/overlay:
 ```sh
 helm install iterabase-cert-manager \
   oci://ghcr.io/nunocgoncalves/iterabase-charts/cert-manager-substrate \
-  --version 0.4.6 -n iterabase-system --create-namespace --wait
+  --version 0.4.8 -n iterabase-system --create-namespace --wait
 helm install iterabase-lvm-storage \
   oci://ghcr.io/nunocgoncalves/iterabase-charts/lvm-storage-substrate \
-  --version 0.4.6 -n iterabase-system --wait
+  --version 0.4.8 -n iterabase-system --wait
 helm install iterabase oci://ghcr.io/nunocgoncalves/iterabase-charts/iterabase-platform \
-  --version 0.4.6 -n iterabase-system \
+  --version 0.4.8 -n iterabase-system \
   --set inference-gateway.ingress.host=gateway.opo1.example.com \
   --set inference-gateway.ingress.tls.clusterIssuer=letsencrypt-prod \
   --set ingress-nginx.controller.service.ipFamilyPolicy=SingleStack \
@@ -494,6 +494,17 @@ Secrets, PVCs, and persisted PostgreSQL/MinIO state are retained throughout.
 The workflow supplies the N-1 baseline as exact `oci://…:<version>` references
 plus archive SHA-256 checksums; the scenario fails closed without them.
 Arbitrary-version rollback safety is not claimed.
+
+## Resources and single-node sizing
+
+Every workload ships reviewed requests and memory limits, the release
+namespace carries a defaults-only `LimitRange` for operator-created pods
+(AgentPool workers, ModelBackend helpers), and `make check-resource-limits`
+fails any render with an unconstrained container. Measured capacity for the
+4 vCPU / 16 GiB baseline and the 8 vCPU / 16 GiB scale tier, the recommended
+kubelet `system-reserved`, and the per-instance concurrency budget are in
+[`docs/sizing.md`](docs/sizing.md). Size AgentPools explicitly through
+`AgentPool.spec.resources` in the overlay.
 
 ## Flux-backed gateway tool runner
 
