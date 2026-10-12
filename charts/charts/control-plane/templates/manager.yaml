@@ -45,6 +45,10 @@ spec:
             - sh
             - -c
             - 'until pg_isready -h {{ include "control-plane.pgHost" . }} -p {{ .Values.postgresql.port }} -U {{ .Values.postgresql.auth.username }}; do echo waiting for postgres; sleep 2; done'
+          {{- with .Values.initResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- if (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) }}
           env:
             # pg_isready doesn't accept --sslmode; libpq reads these env vars,

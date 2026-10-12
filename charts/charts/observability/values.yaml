@@ -61,16 +61,48 @@ kube-prometheus-stack:
   prometheusOperator:
     image:
       sha: a001ed10a3823bbf2410ea347796d0e35ff8decd24fb98acbe7ab9e98d431c39
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+    # config-reloader sidecar the operator injects into Prometheus/Alertmanager.
+    prometheusConfigReloader:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
     admissionWebhooks:
       patch:
         image:
           sha: d0e80b2f62fe43bb5e1b96adc692132fb4522e802f4cf673c09b1f94722b8cb6
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
   kube-state-metrics:
     image:
       sha: sha256:85108987d044b18a098126732f98602df408888c0f7d456241f5abefb9744bc1
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
   prometheus-node-exporter:
     image:
       digest: sha256:8c9bac11973b94b59be88d6e11fee4429aa743c8846cdc75d65b18db33f6a106
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
 
   # kubernetes-mixin default rules (node/etcd/apiserver/pod/...). These plus the
   # iterabase-specific PrometheusRule (templates/iterabase-alerts.yaml) make up
@@ -84,6 +116,12 @@ kube-prometheus-stack:
     alertmanagerSpec:
       image:
         sha: 9e082985f56f4c8c9f724e18f2288c6708f472e56a5286b8863d080434ea065d
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
       storage:
         volumeClaimTemplate:
           spec:
@@ -101,9 +139,21 @@ kube-prometheus-stack:
     enabled: true
     image:
       sha: 7cb8c64c4d57a57e734073f3cc94620adb24a0acb929bd80ba9f14017e3a975b
+    resources:
+      requests:
+        cpu: 25m
+        memory: 192Mi
+      limits:
+        memory: 512Mi
     initChownData:
       image:
         sha: dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 64Mi
     persistence:
       enabled: true
       type: sts
@@ -124,6 +174,12 @@ kube-prometheus-stack:
     sidecar:
       image:
         sha: 21b9fe7bb29d65caf2445ccbf96ff6eda5e589a92bd8f5188f957fe75b551d72
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 192Mi
       dashboards:
         folderAnnotation: grafana_folder
         defaultFolderName: Kubernetes
@@ -139,6 +195,12 @@ kube-prometheus-stack:
     prometheusSpec:
       image:
         sha: 64f71bb84e03c855948418b0fc5dea53e9543d8e3fc9931598f583805507f05e
+      resources:
+        requests:
+          cpu: 100m
+          memory: 1Gi
+        limits:
+          memory: 2Gi
       replicas: 1
       retention: 15d
       # retentionSize is an absolute byte cap (the Prometheus Operator CRD
@@ -171,18 +233,40 @@ loki:
   lokiCanary:
     image:
       digest: sha256:bc8c1cdd09266b56a83918524b115ae648028b40097534932e6ac1c0e1b1f7dc
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+  # The upstream `helm test` Pod exposes no resources value and no install path
+  # runs `helm test`; keep it unrendered so every shipped container is sized
+  # (HOR-602, scripts/check-resource-limits.sh).
   test:
+    enabled: false
     image:
       digest: sha256:2ed6447bbdbcd23019c3fdb02bce6db3fbef296d5a8f77a68d3dbc386bfa43fb
   gateway:
     image:
       digest: sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
     deploymentStrategy:
       type: Recreate
       rollingUpdate: null
   sidecar:
     image:
       sha: a6b3f707f883108376514489a94d6629109a327b2978e1d826cd104c4ca436df
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 192Mi
   deploymentMode: SingleBinary
   loki:
     image:
@@ -226,6 +310,12 @@ loki:
     replicas: 0
   singleBinary:
     replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 512Mi
+      limits:
+        memory: 1536Mi
     persistence:
       enabled: true
       size: 10Gi
@@ -253,6 +343,12 @@ promtail:
   enabled: true
   image:
     tag: 3.0.0@sha256:d3de3da9431cfbe74a6a94555050df5257f357e827be8e63f8998d509c37af8b
+  resources:
+    requests:
+      cpu: 25m
+      memory: 96Mi
+    limits:
+      memory: 256Mi
   config:
     clients:
       - url: http://{{ .Release.Name }}-loki:3100/loki/api/v1/push

@@ -87,7 +87,14 @@ workload:
   certMountPath: /etc/iterabase/workload/tls
   clientCAMountPath: /etc/iterabase/workload/ca
 
-resources: {}
+# Reviewed single-node sizing (HOR-602, charts/docs/sizing.md): CPU request,
+# memory request and memory limit; no CPU limit (CPU is compressible).
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
 
 # Metrics (opt-in; flip on with observability — see values-observability.yaml).
 # A dedicated plaintext in-cluster listener keeps telemetry off both the public

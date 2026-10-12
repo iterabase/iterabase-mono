@@ -132,6 +132,10 @@ spec:
             # not leave a competing owner that would block explicit rollback.
             - --field-manager=helm
             - --patch={"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}
+          {{- with .Values.observabilityUpgradeRecovery.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

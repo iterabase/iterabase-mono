@@ -1,0 +1,24 @@
+{{- /*
+Release-namespace defaults for containers created at runtime without declared
+resources: AgentPool workers and ModelBackend helpers built by the manager
+(HOR-602, DES-HOR-602-02). Defaults only — no max/min — so explicitly sized
+pools are never capped by this chart.
+*/ -}}
+{{- if .Values.runtimeDefaults.enabled }}
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ .Release.Name }}-runtime-defaults
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: runtime-defaults
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        {{- toYaml .Values.runtimeDefaults.defaultRequest | nindent 8 }}
+      default:
+        {{- toYaml .Values.runtimeDefaults.default | nindent 8 }}
+{{- end }}

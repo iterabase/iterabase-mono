@@ -105,6 +105,27 @@ ingress-nginx:
       digest: sha256:594ceea76b01c592858f803f9ff4d2cb40542cae2060410b2c95f75907d659e1
     kind: Deployment
     hostNetwork: false
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+    admissionWebhooks:
+      createSecretJob:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+      patchWebhookJob:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
     service:
       enabled: true
       type: LoadBalancer
@@ -138,6 +159,12 @@ internal-ingress-nginx:
     kind: Deployment
     hostNetwork: false
     electionID: ingress-nginx-internal-leader
+    resources:
+      requests:
+        cpu: 25m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
     ingressClass: nginx-internal
     ingressClassResource:
       enabled: true
@@ -159,6 +186,21 @@ internal-ingress-nginx:
     # reapplied (DES-HOR-506-02). Recheck this coupling on ingress-nginx bumps.
     admissionWebhooks:
       failurePolicy: Fail
+      createSecretJob:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+      # Also sizes the umbrella's lookup-gated admission recovery hook.
+      patchWebhookJob:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
       patch:
         image:
           registry: registry.k8s.io
@@ -200,9 +242,21 @@ metallb:
   controller:
     image:
       tag: v0.16.1@sha256:f51ab515de9ccd20dc3dccb093e48df8adddac019326c456f449e55ba91b6420
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
   speaker:
     image:
       tag: v0.16.1@sha256:16561e96531e1852d5c229ad7fae6e994dcfa983ff7f4de6b6208b34a4e2ddbc
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
   crds:
     enabled: false
   frrk8s:
@@ -252,6 +306,14 @@ reloader:
   enabled: false
   image:
     digest: sha256:0530cf462fa3ba530fab887372e3b79caf608d0093ffc2fded9fa33bac8b74cd
+  reloader:
+    deployment:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
   # Metrics + ServiceMonitor (native to the reloader chart). Flip on with
   # observability; off by default to keep the default render lean.
   metrics:
@@ -275,6 +337,12 @@ external-dns:
   enabled: false
   image:
     tag: v0.21.0@sha256:f53faaf71cb270d1ca9dce6ea0c94bfebf1a18696263487f0fbc74b9bf2bd7ff
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
   provider:
     name: cloudflare
   sources:
@@ -332,3 +400,28 @@ observabilityUpgradeRecovery:
     tag: v1.31.0
     digest: sha256:99b37df34bc4f99ee322521d4c85cb98c1ceb8f70ff0618bef84eec9fe1ebc20
     pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+# --- Runtime-created pod defaults (HOR-602, DES-HOR-602-02) ---
+# One LimitRange in the release namespace defaults any container created
+# without declared resources: AgentPool workers (supervisor + init-wal) and
+# ModelBackend helpers built by the manager, which this chart never renders.
+# It only defaults (no max/min): overlays size real pools explicitly through
+# AgentPool.spec.resources. A pool that requests more memory than
+# default.memory without its own limit is rejected at pod admission (visible,
+# fail-closed). Every chart-rendered container declares its own resources
+# (scripts/check-resource-limits.sh); see charts/docs/sizing.md.
+runtimeDefaults:
+  enabled: true
+  # Measured AgentPool worker peaks on the reference load (HOR-602): ~155Mi /
+  # ~165m per worker during an agent turn; see charts/docs/sizing.md.
+  defaultRequest:
+    cpu: 250m
+    memory: 256Mi
+  default:
+    memory: 1536Mi
