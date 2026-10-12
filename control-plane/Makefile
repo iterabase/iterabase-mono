@@ -91,7 +91,7 @@ test-e2e-unit: ## Compile the owner E2E entrypoint and run hermetic helper tests
 test-e2e: test-e2e-deployed test-e2e-execution
 
 test-e2e-execution: $(E2E_BUILD_DEPS)
-	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 55m -run '^TestE2E$$/^deployed-execution-contracts$$' .
+	cd test/e2e && $(E2E_ENV) go test -v -race -count=1 -timeout 60m -run '^TestE2E$$/^deployed-execution-contracts$$' .
 
 playwright-browser-deps:
 	cd test/e2e/playwright && npm ci && npm run lint

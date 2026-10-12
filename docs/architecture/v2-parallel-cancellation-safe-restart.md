@@ -383,7 +383,7 @@ Checkpoints are declared by Iterabase in each customer overlay's workflow defini
 
 ### 4.5 `wait` node (HOR-649)
 
-A `wait` node is an explicit control point in the graph. Logical shape (HOR-649 owns the exact field names):
+A `wait` node is an explicit control point in the graph. Logical shape below; the exact implemented schema, validation, and runtime contract are in section 24.1:
 
 ```yaml
 - key: collect_replies
@@ -1283,3 +1283,62 @@ HOR-457's architecture deliverable is complete when review confirms:
 - [x] Follow-on implementation ownership and semantic publication classification are explicit.
 
 Semantic publication for HOR-457 is **none**. Merge integrates an approved repository architecture record; implementation, release publication, OPO1 deployment, and any data reset remain separately gated work.
+
+## 24. Waits, pauses, and interrupted steps (HOR-649)
+
+This section is the implemented contract behind the section 1.1 amendments, section 4.5, and the section 8 interrupted-step and pause rules. HOR-649 lands before HOR-468 on the single-active-node runtime (DES-HOR-649-01). Every rule below applies to the attempt's one root lane today. HOR-468 carries them into lanes and decides whether a wait may sit inside a parallel branch.
+
+### 24.1 The `wait` node (DES-HOR-649-02)
+
+```yaml
+- key: collect_quotes
+  kind: wait
+  label: {en: Wait for quotes, pt: Aguardar orçamentos}
+  wait:
+    events:
+      - source: email_reply                      # ^[a-z][a-z0-9_]{0,62}$
+        correlation: {node: send_requests, path: [requests, "*", replyToken]}
+    completion: all                              # or any
+    deadline: {after: 72h}                       # or {at: {node: plan, path: [replyBy]}}
+# outcomes are implicit and reserved: received | deadline | cancelled
+```
+
+Static validation:
+
+- A wait declares no prompt, model, skills, capabilities, workspace tools, timeout, output schema, or human gate. Its outcomes are exactly `received`, `deadline`, and `cancelled`; authors may omit them, and each must have one edge or terminal declaration.
+- `events` holds 1–16 declarations. Each `correlation` names an `agent_task` or `human_gate` that statically dominates the wait (it runs on every path from `entryNode`), and whose declared output schema types the path as a string or an array of strings. `"*"` expands array items.
+- `deadline` is exactly one of `after` (1m–90d) or `at`, which reads one RFC3339 string from a dominating node's output. A wait cannot read its own output.
+
+Runtime:
+
+- Entering a pending wait reads the latest successful output of each source visit before the wait, registers one expected event per key (at most 256), resolves the deadline (bounded to 1m–90d from entry), moves the node to `waiting`, and the run to `waiting`. No turn, worker, or session is held, and the dispatch reconciler skips the run. Missing, empty, duplicate, or over-limit keys, or a key already awaited by other work, stop the attempt with `invalid_wait_input`.
+- Event sources call `work.Store.PostExternalEvent(source, eventKey, correlationKey, payload, artifactRefs)`. `(source, eventKey)` is the idempotency key, so a repeated post is ignored. Every event is stored immutably in `runtime.external_events` with its disposition when received: `matched` (it satisfied a pending expected event), `late` (its key was awaited before but that wait is no longer open, for example after completion, deadline, or stop), or `unmatched`.
+- An event that arrives before its wait is entered, for example while the attempt is paused, is claimed when the wait is entered. A per-key advisory lock serializes arrival and entry so neither can miss the other.
+- The completion rule is checked under the wait row lock. `all` needs every key and `any` needs one. When it is met, the node records `received` and the graph follows its route in the same attempt and transaction.
+- A leased sweep in the dispatch reconcile pass (`CompleteDueWaits`, `FOR UPDATE SKIP LOCKED`) routes an expired wait through `deadline`. `POST /v1/work-items/{id}/wait/stop` lets an Operator or Admin, with the blocker-response authority, route `cancelled`. Both carry whatever arrived. Work-item cancellation (HOR-464) stops the attempt and never routes.
+- The wait's immutable output is `{expected, received, events: [{source, correlationKey, eventId, receivedAt, payload, artifactRefs}], missing: [{source, correlationKey}]}`, ordered by key. Event artifacts are linked to the visit as `evidence` and passed on to the next node like any selected output.
+
+Fan-out stays a pattern, not an engine feature: one agent step sends N requests and records N keys, and one wait collects the replies. There is no automatic chaser; the workflow decides what follows `deadline`.
+
+### 24.2 Paused with reason (DES-HOR-649-03)
+
+- `work.pause_conditions` holds live and cleared causes: `trial_ended`, `provider_unavailable`, and `runner_offline`, in that order of precedence. Their scope is `installation`, `model:<model id>`, `tool:<name>`, or `tool:<name>@<digest>`. Owners raise and clear them idempotently through `RaisePauseCondition`/`ClearPauseCondition`: HOR-648 for the trial, and HOR-597 for the provider. The dispatch reconcile pass derives `runner_offline` conditions for every tool digest pinned by unfinished work that has no active runner heartbeating within 30 seconds, and clears them when one returns.
+- The pause gate runs in `PrepareNode` before any pending node is prepared, so pausing always happens at a step boundary. Running turns finish, and open waits keep matching events. A node matches an `installation` condition, a condition on its agent model, or a condition on any tool it is granted (by name, or by the attempt's pinned digest).
+- Holding a node opens one `work.attempt_pauses` row and appends a `work_paused` timeline event with the reason. If the highest-precedence reason changes, the row is closed and a new one opened. When nothing matches any more, the row is closed, `work_resumed` is appended, and the step starts in the same pass. Resume is automatic. Trial conversion is the trial owner clearing its condition. `attempt_pauses` accepts only one `resumed_at` write.
+
+### 24.3 Interrupted steps (DES-HOR-649-04, amending DES-HOR-457-04/07)
+
+When a graph turn is lost through worker stream loss, lease expiry, reconnect fencing, or an ambiguous assignment send, `InterruptTurn` settles it in one transaction. The Tool Gateway invocation ledger decides the outcome:
+
+| Lost turn | Decision | Result |
+| --- | --- | --- |
+| No `idempotent_write` or `non_idempotent_write` invocation | `rerun` | Turn `aborted`, visit `interrupted`; a new visit of the same node with the interrupted visit's exact context and inputs; the run moves to a fresh session ID. The lost session's UID stays allocated (non-recyclable) until reaped. |
+| Any write invocation, whether succeeded, failed, or outcome-unknown | `stop_after_write` | The attempt stops with `interrupted_after_write`. Recovery is the HOR-463 restart with confirmation of repeated consequences. |
+| Third consecutive interruption of the same node | `stop_repeated_interruption` | The attempt stops with `repeated_interruption`. |
+| Rerun would exceed `maxTransitions` | `stop_transition_limit` | The attempt stops with `transition_limit`. |
+
+Every decision is appended to `runtime.turn_interruptions` with the exact write invocation IDs and the lost and fresh session IDs. A rerun is recorded as a `$interrupted` graph transition, so it counts toward `maxTransitions`. A late report or outcome from the lost turn is after-terminal evidence and cannot advance the graph. An explicit cancel or node timeout is an abort, never an interruption. Provider and runner owners first raise their pause condition, then call `InterruptTurn` with cause `provider_unavailable` or `runner_offline`, so the rerun visit waits at the pause gate until the cause clears.
+
+### 24.4 Customer projection (DES-HOR-649-05)
+
+`work.current_work_items` follows the section 7 precedence: `failed`, `done`, `paused` (an open attempt pause), `waiting` (the run is waiting), `blocked` (an open blocker), `todo`, then `in_progress`. On the single root lane these states cannot coexist, so the order only matters once HOR-468 adds lanes. Waiting and paused never count as Blocked. Work items carry `wait` (`completion`, `expected`, `received`, `deadlineAt`) and `pause` (`reason`, `since`). The timeline and SSE carry `work_waiting`, `wait_event_received`, `wait_stopped`, `work_paused`, `work_resumed`, and `step_interrupted`. The current Dashboard shows waiting and paused items in its In progress column, each with its own state chip and EN/PT copy; HOR-459 and HOR-466 restyle on top of these states. `control_plane_dispatch_workers{state="busy"|"idle"}` shows that waiting work holds no worker.
