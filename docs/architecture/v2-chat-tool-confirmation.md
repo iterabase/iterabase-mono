@@ -1,13 +1,13 @@
 # V2 durable Chat, tool policy, and consequence-confirmation contract
 
-- **Status:** Approved design; implementation is owned by follow-on tickets.
-- **Approval date:** 2026-08-23
+- **Status:** Approved design, amended by the founder design review of 2026-10-11/12 (section 1.1); implementation is owned by follow-on tickets.
+- **Approval date:** 2026-08-23; amended 2026-10-12 ([HOR-663](https://linear.app/horizonshift/issue/HOR-663/docs-amend-the-v2-architecture-docs-to-the-2026-10-design-review))
 - **Architecture ticket:** [HOR-456](https://linear.app/horizonshift/issue/HOR-456/v2-approve-durable-chat-tool-policy-and-confirmation-architecture)
-- **Product contract:** Obsidian `Platform V2 — Managed Digital Workforce — Product Requirements`, especially `REQ-005`–`REQ-009`, `SCN-003`, `SCN-004`, `SCN-008`, and `SCN-018`
+- **Product contract:** Obsidian `Platform V2 — Product Requirements` (2026-10-12), especially `REQ-005`–`REQ-009` (as amended: one continuous conversation per person), `REQ-061`, `SCN-003`, `SCN-004`, `SCN-008`, and `SCN-018`; PD-V2-20261002-02. The 2026-08-10 PRD is history.
 - **Related authority:** [`v2-authentication-authority.md`](v2-authentication-authority.md), especially `DES-HOR-451-04`, `DES-HOR-451-05`, `DES-HOR-451-13`, the three-principal seam, and the cookie-only Chat route classification
-- **Implementation owners:** HOR-452, HOR-455, HOR-458, and the dependency owners identified in section 20
+- **Implementation owners:** HOR-452, HOR-455, HOR-458, HOR-659, and the dependency owners identified in section 20. The HOR-517 prototype is reference only; its multi-conversation history, search, and conversation list are superseded.
 
-This record is the repository authority for V2 customer Chat durability, runtime/pi-session mapping, ChatProfile policy, tool authorization, consequence confirmation, customer streaming, artifact references, and confirmed Chat-to-workflow handoff. It does not implement the design. Where the pre-V2 runtime describes a PVC transcript as authoritative, this record supersedes that statement only for new V2 customer Chat rows; legacy technical runs remain unchanged.
+This record is the repository authority for the V2 chief of staff (customer Chat): its one continuous conversation per person, installation persona, visible memory, ad-hoc jobs and read-only sub-agents, Teams DM surface, durability, runtime/pi-session mapping, ChatProfile policy, tool authorization, consequence confirmation, customer streaming, artifact references, and confirmed Chat-to-workflow handoff. It does not implement the design. Where the pre-V2 runtime describes a PVC transcript as authoritative, this record supersedes that statement only for new V2 customer Chat rows; legacy technical runs remain unchanged.
 
 ## 1. Approved design decisions
 
@@ -29,6 +29,7 @@ The founder approved the following bounded decisions for HOR-456. The full appro
 - **Scope:** Customer Chat routes, conversation ownership, transcript access, and confirmation decisions.
 - **Decision:** A conversation is private to its initiating human and is available only through that human's current active Operator/Admin cookie session. Bearer credentials are denied even if the request also carries a valid cookie. Admin has no transcript or confirmation override.
 - **Consequences:** No Chat API-key action, service-actor Chat, shared conversation, impersonation, or administrative transcript browser enters V2. Server enforcement, not UI hiding, owns the boundary.
+- **Amended (HOR-452, HOR-659):** each person has exactly one continuous conversation. Besides the app's cookie session, an SSO-linked person may reach the same conversation by DM to the chief of staff's Teams app. Bearer credentials stay denied (section 1.1).
 - **Evidence:** Founder approval recorded in HOR-456 on 2026-08-23.
 
 ### DES-HOR-456-03 — Use immutable operator-owned Chat profile versions
@@ -38,6 +39,7 @@ The founder approved the following bounded decisions for HOR-456. The full appro
 - **Scope:** Deployment configuration for Chat model, instructions, AgentPool, executing identity, and allowed capabilities.
 - **Decision:** Add an operator-only, immutable-versioned `ChatProfile` CRD/materialization with one active installation selection. Each run snapshots its exact version and explicit tool/control allow-list.
 - **Consequences:** Profile changes affect only later runs. Chat receives no workspace tools, publish control, shell, arbitrary network, credentials, or customer-system access. Customer users cannot inspect or widen the profile.
+- **Amended (HOR-452, HOR-455):** an Admin names the installation's persona (and optionally a short tone) in Settings; that is configuration, not a security identity. The profile's controls add ad-hoc jobs and delegation to read-only sub-agents (section 1.1).
 - **Evidence:** Founder approval recorded in HOR-456 on 2026-08-23.
 
 ### DES-HOR-456-04 — Re-evaluate the three-principal authorization intersection at every boundary
@@ -83,6 +85,7 @@ The founder approved the following bounded decisions for HOR-456. The full appro
 - **Scope:** Chat workflow resolution, confirmation, idempotent work creation, inputs/artifacts, and source/principal attribution.
 - **Decision:** Snapshot the exact Ready workflow version/digest, validated inputs and artifact references, persona, first business step, and localized consequence. Confirmation transactionally reuses the work-start service with the confirmation UUID as the idempotency key and records Chat/conversation/initiating-human/request-actor/executing-workflow attribution.
 - **Consequences:** Confirm creates exactly one separate work item. Cancel, expiry, or staleness creates none. Workflow start never appears in the tool invocation ledger and ordinary Chat never becomes a work item.
+- **Amended (HOR-455):** ad-hoc jobs and delegated sub-agents are also work items, of the built-in "Ad-hoc job" type (section 12.1). A conversation turn itself is still never a work item.
 - **Evidence:** Founder approval recorded in HOR-456 on 2026-08-23.
 
 ### DES-HOR-456-09 — Use durable event cursors with ephemeral token deltas and explicit cancellation
@@ -110,6 +113,7 @@ The founder approved the following bounded decisions for HOR-456. The full appro
 - **Scope:** Conversation search, customer projections, model/tool context, retention, purge, backup, and pi-session cleanup.
 - **Decision:** Owner-scoped search indexes titles, customer-visible messages, safe citations, tool names/targets, and confirmation decisions—not raw arguments/results, hidden model context, prompts, or technical events. Database Chat records default to indefinite retention unless installation policy purges whole inactive conversations. Pi cache is cleanup-eligible after 30 days of inactivity and must remain reconstructable. PostgreSQL plus artifact and existing ledger state is backup-authoritative; PVC state is not.
 - **Consequences:** Execution-only context never enters customer HTTP/SSE/search/log/audit projections. Purge cannot run while a turn or confirmation is active and preserves independently authoritative work, artifact, invocation, and minimal audit records.
+- **Amended (HOR-452):** there is no conversation list or cross-conversation search. Durable memories are customer-visible records that the person can see, edit, and delete (section 7.12).
 - **Evidence:** Founder approval recorded in HOR-456 on 2026-08-23.
 
 ### DES-HOR-456-12 — Migrate by compatibility seams without legacy transcript backfill
@@ -150,11 +154,29 @@ The founder approved the following bounded decisions for HOR-456. The full appro
 
 The founder approved this review addendum exactly as recommended on 2026-08-23 after the three PR #59 findings above. HOR-456 is the canonical Linear evidence for the addendum.
 
+## 1.1 Design review amendments (2026-10-11/12)
+
+The founder design review of 2026-10-11/12 amended this record. Each amendment's detailed contract is the "Decisions (design review)" section of the ticket in the right-hand column; the Obsidian `Platform V2 — Product Requirements` note maps requirements to those tickets.
+
+| Amends | Amendment | Deciding ticket |
+| --- | --- | --- |
+| `DES-HOR-456-02`, `DES-HOR-456-11`, section 8 | **One continuous conversation per person.** Each person in an installation has exactly one private, continuous conversation with the chief of staff. There is no new/recent/search conversation list. Two people never see each other's conversation or memories, and an Admin has no override. This replaces the multi-conversation design. | [HOR-452](https://linear.app/horizonshift/issue/HOR-452) |
+| `DES-HOR-456-03` | **Installation persona.** An Admin sets the chief of staff's name (for example "Sofia") and optionally a short tone description in Settings. It is applied to the system prompt and the UI. It is configuration, not a security identity. | [HOR-452](https://linear.app/horizonshift/issue/HOR-452) |
+| `DES-HOR-456-11`, section 7 | **Visible memory.** Older turns are compacted into summaries automatically. Durable facts are saved as **memories**: the chief of staff proposes them in the conversation ("I'll remember that Eduardo approves quotes over €5k"), and they are saved explicitly. The person can see, edit, and delete their memories in the conversation's settings panel. There is no hidden memory; memories are per person and never shared. A deleted memory is no longer used (section 7.12). | [HOR-452](https://linear.app/horizonshift/issue/HOR-452) |
+| `DES-HOR-456-08`, invariant 1 | **Ad-hoc jobs are work items.** The chief of staff can run an ad-hoc job, for example "compare these 3 quotes and draft a reply to Eduardo". It is a work item of the built-in "Ad-hoc job" type: visible in Work, carrying its evidence, consuming credits, and cancellable like any work. The conversation links to it and reports its result (section 12.1). | [HOR-455](https://linear.app/horizonshift/issue/HOR-455) |
+| `DES-HOR-456-03`, `DES-HOR-456-05` | **Read-only sub-agents run as ad-hoc jobs.** Delegated research runs as ad-hoc jobs, so the conversation keeps one running turn at a time and the runtime needs no new concurrency model. Sub-agents get read and analyse tools only, with the requesting person's authority: reading work, artifacts and extracted text, read-only browsing, and read-only runner queries. They can draft text and documents as artifacts, and cannot write. | [HOR-455](https://linear.app/horizonshift/issue/HOR-455) |
+| `DES-HOR-456-07` | **Ad-hoc sends.** Sends and submissions happen only through workflows, or through a confirmation card in the conversation that shows the exact content, recipients, and attachments. An ad-hoc send uses the outbound email tool in `confirm` mode; there is no pre-approval for ad-hoc sends. | [HOR-455](https://linear.app/horizonshift/issue/HOR-455), [HOR-599](https://linear.app/horizonshift/issue/HOR-599) |
+| `DES-HOR-456-02`, section 2 non-goals | **Teams DM is the same conversation.** A linked person can DM the chief of staff's Teams app. Messages from Teams and the app interleave in one durable conversation, with the same memory, tools, authority, and confirmations, and the app shows which surface each message came from. Workflow starts, ad-hoc jobs, and confirmations use Teams cards with exact content. It is the only Teams path that starts work. | [HOR-659](https://linear.app/horizonshift/issue/HOR-659), [HOR-248](https://linear.app/horizonshift/issue/HOR-248) |
+| `DES-HOR-456-10`, section 16 | **Attachments and references.** Up to 6 artifacts per message and 25 MiB per file, using the HOR-460 allowlist plus email containers. `@` mentions of work items, workflows, and artifacts the person can see give the chief of staff read access to them for that turn. For scanned or handwritten pages, the chief of staff may read page images. It says when a document is still being scanned or extracted, and never claims to have read content it hasn't. | [HOR-458](https://linear.app/horizonshift/issue/HOR-458) |
+| Section 6 | **Metering and model.** Turns and ad-hoc jobs consume credits (HOR-648). Text is answered by the installation model (HOR-597). | [HOR-452](https://linear.app/horizonshift/issue/HOR-452) |
+
 ## 2. Scope, non-goals, and hard invariants
 
 ### In scope
 
-- Customer-owned durable conversations, messages, safe tool-use projections, confirmation decisions, search, and SSE.
+- One continuous, owner-private conversation per person; messages from the app and the Teams DM surface; safe tool-use projections; confirmation decisions; visible memories; and SSE.
+- The installation persona, automatic compaction, and person-visible memories.
+- Ad-hoc jobs and delegated read-only sub-agents, created as work items.
 - One active mapped pi-session generation per conversation, database reconstruction, generation rotation, and retired-generation fencing.
 - One isolated Chat execution per submitted message, composed with existing `runtime.workflow_runs`, `run_steps`, `turns`, assignments, and events.
 - Operator-owned ChatProfile versioning and exact capability/model/pool snapshots.
@@ -166,17 +188,18 @@ The founder approved this review addendum exactly as recommended on 2026-08-23 a
 ### Non-goals
 
 - Runtime/API/schema/controller/UI/CRD/gateway implementation in HOR-456 itself.
-- API-key, automation-credential, service-actor, external-identity, or anonymous Chat.
-- Shared conversations, Admin transcript access, impersonation, transcript export, or customer-visible technical traces.
+- API-key, automation-credential, service-actor, or anonymous Chat, and any external identity other than an SSO-linked Teams person (HOR-659).
+- Several conversations per person, a conversation list, shared or team conversations, Admin transcript access, impersonation, transcript export, or customer-visible technical traces.
 - Customer workflow/tool/profile/model/provider/routing/rate/capability configuration.
 - Unrestricted autonomy, shell, filesystem workspace tools, arbitrary network, generic web search, direct customer credentials, or internal endpoint access.
-- Chat-triggered schedules, Outlook/Graph, Teams, notifications, or a customer workflow builder.
-- Universal undo, compensation, automatic turn replay, automatic write retry, or memory-reconciliation claims.
+- Chat-triggered schedules or scheduled jobs, Teams group chats or channels, meetings, voice, or a customer workflow builder (V3).
+- Universal undo, compensation, automatic turn replay, automatic write retry, or hidden memory.
+- Pre-approved ad-hoc sends; ad-hoc sends are always confirmed.
 
 ### Non-negotiable invariants
 
-1. A Chat conversation is not a `work.work_item`; only a confirmed workflow-start proposal creates one.
-2. Every V2 Chat query begins with `owner_user_identity_id = current_session.user_id`; an Admin role never removes that predicate.
+1. A Chat conversation is not a `work.work_item`. Only a confirmed workflow-start proposal, an ad-hoc job, or a delegated sub-agent (itself an ad-hoc job) creates one.
+2. Every V2 Chat query begins with `owner_user_identity_id = current_person` (from the browser session, or from the Teams link for the DM surface); an Admin role never removes that predicate. Memories follow the same predicate.
 3. PostgreSQL can reconstruct the next model context without any pi/PVC file.
 4. A conversation has zero or one active mapped pi-session generation and zero or one nonterminal Chat execution.
 5. A runtime assignment is valid only for the exact current conversation generation, execution, worker, and worker fencing generation.
@@ -272,7 +295,9 @@ Trust rules:
 
 | Abuse/failure | Required control and evidence |
 | --- | --- |
-| Cross-user conversation ID | Owner predicate in the same query as lookup/search/event fetch. Return not found; never disclose existence. Admin has no bypass. |
+| Cross-user conversation or memory ID | Owner predicate in the same query as lookup/memory/event fetch. Return not found; never disclose existence. Admin has no bypass. |
+| Teams DM from an unlinked user or forged Bot Framework request | Bot Framework authentication; act only for an SSO-linked person under current authority; an unlinked user gets only the link-your-account message (HOR-248, HOR-659). |
+| Sub-agent attempts a write | Ad-hoc jobs used as sub-agents receive read and analyse tools only; a direct write attempt is denied before the ledger (HOR-455). |
 | Bearer or mixed credentials | Any `Authorization` header on a Chat route is rejected before cookie fallback. No Chat action exists in personal/automation catalogues. Record a secret-free denial. |
 | CSRF | Exact-origin/session-bound CSRF on create, message submit, cancel, and confirmation decision. |
 | Prompt requests forbidden capability | Forbidden tools/controls are absent from the explicit pin set. Workspace tools are false. Direct network and credentials do not exist in the child. |
@@ -325,7 +350,8 @@ Validation/materialization requirements:
 - `capabilities` is explicit. Empty means deny all tools. `nil = all` is invalid for V2 Chat.
 - A capability cannot exceed the pool grant or descriptor effect class/actions.
 - `workspace_tools=false` is fixed. `read`, `write`, `edit`, `bash`, publish controls, arbitrary skills, and direct network are never enabled by this profile.
-- Only reserved product controls named by this record may appear. V2 permits `workflow_start`; schedules, blocker mutation, cancel/restart/revision, artifact deletion/retry, identity/security operations, and arbitrary HTTP are not Chat controls.
+- Only reserved product controls named by this record may appear. V2 permits `workflow_start` and ad-hoc job creation, including delegation to read-only sub-agents (section 12.1, HOR-455); schedules, blocker mutation, cancel/restart/revision, artifact deletion/retry, identity/security operations, and arbitrary HTTP are not Chat controls.
+- The persona name and tone are set by an Admin in Settings, separately from the operator-owned profile (HOR-452). They are applied to the system prompt and the UI, and are not a security identity.
 - The profile's instructions/model details are execution-only and never returned by customer APIs, SSE, search, usage evidence, audit detail, or normal logs.
 - A message-run snapshots the exact profile version/digest/model/capabilities/controls. A later profile selection does not mutate an already-running turn, but it makes any still-pending proposal from the older profile stale.
 
@@ -346,8 +372,7 @@ Names are normative logical names. An implementation may consolidate migrations,
 ### 7.2 `chat.conversations`
 
 - `id` UUID primary key.
-- `owner_user_identity_id` required canonical human FK; immutable.
-- customer-safe `title` and search vector.
+- `owner_user_identity_id` required canonical human FK; immutable and **unique**: one continuous conversation per person (HOR-452).
 - `current_session_generation` nullable bigint and `row_version` for compare-and-swap.
 - `active_execution_id` nullable deferred FK.
 - `next_message_ordinal` and `next_context_ordinal` monotonic counters.
@@ -371,7 +396,7 @@ A `preparing` candidate cannot accept a turn. The active mapping is exactly the 
 
 - `id`, `conversation_id`, unique `(conversation_id, ordinal)`.
 - `role = user|assistant`; no system/tool/thinking role is customer-visible.
-- customer-visible `content`, source locale, originating `execution_id`, and `created_at`.
+- customer-visible `content`, source locale, surface `app|teams` (HOR-659), originating `execution_id`, and `created_at`.
 - user-submission idempotency evidence is on the execution; assistant messages are inserted only by the terminal projection.
 - append-only until an approved conversation-retention purge.
 
@@ -385,7 +410,7 @@ One row represents one submitted user message and one isolated V2 Chat runtime r
 - unique `runtime_run_id`; selected V2 mapping is one `runtime.workflow_runs(kind='chat')`, one legacy `agent_task` run step, and one turn for this message.
 - snapshotted `profile_version_id/digest`, model, pool, explicit capabilities, controls, and exact tool pins.
 - `session_generation` selected before the turn can run and `base_context_ordinal` captured before the submitted user message is applied to pi.
-- `initiating_human_identity_id`, `request_actor_identity_id`, `executing_identity_id`, initiating browser-session ID, role/profile authorization evidence, request/correlation IDs.
+- `initiating_human_identity_id`, `request_actor_identity_id`, `executing_identity_id`, initiating browser-session ID or Teams surface evidence (HOR-659), role/profile authorization evidence, request/correlation IDs.
 - required message `idempotency_key` and canonical `payload_hash`; unique `(conversation_id, idempotency_key)`.
 - state `queued|preparing|running|succeeded|failed|canceled`, bounded customer failure code, cancellation timestamps, and lifecycle timestamps.
 
@@ -464,6 +489,15 @@ The customer query joins `conversations.owner_user_identity_id` before returning
 - Per `DES-HOR-456-13`, a content-free `chat.effective_workload_authority` projection returns only currently eligible V2 running turn, assignment/generation, principal, immutable profile, pool, and assigned-model fields. The Inference Gateway's existing dedicated PostgreSQL role receives exact `SELECT` on this projection—no Chat transcript/context/raw-identity/table-wide/default grant—and retains its approved exact runtime/toolgateway routing/workload reads.
 - Inference workload resolution joins that projection live for every V2 Chat request with no authority cache while retaining existing workflow behavior. Absence, ambiguity, or any projection/database failure denies before backend inference.
 
+### 7.12 `chat.memories` (HOR-452)
+
+- `id`, owner human (same predicate as the conversation), customer-visible content, source message ordinal, created/edited time, and deletion time.
+- Created only when a memory proposal is saved explicitly in the conversation; edited and deleted by the person from the conversation's settings panel.
+- Model context includes only the owner's current, undeleted memories. A deleted memory is no longer used.
+- Memories are never shared with other users and never visible to an Admin.
+
+Automatic compaction summaries stay execution context in `chat.context_items` / `chat.context_checkpoints` (section 7.6). They do not drop referenced facts.
+
 All new cross-schema FKs are nullable for legacy compatibility. Application and database checks require them for new V2 rows.
 
 ## 8. Customer HTTP and SSE contract
@@ -472,13 +506,14 @@ All paths below are same-origin Product API routes. They require the approved op
 
 | Route | Behavior |
 | --- | --- |
-| `POST /v1/chat/conversations` | Create an owner-private empty conversation. No runtime run/work item is created. |
-| `GET /v1/chat/conversations?search=&cursor=&limit=` | Owner-scoped recent list/search over approved fields only. |
-| `GET /v1/chat/conversations/{id}` | Owner-scoped transcript, artifact refs, safe tool uses, confirmations, and current nonterminal execution. |
+| `GET /v1/chat/conversation` | The caller's one conversation, created empty on first use: transcript (paged), surfaces, artifact refs, safe tool uses, confirmations, linked work items, and current nonterminal execution. No runtime run/work item is created. |
+| `GET`/`PATCH`/`DELETE /v1/chat/memories[/{id}]` | Owner-scoped list, edit, and delete of the caller's memories (HOR-452). |
 | `POST /v1/chat/conversations/{id}/messages` | Requires `Idempotency-Key`; atomically appends one user message, stales prior pending confirmations, creates one execution/runtime run with exact snapshots/pins, and schedules it. |
 | `POST /v1/chat/conversations/{id}/executions/{executionId}/cancel` | Idempotent explicit cancellation of only the current nonterminal Chat execution. It does not cancel a work item or reverse an effect. |
 | `POST /v1/chat/confirmations/{id}/decision` | Body carries `decision=confirm|cancel` and the displayed `proposalDigest`. Same-human/current-policy CAS. |
-| `GET /v1/chat/events` | Owner-scoped SSE for all of the user's conversations; optional conversation filter; `Last-Event-ID` is the durable global cursor. |
+| `GET /v1/chat/events` | Owner-scoped SSE for the caller's conversation and memories; `Last-Event-ID` is the durable global cursor. |
+
+The paths above are logical; HOR-452 may keep the conversation ID in the path. There is no create, list, or cross-conversation search route (HOR-452). The Teams DM surface reaches the same conversation through the chief of staff's bot endpoint, for an SSO-linked person (HOR-659); its cards for confirmations, workflow starts, and ad-hoc jobs use the same decision logic as the routes above.
 
 Rules:
 
@@ -743,6 +778,15 @@ workflow/artifacts    = exact prepared version and references
 
 The work item and attempt retain their own immutable workflow/model/tool/capability snapshots. The conversation stores only the work-item reference and safe event. Work proceeds independently if the conversation is later purged. Replaying the same confirm returns the same work item; a payload/version mismatch conflicts. Cancel, expiry, staleness, service failure before commit, or response loss before commit creates no work item. Response loss after commit is recovered by replaying the same decision.
 
+### 12.1 Ad-hoc jobs and read-only sub-agents (HOR-455)
+
+- An ad-hoc job is a work item of the built-in "Ad-hoc job" type: a single-agent task with read and analyse tools and a bounded runtime. Its results are artifacts plus a summary reported back to the conversation.
+- It is visible in Work, carries its evidence, consumes credits, and can be cancelled like any work item. Its source is `chat`, with the person as initiator.
+- Delegated sub-agents run as ad-hoc jobs. The chief of staff can start one or more and track them, so the conversation keeps one nonterminal turn at a time and the runtime gains no new concurrency model.
+- Sub-agents get read and analyse tools only, under the requesting person's current authority: reading work, artifacts, and extracted text; read-only browsing (HOR-594); and read-only runner queries (HOR-596). They may draft text and documents as artifacts. Every write tool is denied before the ledger.
+- Starting a configured workflow stays the confirmed `workflow_start` control above. An ad-hoc send uses a confirmation card with the exact content, recipients, and attachments, and the outbound email tool in `confirm` mode (HOR-599). There is no pre-approval for ad-hoc sends.
+- Conversation cards show a started workflow (link, live status), a running or completed job, a pending confirmation, and the result of a confirmation.
+
 ## 13. Runtime run, pi-session generation, and context contract
 
 ### Selected V2 runtime composition
@@ -985,15 +1029,20 @@ A customer-safe failure code is stable and localizable. Technical diagnostics re
 - Workflow start copies refs into `work.artifact_links` through the existing start transaction. It never copies bytes.
 - Tool runner artifact access still flows through the gateway's exact authorized-ref service; no MinIO credential or URL reaches the child.
 
-HOR-458 owns the first-release six-file/25-MB composition UI after HOR-460/461/462 provide security/extraction states. This record owns only the Chat reference/authorization/handoff seam.
+- `@` references to work items, workflows, and artifacts the person can see give the chief of staff read access to them for that turn, within the person's authority. References to items the person can't see are refused (HOR-458).
+- For scanned or handwritten pages, the chief of staff may read the artifact's page images (HOR-462). The chief of staff says when a document is still being scanned or extracted and never claims to have read content it hasn't.
+- Files sent through the Teams DM go through the same quarantine path and limits (HOR-659).
+
+HOR-458 owns the six-artifact/25 MiB composition UI and references after HOR-460/461/462 provide security/extraction states. This record owns only the Chat reference/authorization/handoff seam.
 
 ## 17. Search, retention, privacy, and backup
 
 ### Search
 
+The conversation list and cross-conversation search are superseded (HOR-452). The rules below apply to any search HOR-452 offers within the person's own conversation.
+
 Owner-scoped PostgreSQL search may index:
 
-- conversation title;
 - customer-visible user/assistant message text;
 - safe citation labels/resource IDs;
 - logical tool name and rendered safe target;
@@ -1012,7 +1061,7 @@ Authorization filters execute before ranking/snippet generation. Search logs con
 ### Retention and purge
 
 - Default Chat DB retention is indefinite.
-- Installation policy may set a finite whole-inactive-conversation retention. No customer self-delete/export surface is added by this ticket.
+- Installation policy may set a finite whole-inactive-conversation retention. No customer self-delete/export surface is added, apart from the person editing and deleting their own memories (section 7.12).
 - A conversation is purge-ineligible while it has a nonterminal execution, a live session-preparation/rotation lease, a pending/confirmed-undelivered confirmation command, or a linked nonterminal invocation/start transaction.
 - Purge first retires/fences any idle active cache generation, then removes customer messages, Chat events, context/checkpoints, safe projections, and linked terminal V2 Chat runtime transcript rows according to one audited plan. It leaves independently authoritative artifact objects, work items, and gateway invocation rows under their own policies.
 - Where those domains retain a conversation/confirmation source UUID, preserve a content-free tombstone with IDs, principal/source attribution, timestamps, and purge evidence. Do not retain searchable message/card content in the tombstone.
@@ -1077,7 +1126,7 @@ HOR-456 itself has no migration, runtime, customer-data, or semantic publication
 
 ### Route/auth direct negatives
 
-For every Chat route, test missing/expired/revoked/disabled cookie, Operator, Admin, other user's UUID, personal key, automation key, delegated token, valid cookie plus any Authorization header, missing/wrong CSRF, and cross-origin request. Operator/Admin may use only their own conversations; bearer always fails and no mutation/event/invocation/work row appears.
+For every Chat route (and the Teams DM surface: unlinked user, forged Bot Framework request), test missing/expired/revoked/disabled cookie, Operator, Admin, other user's UUID, personal key, automation key, delegated token, valid cookie plus any Authorization header, missing/wrong CSRF, and cross-origin request. Operator/Admin may use only their own conversations; bearer always fails and no mutation/event/invocation/work row appears.
 
 ### Runtime/Harness/session
 
@@ -1125,7 +1174,10 @@ For every Chat route, test missing/expired/revoked/disabled cookie, Operator, Ad
 
 ### Recovery/E2E
 
-- `SCN-003`: authorized read tool, attributable answer, durable/searchable conversation, no work item.
+- `SCN-003`: authorized read tool, cited answer limited to what the person can see (Admin value figures, Operator none), durable single conversation, no work item.
+- Two people never see each other's conversation or memories, including through direct API calls; a deleted memory is no longer used; the persona name appears in the UI and replies (HOR-452).
+- An ad-hoc job is visible in Work with its result cited in the conversation; a sub-agent's direct write attempt is denied (HOR-455).
+- A message from Teams and a follow-up in the app form one conversation with shared memory; a Teams file is quarantined before it is read (HOR-659).
 - `SCN-004`: prepared write, cancel zero invocation; confirm one invocation; duplicate delivery no duplicate effect; uncertain result visible as not retried.
 - `SCN-008`: workflow card exact; cancel zero work; confirm one work item with artifact refs/source/principals.
 - `SCN-018`: process/worker/database restart around every durable boundary; no automatic turn/write replay and honest unknown outcome.
@@ -1138,10 +1190,12 @@ For every Chat route, test missing/expired/revoked/disabled cookie, Operator, Ad
 | --- | --- |
 | HOR-453 | Approved opaque browser session, CSRF, session revocation, and current-account base required by every Chat route. |
 | HOR-454 | Operator/Admin server authority, three-principal database seam, current role/account projections, executing identities, and legacy authority cutover. |
-| HOR-452 | ChatProfile CRD/materialization; `chat` read-domain schema/API/UI/search/SSE; one-message runtime composition; session preparation/rotation/context reconstruction; inference workload principal/generation enforcement; explicit read-tool policy and safe result projection. No write execution. |
-| HOR-455 | Write preparation/full templates, confirmation state/UI/outbox, `chat_confirmation` gateway execution/no-retry override, outcome projection, reserved workflow-start control, and transactional `StartTx` attribution. |
+| HOR-452 | ChatProfile CRD/materialization; one continuous conversation per person; persona configuration; compaction and visible memories; `chat` read-domain schema/API/UI/SSE; one-message runtime composition; session preparation/rotation/context reconstruction; inference workload principal/generation enforcement; explicit read-tool policy and safe result projection. No write execution. |
+| HOR-455 | Write preparation/full templates, confirmation state/UI/outbox, `chat_confirmation` gateway execution/no-retry override, outcome projection, reserved workflow-start control, transactional `StartTx` attribution, ad-hoc jobs, read-only sub-agents, and confirmed ad-hoc sends. |
+| HOR-659 | The Teams DM surface on the same conversation: bot message handling, Teams cards, and Teams attachments into the artifact pipeline. |
 | HOR-460/461/462 | Artifact security/extraction/derived-content states and authoritative search/lifecycle consumed by Chat. |
-| HOR-458 | Contextual upload/reuse/reference UI and exact message/workflow handoff using this schema after artifact contracts land. |
+| HOR-458 | Contextual upload/reuse/`@`-reference UI and exact message/workflow/ad-hoc-job handoff using this schema after artifact contracts land. |
+| HOR-517 | Reference-only prototype. UI is designed in code in the HOR-459 app's Chat route and reviewed on `pr-<N>` previews. |
 | HOR-467 | Full direct-negative, bilingual/accessibility, restart/restore, release, and reference-environment E2E evidence. |
 
 `control-plane/` owns Chat, runtime, dispatch, Harness, Tool Gateway, workflow/work, artifact integration, and product UI. `inference-gateway/` is additionally in scope only for the named workload principal/generation/model-authorization seam. Charts/package changes belong to follow-on implementation/release tickets, not this design record.
@@ -1154,7 +1208,9 @@ For every Chat route, test missing/expired/revoked/disabled cookie, Operator, Ad
 | `REQ-006` authorized reads | Sections 7.7, 10, 14, 19: existing gateway ledger, safe projection/citations, current principal/resource checks, no work item. |
 | `REQ-007` confirmed writes | Sections 7.8–7.9, 10–11, 14–15: no direct write, exact card/decision, one ledger invocation, no retry, unknown outcome. |
 | `REQ-008` confirmed workflow start | Sections 11–12 and diagram: exact workflow/input/persona/first-step/consequence, cancel zero work, one confirmed Chat-source item. |
-| `REQ-009` durable/searchable conversations | Sections 7, 8–9, 13, 17: DB transcript/context, tool/confirmation attribution, search, SSE/recovery, Chat not work. |
+| `REQ-009` one durable conversation per person, with visible memory | Sections 1.1, 7, 8–9, 13, 17: DB transcript/context, memories, tool/confirmation attribution, SSE/recovery, Chat not work. |
+| `REQ-007`, `REQ-008` ad-hoc jobs and sub-agents | Sections 1.1 and 12.1. |
+| `REQ-061` chief of staff in Teams | Sections 1.1, 8, and 16. |
 | `SCN-003` | Read-only sequence and E2E matrix. |
 | `SCN-004` | Confirmation state, tool command/ledger composition, no-silent-retry and `outcome_unknown` tests. |
 | `SCN-008` | Workflow card/start transaction and artifact-reference tests. |
