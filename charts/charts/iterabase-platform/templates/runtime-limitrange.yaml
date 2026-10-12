@@ -1,8 +1,9 @@
 {{- /*
-Release-namespace defaults for containers created at runtime without declared
-resources: AgentPool workers and ModelBackend helpers built by the manager
-(HOR-602, DES-HOR-602-02). Defaults only — no max/min — so explicitly sized
-pools are never capped by this chart.
+Release-namespace default requests for containers created at runtime without
+declared resources: AgentPool workers and ModelBackend pods built by the
+manager (HOR-602, DES-HOR-602-02 as amended). Requests only — no default
+limit and no max/min — so an unsized vLLM backend is never capped and an n-1
+rollback still fits the node while this object briefly outlives it.
 */ -}}
 {{- if .Values.runtimeDefaults.enabled }}
 apiVersion: v1
@@ -19,6 +20,4 @@ spec:
     - type: Container
       defaultRequest:
         {{- toYaml .Values.runtimeDefaults.defaultRequest | nindent 8 }}
-      default:
-        {{- toYaml .Values.runtimeDefaults.default | nindent 8 }}
 {{- end }}

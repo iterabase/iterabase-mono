@@ -24,17 +24,25 @@ Multi-node sizing, autoscaling and Graviton are out of scope.
 - **No CPU limits.** CPU is compressible: throttling hurts latency and protects
   no neighbour. CPU requests reserve schedulable capacity and set the
   scheduler's admission decision.
-- **Runtime-created pods get defaults (DES-HOR-602-02).** The umbrella renders
-  one `LimitRange`, `<release>-runtime-defaults`, in the release namespace. It
-  sets only defaults, no `max`/`min`: 250m CPU / 256Mi memory request and a
-  1536Mi memory limit. It applies to AgentPool workers (`supervisor` and
-  `init-wal`) and ModelBackend helpers that the manager creates without
-  resources. Overlays should size real pools explicitly through
-  `AgentPool.spec.resources`. A pool that requests more memory than 1536Mi
-  without its own limit is rejected at pod admission.
-- **Overcommit fails closed.** When the pool asks for more workers than the
-  node can admit, the surplus pods stay `Pending` (unschedulable) instead of
-  overcommitting memory. Both reference runs observed this directly.
+- **Runtime-created pods get a default request (DES-HOR-602-02, amended).**
+  The umbrella renders one `LimitRange`, `<release>-runtime-defaults`, in the
+  release namespace. It sets only `defaultRequest` (25m CPU / 128Mi memory):
+  no default limit and no `max`/`min`. It applies to AgentPool workers
+  (`supervisor` and `init-wal`) and ModelBackend pods that the manager creates
+  without resources, so they still count toward scheduling. It deliberately
+  sets no memory limit. A ModelBackend always declares a GPU but often no
+  memory, and a default limit would OOM-kill its vLLM server. A larger default
+  request would also land on every unsized pod of an n-1 chart during a
+  rollback, while the LimitRange briefly outlives the rollback, and the
+  rollback would no longer fit the node. **Runtime pods have a memory limit only
+  when the overlay sets one**: size AgentPools (recommended 250m / 256Mi
+  request, 1Gi limit per worker, from the measurements below) and
+  ModelBackends through their `spec.resources`.
+- **Overcommit fails closed for sized pools.** When a pool with explicit
+  requests asks for more workers than the node can admit, the surplus pods
+  stay `Pending` (unschedulable) instead of overcommitting memory. Every
+  reference run observed this directly. An unsized pool gets only the small
+  default request, so size every pool.
 
 ## Kubelet reservation
 
@@ -57,7 +65,10 @@ both substrates, and the platform with `values-tls.yaml` and
 `values-observability.yaml`. The workflow was a single `agent_task` node
 calling `deepseek-v4-flash` on Iterabase inference. Each worker served one
 turn at a time. Memory and CPU were sampled every 15 seconds with
-`kubectl top`. Peaks are per container.
+`kubectl top`. Peaks are per container. The worker request in each run label is the
+per-container request every worker received (250m CPU in all runs). The runs
+applied it through an earlier LimitRange default; installs now set it through
+`AgentPool.spec.resources`.
 
 | Run | Workers | Items (in flight) | Result | Node peak CPU / memory | Worker peak | Restarts / OOM |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -93,7 +104,7 @@ reserved from the HOR-460 reference profile until HOR-461/HOR-462 measure it.
 
 | | 4 vCPU / 16 GiB | 8 vCPU / 16 GiB |
 | --- | --- | --- |
-| Agent worker replicas (default sizing 250m / 256Mi) | 6 | 12 |
+| Agent worker replicas (recommended sizing 250m / 256Mi) | 6 | 12 |
 | Concurrent browser runs (provisional, 500m / 1 GiB each) | 1 | 1 |
 | Concurrent extractions (provisional, within the artifact reservation) | 1 | 1 |
 | Workers alone, no browser/artifact workloads (measured) | 11 (no reservation) | 26 (reserved) |
