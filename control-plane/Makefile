@@ -309,8 +309,9 @@ tool-runner-lint: ## Typecheck the tool runner.
 	cd tool-runner && npm run lint
 
 .PHONY: tool-runner-test
-tool-runner-test: ## Run manifest/materializer/runner unit tests.
+tool-runner-test: ## Run manifest/materializer/runner/product-layer unit tests and the product version gate.
 	cd tool-runner && npm test
+	node tool-runner/scripts/check-product-versions.mjs
 
 TOOL_RUNNER_IMG ?= control-plane-tool-runner:latest
 .PHONY: tool-runner-image

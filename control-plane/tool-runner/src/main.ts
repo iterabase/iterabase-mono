@@ -1,8 +1,8 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { FluxMaterializer } from "./materializer.js";
+import { readFile, stat, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { GenerationMaterializer } from "./materializer.js";
 import { toolDigest } from "./canonical.js";
-import { loadGeneration } from "./manifest.js";
+import { loadGeneration, loadLayers } from "./manifest.js";
 import { MaterializerMetrics, RunnerMetrics, startMetricsServer } from "./metrics.js";
 import { ToolRunner, type RunnerConfig } from "./runner.js";
 import { sleep } from "./sleep.js";
@@ -17,7 +17,7 @@ async function main(): Promise<void> {
     case "materialize": await materialize(); return;
     case "validate": await validate(process.argv[3]); return;
     case "digest": await digest(process.argv[3]); return;
-    default: throw new Error("usage: tool-runner <run|materialize|validate|digest> [directory]");
+    default: throw new Error("usage: tool-runner <run|materialize|validate [overlay-directory]|digest <tool-directory>>");
   }
 }
 
@@ -59,8 +59,9 @@ async function run(): Promise<void> {
 async function materialize(): Promise<void> {
   const metrics = new MaterializerMetrics();
   await startMetricsServer(metrics.registry, tcpPort("MATERIALIZER_METRICS_PORT", 9091), abort.signal);
-  const instance = new FluxMaterializer({
-    namespace: env("FLUX_SOURCE_NAMESPACE", "flux-system"), sourceName: env("FLUX_SOURCE_NAME", "overlay"),
+  const instance = new GenerationMaterializer({
+    productRoot: productRoot(), productVersion: env("TOOL_RUNNER_BUILD_VERSION", "dev"),
+    flux: boolean("FLUX_ENABLED", true) ? { namespace: env("FLUX_SOURCE_NAMESPACE", "flux-system"), sourceName: env("FLUX_SOURCE_NAME", "overlay") } : undefined,
     artifactsRoot: env("ARTIFACTS_ROOT", "/artifacts"), controlRoot: env("CONTROL_ROOT", "/control"),
     pollMs: positiveInt("FLUX_POLL_MS", 5000), maxArchiveBytes: positiveInt("FLUX_MAX_ARCHIVE_BYTES", 512 * 1024 * 1024),
     maxExtractedBytes: positiveInt("TOOL_RUNNER_MAX_LOADED_BYTES", 512 * 1024 * 1024), maxGenerations: positiveInt("TOOL_RUNNER_MAX_GENERATIONS", 8),
@@ -78,11 +79,33 @@ async function digest(path: string | undefined): Promise<void> {
   console.log(toolDigest(manifest, bundle));
 }
 
+// validate checks the image product layer alone, or composed with an overlay's
+// tools/client layer exactly as the materializer would publish it.
 async function validate(path: string | undefined): Promise<void> {
-  if (!path) throw new Error("validate requires a generation directory");
-  const directory = resolve(path);
-  const generation = await loadGeneration(directory, { revision: "local-validation", artifactDigest: "local-validation" });
-  console.log(JSON.stringify({ valid: true, tools: generation.tools.map((tool) => ({ name: tool.manifest.name, version: tool.manifest.version, digest: tool.manifest.digest })) }, null, 2));
+  const metadata = { revision: "local-validation", artifactDigest: "local-validation" };
+  let generation;
+  if (!path) {
+    generation = await loadLayers(productRoot(), null, productRoot(), metadata);
+  } else {
+    const directory = resolve(path);
+    if (await exists(join(directory, "tools", "product"))) throw new Error("overlay tools/product is not allowed: product tools ship with the platform release; put customer tools in tools/client");
+    generation = await loadLayers(productRoot(), join(directory, "tools", "client"), directory, metadata);
+  }
+  console.log(JSON.stringify({ valid: true, tools: generation.tools.map((tool) => ({ name: tool.manifest.name, version: tool.manifest.version, digest: tool.manifest.digest, layer: tool.layer })) }, null, 2));
+}
+
+function productRoot(): string { return resolve(env("PRODUCT_TOOLS_ROOT", "/app/tools/product")); }
+async function exists(path: string): Promise<boolean> {
+  try { await stat(path); return true; } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+function boolean(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  if (raw !== "true" && raw !== "false") throw new Error(`${name} must be true or false`);
+  return raw === "true";
 }
 
 function env(name: string, fallback?: string): string {

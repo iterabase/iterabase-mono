@@ -11,13 +11,13 @@ export class MaterializerMetrics {
   });
   readonly materializations = new Counter({
     name: "tool_runner_materializations_total",
-    help: "Flux artifact materialization attempts by result.",
+    help: "Tool generation materialization attempts by result.",
     labelNames: ["result"] as const,
     registers: [this.registry],
   });
   readonly lastSuccess = new Gauge({
     name: "tool_runner_materialization_last_success_timestamp_seconds",
-    help: "Unix timestamp of the last successfully published Flux artifact generation.",
+    help: "Unix timestamp of the last successfully published tool generation.",
     registers: [this.registry],
   });
   readonly generationBytes = new Gauge({
@@ -27,14 +27,14 @@ export class MaterializerMetrics {
   });
   readonly duration = new Histogram({
     name: "tool_runner_materialization_duration_seconds",
-    help: "Flux artifact materialization duration by bounded result.",
+    help: "Tool generation materialization duration by bounded result.",
     labelNames: ["result"] as const,
     buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
     registers: [this.registry],
   });
   readonly currentArtifact = new Gauge({
     name: "tool_runner_materialized_artifact_current",
-    help: "Whether a current validated Flux artifact generation has been published.",
+    help: "Whether a current validated tool generation has been published.",
     registers: [this.registry],
   });
 

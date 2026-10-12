@@ -154,9 +154,17 @@ async function loadLayer(root: string, layer: LoadedTool["layer"], maxBundleByte
   return out;
 }
 
-export async function loadGeneration(directory: string, metadata: { revision: string; artifactDigest: string }, limits = { maxBundleBytes: 16 * 1024 * 1024, maxTools: 128 }): Promise<LoadedGeneration> {
-  const product = await loadLayer(join(directory, "tools", "product"), "product", limits.maxBundleBytes);
-  const client = await loadLayer(join(directory, "tools", "client"), "client", limits.maxBundleBytes);
+const defaultLimits = { maxBundleBytes: 16 * 1024 * 1024, maxTools: 128 };
+
+export async function loadGeneration(directory: string, metadata: { revision: string; artifactDigest: string }, limits = defaultLimits): Promise<LoadedGeneration> {
+  return loadLayers(join(directory, "tools", "product"), join(directory, "tools", "client"), directory, metadata, limits);
+}
+
+// loadLayers composes the release-versioned product layer with the optional
+// overlay client layer. A client tool shadows a product tool by logical name.
+export async function loadLayers(productRoot: string, clientRoot: string | null, directory: string, metadata: { revision: string; artifactDigest: string }, limits = defaultLimits): Promise<LoadedGeneration> {
+  const product = await loadLayer(productRoot, "product", limits.maxBundleBytes);
+  const client = clientRoot ? await loadLayer(clientRoot, "client", limits.maxBundleBytes) : new Map<string, LoadedTool>();
   for (const [name, override] of client) {
     const base = product.get(name);
     if (base && base.manifest.version === override.manifest.version && base.manifest.digest !== override.manifest.digest) {

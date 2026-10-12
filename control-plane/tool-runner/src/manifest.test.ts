@@ -51,6 +51,23 @@ describe("immutable tool generation loading", () => {
     await expect(loadGeneration(root, { revision: "r", artifactDigest: "d" })).rejects.toThrow("unknown field unreviewed");
   });
 
+  it("rejects a write tool without both EN and PT consequence templates", async () => {
+    const { root, dir } = await fixture("product");
+    const manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8")) as Record<string, unknown>;
+    manifest.effectClass = "non_idempotent_write";
+    manifest.consequenceSummaryTemplate = { localizedTemplates: { en: "Write the record" }, argumentPaths: {} };
+    await writeFile(join(dir, "manifest.json"), JSON.stringify(manifest));
+    await expect(loadGeneration(root, { revision: "r", artifactDigest: "d" })).rejects.toThrow("requires en and pt templates");
+  });
+
+  it("rejects an unknown effect class", async () => {
+    const { root, dir } = await fixture("product");
+    const manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8")) as Record<string, unknown>;
+    manifest.effectClass = "destructive";
+    await writeFile(join(dir, "manifest.json"), JSON.stringify(manifest));
+    await expect(loadGeneration(root, { revision: "r", artifactDigest: "d" })).rejects.toThrow("effectClass is invalid");
+  });
+
   it("rejects local imports outside the digested bundle", async () => {
     const local = await fixture("product", { body: "import './helper.mjs';export const identity={name:'test.echo',version:'1.0.0'};export async function invoke(){};" });
     await expect(loadGeneration(local.root, { revision: "r", artifactDigest: "d" })).rejects.toThrow("bundle local/package dependencies");
