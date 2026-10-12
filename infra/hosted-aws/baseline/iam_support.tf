@@ -61,6 +61,13 @@ data "aws_iam_policy_document" "support" {
     actions   = ["ssm:TerminateSession", "ssm:ResumeSession"]
     resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:session/$${aws:userid}-*"]
   }
+
+  # The client side of the session: StartSession creates it, this opens it.
+  statement {
+    sid       = "OwnSessionDataChannel"
+    actions   = ["ssmmessages:OpenDataChannel"]
+    resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:session/$${aws:userid}-*"]
+  }
 }
 
 resource "aws_iam_role_policy" "support" {
