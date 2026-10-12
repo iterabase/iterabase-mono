@@ -664,7 +664,7 @@ type CanonicalGraph struct {
 	TerminalOutcomes []CanonicalTerminalOutcome `json:"terminalOutcomes"`
 }
 
-// CanonicalNode is an immutable agent task or human gate definition.
+// CanonicalNode is an immutable agent task, human gate, or wait definition.
 type CanonicalNode struct {
 	Key                string                       `json:"key"`
 	Label              CanonicalLocalizedText       `json:"label"`
@@ -679,6 +679,34 @@ type CanonicalNode struct {
 	OutputSchema       json.RawMessage              `json:"outputSchema,omitempty"`
 	ResultPresentation *CanonicalResultPresentation `json:"resultPresentation,omitempty"`
 	HumanGate          *CanonicalHumanGate          `json:"humanGate,omitempty"`
+	Wait               *CanonicalWait               `json:"wait,omitempty"`
+}
+
+// CanonicalWait is the durable external-event wait contract (DES-HOR-649-02).
+type CanonicalWait struct {
+	Events     []CanonicalWaitEvent  `json:"events"`
+	Completion string                `json:"completion"`
+	Deadline   CanonicalWaitDeadline `json:"deadline"`
+}
+
+// CanonicalWaitEvent is one expected event source and its correlation keys.
+type CanonicalWaitEvent struct {
+	Source      string                   `json:"source"`
+	Correlation CanonicalOutputReference `json:"correlation"`
+}
+
+// CanonicalWaitDeadline is exactly one of a relative duration or an absolute
+// RFC3339 time read from an earlier node's output.
+type CanonicalWaitDeadline struct {
+	After string                    `json:"after,omitempty"`
+	At    *CanonicalOutputReference `json:"at,omitempty"`
+}
+
+// CanonicalOutputReference addresses a value in an earlier node's latest
+// successful output. "*" expands every array item.
+type CanonicalOutputReference struct {
+	Node string   `json:"node"`
+	Path []string `json:"path"`
 }
 
 // CanonicalResultPresentation is snapshotted onto each terminal node visit.

@@ -787,3 +787,29 @@ func TestWorkflowManualAPISourceReady(t *testing.T) {
 			strings.Contains(g.Status.ValidationMessage, "no installed source adapter")
 	}, 15*time.Second, 200*time.Millisecond, "graph_email must stay Not Ready when its adapter is absent")
 }
+
+func TestCanonicalNode_WaitFillsReservedOutcomesAndDeadlines(t *testing.T) {
+	relative := canonicalNode(v1alpha1.WorkflowNode{
+		Key: "collect", Kind: v1alpha1.WorkflowNodeWait,
+		Wait: &v1alpha1.WaitSpec{
+			Events: []v1alpha1.WaitEventSpec{{Source: "email_reply", Correlation: v1alpha1.OutputReference{
+				Node: "send", Path: []string{"requests", "*", "replyToken"}}}},
+			Completion: "all",
+			Deadline:   v1alpha1.WaitDeadline{After: &metav1.Duration{Duration: 72 * time.Hour}},
+		},
+	})
+	assert.Equal(t, workflow.WaitOutcomes, relative.Outcomes, "omitted wait outcomes are the reserved set")
+	require.NotNil(t, relative.Wait)
+	assert.Equal(t, "72h0m0s", relative.Wait.Deadline.After)
+	assert.Nil(t, relative.Wait.Deadline.At)
+	assert.Equal(t, workflow.CanonicalOutputReference{Node: "send", Path: []string{"requests", "*", "replyToken"}}, relative.Wait.Events[0].Correlation)
+
+	absolute := canonicalNode(v1alpha1.WorkflowNode{
+		Key: "collect", Kind: v1alpha1.WorkflowNodeWait, Outcomes: []string{"cancelled", "received", "deadline"},
+		Wait: &v1alpha1.WaitSpec{Completion: "any",
+			Deadline: v1alpha1.WaitDeadline{At: &v1alpha1.OutputReference{Node: "plan", Path: []string{"replyBy"}}}},
+	})
+	assert.Equal(t, []string{"cancelled", "received", "deadline"}, absolute.Outcomes, "explicit outcomes are kept for validation")
+	assert.Equal(t, &workflow.CanonicalOutputReference{Node: "plan", Path: []string{"replyBy"}}, absolute.Wait.Deadline.At)
+	assert.Empty(t, absolute.Wait.Deadline.After)
+}

@@ -19,7 +19,8 @@ const (
 
 // ValidateGraph validates the immutable graph contract used both at reconcile
 // and attempt resolution. Cycles are legal; unreachable nodes, uncovered
-// outcomes, and graphs with no possible terminal path fail closed.
+// outcomes (including a wait's reserved outcomes), graphs with no possible
+// terminal path, and wait references that may not have run fail closed.
 //
 //nolint:gocyclo // Graph validation reports precise operator errors across the complete contract.
 func ValidateGraph(spec CanonicalSpec) error {
@@ -84,6 +85,9 @@ func ValidateGraph(spec CanonicalSpec) error {
 			if n.HumanGate != nil {
 				return fmt.Errorf("graph.nodes[%d].humanGate is forbidden for agent_task", i)
 			}
+			if n.Wait != nil {
+				return fmt.Errorf("graph.nodes[%d].wait is forbidden for agent_task", i)
+			}
 			if n.ModelRef == "" && spec.DefaultModelRef == "" {
 				return fmt.Errorf("graph.nodes[%d] requires modelRef or spec.defaultModelRef", i)
 			}
@@ -125,6 +129,9 @@ func ValidateGraph(spec CanonicalSpec) error {
 			if n.HumanGate == nil {
 				return fmt.Errorf("graph.nodes[%d].humanGate is required for human_gate", i)
 			}
+			if n.Wait != nil {
+				return fmt.Errorf("graph.nodes[%d].wait is forbidden for human_gate", i)
+			}
 			switch n.HumanGate.Type {
 			case "information", "decision", "approval", "artifact":
 			default:
@@ -144,6 +151,10 @@ func ValidateGraph(spec CanonicalSpec) error {
 			}
 			if err := validateHumanGatePresentation(n); err != nil {
 				return fmt.Errorf("graph.nodes[%d].humanGate.presentation: %w", i, err)
+			}
+		case NodeWait:
+			if err := validateWaitNodeShape(i, n); err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("graph.nodes[%d].kind %q is unknown", i, n.Kind)
@@ -223,7 +234,7 @@ func ValidateGraph(spec CanonicalSpec) error {
 			return fmt.Errorf("graph node %q has no path to a terminal outcome", key)
 		}
 	}
-	return nil
+	return validateWaitReferences(g.EntryNode, nodes, adj)
 }
 
 func walk(start string, adj map[string][]string) map[string]struct{} {

@@ -547,42 +547,7 @@ func buildCanonicalSpec(wf *v1alpha1.Workflow) workflow.CanonicalSpec {
 		})
 	}
 	for _, n := range wf.Spec.Graph.Nodes {
-		cn := workflow.CanonicalNode{
-			Key: n.Key, Label: workflow.CanonicalLocalizedText{EN: n.Label.EN, PT: n.Label.PT},
-			Kind: n.Kind, Prompt: n.Prompt, ModelRef: n.ModelRef,
-			Skills: n.Skills, Capabilities: n.Capabilities,
-			WorkspaceTools: n.WorkspaceTools, Outcomes: n.Outcomes,
-			OutputSchema: rawJSON(n.OutputSchema),
-		}
-		if n.Timeout != nil {
-			cn.Timeout = n.Timeout.Duration.String()
-		}
-		if n.ResultPresentation != nil {
-			cn.ResultPresentation = canonicalResultPresentation(n.ResultPresentation)
-		}
-		if n.HumanGate != nil {
-			cn.HumanGate = &workflow.CanonicalHumanGate{
-				Type:           n.HumanGate.Type,
-				Title:          workflow.CanonicalLocalizedText{EN: n.HumanGate.Title.EN, PT: n.HumanGate.Title.PT},
-				Description:    workflow.CanonicalLocalizedText{EN: n.HumanGate.Description.EN, PT: n.HumanGate.Description.PT},
-				ResponseSchema: rawJSON(n.HumanGate.ResponseSchema),
-			}
-			for _, label := range n.HumanGate.Presentation.Outcomes {
-				cn.HumanGate.Presentation.Outcomes = append(cn.HumanGate.Presentation.Outcomes,
-					workflow.CanonicalLocalizedText{EN: label.EN, PT: label.PT})
-			}
-			for _, field := range n.HumanGate.Presentation.Fields {
-				canonicalField := workflow.CanonicalHumanGateFieldPresentation{
-					Key: field.Key, Label: workflow.CanonicalLocalizedText{EN: field.Label.EN, PT: field.Label.PT},
-				}
-				for _, label := range field.Options {
-					canonicalField.Options = append(canonicalField.Options,
-						workflow.CanonicalLocalizedText{EN: label.EN, PT: label.PT})
-				}
-				cn.HumanGate.Presentation.Fields = append(cn.HumanGate.Presentation.Fields, canonicalField)
-			}
-		}
-		spec.Graph.Nodes = append(spec.Graph.Nodes, cn)
+		spec.Graph.Nodes = append(spec.Graph.Nodes, canonicalNode(n))
 	}
 	for _, e := range wf.Spec.Graph.Edges {
 		spec.Graph.Edges = append(spec.Graph.Edges, workflow.CanonicalEdge{From: e.From, Outcome: e.Outcome, To: e.To})
@@ -598,6 +563,73 @@ func buildCanonicalSpec(wf *v1alpha1.Workflow) workflow.CanonicalSpec {
 		})
 	}
 	return spec
+}
+
+func canonicalNode(n v1alpha1.WorkflowNode) workflow.CanonicalNode {
+	cn := workflow.CanonicalNode{
+		Key: n.Key, Label: workflow.CanonicalLocalizedText{EN: n.Label.EN, PT: n.Label.PT},
+		Kind: n.Kind, Prompt: n.Prompt, ModelRef: n.ModelRef,
+		Skills: n.Skills, Capabilities: n.Capabilities,
+		WorkspaceTools: n.WorkspaceTools, Outcomes: n.Outcomes,
+		OutputSchema: rawJSON(n.OutputSchema),
+	}
+	if n.Timeout != nil {
+		cn.Timeout = n.Timeout.Duration.String()
+	}
+	if n.ResultPresentation != nil {
+		cn.ResultPresentation = canonicalResultPresentation(n.ResultPresentation)
+	}
+	if n.HumanGate != nil {
+		cn.HumanGate = &workflow.CanonicalHumanGate{
+			Type:           n.HumanGate.Type,
+			Title:          workflow.CanonicalLocalizedText{EN: n.HumanGate.Title.EN, PT: n.HumanGate.Title.PT},
+			Description:    workflow.CanonicalLocalizedText{EN: n.HumanGate.Description.EN, PT: n.HumanGate.Description.PT},
+			ResponseSchema: rawJSON(n.HumanGate.ResponseSchema),
+		}
+		for _, label := range n.HumanGate.Presentation.Outcomes {
+			cn.HumanGate.Presentation.Outcomes = append(cn.HumanGate.Presentation.Outcomes,
+				workflow.CanonicalLocalizedText{EN: label.EN, PT: label.PT})
+		}
+		for _, field := range n.HumanGate.Presentation.Fields {
+			canonicalField := workflow.CanonicalHumanGateFieldPresentation{
+				Key: field.Key, Label: workflow.CanonicalLocalizedText{EN: field.Label.EN, PT: field.Label.PT},
+			}
+			for _, label := range field.Options {
+				canonicalField.Options = append(canonicalField.Options,
+					workflow.CanonicalLocalizedText{EN: label.EN, PT: label.PT})
+			}
+			cn.HumanGate.Presentation.Fields = append(cn.HumanGate.Presentation.Fields, canonicalField)
+		}
+	}
+	if n.Wait != nil {
+		cn.Wait = canonicalWait(n.Wait)
+	}
+	// A wait's outcomes are reserved and implicit; an author may omit them.
+	if n.Kind == v1alpha1.WorkflowNodeWait && len(cn.Outcomes) == 0 {
+		cn.Outcomes = append([]string(nil), workflow.WaitOutcomes...)
+	}
+	return cn
+}
+
+func canonicalWait(in *v1alpha1.WaitSpec) *workflow.CanonicalWait {
+	out := &workflow.CanonicalWait{Completion: in.Completion}
+	for _, event := range in.Events {
+		out.Events = append(out.Events, workflow.CanonicalWaitEvent{
+			Source: event.Source,
+			Correlation: workflow.CanonicalOutputReference{
+				Node: event.Correlation.Node, Path: append([]string(nil), event.Correlation.Path...),
+			},
+		})
+	}
+	if in.Deadline.After != nil {
+		out.Deadline.After = in.Deadline.After.Duration.String()
+	}
+	if in.Deadline.At != nil {
+		out.Deadline.At = &workflow.CanonicalOutputReference{
+			Node: in.Deadline.At.Node, Path: append([]string(nil), in.Deadline.At.Path...),
+		}
+	}
+	return out
 }
 
 func canonicalResultPresentation(in *v1alpha1.ResultPresentation) *workflow.CanonicalResultPresentation {
