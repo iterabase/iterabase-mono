@@ -242,6 +242,7 @@ spec:
     - {tool: platform.fixture_barrier, maxEffectClass: read_only}
     - {tool: platform.fixture_upsert, maxEffectClass: idempotent_write}
     - {tool: platform.fixture_write, maxEffectClass: non_idempotent_write}
+    - {tool: platform.diagnostic, maxEffectClass: read_only}
   credentialBindings:
     - toolName: platform.fixture_read
       slot: fixture_token
@@ -544,6 +545,27 @@ func exerciseImmutableToolGenerationStage(t *testing.T, state *deployedState) {
 	_ = waitForWorkState(t, state, pinned.ID, "done", 4*time.Minute)
 	waitForDatabaseValue(t, state, fmt.Sprintf("SELECT count(*) FROM toolgateway.runner_registrations WHERE tool_name='platform.fixture_read' AND tool_digest='%s' AND active", v1Digest), "0", 3*time.Minute)
 	state.toolDigests["platform.fixture_read"] = v2Digest
+}
+
+// exerciseProductToolLayerStage proves the release-versioned product layer
+// (HOR-651): the overlay source carries only customer tools, yet a workflow
+// runs the reference product tool served from the tool-runner image.
+func exerciseProductToolLayerStage(t *testing.T, state *deployedState) {
+	t.Helper()
+	pod := state.kubectl(t, 30*time.Second, "get", "pods", "-n", "default", "-l", "app=tool-git", "-o", "jsonpath={.items[0].metadata.name}")
+	state.kubectl(t, 30*time.Second, "exec", "-n", "default", pod, "--", "/bin/sh", "-ceu", "test -d /git/repo/tools/client && test ! -e /git/repo/tools/product")
+	digest := state.toolDigests[productDiagnosticTool]
+	waitForDatabaseValue(t, state, fmt.Sprintf("SELECT count(*) FROM toolgateway.runner_registrations WHERE tool_name='%s' AND tool_digest='%s' AND active AND accepting_new", productDiagnosticTool, digest), "1", 3*time.Minute)
+
+	state.applyYAML(t, "product-diagnostic.yaml", workflowYAML("product-diagnostic", "e2e/product-diagnostic", "1", "E2E_MODE:product-diagnostic", false,
+		[]string{productDiagnosticTool}, "", ""))
+	waitForWorkflowReady(t, state, "product-diagnostic", 30*time.Second)
+	item := startWorkflow(t, state, "e2e/product-diagnostic", "Product tool layer")
+	item = waitForWorkState(t, state, item.ID, "done", 4*time.Minute)
+	ledger := state.databaseQuery(t, fmt.Sprintf(`SELECT tool_version_digest || '|' || state || '|' || (result_json->>'layer') FROM toolgateway.invocations WHERE attempt_id='%s' AND tool_name='%s'`, item.CurrentAttemptID, productDiagnosticTool))
+	if want := digest + "|succeeded|product"; ledger != want {
+		t.Fatalf("product tool invocation=%q want=%q", ledger, want)
+	}
 }
 
 func exerciseRepresentativeExecutionStage(t *testing.T, state *deployedState) {
