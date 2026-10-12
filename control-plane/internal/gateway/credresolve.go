@@ -3,8 +3,10 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -189,14 +191,23 @@ func (f *FakeSecretResolver) Resolve(_ context.Context, ref SecretRef) (string, 
 // httpOAuthAcquirer performs a real OAuth2 client-credentials grant over HTTP.
 type httpOAuthAcquirer struct{ client *http.Client }
 
-// NewHTTPOAuthAcquirer returns an OAuthAcquirer that performs real grants.
+// NewHTTPOAuthAcquirer returns an OAuthAcquirer that performs real grants. The
+// grant never follows redirects: a 307/308 would replay the form, client secret
+// included, to a location the token endpoint chose.
 func NewHTTPOAuthAcquirer(client *http.Client) OAuthAcquirer {
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+	c := http.Client{Timeout: 10 * time.Second}
+	if client != nil {
+		c = *client
 	}
-	return &httpOAuthAcquirer{client: client}
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &httpOAuthAcquirer{client: &c}
 }
 
+// Acquire errors surface in caller responses and the durable invocation record,
+// so they are built only from the configured token URL, the numeric status and
+// an allow-listed RFC 6749 error code. Nothing the token endpoint or transport
+// chose (body, status reason, redirect location, error text) is included, since
+// any of it may echo the submitted client secret (ARCH-008, HOR-650).
 func (h *httpOAuthAcquirer) Acquire(ctx context.Context, tokenURL, clientID, clientSecret, scope string) (string, error) {
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
@@ -207,26 +218,27 @@ func (h *httpOAuthAcquirer) Acquire(ctx context.Context, tokenURL, clientID, cli
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("oauth token endpoint %q: invalid token URL", tokenURL)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := h.client.Do(req)
 	if err != nil {
-		return "", err
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return "", fmt.Errorf("oauth token endpoint %s: request timed out", tokenURL)
+		}
+		return "", fmt.Errorf("oauth token endpoint %s: request failed", tokenURL)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("oauth token endpoint %s: HTTP %d: reading response failed", tokenURL, resp.StatusCode)
 	}
-	// Errors surface in caller responses and the durable invocation record, so
-	// they never carry the token endpoint's body: providers may echo submitted
-	// form values, including the client secret (ARCH-008, HOR-650).
 	if resp.StatusCode != http.StatusOK {
 		if code := oauthErrorCode(body); code != "" {
-			return "", fmt.Errorf("oauth token endpoint %s: %s: %s", tokenURL, resp.Status, code)
+			return "", fmt.Errorf("oauth token endpoint %s: HTTP %d: %s", tokenURL, resp.StatusCode, code)
 		}
-		return "", fmt.Errorf("oauth token endpoint %s: %s", tokenURL, resp.Status)
+		return "", fmt.Errorf("oauth token endpoint %s: HTTP %d", tokenURL, resp.StatusCode)
 	}
 	var tok struct {
 		AccessToken string `json:"access_token"`
@@ -235,7 +247,7 @@ func (h *httpOAuthAcquirer) Acquire(ctx context.Context, tokenURL, clientID, cli
 		return "", fmt.Errorf("oauth token endpoint %s: unparseable token response", tokenURL)
 	}
 	if tok.AccessToken == "" {
-		return "", fmt.Errorf("token response missing access_token")
+		return "", fmt.Errorf("oauth token endpoint %s: token response missing access_token", tokenURL)
 	}
 	return tok.AccessToken, nil
 }
