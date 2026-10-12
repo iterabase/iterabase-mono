@@ -219,19 +219,44 @@ func (h *httpOAuthAcquirer) Acquire(ctx context.Context, tokenURL, clientID, cli
 	if err != nil {
 		return "", err
 	}
+	// Errors surface in caller responses and the durable invocation record, so
+	// they never carry the token endpoint's body: providers may echo submitted
+	// form values, including the client secret (ARCH-008, HOR-650).
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("oauth token endpoint %s: %s: %s", tokenURL, resp.Status, body)
+		if code := oauthErrorCode(body); code != "" {
+			return "", fmt.Errorf("oauth token endpoint %s: %s: %s", tokenURL, resp.Status, code)
+		}
+		return "", fmt.Errorf("oauth token endpoint %s: %s", tokenURL, resp.Status)
 	}
 	var tok struct {
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.Unmarshal(body, &tok); err != nil {
-		return "", fmt.Errorf("parse token response: %w", err)
+		return "", fmt.Errorf("oauth token endpoint %s: unparseable token response", tokenURL)
 	}
 	if tok.AccessToken == "" {
 		return "", fmt.Errorf("token response missing access_token")
 	}
 	return tok.AccessToken, nil
+}
+
+// oauthErrorCodes is the closed RFC 6749 §5.2 token error code set.
+var oauthErrorCodes = map[string]bool{
+	"invalid_request": true, "invalid_client": true, "invalid_grant": true,
+	"unauthorized_client": true, "unsupported_grant_type": true, "invalid_scope": true,
+}
+
+// oauthErrorCode extracts the RFC 6749 §5.2 error code from a token error
+// response. Only a code from the closed set is returned, so no provider-chosen
+// text (which could echo request values) passes through; otherwise "".
+func oauthErrorCode(body []byte) string {
+	var e struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &e) != nil || !oauthErrorCodes[e.Error] {
+		return ""
+	}
+	return e.Error
 }
 
 // fakeOAuthAcquirer returns a canned token for tests.
