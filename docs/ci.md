@@ -123,6 +123,7 @@ only the smoke scenarios, even when it moves GPU driver inputs. Add the
 | `forge` | `forge/**` | format, lint, GoReleaser config, build, unit and fake-SSH tests |
 | `forge-fault-matrix` | with `forge` | the privileged, fail-closed data-storage fault matrix (HOR-545) |
 | `charts-static` | `charts/**`, version changes | `make check` (lint, template, kubeconform, contract scripts, the appVersion link lint) and `make check-tls` |
+| `infra` | `infra/**` | `make infra-check`: `terraform fmt -check`, `terraform validate` against the locked providers with no backend, and `tflint`, using the checksummed `terraform` and `tflint` CI tools. No cloud credentials (`DES-HOR-603-02`). |
 | `nested-go-lint` | `*/test/e2e/**`, `testkit/**` | `golangci-lint run ./...` in the four nested E2E modules |
 
 A CI change (rule 2) or a path with no owner (rule 6) selects every job.

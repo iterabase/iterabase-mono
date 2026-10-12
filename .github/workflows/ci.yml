@@ -405,6 +405,25 @@ jobs:
         run: make check-tls
         working-directory: charts
 
+  # Account-level Terraform (infra/): formatting, validation against the locked
+  # providers, and tflint. Static only: CI holds no hosted-account credentials
+  # (DES-HOR-603-02).
+  infra:
+    name: infra
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'infra')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: ./.github/actions/setup-ci-tool
+        with: {name: terraform, version: 1.16.5}
+      - uses: ./.github/actions/setup-ci-tool
+        with: {name: tflint, version: 0.64.0}
+      - name: Format, validate, and lint
+        run: make infra-check
+
   # Shared Go E2E modules are compiled and tested by several owners but are not
   # linted by any of their product jobs. This dedicated job installs the
   # repository-pinned golangci-lint and runs it in every nested module, so a
@@ -458,6 +477,7 @@ jobs:
       - forge
       - forge-fault-matrix
       - charts
+      - infra
       - nested-go-lint
     runs-on: ubuntu-latest
     steps:

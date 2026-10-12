@@ -55,6 +55,7 @@ JOB_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("forge/**", ("forge",)),
     ("charts/test/e2e/**", ("e2e-modules",)),
     ("charts/**", ("charts",)),
+    ("infra/**", ("infra",)),
     ("testkit/**", ("e2e-modules", "ci-contract")),
     ("release/**", ("ci-contract",)),
     (".github/**", ("ci-contract",)),
@@ -64,7 +65,7 @@ ALL_JOBS = tuple(sorted({job for _, jobs in JOB_RULES for job in jobs}))
 DOC_PATTERNS = ("*.md", "docs/**", "**/docs/**", "LICENSE", "**/LICENSE")
 CI_PATTERNS = (".github/**", ".githooks/**", "testkit/**", "release/**", "Makefile", "go.work", "go.work.sum",
                ".golangci.yml", ".golangci.yaml", ".gitignore", ".gitattributes")
-OWNED_PREFIXES = ("control-plane/", "inference-gateway/", "forge/", "charts/", "testkit/", "release/", "docs/",
+OWNED_PREFIXES = ("control-plane/", "inference-gateway/", "forge/", "charts/", "infra/", "testkit/", "release/", "docs/",
                   ".github/", ".githooks/")
 VERSION_FILES = ("control-plane/VERSION", "inference-gateway/VERSION", "forge/VERSION")
 # Inputs that change what the GPU driver-upgrade stage proves (rule 5).

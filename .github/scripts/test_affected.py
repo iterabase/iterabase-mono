@@ -207,6 +207,14 @@ class RealDiffTests(unittest.TestCase):
         self.assertIn("lvm-storage-substrate-chart", selection.artifacts)
         self.assertEqual(selection.jobs, list(affected.ALL_JOBS))
 
+    def test_infra_change_runs_the_infra_job_only(self) -> None:
+        # HOR-603: account Terraform builds no artifact and deploys into no scenario.
+        selection = run(["infra/hosted-aws/baseline/network.tf", "infra/.tflint.hcl", "infra/AGENTS.md"])
+        self.assertEqual(selection.classification, "selected")
+        self.assertEqual(selection.jobs, ["infra"])
+        self.assertEqual(selection.artifacts, [])
+        self.assertEqual(selection.scenarios, [])
+
     def test_unknown_path_selects_everything(self) -> None:
         selection = run(["docs/x.md", "tools/new-thing.sh"])
         self.assertEqual(selection.classification, "all")

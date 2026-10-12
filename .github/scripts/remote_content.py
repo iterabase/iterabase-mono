@@ -542,13 +542,13 @@ def validate_manifest(manifest: dict[str, Any], root: Path = ROOT) -> None:
                     raise ContentError(f"workflow {name} {version} lacks {platform} checksum authority")
     literal_installs = set(
         re.findall(
-            r"uses:\s+\./\.github/actions/setup-ci-tool\s*\n\s+with:\s+\{name:\s*(buildx|envtest|goreleaser|syft),\s*version:\s*([0-9.]+)\}",
+            r"uses:\s+\./\.github/actions/setup-ci-tool\s*\n\s+with:\s+\{name:\s*(buildx|envtest|goreleaser|syft|terraform|tflint),\s*version:\s*([0-9.]+)\}",
             automation_text,
         )
     )
     literal_installs.update(
         re.findall(
-            r"uses:\s+\./\.github/actions/setup-ci-tool\s*\n\s+with:\s*\n\s+name:\s*(buildx|envtest|goreleaser|syft)\s*\n\s+version:\s*([0-9.]+)",
+            r"uses:\s+\./\.github/actions/setup-ci-tool\s*\n\s+with:\s*\n\s+name:\s*(buildx|envtest|goreleaser|syft|terraform|tflint)\s*\n\s+version:\s*([0-9.]+)",
             automation_text,
         )
     )
@@ -556,7 +556,7 @@ def validate_manifest(manifest: dict[str, Any], root: Path = ROOT) -> None:
         for platform in ("linux-amd64", "linux-arm64"):
             if (name, version, platform) not in ci_authority:
                 raise ContentError(f"CI tool {name} {version} lacks {platform} checksum authority")
-    expected_ci_tools = {(item["name"], item["version"]) for item in ci_tools if item["name"] in {"buildx", "envtest", "goreleaser", "syft"}}
+    expected_ci_tools = {(item["name"], item["version"]) for item in ci_tools if item["name"] in {"buildx", "envtest", "goreleaser", "syft", "terraform", "tflint"}}
     if literal_installs != expected_ci_tools:
         raise ContentError(f"CI tool authority has unused or unreviewed installers: {sorted(literal_installs ^ expected_ci_tools)}")
     package_lock = json.loads((root / "control-plane/test/e2e/playwright/package-lock.json").read_text(encoding="utf-8"))
