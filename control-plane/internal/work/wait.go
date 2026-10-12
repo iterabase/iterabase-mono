@@ -134,13 +134,14 @@ func (s *Store) enterWaitTx(ctx context.Context, tx pgx.Tx, itemID, attemptID st
 
 	// An event may arrive between the sending step and this wait (or while the
 	// attempt was paused before it). Claim the earliest unclaimed event for each
-	// key so it is never lost.
+	// key so it is never lost. Late evidence (an event for a wait that already
+	// completed or was stopped) is never claimed by a later wait.
 	for _, e := range expectations {
 		var eventID string
 		var receivedAt time.Time
 		err := tx.QueryRow(ctx, `
 			SELECT e.id::text, e.received_at FROM runtime.external_events e
-			WHERE e.source=$1 AND e.correlation_key=$2
+			WHERE e.source=$1 AND e.correlation_key=$2 AND e.disposition='unmatched'
 			  AND NOT EXISTS (SELECT 1 FROM runtime.wait_expectations x WHERE x.event_id=e.id)
 			ORDER BY e.received_at, e.id LIMIT 1`, e.source, e.key).Scan(&eventID, &receivedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -525,16 +526,20 @@ func (s *Store) PostExternalEvent(ctx context.Context, in ExternalEventInput) (E
 			return ExternalEventResult{}, err
 		}
 	}
+	var expired bool
 	if matched {
-		// Re-check under the wait lock: a concurrent post may have claimed it.
+		// Re-check under the wait lock: a concurrent post may have claimed it,
+		// and an event arriving at or after the deadline never counts toward
+		// the completion rule, however late the sweep runs.
 		var stillPending bool
 		if err := tx.QueryRow(ctx, `
 			SELECT EXISTS(SELECT 1 FROM runtime.wait_expectations
-			WHERE node_execution_id=$1 AND source=$2 AND correlation_key=$3 AND state='pending')`,
-			node.ID, in.Source, in.CorrelationKey).Scan(&stillPending); err != nil {
+			       WHERE node_execution_id=$1 AND source=$2 AND correlation_key=$3 AND state='pending'),
+			       (SELECT deadline_at <= clock_timestamp() FROM runtime.waits WHERE node_execution_id=$1)`,
+			node.ID, in.Source, in.CorrelationKey).Scan(&stillPending, &expired); err != nil {
 			return ExternalEventResult{}, err
 		}
-		matched = stillPending
+		matched = stillPending && !expired
 	}
 	if matched {
 		disposition = EventMatched
@@ -566,6 +571,13 @@ func (s *Store) PostExternalEvent(ctx context.Context, in ExternalEventInput) (E
 		return ExternalEventResult{}, err
 	}
 	result := ExternalEventResult{EventID: eventID, Disposition: disposition}
+	if expired {
+		// The deadline passed before this arrival: route `deadline` now with
+		// what arrived in time, and keep this event as evidence only.
+		if _, err := s.completeWaitTx(ctx, tx, itemID, node.AttemptID, node, workflow.WaitOutcomeDeadline, ""); err != nil {
+			return ExternalEventResult{}, err
+		}
+	}
 	if matched {
 		result.WorkItemID = itemID
 		if _, err := tx.Exec(ctx, `

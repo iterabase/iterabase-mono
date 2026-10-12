@@ -1079,8 +1079,32 @@ type InvocationKey struct {
 // side-effect boundary, with a crash-recovery lease. On a unique-key conflict
 // (duplicate caller) it returns the existing invocation with inserted=false so
 // the caller can report in-progress or replay the committed result (ARCH-014).
+//
+// A turn-scoped row is inserted only while the turn is still live, under a
+// share lock on the turn. The interrupted-step classifier (DES-HOR-649-04)
+// settles the turn under an exclusive lock and then reads this ledger, so an
+// invocation either commits before the classifier reads it or is refused with
+// ErrScopeDenied after the turn is settled; a rerun can never race a write.
 func (s *Store) BeginInvocation(ctx context.Context, key InvocationKey, tv ToolVersion, poolID *string, args, artifactInputRefs, consequenceSummary []byte, leaseExpiresAt time.Time, gatewayInstanceID string) (inv Invocation, inserted bool, err error) {
-	row := s.pool.QueryRow(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Invocation{}, false, fmt.Errorf("begin invocation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if key.CallerScope == CallerScopeTurn {
+		var state string
+		err := tx.QueryRow(ctx, `SELECT state FROM runtime.turns WHERE id = $1::uuid FOR SHARE`, key.CallerScopeID).Scan(&state)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Invocation{}, false, ErrScopeDenied
+		}
+		if err != nil {
+			return Invocation{}, false, fmt.Errorf("begin invocation: lock turn: %w", err)
+		}
+		if state != "pending" && state != "running" {
+			return Invocation{}, false, ErrScopeDenied
+		}
+	}
+	row := tx.QueryRow(ctx, `
 		INSERT INTO toolgateway.invocations
 			(attempt_id, caller_scope, caller_scope_id, tool_call_id, tool_name,
 			 tool_version_digest, idempotency_key, effect_class, pool_id, arguments_json,
@@ -1096,12 +1120,16 @@ func (s *Store) BeginInvocation(ctx context.Context, key InvocationKey, tv ToolV
 	if err := row.Scan(&id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Conflict: duplicate. Fetch the existing invocation.
+			_ = tx.Rollback(ctx)
 			existing, gerr := s.GetInvocationByKey(ctx, key)
 			if gerr != nil {
 				return Invocation{}, false, gerr
 			}
 			return existing, false, nil
 		}
+		return Invocation{}, false, fmt.Errorf("begin invocation: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return Invocation{}, false, fmt.Errorf("begin invocation: %w", err)
 	}
 	inv, err = s.GetInvocation(ctx, id)
