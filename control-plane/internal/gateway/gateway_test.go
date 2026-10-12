@@ -768,27 +768,25 @@ func TestGateway_CredentialBindingResolution(t *testing.T) {
 	assert.NotContains(t, string(invocation.ConsequenceSummary), "sekret-token-value")
 }
 
-// TestGateway_OAuthClientCredentialsHandsRunnerOnlyAccessToken performs a real
-// client-credentials grant against a mock token endpoint: the runner receives
-// the acquired access token and never the client secret (ARCH-008, HOR-650).
-func TestGateway_OAuthClientCredentialsHandsRunnerOnlyAccessToken(t *testing.T) {
-	const clientSecret = "oauth-client-secret-value"
-	var grants atomic.Int32
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ParseForm() != nil || r.PostForm.Get("grant_type") != "client_credentials" ||
-			r.PostForm.Get("client_id") != "graph-client" || r.PostForm.Get("client_secret") != clientSecret ||
-			r.PostForm.Get("scope") != "https://graph.example.test/.default" {
-			http.Error(w, "invalid_client", http.StatusUnauthorized)
-			return
-		}
-		grants.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"graph-access-token","token_type":"Bearer","expires_in":3600}`))
-	}))
+const oauthClientSecret = "oauth-client-secret-value"
+
+// oauthInvocation is the observable outcome of invoking an OAuth-bound tool.
+type oauthInvocation struct {
+	resp       *v1.InvokeResponse
+	record     gateway.Invocation
+	dispatched *v1.CredentialContext // nil when the runner was never invoked
+}
+
+// invokeOAuthTool binds graph.read_mail to an oauth_client_credentials slot
+// whose grant is a real HTTP client-credentials request to tokenEndpoint, then
+// invokes it once through the gateway.
+func invokeOAuthTool(t *testing.T, tokenEndpoint http.HandlerFunc) oauthInvocation {
+	t.Helper()
+	tokenServer := httptest.NewServer(tokenEndpoint)
 	t.Cleanup(tokenServer.Close)
 
 	secrets := gateway.NewFakeSecretResolver()
-	secrets.Set("graph-oauth", "client_secret", clientSecret)
+	secrets.Set("graph-oauth", "client_secret", oauthClientSecret)
 	env := newTestEnvWithOAuth(t, secrets, gateway.NewHTTPOAuthAcquirer(tokenServer.Client()))
 	ctx := context.Background()
 	require.NoError(t, env.store.UpsertPoolGrant(ctx, env.poolID, "graph.read_mail", gateway.EffectReadOnly, nil))
@@ -797,14 +795,14 @@ func TestGateway_OAuthClientCredentialsHandsRunnerOnlyAccessToken(t *testing.T) 
 		[]byte(fmt.Sprintf(`{"client_id":"graph-client","client_secret_ref":{"name":"graph-oauth","key":"client_secret"},"token_url":%q,"scope":"https://graph.example.test/.default"}`, tokenServer.URL)),
 		[]byte(`{"mailbox":"walter-inbox"}`)))
 
-	var seenCred *v1.CredentialContext
+	var out oauthInvocation
 	rr := startRefRunner(t, env, &v1.ToolDescriptor{
 		Name: "graph.read_mail", Version: "1.0.0", Digest: "sha256:graph-read-1",
 		Description: "read a mailbox", EffectClass: v1.EffectClass_EFFECT_CLASS_READ_ONLY,
 		InputSchema: []byte(`{"type":"object"}`), Timeout: durationPtr(5 * time.Second),
 		CredentialSlots: []*v1.CredentialSlot{{Name: "graph", Scheme: v1.CredentialScheme_CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS, Required: true}},
 	}, func(inv *v1.Invoke) (*v1.InvokeResult, bool) {
-		seenCred = inv.CredentialContext
+		out.dispatched = inv.CredentialContext
 		return &v1.InvokeResult{State: v1.InvokeState_INVOKE_STATE_SUCCEEDED, ResultJson: []byte(`{"messages":[]}`)}, false
 	})
 	defer rr.close()
@@ -818,24 +816,72 @@ func TestGateway_OAuthClientCredentialsHandsRunnerOnlyAccessToken(t *testing.T) 
 		ArgumentsJson: []byte(`{}`), IdempotencyKey: "read-1",
 	}))
 	require.NoError(t, err)
-	require.Equal(t, v1.InvokeState_INVOKE_STATE_SUCCEEDED, iresp.Msg.State)
+	out.resp = iresp.Msg
+	out.record, err = env.store.GetInvocation(ctx, iresp.Msg.InvocationId)
+	require.NoError(t, err)
+	return out
+}
+
+func (o oauthInvocation) durableRecord() string {
+	return fmt.Sprintf("%s%s%s%s", o.record.ArgumentsJSON, o.record.ResultJSON, o.record.Error, o.record.ConsequenceSummary)
+}
+
+// TestGateway_OAuthClientCredentialsHandsRunnerOnlyAccessToken performs a real
+// client-credentials grant against a mock token endpoint: the runner receives
+// the acquired access token and never the client secret (ARCH-008, HOR-650).
+func TestGateway_OAuthClientCredentialsHandsRunnerOnlyAccessToken(t *testing.T) {
+	var grants atomic.Int32
+	got := invokeOAuthTool(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.ParseForm() != nil || r.PostForm.Get("grant_type") != "client_credentials" ||
+			r.PostForm.Get("client_id") != "graph-client" || r.PostForm.Get("client_secret") != oauthClientSecret ||
+			r.PostForm.Get("scope") != "https://graph.example.test/.default" {
+			http.Error(w, "invalid_client", http.StatusUnauthorized)
+			return
+		}
+		grants.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"graph-access-token","token_type":"Bearer","expires_in":3600}`))
+	})
+	require.Equal(t, v1.InvokeState_INVOKE_STATE_SUCCEEDED, got.resp.State)
 	assert.Equal(t, int32(1), grants.Load())
 
-	require.NotNil(t, seenCred)
-	cred := seenCred.Slots["graph"]
+	require.NotNil(t, got.dispatched)
+	cred := got.dispatched.Slots["graph"]
 	require.NotNil(t, cred)
 	assert.Equal(t, v1.CredentialScheme_CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS, cred.Scheme)
 	assert.Equal(t, "graph-access-token", cred.BearerValue)
 	assert.Equal(t, "graph-client", cred.OauthClientId)
-	wire, err := proto.Marshal(seenCred)
+	wire, err := proto.Marshal(got.dispatched)
 	require.NoError(t, err)
-	assert.NotContains(t, string(wire), clientSecret, "the client secret must never reach the runner")
+	assert.NotContains(t, string(wire), oauthClientSecret, "the client secret must never reach the runner")
 
-	invocation, err := env.store.GetInvocation(ctx, iresp.Msg.InvocationId)
-	require.NoError(t, err)
-	record := fmt.Sprintf("%s%s%s%s", invocation.ArgumentsJSON, invocation.ResultJSON, invocation.Error, invocation.ConsequenceSummary)
-	assert.NotContains(t, record, clientSecret)
-	assert.NotContains(t, record, "graph-access-token")
+	assert.NotContains(t, got.durableRecord(), oauthClientSecret)
+	assert.NotContains(t, got.durableRecord(), "graph-access-token")
+}
+
+// TestGateway_OAuthGrantFailureNeverExposesSecret: a token endpoint that echoes
+// submitted values in its error body must not leak the client secret into the
+// caller response or the durable invocation record, and nothing is dispatched.
+func TestGateway_OAuthGrantFailureNeverExposesSecret(t *testing.T) {
+	for name, body := range map[string]string{
+		"rfc6749 error with echoing description": `{"error":"invalid_client","error_description":"bad secret ` + oauthClientSecret + `"}`,
+		"free-text body":                         "invalid_client: " + oauthClientSecret,
+		"secret as error code":                   `{"error":"` + oauthClientSecret + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := invokeOAuthTool(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(body))
+			})
+			require.Equal(t, v1.InvokeState_INVOKE_STATE_FAILED, got.resp.State)
+			require.NotNil(t, got.resp.Error)
+			assert.Equal(t, "credential_resolution_failed", got.resp.Error.Code)
+			assert.Contains(t, got.resp.Error.Message, "401")
+			assert.NotContains(t, got.resp.Error.Message, oauthClientSecret)
+			assert.NotContains(t, got.durableRecord(), oauthClientSecret)
+			assert.Nil(t, got.dispatched, "a failed grant must not dispatch")
+		})
+	}
 }
 
 func TestGateway_ConsequenceSummariesDistinguishRecipients(t *testing.T) {
