@@ -63,7 +63,8 @@ type WorkflowSpec struct {
 }
 
 // WorkflowGraph is a directed graph with one active node at a time. Every
-// declared node outcome must have exactly one edge or terminal declaration.
+// declared node outcome (including a wait node's implicit outcomes) must have
+// exactly one edge or terminal declaration.
 // Cycles are legal; maxTransitions is the non-convergence safety bound.
 // +kubebuilder:object:generate=true
 type WorkflowGraph struct {
@@ -93,7 +94,8 @@ type WorkflowGraph struct {
 	TerminalOutcomes []WorkflowTerminalOutcome `json:"terminalOutcomes"`
 }
 
-// WorkflowNode is either an agent task or a customer-actionable human gate.
+// WorkflowNode is an agent task, a customer-actionable human gate, or a
+// durable wait for correlated external events.
 // +kubebuilder:object:generate=true
 type WorkflowNode struct {
 	// key is unique within the graph and stable across repeated visits.
@@ -106,8 +108,9 @@ type WorkflowNode struct {
 	// +kubebuilder:validation:Required
 	Label LocalizedText `json:"label"`
 
-	// kind selects agent execution or a durable customer blocker.
-	// +kubebuilder:validation:Enum=agent_task;human_gate
+	// kind selects agent execution, a durable customer blocker, or a durable
+	// wait for external events that holds no worker.
+	// +kubebuilder:validation:Enum=agent_task;human_gate;wait
 	// +kubebuilder:validation:Required
 	Kind string `json:"kind"`
 
@@ -137,10 +140,12 @@ type WorkflowNode struct {
 	// +optional
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
 
-	// outcomes are the only values complete_step (or a human response) may emit.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	Outcomes []string `json:"outcomes"`
+	// outcomes are the only values complete_step (or a human response) may
+	// emit. Required for agent_task and human_gate. A wait node's outcomes are
+	// the reserved received, deadline, and cancelled; omit them or list exactly
+	// that set.
+	// +optional
+	Outcomes []string `json:"outcomes,omitempty"`
 
 	// outputSchema validates complete_step.output for agent_task nodes. It is a
 	// JSON Schema document and defaults to an unconstrained object when absent.
@@ -156,9 +161,71 @@ type WorkflowNode struct {
 	// +optional
 	ResultPresentation *ResultPresentation `json:"resultPresentation,omitempty"`
 
-	// humanGate is required for human_gate and forbidden for agent_task.
+	// humanGate is required for human_gate and forbidden otherwise.
 	// +optional
 	HumanGate *HumanGateSpec `json:"humanGate,omitempty"`
+
+	// wait is required for wait and forbidden otherwise.
+	// +optional
+	Wait *WaitSpec `json:"wait,omitempty"`
+}
+
+// WaitSpec declares the correlated external events a wait node collects
+// without holding a worker, its completion rule, and its deadline.
+// +kubebuilder:object:generate=true
+type WaitSpec struct {
+	// events names each expected event source and where its correlation keys
+	// come from. A key path resolving to N strings expects N events.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	Events []WaitEventSpec `json:"events"`
+
+	// completion is all (every expected event) or any (the first one).
+	// +kubebuilder:validation:Enum=all;any
+	// +kubebuilder:validation:Required
+	Completion string `json:"completion"`
+
+	// deadline bounds the wait; exactly one of after or at is required.
+	// +kubebuilder:validation:Required
+	Deadline WaitDeadline `json:"deadline"`
+}
+
+// WaitEventSpec is one expected event source and its correlation-key origin.
+// +kubebuilder:object:generate=true
+type WaitEventSpec struct {
+	// source is the event source that posts by correlation key, for example
+	// email_reply.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9_]{0,62}$`
+	Source string `json:"source"`
+
+	// correlation names an earlier node's validated output path holding one
+	// string or an array of strings.
+	// +kubebuilder:validation:Required
+	Correlation OutputReference `json:"correlation"`
+}
+
+// WaitDeadline is relative to entering the node, or an absolute RFC3339 time
+// produced by an earlier step. Both are bounded to 1m-90d from entry.
+// +kubebuilder:object:generate=true
+type WaitDeadline struct {
+	// +optional
+	After *metav1.Duration `json:"after,omitempty"`
+	// +optional
+	At *OutputReference `json:"at,omitempty"`
+}
+
+// OutputReference addresses a value in the latest successful output of an
+// earlier node in the same attempt. "*" expands every array item.
+// +kubebuilder:object:generate=true
+type OutputReference struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Node string `json:"node"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	Path []string `json:"path"`
 }
 
 // ResultPresentation is the approved customer projection for a terminal node.
@@ -424,6 +491,7 @@ const (
 
 	WorkflowNodeAgentTask = "agent_task"
 	WorkflowNodeHumanGate = "human_gate"
+	WorkflowNodeWait      = "wait"
 
 	HumanGateInformation = "information"
 	HumanGateDecision    = "decision"

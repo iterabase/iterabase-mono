@@ -92,8 +92,9 @@ spec:
                     description: nodes are immutable node definitions keyed within
                       this graph.
                     items:
-                      description: WorkflowNode is either an agent task or a customer-actionable
-                        human gate.
+                      description: |-
+                        WorkflowNode is an agent task, a customer-actionable human gate, or a
+                        durable wait for correlated external events.
                       properties:
                         capabilities:
                           description: |-
@@ -104,7 +105,7 @@ spec:
                           type: array
                         humanGate:
                           description: humanGate is required for human_gate and forbidden
-                            for agent_task.
+                            otherwise.
                           properties:
                             description:
                               description: LocalizedText carries approved English/Portuguese
@@ -207,11 +208,13 @@ spec:
                           minLength: 1
                           type: string
                         kind:
-                          description: kind selects agent execution or a durable customer
-                            blocker.
+                          description: |-
+                            kind selects agent execution, a durable customer blocker, or a durable
+                            wait for external events that holds no worker.
                           enum:
                           - agent_task
                           - human_gate
+                          - wait
                           type: string
                         label:
                           description: |-
@@ -228,11 +231,13 @@ spec:
                             for this agent node.
                           type: string
                         outcomes:
-                          description: outcomes are the only values complete_step
-                            (or a human response) may emit.
+                          description: |-
+                            outcomes are the only values complete_step (or a human response) may
+                            emit. Required for agent_task and human_gate. A wait node's outcomes are
+                            the reserved received, deadline, and cancelled; omit them or list exactly
+                            that set.
                           items:
                             type: string
-                          minItems: 1
                           type: array
                         outputSchema:
                           description: |-
@@ -343,6 +348,83 @@ spec:
                           description: timeout bounds one node execution. Zero uses
                             the runtime default.
                           type: string
+                        wait:
+                          description: wait is required for wait and forbidden otherwise.
+                          properties:
+                            completion:
+                              description: completion is all (every expected event)
+                                or any (the first one).
+                              enum:
+                              - all
+                              - any
+                              type: string
+                            deadline:
+                              description: deadline bounds the wait; exactly one of
+                                after or at is required.
+                              properties:
+                                after:
+                                  type: string
+                                at:
+                                  description: |-
+                                    OutputReference addresses a value in the latest successful output of an
+                                    earlier node in the same attempt. "*" expands every array item.
+                                  properties:
+                                    node:
+                                      minLength: 1
+                                      type: string
+                                    path:
+                                      items:
+                                        type: string
+                                      minItems: 1
+                                      type: array
+                                  required:
+                                  - node
+                                  - path
+                                  type: object
+                              type: object
+                            events:
+                              description: |-
+                                events names each expected event source and where its correlation keys
+                                come from. A key path resolving to N strings expects N events.
+                              items:
+                                description: WaitEventSpec is one expected event source
+                                  and its correlation-key origin.
+                                properties:
+                                  correlation:
+                                    description: |-
+                                      correlation names an earlier node's validated output path holding one
+                                      string or an array of strings.
+                                    properties:
+                                      node:
+                                        minLength: 1
+                                        type: string
+                                      path:
+                                        items:
+                                          type: string
+                                        minItems: 1
+                                        type: array
+                                    required:
+                                    - node
+                                    - path
+                                    type: object
+                                  source:
+                                    description: |-
+                                      source is the event source that posts by correlation key, for example
+                                      email_reply.
+                                    pattern: ^[a-z][a-z0-9_]{0,62}$
+                                    type: string
+                                required:
+                                - correlation
+                                - source
+                                type: object
+                              maxItems: 16
+                              minItems: 1
+                              type: array
+                          required:
+                          - completion
+                          - deadline
+                          - events
+                          type: object
                         workspaceTools:
                           description: |-
                             workspaceTools requests the fixed read/write/edit/bash set. The referenced
@@ -352,7 +434,6 @@ spec:
                       - key
                       - kind
                       - label
-                      - outcomes
                       type: object
                     minItems: 1
                     type: array
