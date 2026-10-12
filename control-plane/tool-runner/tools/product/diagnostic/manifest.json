@@ -1,0 +1,17 @@
+{
+  "apiVersion": "iterabase.io/tool/v1",
+  "name": "platform.diagnostic",
+  "version": "1.0.0",
+  "digest": "sha256:5b3795a62b092220a2f36e9ff90deed95f213114df75bdc42ce6da214e8a493a",
+  "description": "Read-only diagnostic that echoes a message from the platform product tool layer.",
+  "bundle": "index.mjs",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "message": { "type": "string", "maxLength": 256 }
+    }
+  },
+  "effectClass": "read_only",
+  "timeoutMs": 5000
+}

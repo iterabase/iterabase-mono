@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, posix, resolve } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -10,8 +10,12 @@ import type { MaterializerMetrics } from "./metrics.js";
 import { sleep } from "./sleep.js";
 
 export interface MaterializerConfig {
-  namespace: string;
-  sourceName: string;
+  // Release-versioned product layer baked into the tool-runner image
+  // (DES-HOR-651-01). It is read-only and identical for every pod of a release.
+  productRoot: string;
+  productVersion: string;
+  // Optional overlay client layer. Absent means a product-only generation.
+  flux?: { namespace: string; sourceName: string };
   artifactsRoot: string;
   controlRoot: string;
   pollMs: number;
@@ -22,11 +26,17 @@ export interface MaterializerConfig {
 
 export interface FluxArtifact { revision: string; digest: string; url: string }
 
-export class FluxMaterializer {
-  private custom: k8s.CustomObjectsApi;
+// GenerationSource is one composed generation: the image product layer plus
+// the exact Flux client artifact, if any. Its digest names the generation.
+export interface GenerationSource { revision: string; digest: string; productDigest: string; client: FluxArtifact | null }
+
+export class GenerationMaterializer {
+  private custom: k8s.CustomObjectsApi | null = null;
   private lastDigest = "";
+  private productDigest = "";
 
   constructor(private readonly cfg: MaterializerConfig, kubeConfig?: k8s.KubeConfig, private readonly metrics?: MaterializerMetrics) {
+    if (!cfg.flux) return;
     const kc = kubeConfig ?? new k8s.KubeConfig();
     if (!kubeConfig) kc.loadFromCluster();
     this.custom = kc.makeApiClient(k8s.CustomObjectsApi);
@@ -38,11 +48,11 @@ export class FluxMaterializer {
     while (!signal.aborted) {
       const observedAt = Date.now();
       try {
-        const artifact = await this.currentArtifact();
-        if (artifact && artifact.digest !== this.lastDigest) {
-          const bytes = await this.materialize(artifact);
-          this.lastDigest = artifact.digest;
-          this.metrics?.success(artifact.revision, artifact.digest, bytes, (Date.now() - observedAt) / 1000);
+        const source = await this.currentSource();
+        if (source && source.digest !== this.lastDigest) {
+          const bytes = await this.materialize(source);
+          this.lastDigest = source.digest;
+          this.metrics?.success(source.revision, source.digest, bytes, (Date.now() - observedAt) / 1000);
         }
       } catch (error) {
         this.metrics?.failure((Date.now() - observedAt) / 1000);
@@ -52,10 +62,20 @@ export class FluxMaterializer {
     }
   }
 
+  // currentSource returns null only while a configured Flux client source has
+  // no Ready artifact: a configured overlay is never silently skipped.
+  async currentSource(): Promise<GenerationSource | null> {
+    if (!this.productDigest) this.productDigest = await layerDigest(this.cfg.productRoot);
+    const client = this.cfg.flux ? await this.currentArtifact() : null;
+    if (this.cfg.flux && !client) return null;
+    return composeSource(this.productDigest, this.cfg.productVersion, client);
+  }
+
   async currentArtifact(): Promise<FluxArtifact | null> {
+    if (!this.custom || !this.cfg.flux) return null;
     const response = await this.custom.getNamespacedCustomObject({
-      group: "source.toolkit.fluxcd.io", version: "v1", namespace: this.cfg.namespace,
-      plural: "gitrepositories", name: this.cfg.sourceName,
+      group: "source.toolkit.fluxcd.io", version: "v1", namespace: this.cfg.flux.namespace,
+      plural: "gitrepositories", name: this.cfg.flux.sourceName,
     });
     const object = response as unknown as { status?: { artifact?: Partial<FluxArtifact> } };
     const artifact = object.status?.artifact;
@@ -69,11 +89,11 @@ export class FluxMaterializer {
     return artifact as FluxArtifact;
   }
 
-  async materialize(artifact: FluxArtifact): Promise<number> {
-    const generationName = artifact.digest.slice("sha256:".length);
+  async materialize(source: GenerationSource): Promise<number> {
+    const generationName = source.digest.slice("sha256:".length);
     const finalDir = join(this.cfg.artifactsRoot, "generations", generationName);
     try {
-      if ((await stat(finalDir)).isDirectory()) { await this.publishCurrent(artifact, finalDir); return directoryBytes(finalDir); }
+      if ((await stat(finalDir)).isDirectory()) { await this.publishCurrent(source, finalDir); return directoryBytes(finalDir); }
     } catch { /* absent */ }
     await this.reclaimReleased(generationName);
     const dirs = await generationDirs(this.cfg.artifactsRoot);
@@ -84,18 +104,30 @@ export class FluxMaterializer {
     await rm(archive, { force: true });
     await removeReadOnlyTree(staging);
     try {
-      await this.download(artifact, archive);
-      const expanded = await validateArchive(archive, this.cfg.maxExtractedBytes);
+      let expanded = 0;
+      if (source.client) {
+        await this.download(source.client, archive);
+        expanded += await validateArchive(archive, this.cfg.maxExtractedBytes);
+      }
+      expanded += await directoryBytes(this.cfg.productRoot);
       const currentBytes = await totalGenerationBytes(this.cfg.artifactsRoot);
       if (currentBytes + expanded > this.cfg.maxExtractedBytes) throw new Error(`extracted generation storage would exceed ${this.cfg.maxExtractedBytes} bytes`);
-      await mkdir(staging, { recursive: true, mode: 0o700 });
-      await tar.x({ file: archive, cwd: staging, gzip: true, filter: (path, entry) => allowedToolPath(path) && "type" in entry && entry.type === "File", noMtime: true });
+      await mkdir(join(staging, "tools"), { recursive: true, mode: 0o700 });
+      await copyLayer(this.cfg.productRoot, join(staging, "tools", "product"));
+      if (source.client) {
+        await tar.x({ file: archive, cwd: staging, gzip: true, filter: (path, entry) => allowedToolPath(path) && "type" in entry && entry.type === "File", noMtime: true });
+      }
+      // The product layer must match the digest this generation is named by;
+      // the image is immutable, so a mismatch means the copy was corrupted.
+      const copied = await layerDigest(join(staging, "tools", "product"));
+      if (copied !== source.productDigest) throw new Error(`product layer digest mismatch: expected ${source.productDigest}, copied ${copied}`);
       // The runner container mounts /artifacts read-only. Keep materializer
       // ownership on the writable side so released generations can be reaped;
       // atomic rename is the publication boundary.
       await rename(staging, finalDir);
-      await this.publishCurrent(artifact, finalDir);
-      console.info(JSON.stringify({ event: "artifact_materialized", revision: artifact.revision, digest: artifact.digest, bytes: expanded }));
+      await this.publishCurrent(source, finalDir);
+      console.info(JSON.stringify({ event: "generation_materialized", revision: source.revision, digest: source.digest,
+        productDigest: source.productDigest, clientDigest: source.client?.digest ?? null, bytes: expanded }));
       return expanded;
     } finally {
       await rm(archive, { force: true });
@@ -127,9 +159,9 @@ export class FluxMaterializer {
     if (actual !== artifact.digest) throw new Error(`Flux artifact digest mismatch: status ${artifact.digest}, downloaded ${actual}`);
   }
 
-  private async publishCurrent(artifact: FluxArtifact, directory: string): Promise<void> {
+  private async publishCurrent(source: GenerationSource, directory: string): Promise<void> {
     const tmp = join(this.cfg.controlRoot, "current.json.tmp");
-    await writeFile(tmp, JSON.stringify({ revision: artifact.revision, artifactDigest: artifact.digest, directory }), { mode: 0o600 });
+    await writeFile(tmp, JSON.stringify({ revision: source.revision, artifactDigest: source.digest, directory }), { mode: 0o600 });
     await rename(tmp, join(this.cfg.controlRoot, "current.json"));
   }
 
@@ -163,6 +195,7 @@ export async function validateArchive(file: string, maxBytes: number): Promise<n
     if (entry.path.startsWith("/") || normalized === ".." || normalized.startsWith("../") || normalized.includes("/../")) invalid = new Error(`unsafe archive path ${entry.path}`);
     else if (seen.has(normalized)) invalid = new Error(`duplicate archive path ${normalized}`);
     else if (["SymbolicLink", "Link", "CharacterDevice", "BlockDevice", "FIFO"].includes(entry.type)) invalid = new Error(`unsupported archive entry ${normalized} (${entry.type})`);
+    else if (productPath(normalized)) invalid = new Error(`overlay tools/product is not allowed (${normalized}): product tools ship with the platform release; put customer tools in tools/client`);
     else {
       seen.add(normalized);
       if (entry.type === "File" && allowedToolPath(normalized)) {
@@ -177,7 +210,58 @@ export async function validateArchive(file: string, maxBytes: number): Promise<n
 
 function allowedToolPath(path: string): boolean {
   const normalized = posix.normalize(path).replace(/^\.\//, "");
-  return normalized === "tools" || normalized === "tools/product" || normalized === "tools/client" || normalized.startsWith("tools/product/") || normalized.startsWith("tools/client/");
+  return normalized === "tools" || normalized === "tools/client" || normalized.startsWith("tools/client/");
+}
+
+function productPath(path: string): boolean {
+  const normalized = path.replace(/^\.\//, "").replace(/\/$/, "");
+  return normalized === "tools/product" || normalized.startsWith("tools/product/");
+}
+
+// composeSource names a generation by both layers, so a platform upgrade (new
+// product digest) and an overlay change (new Flux digest) each publish exactly
+// one new immutable generation.
+export function composeSource(productDigest: string, productVersion: string, client: FluxArtifact | null): GenerationSource {
+  const hash = createHash("sha256");
+  hash.update(`iterabase.io/tool-generation/v1\0product\0${productDigest}\0client\0${client?.digest ?? "none"}`);
+  const revision = `product@${productVersion}` + (client ? `+client@${client.revision}` : "");
+  return { revision, digest: `sha256:${hash.digest("hex")}`, productDigest, client };
+}
+
+// layerDigest hashes every regular file of a layer by sorted relative path.
+// Links and special files are rejected: the layer is copied verbatim.
+export async function layerDigest(root: string): Promise<string> {
+  const hash = createHash("sha256");
+  hash.update("iterabase.io/tool-layer/v1\0");
+  for (const path of await layerFiles(root)) {
+    const bytes = await readFile(join(root, path));
+    hash.update(`${path}\0${bytes.byteLength}\0`);
+    hash.update(bytes);
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+async function layerFiles(root: string): Promise<string[]> {
+  const out: string[] = [];
+  async function walk(relative: string): Promise<void> {
+    for (const entry of await readdir(join(root, relative), { withFileTypes: true })) {
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      const info = await lstat(join(root, child));
+      if (info.isDirectory()) await walk(child);
+      else if (info.isFile()) out.push(child);
+      else throw new Error(`product layer entry ${child} is not a regular file or directory`);
+    }
+  }
+  await walk("");
+  return out.sort();
+}
+
+async function copyLayer(source: string, destination: string): Promise<void> {
+  await mkdir(destination, { recursive: true, mode: 0o700 });
+  for (const path of await layerFiles(source)) {
+    await mkdir(dirname(join(destination, path)), { recursive: true, mode: 0o700 });
+    await copyFile(join(source, path), join(destination, path));
+  }
 }
 
 async function removeReadOnlyTree(root: string): Promise<void> {

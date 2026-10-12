@@ -231,17 +231,24 @@ attempt pins. Exact runner identities and allowed tool namespaces come from
 static gateway deployment configuration and are reconciled into
 `approved_runners`; runners cannot approve themselves.
 
-### Flux tool generations (HOR-397)
+### Tool generations (HOR-397, HOR-651)
 
 `tool-runner/` builds the separate generic Node 24
-`control-plane-tool-runner` image. A materializer sidecar polls one configured
-Flux `GitRepository`, verifies the exact artifact digest, safely extracts only
-`tools/product` and `tools/client`, and atomically publishes immutable generation
-directories. The runner mounts those files read-only, validates the complete
-manifest/bundle set, and registers over outbound mTLS. It receives no Kubernetes
-or Git credential; the materializer receives no runner private key. Both
+`control-plane-tool-runner` image. The release-versioned product tool layer
+(`tool-runner/tools/product`) is baked into that image and released with the
+control-plane (DES-HOR-651-01). A materializer sidecar composes each generation
+from that product layer plus, optionally, the `tools/client` layer of one
+configured Flux `GitRepository`. It verifies the exact artifact digest, safely
+extracts only `tools/client`, rejects an overlay `tools/product`, and atomically
+publishes immutable generation directories named by both layer digests. The
+runner mounts those files read-only, validates the complete manifest/bundle set,
+and registers over outbound mTLS. It receives no Kubernetes or Git credential;
+the materializer receives no runner private key, and with
+`toolRunner.flux.enabled=false` no Kubernetes credential either. Both
 processes expose unauthenticated, metrics-only `/metrics` listeners for the
-chart's opt-in Prometheus `ServiceMonitor`; no invocation API is exposed.
+chart's opt-in Prometheus `ServiceMonitor`; no invocation API is exposed. See
+[`tool-runner/tools/README.md`](tool-runner/tools/README.md) for the
+product/client layer contract.
 
 A client bundle shadows a product bundle by logical name only with a new
 immutable version. The digest binds canonical manifest metadata and exact ESM
@@ -249,11 +256,15 @@ bytes; mismatches reject the whole revision while the last valid generation
 continues serving. Superseded registrations enter coordinated drain: new
 attempts cannot select them, existing pins remain routable, and release occurs
 when no unfinished pin remains or the configured hard retention deadline makes
-them explicitly unavailable. No substitution occurs.
+them explicitly unavailable. No substitution occurs. A platform upgrade replaces
+the runner pod; attempts pinned to a product version that the upgrade
+superseded keep their pins and receive the retryable `tool_unavailable`
+(DES-HOR-651-02).
 
-Use `make tool-runner-lint tool-runner-test tool-runner-build` locally. The
-image also provides `digest <tool-directory>` and `validate
-<generation-directory>` authoring commands. Concrete Graph tools remain owned
+Use `make tool-runner-lint tool-runner-test tool-runner-build` locally;
+`tool-runner-test` also validates every product tool and enforces product
+version immutability against `master`. The image provides `digest
+<tool-directory>` and `validate [overlay-directory]` authoring commands. Concrete Graph tools remain owned
 by HOR-358; the supervisor IPC client is HOR-395.
 
 ## Model backends (HOR-306/388)
