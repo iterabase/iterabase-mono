@@ -10,9 +10,9 @@ set -euo pipefail
 # deliberately not required: CPU is compressible and throttling hurts latency
 # without protecting neighbours (see docs/sizing.md).
 #
-# The umbrella must also render the release-namespace LimitRange that defaults
-# runtime-created pods (AgentPool workers, ModelBackend helpers) the chart never
-# renders itself.
+# The umbrella must also render the release-namespace LimitRange that gives
+# runtime-created pods (AgentPool workers, ModelBackend pods) the chart never
+# renders a default request, and nothing else: no default limit, no max/min.
 #
 # Every profile below must stay a superset of what a supported install enables;
 # add a profile when a new values path introduces workloads.
@@ -87,7 +87,7 @@ def problems(resources):
 EXEMPT = {
     # cert-manager-csi-driver v0.15.0 sizes only its driver container. Both
     # sidecars are small static binaries; the platform release-namespace
-    # LimitRange defaults them whenever their pods are recreated.
+    # LimitRange gives them a default request whenever their pods are recreated.
     ("DaemonSet", "cert-manager-csi-driver", "node-driver-registrar"),
     ("DaemonSet", "cert-manager-csi-driver", "liveness-probe"),
 }
@@ -126,11 +126,14 @@ for profile in ("default", "kind", "observability-tls", "internal-observability"
         failures.append(f"{profile}: expected exactly one Container LimitRange entry, found {len(container_limits)}")
         continue
     entry = container_limits[0]
-    for p in problems({"requests": entry.get("defaultRequest"), "limits": entry.get("default")}):
-        failures.append(f"{profile}: LimitRange default {p}")
-    for bound in ("max", "min", "maxLimitRequestRatio"):
+    request = entry.get("defaultRequest") or {}
+    for field in ("cpu", "memory"):
+        if field not in request:
+            failures.append(f"{profile}: LimitRange defaultRequest missing {field}")
+    # A default limit OOM-kills unsized ModelBackend pods; max/min reject them.
+    for bound in ("default", "max", "min", "maxLimitRequestRatio"):
         if bound in entry:
-            failures.append(f"{profile}: LimitRange must only default (DES-HOR-602-02), found {bound}")
+            failures.append(f"{profile}: LimitRange must only default requests (DES-HOR-602-02), found {bound}")
 
 for stale in sorted(EXEMPT - exempted):
     failures.append(f"stale exemption no longer rendered: {stale}")

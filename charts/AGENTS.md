@@ -22,7 +22,7 @@ Stay inside `charts/` for Helm packaging and declarative install, upgrade, featu
 - Every subchart wraps resources in `{{- if .Values.enabled }}`; the umbrella controls it through `condition: <chart>.enabled`.
 - Chart-generated secrets must remain stable across upgrades through the Helm `lookup` pattern. Never commit real secrets.
 - Runtime image, chart, release, Service, and configuration names are external contracts and must not change during source/module migrations.
-- Every rendered container declares a CPU request, a memory request and a memory limit (no CPU limits); `scripts/check-resource-limits.sh` enforces it and the release-namespace LimitRange defaults only runtime-created pods. Size changes stay within [`docs/sizing.md`](docs/sizing.md) (HOR-602, DES-HOR-602-01/02).
+- Every rendered container declares a CPU request, a memory request and a memory limit (no CPU limits); `scripts/check-resource-limits.sh` enforces it and the release-namespace LimitRange only defaults requests for runtime-created pods (never a limit: unsized vLLM backends must not be capped). Size changes stay within [`docs/sizing.md`](docs/sizing.md) (HOR-602, DES-HOR-602-01/02).
 - Per-chart tags remain `<chart>-<semver>` and publish to `oci://ghcr.io/iterabase/iterabase-charts/<chart>` according to the approved release contract; data dependency subcharts remain bundled only.
 
 Any change to ownership, release identity, secret lifecycle, or install/upgrade semantics is architectural and requires explicit user approval before implementation.

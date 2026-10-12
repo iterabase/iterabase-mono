@@ -407,21 +407,18 @@ observabilityUpgradeRecovery:
     limits:
       memory: 128Mi
 
-# --- Runtime-created pod defaults (HOR-602, DES-HOR-602-02) ---
-# One LimitRange in the release namespace defaults any container created
-# without declared resources: AgentPool workers (supervisor + init-wal) and
-# ModelBackend helpers built by the manager, which this chart never renders.
-# It only defaults (no max/min): overlays size real pools explicitly through
-# AgentPool.spec.resources. A pool that requests more memory than
-# default.memory without its own limit is rejected at pod admission (visible,
-# fail-closed). Every chart-rendered container declares its own resources
+# --- Runtime-created pod defaults (HOR-602, DES-HOR-602-02 as amended) ---
+# One LimitRange in the release namespace gives any container created without
+# declared resources a small default request, so AgentPool workers (supervisor
+# + init-wal) and ModelBackend pods built by the manager still count toward
+# scheduling. It sets no default limit and no max/min: a default memory limit
+# OOM-kills unsized vLLM backends, and larger default requests make an n-1
+# rollback unschedulable while this object briefly outlives it. Runtime pods
+# get memory limits only through AgentPool/ModelBackend spec.resources. Every
+# chart-rendered container declares its own resources
 # (scripts/check-resource-limits.sh); see charts/docs/sizing.md.
 runtimeDefaults:
   enabled: true
-  # Measured AgentPool worker peaks on the reference load (HOR-602): ~155Mi /
-  # ~165m per worker during an agent turn; see charts/docs/sizing.md.
   defaultRequest:
-    cpu: 250m
-    memory: 256Mi
-  default:
-    memory: 1536Mi
+    cpu: 25m
+    memory: 128Mi

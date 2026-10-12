@@ -498,13 +498,14 @@ Arbitrary-version rollback safety is not claimed.
 ## Resources and single-node sizing
 
 Every workload ships reviewed requests and memory limits, the release
-namespace carries a defaults-only `LimitRange` for operator-created pods
-(AgentPool workers, ModelBackend helpers), and `make check-resource-limits`
+namespace carries a requests-only `LimitRange` so operator-created pods
+(AgentPool workers, ModelBackend pods) count toward scheduling, and `make check-resource-limits`
 fails any render with an unconstrained container. Measured capacity for the
 4 vCPU / 16 GiB baseline and the 8 vCPU / 16 GiB scale tier, the recommended
 kubelet `system-reserved`, and the per-instance concurrency budget are in
-[`docs/sizing.md`](docs/sizing.md). Size AgentPools explicitly through
-`AgentPool.spec.resources` in the overlay.
+[`docs/sizing.md`](docs/sizing.md). The LimitRange sets no memory limit, so
+size AgentPools and ModelBackends explicitly through their `spec.resources` in
+the overlay.
 
 ## Flux-backed gateway tool runner
 
