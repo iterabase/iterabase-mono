@@ -69,10 +69,20 @@ func (m *minioStore) Put(ctx context.Context, key string, r io.Reader, contentTy
 			return fmt.Errorf("check artifact object absence: %w", err)
 		}
 	}
-	if _, err := m.client.PutObject(ctx, m.bucket, key, r, -1, minio.PutObjectOptions{ContentType: contentType}); err != nil {
+	if _, err := m.client.PutObject(ctx, m.bucket, key, r, -1, putOptions(contentType)); err != nil {
 		return fmt.Errorf("put artifact object: %w", err)
 	}
 	return nil
+}
+
+// uploadPartSize bounds the memory one streamed upload buffers. With an
+// unknown length minio-go otherwise sizes each part for a 5 TiB object
+// (~528 MiB), which no sized gateway/api/manager container can hold (HOR-602).
+// 16 MiB parts still allow 10,000 x 16 MiB = 156 GiB, far above MaxSize.
+const uploadPartSize = 16 << 20
+
+func putOptions(contentType string) minio.PutObjectOptions {
+	return minio.PutObjectOptions{ContentType: contentType, PartSize: uploadPartSize}
 }
 
 func (m *minioStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
