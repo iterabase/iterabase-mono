@@ -383,3 +383,69 @@ tests:
       - eval_time: 15m
         alertname: IterabaseCertificateExpiringSoon
         exp_alerts: []
+
+  - name: OOM-killed container fires while its restart is recent
+    interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="default",pod="opo1-postgresql-0",container="postgresql",reason="OOMKilled"}'
+        values: '0 0 1 1 1 1'
+      - series: 'kube_pod_container_status_restarts_total{namespace="default",pod="opo1-postgresql-0",container="postgresql"}'
+        values: '0 0 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: IterabaseContainerOOMKilled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: capacity
+              namespace: default
+              pod: opo1-postgresql-0
+              container: postgresql
+              reason: OOMKilled
+            exp_annotations:
+              summary: "Container default/opo1-postgresql-0/postgresql was OOM-killed"
+              description: "The container exceeded its memory limit and was killed by the kernel within the last 15 minutes. Work it was serving may have been interrupted."
+              first_action: "Check the container's memory trend against its limit and the node budget in charts/docs/sizing.md before raising the limit."
+              runbook_url: "https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabasecontaineroomkilled"
+
+  - name: an old OOM kill without a recent restart stays quiet
+    interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="default",pod="opo1-postgresql-0",container="postgresql",reason="OOMKilled"}'
+        values: '1x30'
+      - series: 'kube_pod_container_status_restarts_total{namespace="default",pod="opo1-postgresql-0",container="postgresql"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: IterabaseContainerOOMKilled
+        exp_alerts: []
+
+  - name: working set above 90 percent of the memory limit warns after 15 minutes
+    interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="default",pod="opo1-control-plane-api-0",container="api",id="/a"}'
+        values: '750000000x20'
+      - series: 'kube_pod_container_resource_limits{namespace="default",pod="opo1-control-plane-api-0",container="api",resource="memory",unit="byte"}'
+        values: '805306368x20'
+      - series: 'container_memory_working_set_bytes{namespace="default",pod="opo1-redis-0",container="redis",id="/b"}'
+        values: '100000000x20'
+      - series: 'kube_pod_container_resource_limits{namespace="default",pod="opo1-redis-0",container="redis",resource="memory",unit="byte"}'
+        values: '536870912x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: IterabaseContainerMemoryNearLimit
+        exp_alerts: []
+      - eval_time: 17m
+        alertname: IterabaseContainerMemoryNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: capacity
+              namespace: default
+              pod: opo1-control-plane-api-0
+              container: api
+            exp_annotations:
+              summary: "Container default/opo1-control-plane-api-0/api is above 90% of its memory limit"
+              description: "Sustained working set close to the memory limit; the next allocation spike will OOM-kill the container."
+              first_action: "Identify the load driving memory growth and compare it with the reviewed budget in charts/docs/sizing.md."
+              runbook_url: "https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabasecontainermemorynearlimit"
