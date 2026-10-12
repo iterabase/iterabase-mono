@@ -85,7 +85,7 @@ func deployedExecutionContractsScenario() sharede2e.Definition {
 	return sharede2e.Define(sharede2e.Scenario[*deployedState]{
 		Metadata: deployedExecutionMetadata(
 			"deployed-execution-contracts",
-			"Proves source-built AgentPool, dispatch, disposable harness children, model/tool gateways, immutable image product plus overlay client tools, artifacts, consequences, isolation, durable waits, and interrupted-step recovery on fresh Kind.",
+			"Proves source-built AgentPool, dispatch, disposable harness children, model/tool gateways, a product-only fresh install then immutable image product plus overlay client tools, artifacts, consequences, isolation, durable waits, and interrupted-step recovery on fresh Kind.",
 			"test-e2e-execution", 60,
 			[]string{"HOR-477", "HOR-438", "HOR-488", "HOR-489", "HOR-545", "HOR-649", "HOR-651", "REQ-005", "REQ-009", "REQ-010", "REQ-018", "REQ-035", "REQ-045", "REQ-046", "SCN-008", "SCN-009", "SCN-012", "SCN-030"},
 		),
@@ -99,7 +99,9 @@ func deployedExecutionContractsScenario() sharede2e.Definition {
 			{Name: "install-execution-platform", DependsOn: []string{"install-execution-fixtures"}, Run: installExecutionPlatformStage},
 			{Name: "assert-execution-platform-ready", DependsOn: []string{"install-execution-platform"}, Run: assertExecutionPlatformReadyStage},
 			{Name: "setup-execution-resources", DependsOn: []string{"assert-execution-platform-ready"}, Run: setupExecutionResourcesStage},
-			{Name: "exercise-agentpool-late-secret-recovery", DependsOn: []string{"setup-execution-resources"}, Run: exerciseAgentPoolLateSecretRecoveryStage},
+			{Name: "exercise-product-only-install", DependsOn: []string{"setup-execution-resources"}, Run: exerciseProductOnlyInstallStage},
+			{Name: "enable-client-tool-layer", DependsOn: []string{"exercise-product-only-install"}, Run: enableClientToolLayerStage},
+			{Name: "exercise-agentpool-late-secret-recovery", DependsOn: []string{"enable-client-tool-layer"}, Run: exerciseAgentPoolLateSecretRecoveryStage},
 			{Name: "exercise-worker-loss-cancellation", DependsOn: []string{"exercise-agentpool-late-secret-recovery"}, Run: exerciseWorkerLossCancellationStage},
 			{Name: "exercise-concurrent-same-pool-rwo", DependsOn: []string{"exercise-worker-loss-cancellation"}, Run: exerciseConcurrentSamePoolWorkStage},
 			{Name: "exercise-immutable-tool-generation", DependsOn: []string{"exercise-concurrent-same-pool-rwo"}, Run: exerciseImmutableToolGenerationStage},

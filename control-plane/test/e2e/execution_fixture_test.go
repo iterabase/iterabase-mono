@@ -28,18 +28,22 @@ type toolFixture struct {
 func installExecutionFixtureStage(t *testing.T, state *deployedState) {
 	t.Helper()
 	installRuntimeBackend(t, state)
+	// The platform installs product-only first (HOR-651): no Flux, no overlay
+	// source, no client tools. enableClientToolLayerStage adds them later.
+	state.toolDigests = map[string]string{productDiagnosticTool: productToolDigest(t, "diagnostic")}
+	state.toolV1 = writeToolGeneration(t, "1.0.0", false)
+	state.toolV2 = writeToolGeneration(t, "2.0.0", true)
+}
+
+// enableClientToolLayerStage turns the product-only install into the
+// customer shape: Flux serves the overlay's tools/client layer and a platform
+// upgrade enables the runner's client source.
+func enableClientToolLayerStage(t *testing.T, state *deployedState) {
+	t.Helper()
 	state.kubectl(t, 3*time.Minute, "apply", "-f", fluxInstallManifest)
 	state.kubectl(t, 4*time.Minute, "wait", "-n", "flux-system", "--for=condition=Available",
 		"deployment/source-controller", "deployment/kustomize-controller", "--timeout=180s")
-
-	v1 := writeToolGeneration(t, "1.0.0", false)
-	v2 := writeToolGeneration(t, "2.0.0", true)
-	state.toolDigests = map[string]string{productDiagnosticTool: productToolDigest(t, "diagnostic")}
-	for _, tool := range v1 {
-		state.toolDigests[tool.name] = tool.digest
-	}
-	state.toolV2 = v2
-	installToolGitServer(t, state, v1)
+	installToolGitServer(t, state, state.toolV1)
 	state.applyYAML(t, "tool-source.yaml", `apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
@@ -78,6 +82,16 @@ spec:
 		"source_sha": os.Getenv("ITERABASE_E2E_SOURCE_SHA"), "flux_revision": state.fluxRevision, "flux_digest": state.fluxDigest,
 		"images": []any{imageEvidence(state.harnessImage), imageEvidence(state.toolRunnerImage), imageEvidence(state.inferenceImage), imageEvidence(state.runtimeImage)},
 	})
+
+	state.installPlatformValues(t, "execution-platform-client-values.json", executionPlatformValues(state, true), 18*time.Minute)
+	state.kubectl(t, 7*time.Minute, "rollout", "status", "deployment/iterabase-tool-runner", "-n", controlPlaneNamespace, "--timeout=6m")
+	for _, tool := range state.toolV1 {
+		state.toolDigests[tool.name] = tool.digest
+	}
+	for name, digest := range state.toolDigests {
+		query := fmt.Sprintf("SELECT count(*) FROM toolgateway.runner_registrations WHERE tool_name='%s' AND tool_digest='%s' AND active AND accepting_new", name, digest)
+		waitForDatabaseValue(t, state, query, "1", 3*time.Minute)
+	}
 }
 
 func imageEvidence(image deployedImage) map[string]string {
@@ -133,9 +147,16 @@ spec:
 
 func installExecutionPlatformStage(t *testing.T, state *deployedState) {
 	t.Helper()
+	state.installPlatformValues(t, "execution-platform-values.json", executionPlatformValues(state, false), 18*time.Minute)
+}
+
+// executionPlatformValues renders the execution install. clientTools=false is
+// the fresh product-only install: the tool runner serves only the product
+// layer from its image and the chart renders no Flux client.
+func executionPlatformValues(state *deployedState, clientTools bool) map[string]any {
 	// CI supplies every image as an exact archive imported before install.
 	pullPolicy := "Never"
-	values := map[string]any{
+	return map[string]any{
 		"global":         map[string]any{"internalTLS": map[string]any{"enabled": true}},
 		"external-dns":   map[string]any{"enabled": false},
 		"redis":          map[string]any{"enabled": true},
@@ -158,13 +179,12 @@ func installExecutionPlatformStage(t *testing.T, state *deployedState) {
 				"enabled":               true,
 				"image":                 map[string]any{"repository": state.toolRunnerImage.repository, "tag": state.toolRunnerImage.tag, "pullPolicy": pullPolicy},
 				"allowedToolNamespaces": []string{"platform"},
-				"flux":                  map[string]any{"namespace": "flux-system", "sourceName": "overlay", "pollMs": 1000},
+				"flux":                  map[string]any{"enabled": clientTools, "namespace": "flux-system", "sourceName": "overlay", "pollMs": 1000},
 			},
 			"artifact": map[string]any{"enabled": true},
 			"ingress":  map[string]any{"enabled": false},
 		},
 	}
-	state.installPlatformValues(t, "execution-platform-values.json", values, 18*time.Minute)
 }
 
 func assertExecutionPlatformReadyStage(t *testing.T, state *deployedState) {
