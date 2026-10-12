@@ -153,7 +153,8 @@ $$;
 CREATE TRIGGER attempt_pauses_guard BEFORE UPDATE OR DELETE ON work.attempt_pauses
     FOR EACH ROW EXECUTE FUNCTION work.guard_attempt_pause_mutation();
 
--- Customer state (DES-HOR-649-05). Waiting and paused never count as blocked.
+-- Customer state (DES-HOR-649-05), in the architecture section 7 precedence.
+-- Waiting and paused never count as blocked.
 -- The work-item columns are the view's original HOR-254 set, listed explicitly
 -- so later work_items columns stay independent of this view.
 DROP VIEW work.current_work_items;
@@ -163,9 +164,9 @@ SELECT wi.id, wi.workflow_key, wi.scope_identity_id, wi.title, wi.source, wi.sta
        CASE
            WHEN wr.state IN ('failed', 'aborted') THEN 'failed'
            WHEN wr.state = 'succeeded' THEN 'done'
-           WHEN EXISTS (SELECT 1 FROM work.blockers b WHERE b.work_item_id = wi.id AND b.state = 'open') THEN 'blocked'
            WHEN EXISTS (SELECT 1 FROM work.attempt_pauses p WHERE p.attempt_id = wr.id AND p.resumed_at IS NULL) THEN 'paused'
            WHEN wr.state = 'waiting' THEN 'waiting'
+           WHEN EXISTS (SELECT 1 FROM work.blockers b WHERE b.work_item_id = wi.id AND b.state = 'open') THEN 'blocked'
            WHEN wr.state = 'pending' THEN 'todo'
            WHEN wr.state IN ('running', 'awaiting_approval') THEN 'in_progress'
        END AS customer_state,
