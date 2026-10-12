@@ -7,7 +7,14 @@ image:
   pullPolicy: IfNotPresent
 
 # Redis is hot-path cache only (never source of truth); ephemeral storage in v1.
-resources: {}
+# Reviewed single-node sizing (HOR-602, charts/docs/sizing.md): CPU request,
+# memory request and memory limit; no CPU limit (CPU is compressible).
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 512Mi
 
 # Internal TLS (opt-in; the umbrella's internalTLS.enabled fans this on in prod).
 # When enabled, redis serves TLS only (plaintext port disabled) with a cert-manager
@@ -39,5 +46,10 @@ metrics:
     tag: "v1.67.0"
     digest: sha256:120f7ec77293459ccfdad66bb1db75ab72e8bfeab99f58b1cc2564cadcd7a9e7
     pullPolicy: IfNotPresent
-  resources: {}
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
   # scrapeInterval: 30s

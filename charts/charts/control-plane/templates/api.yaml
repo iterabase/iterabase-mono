@@ -41,6 +41,10 @@ spec:
             - sh
             - -c
             - 'until pg_isready -h {{ include "control-plane.pgHost" . }} -p {{ .Values.postgresql.port }} -U {{ .Values.postgresql.auth.username }}; do echo waiting for postgres; sleep 2; done'
+          {{- with .Values.initResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- if (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) }}
           env:
             # pg_isready doesn't accept --sslmode; libpq reads these env vars,
@@ -59,6 +63,10 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/api"]
           args: ["migrate", "up"]
+          {{- with .Values.api.initResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
             - name: PGPASSWORD
               valueFrom:
@@ -77,6 +85,10 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/api"]
+          {{- with .Values.api.initResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           args:
             - bootstrap
             {{- if not .Values.auth.enabled }}

@@ -13,10 +13,27 @@ image:
 manager:
   args:
     - --health-probe-bind-address=:8081
-  resources: {}
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
 api:
   addr: ":8080"
-  resources: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      memory: 768Mi
+  # migrate + bootstrap init containers (api image).
+  initResources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 gateway:
   # Standalone installs opt in after providing cert-manager and either using
@@ -35,7 +52,12 @@ gateway:
     # ClusterIssuers read CA Secrets from cert-manager's cluster-resource
     # namespace. Empty uses this release namespace (the umbrella default).
     clusterResourceNamespace: ""
-  resources: {}
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
 
 dispatch:
   # The durable Work bidi-stream gRPC server (HOR-249): warm-agent workers
@@ -58,7 +80,12 @@ dispatch:
   tls:
     generated: true
     serverSecret: "" # default: <release>-control-plane-dispatch-tls
-  resources: {}
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
 
 toolRunner:
   enabled: false # umbrella enables; requires gateway + Flux GitRepository
@@ -83,8 +110,18 @@ toolRunner:
     enabled: false # also enabled by the chart-wide metrics.enabled observability knob
     materializerPort: 9091
     runnerPort: 9092
-  resources: {}
-  materializerResources: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  materializerResources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 # Immutable artifact service (HOR-399). The umbrella's MinIO subchart creates
 # the bucket + dedicated credential. For standalone/BYO MinIO, override endpoint
@@ -226,7 +263,15 @@ tls:
   caSecretName: ""   # required when enabled: the internal CA root Secret
   caMountPath: /etc/iterabase/internal-ca/ca.crt
 
-resources: {}
+# Reviewed single-node sizing (HOR-602, charts/docs/sizing.md): CPU request,
+# memory request and memory limit; no CPU limit (CPU is compressible).
+# wait-for-postgres init containers (pg_isready).
+initResources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    memory: 64Mi
 
 # Metrics (opt-in; flip on with observability — see values-observability.yaml).
 # Application and mandatory-mTLS listeners remain isolated: api/gateway/dispatch

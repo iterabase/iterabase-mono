@@ -26,7 +26,14 @@ artifactService:
 networkPolicy:
   enabled: true
 
-resources: {}
+# Reviewed single-node sizing (HOR-602, charts/docs/sizing.md): CPU request,
+# memory request and memory limit; no CPU limit (CPU is compressible).
+resources:
+  requests:
+    cpu: 25m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
 
 # Metrics (opt-in; flip on with observability — see values-observability.yaml).
 # MinIO exposes /minio/v2/metrics/cluster natively on the S3 port (no exporter

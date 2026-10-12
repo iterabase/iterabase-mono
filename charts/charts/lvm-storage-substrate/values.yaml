@@ -26,6 +26,13 @@ lvm-localpv:
       keep: true
   lvmNode:
     kubeletDir: /var/lib/kubelet
+    # Applied to every node-plugin container (registrar + plugin).
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
     driverRegistrar:
       image:
         registry: ""
@@ -41,6 +48,13 @@ lvm-localpv:
       name: openebs-lvm-controller-sa
   lvmController:
     replicas: 1
+    # Applied to every controller container (resizer, provisioner, plugin).
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
     resizer:
       image:
         registry: ""
