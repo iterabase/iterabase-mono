@@ -17,10 +17,17 @@ import {
   Period,
   respondToBlocker,
   saveFeedback,
+  stopWaiting,
   subscribe,
   uploadArtifact,
 } from "./api";
-import { localized, stateLabel, t } from "./i18n";
+import {
+  localized,
+  pauseReasonLabel,
+  stateLabel,
+  t,
+  waitingProgress,
+} from "./i18n";
 import type {
   Blocker,
   DetailData,
@@ -38,6 +45,11 @@ import { AuthProfile, probeSession } from "./auth/authApi";
 import "./styles.css";
 
 const states: WorkState[] = ["todo", "in_progress", "blocked", "done"];
+// Waiting and paused work is active, never Blocked (DES-HOR-649-05): it sits
+// in the In progress column with its own honest state chip.
+function boardColumn(state: WorkState): WorkState {
+  return state === "waiting" || state === "paused" ? "in_progress" : state;
+}
 const categoryKeys = [
   "incorrect_classification",
   "missing_information",
@@ -397,6 +409,24 @@ function WorkCard({
           {localized(item.currentStep.label, locale)}
         </div>
       )}
+      {item.state === "waiting" && item.wait && (
+        <div className="wait-chip">
+          <i />
+          <div>
+            <small>{stateLabel("waiting", locale)}</small>
+            {waitingProgress(item.wait.received, item.wait.expected, locale)}
+          </div>
+        </div>
+      )}
+      {item.state === "paused" && item.pause && (
+        <div className="pause-chip">
+          <span>Ⅱ</span>
+          <div>
+            <small>{stateLabel("paused", locale)}</small>
+            {pauseReasonLabel(item.pause.reason, locale)}
+          </div>
+        </div>
+      )}
       {item.state === "blocked" && item.blocker && (
         <div className="blocker-chip">
           <span>△</span>
@@ -463,7 +493,9 @@ function Board({
       )}
       <section className="board" aria-label={c.board}>
         {states.map((state) => {
-          const column = items.filter((item) => item.state === state);
+          const column = items.filter(
+            (item) => boardColumn(item.state) === state,
+          );
           return (
             <div className="column" key={state}>
               <div className="column-title">
@@ -715,6 +747,58 @@ function DetailPanel({
                     empty={c.noDetails}
                     locale={locale}
                   />
+                </Section>
+              )}
+              {detail.item.state === "waiting" && detail.item.wait && (
+                <Section title={c.waitingTitle}>
+                  <p className="wait-progress">
+                    <b>
+                      {waitingProgress(
+                        detail.item.wait.received,
+                        detail.item.wait.expected,
+                        locale,
+                      )}
+                    </b>
+                    <span>
+                      {detail.item.wait.completion === "any"
+                        ? c.waitingAny
+                        : c.waitingAll}
+                    </span>
+                    <span>
+                      {c.waitingUntil}{" "}
+                      {when(detail.item.wait.deadlineAt, locale)}
+                    </span>
+                  </p>
+                  <p className="muted">{c.stopWaitingHelp}</p>
+                  <button
+                    className="button secondary"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await stopWaiting(token, detail.item);
+                        setNotice(c.waitingStopped);
+                        await refresh();
+                        changed();
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : "Error");
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    {c.stopWaiting}
+                  </button>
+                </Section>
+              )}
+              {detail.item.state === "paused" && detail.item.pause && (
+                <Section title={c.pausedTitle}>
+                  <p className="pause-reason">
+                    {pauseReasonLabel(detail.item.pause.reason, locale)}
+                  </p>
+                  <p className="muted">
+                    {c.pausedSince} {when(detail.item.pause.since, locale)}
+                  </p>
                 </Section>
               )}
               {detail.blocker && (
@@ -1311,6 +1395,15 @@ function eventLabel(event: TimelineEvent, locale: Locale): string {
     consequence_repetition_confirmed: [
       "Repeated actions confirmed",
       "Ações repetidas confirmadas",
+    ],
+    work_waiting: ["Waiting for responses", "A aguardar respostas"],
+    wait_event_received: ["Response received", "Resposta recebida"],
+    wait_stopped: ["Stopped waiting", "Deixou de aguardar"],
+    work_paused: ["Paused", "Em pausa"],
+    work_resumed: ["Resumed", "Retomado"],
+    step_interrupted: [
+      "Step interrupted; starting it again",
+      "Etapa interrompida; a recomeçar",
     ],
   };
   return (labels[event.code] || ["Work updated", "Trabalho atualizado"])[

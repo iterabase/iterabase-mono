@@ -325,6 +325,80 @@ describe("Platform v1 Dashboard", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows waiting and paused work as active, never Blocked, and stops a wait on request", async () => {
+    const waiting = {
+      ...item,
+      state: "waiting",
+      finishedAt: undefined,
+      startedAt: "2026-08-05T09:01:00Z",
+      estimatedValue: undefined,
+      wait: {
+        completion: "all",
+        expected: 3,
+        received: 2,
+        deadlineAt: "2026-08-08T09:01:00Z",
+      },
+    };
+    const paused = {
+      ...item,
+      id: "item-paused",
+      title: "Quotation request — Paused",
+      state: "paused",
+      finishedAt: undefined,
+      estimatedValue: undefined,
+      pause: { reason: "runner_offline", since: "2026-08-05T09:02:00Z" },
+    };
+    let stopped = false;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.startsWith("/v1/work-items?")) return json([waiting, paused]);
+      if (url === "/v1/work-items/item-1")
+        return json(stopped ? { ...waiting, state: "in_progress" } : waiting);
+      if (url.endsWith("/wait/stop") && init?.method === "POST") {
+        stopped = true;
+        return json({ ...waiting, state: "in_progress" });
+      }
+      return fetchMock(input, init);
+    });
+    const user = await connect();
+    const inProgress = screen
+      .getByRole("heading", { name: "In progress" })
+      .closest(".column") as HTMLElement;
+    expect(
+      within(inProgress).getByText("Quotation request — ACME"),
+    ).toBeInTheDocument();
+    expect(within(inProgress).getByText("2 of 3 received")).toBeInTheDocument();
+    expect(
+      within(inProgress).getByText(
+        "A connected system is offline. Work resumes automatically when it reconnects.",
+      ),
+    ).toBeInTheDocument();
+    const blocked = screen
+      .getByRole("heading", { name: "Blocked" })
+      .closest(".column") as HTMLElement;
+    expect(within(blocked).getByText("No items")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Quotation request — ACME"));
+    expect(
+      await screen.findByRole("heading", { name: "Waiting for responses" }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Stop waiting and continue" }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Stopped waiting. Work continues with what arrived.",
+    );
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(
+          ([url, init]) =>
+            String(url) === "/v1/work-items/item-1/wait/stop" &&
+            init?.method === "POST",
+        ),
+    ).toBe(true);
+  });
+
   it("presents Portuguese customer labels", async () => {
     const user = userEvent.setup();
     render(<App />);

@@ -152,6 +152,17 @@ export async function respondToBlocker(
   );
 }
 
+export async function stopWaiting(
+  token: string,
+  item: WorkItem,
+): Promise<void> {
+  await request(
+    token,
+    `/v1/work-items/${encodeURIComponent(item.id)}/wait/stop`,
+    { method: "POST" },
+  );
+}
+
 export function saveFeedback(
   token: string,
   item: WorkItem,

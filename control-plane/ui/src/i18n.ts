@@ -1,4 +1,4 @@
-import type { Locale, LocalizedText, WorkState } from "./types";
+import type { Locale, LocalizedText, PauseReason, WorkState } from "./types";
 
 const copy = {
   en: {
@@ -34,6 +34,8 @@ const copy = {
     open: "Open",
     todo: "To do",
     in_progress: "In progress",
+    waiting: "Waiting",
+    paused: "Paused",
     blocked: "Blocked",
     done: "Done",
     failedState: "Could not complete",
@@ -101,6 +103,22 @@ const copy = {
     invalidInteger: "Enter a whole number.",
     invalidObject: "Enter a valid JSON object.",
     invalidArray: "Enter a valid JSON array.",
+    waitingTitle: "Waiting for responses",
+    waitingProgress: "{received} of {expected} received",
+    waitingAny: "Continues on the first response",
+    waitingAll: "Continues when all responses arrive",
+    waitingUntil: "Until",
+    stopWaiting: "Stop waiting and continue",
+    stopWaitingHelp:
+      "The workflow continues now with the responses received so far.",
+    waitingStopped: "Stopped waiting. Work continues with what arrived.",
+    pausedTitle: "Paused",
+    pausedSince: "Since",
+    trial_ended: "Trial ended. Work resumes once the plan is converted.",
+    provider_unavailable:
+      "The AI model provider is unavailable. Work resumes automatically.",
+    runner_offline:
+      "A connected system is offline. Work resumes automatically when it reconnects.",
   },
   pt: {
     dashboard: "Painel",
@@ -135,6 +153,8 @@ const copy = {
     open: "Abrir",
     todo: "A fazer",
     in_progress: "Em curso",
+    waiting: "A aguardar",
+    paused: "Em pausa",
     blocked: "Bloqueado",
     done: "Concluído",
     failedState: "Não foi possível concluir",
@@ -203,6 +223,23 @@ const copy = {
     invalidInteger: "Introduza um número inteiro.",
     invalidObject: "Introduza um objeto JSON válido.",
     invalidArray: "Introduza uma lista JSON válida.",
+    waitingTitle: "A aguardar respostas",
+    waitingProgress: "{received} de {expected} recebidas",
+    waitingAny: "Continua com a primeira resposta",
+    waitingAll: "Continua quando chegarem todas as respostas",
+    waitingUntil: "Até",
+    stopWaiting: "Deixar de aguardar e continuar",
+    stopWaitingHelp:
+      "O fluxo de trabalho continua agora com as respostas já recebidas.",
+    waitingStopped: "Deixou de aguardar. O trabalho continua com o que chegou.",
+    pausedTitle: "Em pausa",
+    pausedSince: "Desde",
+    trial_ended:
+      "O período experimental terminou. O trabalho retoma quando o plano for convertido.",
+    provider_unavailable:
+      "O fornecedor do modelo de IA está indisponível. O trabalho retoma automaticamente.",
+    runner_offline:
+      "Um sistema ligado está offline. O trabalho retoma automaticamente quando voltar a ligar.",
   },
 } as const;
 
@@ -218,4 +255,17 @@ export function localized(
 export function stateLabel(state: WorkState, locale: Locale): string {
   const c = t(locale);
   return state === "failed" ? c.failedState : c[state];
+}
+export function pauseReasonLabel(reason: PauseReason, locale: Locale): string {
+  const c = t(locale);
+  return c[reason] || c.pausedTitle;
+}
+export function waitingProgress(
+  received: number,
+  expected: number,
+  locale: Locale,
+): string {
+  return t(locale)
+    .waitingProgress.replace("{received}", String(received))
+    .replace("{expected}", String(expected));
 }

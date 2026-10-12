@@ -1,5 +1,8 @@
 export type Locale = "en" | "pt";
-export type WorkState = "todo" | "in_progress" | "blocked" | "done" | "failed";
+export type WorkState =
+  "todo" | "in_progress" | "waiting" | "paused" | "blocked" | "done" | "failed";
+export type PauseReason =
+  "trial_ended" | "provider_unavailable" | "runner_offline";
 
 export interface LocalizedText {
   en?: string;
@@ -33,6 +36,16 @@ export interface BlockerSummary {
   kind: string;
   title: LocalizedText;
 }
+export interface WaitSummary {
+  completion: "all" | "any";
+  expected: number;
+  received: number;
+  deadlineAt: string;
+}
+export interface PauseSummary {
+  reason: PauseReason;
+  since: string;
+}
 export interface WorkItem {
   id: string;
   workflowKey: string;
@@ -41,6 +54,8 @@ export interface WorkItem {
   presentation: WorkPresentation;
   currentStep?: BusinessStep;
   blocker?: BlockerSummary;
+  wait?: WaitSummary;
+  pause?: PauseSummary;
   currentAttemptId: string;
   state: WorkState;
   createdAt: string;
