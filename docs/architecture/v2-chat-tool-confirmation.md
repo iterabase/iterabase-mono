@@ -303,7 +303,7 @@ Trust rules:
 | Prompt requests forbidden capability | Forbidden tools/controls are absent from the explicit pin set. Workspace tools are false. Direct network and credentials do not exist in the child. |
 | Fabricated tool/version/scope | Gateway resolves active assignment, Chat execution, current generation, pool, principals, capability request, and immutable pin from PostgreSQL. |
 | Fabricated artifact | Resolve only artifact refs linked to the exact message/execution/proposal and recheck current security/extraction/compatibility state. |
-| Stale account/role/session | Re-evaluate current account/role at every boundary and browser-session eligibility for active-turn and decision requests; fail closed. An asynchronous confirmed command uses durable decision evidence and current account authority rather than requiring the originating session/assignment to remain live. Existing authorized effects are not described as reversed. |
+| Stale account/role/session | Re-evaluate current account/role at every boundary and channel eligibility (browser session or current Teams SSO link, section 10) for active-turn and decision requests; fail closed. An asynchronous confirmed command uses durable decision evidence and current account authority rather than requiring the originating session/assignment to remain live. Existing authorized effects are not described as reversed. |
 | Stale profile/policy/target | Snapshot for audit, re-evaluate current policy, and transition a pending confirmation to `stale` rather than executing changed intent. |
 | Compromised child invokes write | `InvokeTool` detects a V2 Chat turn and denies both write classes before `BeginInvocation`; only `PrepareChatConfirmation` may create a proposal. |
 | Unsafe read result | Validate and project through the immutable Chat output/citation contract before returning to the child or persisting customer-safe metadata. Raw gateway result remains operator-only. |
@@ -605,12 +605,19 @@ Every Chat-eligible tool version adds an immutable `chat_contract`:
 
 ### Effective authorization algorithm
 
+**Channel eligibility (HOR-659, DES-HOR-663-01).** Every algorithm and protocol below names *channel eligibility* instead of a browser session. It is satisfied in exactly one of two ways, and bearer credentials satisfy neither:
+
+- **App:** the same human's current active cookie session, with exact-origin CSRF on unsafe requests (section 8).
+- **Teams:** a Bot Framework-authenticated activity from the same human's current SSO link (Entra object ID bound to that person, `v2-authentication-authority.md` section 6.7). The Teams surface has no browser-session ID and needs none; the activity ID and link evidence are recorded instead (section 7.5). An unlinked or forged activity fails closed.
+
+The current-person predicate, current account/role, `proposalDigest` match, and bearer denial are identical on both channels.
+
 The same policy authorities apply at active-turn and post-turn confirmation boundaries, but their liveness proofs differ.
 
 For discover, model invocation, read invocation, write preparation, and active-turn artifact access, resolve and intersect:
 
 ```text
-current active initiating human + role + initiating browser-session eligibility
+current active initiating human + role + initiating channel eligibility (app session or Teams link)
 ∩ trusted request actor (same human for V2 Chat)
 ∩ current active executing Chat identity
 ∩ immutable execution ChatProfile version and requested capability
@@ -622,7 +629,7 @@ current active initiating human + role + initiating browser-session eligibility
 ∩ valid immutable Chat descriptor contract
 ```
 
-A pending confirmation intentionally outlives its originating message run and live assignment. For the cookie-only decision and later command execution, resolve and intersect:
+A pending confirmation intentionally outlives its originating message run and live assignment. For the decision (from the app or a Teams card) and later command execution, resolve and intersect:
 
 ```text
 current active initiating human + role + conversation ownership
@@ -637,7 +644,7 @@ current active initiating human + role + conversation ownership
 ∩ current target/resource/artifact readiness and version tokens
 ```
 
-The decision request additionally requires the same human's current cookie session and CSRF. Asynchronous command execution relies on the durable confirmed decision evidence and rechecks current human/account plus every policy/resource authority above; it does **not** require the originating assignment or worker fence to remain live. The gateway verifies that preparation occurred under that then-live fence, but runtime settlement and assignment cleanup do not invalidate an otherwise current ten-minute proposal.
+The decision request additionally requires the same human's current channel eligibility: a cookie session and CSRF in the app, or a Bot Framework-authenticated card action from their current SSO link in Teams. Asynchronous command execution relies on the durable confirmed decision evidence and rechecks current human/account plus every policy/resource authority above; it does **not** require the originating assignment or worker fence to remain live. The gateway verifies that preparation occurred under that then-live fence, but runtime settlement and assignment cleanup do not invalidate an otherwise current ten-minute proposal.
 
 The current ChatProfile selection is not substituted into an active turn; the exact run snapshot applies. A changed active selection stales a pending confirmation, not the already-authorized model context. Infrastructure or malformed authority is `503`/failed closed, not a misleading broader fallback.
 
@@ -704,10 +711,10 @@ Terminal decision states never return to `pending`. Expiry/staleness does not mu
 
 ### Decision protocol
 
-1. Resolve the confirmation through the current conversation owner predicate and current cookie session.
-2. Require the same initiating human, a matching displayed `proposalDigest`, and valid CSRF.
+1. Resolve the confirmation through the current conversation owner predicate and the request's channel eligibility (section 10): a current cookie session in the app, or a Bot Framework-authenticated card action from the current SSO link in Teams. Any bearer credential is denied.
+2. Require the same initiating human and a matching displayed `proposalDigest`, plus valid CSRF on the app channel. A Teams card action carries the digest it displayed; Bot Framework authentication replaces CSRF.
 3. Lock the confirmation and conversation. If the same terminal decision already exists, return it. If the opposite exists, return `409 decision_conflict`.
-4. Recheck time, no later user-message ordinal, current account/role/session, profile selection, tool/workflow version, pool/action/resource target, and artifact readiness/compatibility.
+4. Recheck time, no later user-message ordinal, current account/role and channel eligibility (session or SSO link), profile selection, tool/workflow version, pool/action/resource target, and artifact readiness/compatibility.
 5. On drift, transition to `stale`, append an event, and create no effect.
 6. On cancel, transition to `canceled`, append an event, and create no effect.
 7. On tool confirm, transition to `confirmed` and insert one command in the same transaction.
@@ -986,7 +993,7 @@ sequenceDiagram
 
 ### Explicit cancellation
 
-- Cancel is allowed only for the owner through a current cookie session and CSRF.
+- Cancel is allowed only for the owner, through a current cookie session and CSRF in the app or a Teams card action from their current SSO link (section 10). Bearer is denied.
 - Repeated cancel is idempotent.
 - Before assignment, mark execution/runtime canceled without inference/tool work.
 - During a turn, persist `cancel_requested`, send existing `AbortTurn`, fence late customer projection, and settle by first-terminal-writer rules.
@@ -1090,7 +1097,7 @@ Authorization filters execute before ranking/snippet generation. Search logs con
 
 Fail enablement when any of the following is absent/ambiguous:
 
-- active V2 authority epoch/current Operator/Admin session enforcement;
+- current V2 authority enforcement: one V2 action per customer route, current Operator/Admin session, and bearer denial on Chat routes (`v2-authentication-authority.md`, HOR-582; there is no authority epoch to check);
 - exactly one valid active ChatProfile, active executing identity, pool, allowed model, and explicit capability/control set;
 - any allow-listed tool lacks a healthy exact version, pool grant, valid Chat contract, or required EN/PT copy;
 - any workflow eligible for Chat start lacks Ready immutable version, persona, first business step, input compatibility, or EN/PT consequence presentation;
