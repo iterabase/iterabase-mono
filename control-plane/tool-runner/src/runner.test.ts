@@ -1,11 +1,13 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import {
-  CredentialScheme, InvokeSchema, InvokeState, RunnerMessageSchema, ToolDescriptorSchema, ToolVersionRefSchema,
-  type ToolVersionRef,
+  CredentialSchema, CredentialScheme, InvokeSchema, InvokeState, RunnerMessageSchema, ToolDescriptorSchema, ToolVersionRefSchema,
+  type Credential, type ToolVersionRef,
 } from "./gen/iterabase/gateway/v1/gateway_pb.js";
 import type { LoadedGeneration, ToolManifest } from "./manifest.js";
 import { AsyncQueue } from "./queue.js";
@@ -47,7 +49,11 @@ async function acceptWithoutGateway(runner: ToolRunner, loaded: LoadedGeneration
   await activation;
 }
 
-async function invoke(module: ToolModule) {
+const bearerSlots: Record<string, Credential> = {
+  api: create(CredentialSchema, { scheme: CredentialScheme.BEARER, bearerValue: "secret", resourceConstraintsJson: new TextEncoder().encode('{"tenant":"one"}') }),
+};
+
+async function invoke(module: ToolModule, slots: Record<string, Credential> = bearerSlots) {
   const runner = new ToolRunner(config);
   await acceptWithoutGateway(runner, generation(module));
   const queue = new AsyncQueue<ReturnType<typeof create<typeof RunnerMessageSchema>>>();
@@ -61,7 +67,7 @@ async function invoke(module: ToolModule) {
   const response = internal.execute(create(InvokeSchema, {
     invocationId: "inv-1", idempotencyKey: "stable-key", argumentsJson: new TextEncoder().encode('{"value":7}'),
     descriptor: create(ToolDescriptorSchema, { name: manifest.name, version: manifest.version, digest: manifest.digest }),
-    credentialContext: { slots: { api: { scheme: CredentialScheme.BEARER, bearerValue: "secret", resourceConstraintsJson: new TextEncoder().encode('{"tenant":"one"}') } } },
+    credentialContext: { slots },
   }));
   const message = await queue[Symbol.asyncIterator]().next();
   await response;
@@ -216,6 +222,41 @@ describe("trusted tool execution", () => {
     expect(observed?.idempotencyKey).toBe("stable-key");
     expect(Object.isFrozen(observed)).toBe(true);
     expect(Object.isFrozen(observed?.credentials.api)).toBe(true);
+    expect(observed?.credentials.api).toEqual({ scheme: "bearer", value: "secret", resourceConstraints: { tenant: "one" } });
+  });
+
+  it("gives OAuth tools the gateway-acquired access token and never a client secret", async () => {
+    const server = createServer((request, response) => {
+      response.writeHead(request.headers.authorization === "Bearer graph-access-token" ? 200 : 401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ mailbox: "walter-inbox" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/me/messages`;
+    let observed: ToolInvocationContext | undefined;
+    try {
+      const message = await invoke({ identity: { name: manifest.name, version: manifest.version }, async invoke(context) {
+        observed = context;
+        const graph = context.credentials.graph as { accessToken: string };
+        const response = await fetch(endpoint, { headers: { authorization: `Bearer ${graph.accessToken}` } });
+        return { result: { status: response.status, body: await response.json() } };
+      } }, {
+        graph: create(CredentialSchema, {
+          scheme: CredentialScheme.OAUTH_CLIENT_CREDENTIALS, bearerValue: "graph-access-token", oauthClientId: "client-1",
+          oauthTokenUrl: "https://login.example.test/token", oauthScope: "https://graph.example.test/.default",
+          resourceConstraintsJson: new TextEncoder().encode('{"mailbox":"walter-inbox"}'),
+        }),
+      });
+      if (message.kind.case !== "invokeResult") throw new Error("missing result");
+      expect(message.kind.value.state).toBe(InvokeState.SUCCEEDED);
+      expect(JSON.parse(new TextDecoder().decode(message.kind.value.resultJson))).toEqual({ status: 200, body: { mailbox: "walter-inbox" } });
+    } finally {
+      server.close();
+    }
+    expect(observed?.credentials.graph).toEqual({
+      scheme: "oauth_client_credentials", accessToken: "graph-access-token", clientId: "client-1",
+      tokenUrl: "https://login.example.test/token", scope: "https://graph.example.test/.default", resourceConstraints: { mailbox: "walter-inbox" },
+    });
+    expect(CredentialSchema.fields.map((field) => field.name)).not.toContain("oauth_client_secret");
   });
 
   it("returns explicit ToolError fields but redacts unknown exceptions", async () => {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http2"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -60,6 +62,13 @@ var idCounter atomic.Uint64
 func shortID() string { return fmt.Sprintf("t%d", idCounter.Add(1)) }
 
 func newTestEnv(t *testing.T, secrets *gateway.FakeSecretResolver) *testEnv {
+	t.Helper()
+	return newTestEnvWithOAuth(t, secrets, gateway.NewFakeOAuthAcquirer("oauth-token"))
+}
+
+// newTestEnvWithOAuth is newTestEnv with an explicit OAuth acquirer, e.g. a
+// real HTTP grant against a mock token endpoint.
+func newTestEnvWithOAuth(t *testing.T, secrets *gateway.FakeSecretResolver, oauth gateway.OAuthAcquirer) *testEnv {
 	t.Helper()
 	if secrets == nil {
 		secrets = gateway.NewFakeSecretResolver()
@@ -109,7 +118,7 @@ func newTestEnv(t *testing.T, secrets *gateway.FakeSecretResolver) *testEnv {
 	wfStep, err := ca.Leaf(testca.LeafOpts{SPIFFEID: wfSpiffe})
 	require.NoError(t, err)
 
-	svc := gateway.NewService(store, secrets, gateway.NewFakeOAuthAcquirer("oauth-token"), gateway.Config{TrustDomain: td, DispatchLease: 2 * time.Second}, nil)
+	svc := gateway.NewService(store, secrets, oauth, gateway.Config{TrustDomain: td, DispatchLease: 2 * time.Second}, nil)
 	artifacts := artifactstore.NewService(artifactstore.NewStore(pgpool), newMemoryObjectStore(), artifactstore.Config{MaxSize: 1 << 20}, nil)
 	svc.SetArtifactService(artifacts)
 
@@ -757,6 +766,76 @@ func TestGateway_CredentialBindingResolution(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"en":"Send an email to x@y","pt":"Enviar um email para x@y"}`, string(invocation.ConsequenceSummary))
 	assert.NotContains(t, string(invocation.ConsequenceSummary), "sekret-token-value")
+}
+
+// TestGateway_OAuthClientCredentialsHandsRunnerOnlyAccessToken performs a real
+// client-credentials grant against a mock token endpoint: the runner receives
+// the acquired access token and never the client secret (ARCH-008, HOR-650).
+func TestGateway_OAuthClientCredentialsHandsRunnerOnlyAccessToken(t *testing.T) {
+	const clientSecret = "oauth-client-secret-value"
+	var grants atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ParseForm() != nil || r.PostForm.Get("grant_type") != "client_credentials" ||
+			r.PostForm.Get("client_id") != "graph-client" || r.PostForm.Get("client_secret") != clientSecret ||
+			r.PostForm.Get("scope") != "https://graph.example.test/.default" {
+			http.Error(w, "invalid_client", http.StatusUnauthorized)
+			return
+		}
+		grants.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"graph-access-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+
+	secrets := gateway.NewFakeSecretResolver()
+	secrets.Set("graph-oauth", "client_secret", clientSecret)
+	env := newTestEnvWithOAuth(t, secrets, gateway.NewHTTPOAuthAcquirer(tokenServer.Client()))
+	ctx := context.Background()
+	require.NoError(t, env.store.UpsertPoolGrant(ctx, env.poolID, "graph.read_mail", gateway.EffectReadOnly, nil))
+	require.NoError(t, env.store.UpsertCredentialBinding(ctx, env.poolID, "graph.read_mail", "graph",
+		gateway.CredOAuthClientCredentials,
+		[]byte(fmt.Sprintf(`{"client_id":"graph-client","client_secret_ref":{"name":"graph-oauth","key":"client_secret"},"token_url":%q,"scope":"https://graph.example.test/.default"}`, tokenServer.URL)),
+		[]byte(`{"mailbox":"walter-inbox"}`)))
+
+	var seenCred *v1.CredentialContext
+	rr := startRefRunner(t, env, &v1.ToolDescriptor{
+		Name: "graph.read_mail", Version: "1.0.0", Digest: "sha256:graph-read-1",
+		Description: "read a mailbox", EffectClass: v1.EffectClass_EFFECT_CLASS_READ_ONLY,
+		InputSchema: []byte(`{"type":"object"}`), Timeout: durationPtr(5 * time.Second),
+		CredentialSlots: []*v1.CredentialSlot{{Name: "graph", Scheme: v1.CredentialScheme_CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS, Required: true}},
+	}, func(inv *v1.Invoke) (*v1.InvokeResult, bool) {
+		seenCred = inv.CredentialContext
+		return &v1.InvokeResult{State: v1.InvokeState_INVOKE_STATE_SUCCEEDED, ResultJson: []byte(`{"messages":[]}`)}, false
+	})
+	defer rr.close()
+	t.Cleanup(rr.close)
+
+	runID, turnID := seedTurnAttempt(t, env)
+	gc := gatewayClient(env, env.supervisor)
+	iresp, err := gc.InvokeTool(ctx, connect.NewRequest(&v1.InvokeRequest{
+		AttemptId: runID, CallerScope: v1.CallerScope_CALLER_SCOPE_TURN, CallerScopeId: turnID, FencingGeneration: 1,
+		ToolCallId: "call-1", ToolName: "graph.read_mail", ToolVersionDigest: "sha256:graph-read-1",
+		ArgumentsJson: []byte(`{}`), IdempotencyKey: "read-1",
+	}))
+	require.NoError(t, err)
+	require.Equal(t, v1.InvokeState_INVOKE_STATE_SUCCEEDED, iresp.Msg.State)
+	assert.Equal(t, int32(1), grants.Load())
+
+	require.NotNil(t, seenCred)
+	cred := seenCred.Slots["graph"]
+	require.NotNil(t, cred)
+	assert.Equal(t, v1.CredentialScheme_CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS, cred.Scheme)
+	assert.Equal(t, "graph-access-token", cred.BearerValue)
+	assert.Equal(t, "graph-client", cred.OauthClientId)
+	wire, err := proto.Marshal(seenCred)
+	require.NoError(t, err)
+	assert.NotContains(t, string(wire), clientSecret, "the client secret must never reach the runner")
+
+	invocation, err := env.store.GetInvocation(ctx, iresp.Msg.InvocationId)
+	require.NoError(t, err)
+	record := fmt.Sprintf("%s%s%s%s", invocation.ArgumentsJSON, invocation.ResultJSON, invocation.Error, invocation.ConsequenceSummary)
+	assert.NotContains(t, record, clientSecret)
+	assert.NotContains(t, record, "graph-access-token")
 }
 
 func TestGateway_ConsequenceSummariesDistinguishRecipients(t *testing.T) {

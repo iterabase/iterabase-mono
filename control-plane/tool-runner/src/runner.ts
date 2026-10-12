@@ -454,10 +454,12 @@ function effect(value: ToolManifest["effectClass"]): EffectClass {
 function credentialScheme(value: "bearer" | "oauth_client_credentials"): CredentialScheme {
   return value === "bearer" ? CredentialScheme.BEARER : CredentialScheme.OAUTH_CLIENT_CREDENTIALS;
 }
+// OAuth tools receive the gateway-acquired access token; the client secret and
+// token refresh stay with the gateway (ARCH-008).
 function credentials(slots: Record<string, Credential>): Record<string, unknown> {
   return deepFreeze(Object.fromEntries(Object.entries(slots).map(([name, value]) => [name, value.scheme === CredentialScheme.BEARER ?
     { scheme: "bearer", value: value.bearerValue, resourceConstraints: parseJSON(value.resourceConstraintsJson) } :
-    { scheme: "oauth_client_credentials", clientId: value.oauthClientId, clientSecret: value.oauthClientSecret, tokenUrl: value.oauthTokenUrl, scope: value.oauthScope, resourceConstraints: parseJSON(value.resourceConstraintsJson) }])));
+    { scheme: "oauth_client_credentials", accessToken: value.bearerValue, clientId: value.oauthClientId, tokenUrl: value.oauthTokenUrl, scope: value.oauthScope, resourceConstraints: parseJSON(value.resourceConstraintsJson) }])));
 }
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {

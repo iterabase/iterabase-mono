@@ -458,12 +458,15 @@ message CredentialContext {
 }
 
 // Credential is one resolved credential value. The scheme selects which fields
-// apply, mirroring CredentialSlot.scheme.
+// apply, mirroring CredentialSlot.scheme. For OAuth client credentials the
+// gateway alone holds the client secret and performs the grant (ARCH-008); the
+// runner receives only the acquired short-lived access token in bearer_value.
 message Credential {
+  reserved 4;
+  reserved "oauth_client_secret";
   CredentialScheme scheme = 1;
-  string bearer_value = 2;                       // CREDENTIAL_SCHEME_BEARER
+  string bearer_value = 2;                       // CREDENTIAL_SCHEME_BEARER value, or the OAuth access token
   string oauth_client_id = 3;                    // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
-  string oauth_client_secret = 4;                // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
   string oauth_token_url = 5;                    // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
   string oauth_scope = 6;                        // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
   // Non-secret resource constraints bound to this slot (e.g. tenant, site,

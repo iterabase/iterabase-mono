@@ -2794,15 +2794,16 @@ func (x *CredentialContext) GetSlots() map[string]*Credential {
 }
 
 // Credential is one resolved credential value. The scheme selects which fields
-// apply, mirroring CredentialSlot.scheme.
+// apply, mirroring CredentialSlot.scheme. For OAuth client credentials the
+// gateway alone holds the client secret and performs the grant (ARCH-008); the
+// runner receives only the acquired short-lived access token in bearer_value.
 type Credential struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Scheme            CredentialScheme       `protobuf:"varint,1,opt,name=scheme,proto3,enum=iterabase.gateway.v1.CredentialScheme" json:"scheme,omitempty"`
-	BearerValue       string                 `protobuf:"bytes,2,opt,name=bearer_value,json=bearerValue,proto3" json:"bearer_value,omitempty"`                     // CREDENTIAL_SCHEME_BEARER
-	OauthClientId     string                 `protobuf:"bytes,3,opt,name=oauth_client_id,json=oauthClientId,proto3" json:"oauth_client_id,omitempty"`             // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
-	OauthClientSecret string                 `protobuf:"bytes,4,opt,name=oauth_client_secret,json=oauthClientSecret,proto3" json:"oauth_client_secret,omitempty"` // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
-	OauthTokenUrl     string                 `protobuf:"bytes,5,opt,name=oauth_token_url,json=oauthTokenUrl,proto3" json:"oauth_token_url,omitempty"`             // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
-	OauthScope        string                 `protobuf:"bytes,6,opt,name=oauth_scope,json=oauthScope,proto3" json:"oauth_scope,omitempty"`                        // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Scheme        CredentialScheme       `protobuf:"varint,1,opt,name=scheme,proto3,enum=iterabase.gateway.v1.CredentialScheme" json:"scheme,omitempty"`
+	BearerValue   string                 `protobuf:"bytes,2,opt,name=bearer_value,json=bearerValue,proto3" json:"bearer_value,omitempty"`         // CREDENTIAL_SCHEME_BEARER value, or the OAuth access token
+	OauthClientId string                 `protobuf:"bytes,3,opt,name=oauth_client_id,json=oauthClientId,proto3" json:"oauth_client_id,omitempty"` // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
+	OauthTokenUrl string                 `protobuf:"bytes,5,opt,name=oauth_token_url,json=oauthTokenUrl,proto3" json:"oauth_token_url,omitempty"` // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
+	OauthScope    string                 `protobuf:"bytes,6,opt,name=oauth_scope,json=oauthScope,proto3" json:"oauth_scope,omitempty"`            // CREDENTIAL_SCHEME_OAUTH_CLIENT_CREDENTIALS
 	// Non-secret resource constraints bound to this slot (e.g. tenant, site,
 	// mailbox). Never a secret value.
 	ResourceConstraintsJson []byte `protobuf:"bytes,7,opt,name=resource_constraints_json,json=resourceConstraintsJson,proto3" json:"resource_constraints_json,omitempty"`
@@ -2857,13 +2858,6 @@ func (x *Credential) GetBearerValue() string {
 func (x *Credential) GetOauthClientId() string {
 	if x != nil {
 		return x.OauthClientId
-	}
-	return ""
-}
-
-func (x *Credential) GetOauthClientSecret() string {
-	if x != nil {
-		return x.OauthClientSecret
 	}
 	return ""
 }
@@ -3224,17 +3218,16 @@ const file_iterabase_gateway_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"SlotsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x126\n" +
-	"\x05value\x18\x02 \x01(\v2 .iterabase.gateway.v1.CredentialR\x05value:\x028\x01\"\xcc\x02\n" +
+	"\x05value\x18\x02 \x01(\v2 .iterabase.gateway.v1.CredentialR\x05value:\x028\x01\"\xb7\x02\n" +
 	"\n" +
 	"Credential\x12>\n" +
 	"\x06scheme\x18\x01 \x01(\x0e2&.iterabase.gateway.v1.CredentialSchemeR\x06scheme\x12!\n" +
 	"\fbearer_value\x18\x02 \x01(\tR\vbearerValue\x12&\n" +
-	"\x0foauth_client_id\x18\x03 \x01(\tR\roauthClientId\x12.\n" +
-	"\x13oauth_client_secret\x18\x04 \x01(\tR\x11oauthClientSecret\x12&\n" +
+	"\x0foauth_client_id\x18\x03 \x01(\tR\roauthClientId\x12&\n" +
 	"\x0foauth_token_url\x18\x05 \x01(\tR\roauthTokenUrl\x12\x1f\n" +
 	"\voauth_scope\x18\x06 \x01(\tR\n" +
 	"oauthScope\x12:\n" +
-	"\x19resource_constraints_json\x18\a \x01(\fR\x17resourceConstraintsJson\"\x82\x01\n" +
+	"\x19resource_constraints_json\x18\a \x01(\fR\x17resourceConstraintsJsonJ\x04\b\x04\x10\x05R\x13oauth_client_secret\"\x82\x01\n" +
 	"\vArtifactRef\x12\x1f\n" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12\x1b\n" +
