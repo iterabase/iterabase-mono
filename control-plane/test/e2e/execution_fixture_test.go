@@ -34,7 +34,7 @@ func installExecutionFixtureStage(t *testing.T, state *deployedState) {
 
 	v1 := writeToolGeneration(t, "1.0.0", false)
 	v2 := writeToolGeneration(t, "2.0.0", true)
-	state.toolDigests = map[string]string{}
+	state.toolDigests = map[string]string{productDiagnosticTool: productToolDigest(t, "diagnostic")}
 	for _, tool := range v1 {
 		state.toolDigests[tool.name] = tool.digest
 	}
@@ -290,7 +290,7 @@ export async function invoke(context,args){
 	root := t.TempDir()
 	out := make([]toolFixture, 0, len(definitions))
 	for _, definition := range definitions {
-		dir := filepath.Join(root, "tools", "product", strings.TrimPrefix(definition.name, "platform."))
+		dir := filepath.Join(root, "tools", "client", strings.TrimPrefix(definition.name, "platform."))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("create tool fixture: %v", err)
 		}
@@ -334,6 +334,26 @@ export async function invoke(context,args){
 	return out
 }
 
+// productDiagnosticTool is the reference release-versioned product tool
+// (HOR-651). It ships inside the tool-runner image under test, never in the
+// overlay fixture, so its digest comes from the same source tree.
+const productDiagnosticTool = "platform.diagnostic"
+
+func productToolDigest(t *testing.T, short string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "tool-runner", "tools", "product", short, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read product tool manifest %s: %v", short, err)
+	}
+	var manifest struct {
+		Digest string `json:"digest"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil || !canonicalDigest(manifest.Digest) {
+		t.Fatalf("product tool manifest %s has no canonical digest: %v", short, err)
+	}
+	return manifest.Digest
+}
+
 func installToolGitServer(t *testing.T, state *deployedState, tools []toolFixture) {
 	t.Helper()
 	clientPublic, clientPrivate := sshKeyPair(t)
@@ -375,12 +395,12 @@ spec:
           command: ["/bin/sh", "-ceu"]
           args:
             - |
-              mkdir -p /git/repo/tools/product
+              mkdir -p /git/repo/tools/client
               for manifest in /seed/*-manifest.json; do
                 short=$(basename "$manifest" -manifest.json)
-                mkdir -p "/git/repo/tools/product/$short"
-                cp "$manifest" "/git/repo/tools/product/$short/manifest.json"
-                cp "/seed/$short-index.mjs" "/git/repo/tools/product/$short/index.mjs"
+                mkdir -p "/git/repo/tools/client/$short"
+                cp "$manifest" "/git/repo/tools/client/$short/manifest.json"
+                cp "/seed/$short-index.mjs" "/git/repo/tools/client/$short/index.mjs"
               done
               cd /git/repo
               git init -b master
@@ -430,7 +450,7 @@ func publishToolGeneration(t *testing.T, state *deployedState, tools []toolFixtu
 		manifestPath := filepath.Join(dir, "manifest.json")
 		mustWriteMode(t, bundlePath, tool.bundle, 0o644)
 		mustWriteMode(t, manifestPath, append(append([]byte(nil), tool.manifest...), '\n'), 0o644)
-		destination := "default/" + pod + ":/git/repo/tools/product/" + short + "/"
+		destination := "default/" + pod + ":/git/repo/tools/client/" + short + "/"
 		state.kubectl(t, time.Minute, "cp", bundlePath, destination+"index.mjs")
 		state.kubectl(t, time.Minute, "cp", manifestPath, destination+"manifest.json")
 	}

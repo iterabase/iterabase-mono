@@ -544,6 +544,8 @@ func initialToolChoice(currentTurn string) map[string]any {
 	switch {
 	case strings.Contains(currentTurn, "E2E_MODE:read-artifact"):
 		return toolChoice("fixture-read", "platform.fixture_read", `{"message":"produce attributable evidence"}`)
+	case strings.Contains(currentTurn, "E2E_MODE:product-diagnostic"):
+		return toolChoice("product-diagnostic", "platform.diagnostic", `{"message":"release-versioned product layer"}`)
 	case strings.Contains(currentTurn, "E2E_MODE:barrier"):
 		return toolChoice("fixture-barrier", "platform.fixture_barrier", `{}`)
 	case strings.Contains(currentTurn, "E2E_MODE:consequence"):
