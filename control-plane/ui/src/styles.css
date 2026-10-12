@@ -317,6 +317,12 @@ a:hover {
 .dot.blocked {
   background: var(--amber);
 }
+.dot.waiting {
+  background: var(--blue);
+}
+.dot.paused {
+  background: var(--g400);
+}
 .dot.done {
   background: var(--green);
 }
@@ -520,10 +526,69 @@ a:hover {
 .work-card.edge-blocked {
   border-left-color: var(--amber);
 }
+.work-card.edge-waiting {
+  border-left-color: var(--blue);
+}
+.work-card.edge-paused {
+  border-left-color: var(--g400);
+}
 .work-card.edge-done {
   border-left-color: var(--green);
 }
 .card-meta,
+.wait-chip,
+.pause-chip {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.wait-chip {
+  background: var(--blue100);
+}
+.wait-chip > i {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--blue);
+}
+.pause-chip {
+  background: var(--g50);
+}
+.pause-chip > span {
+  color: var(--g500);
+}
+.wait-chip div,
+.pause-chip div {
+  display: flex;
+  flex-direction: column;
+  font-weight: 500;
+}
+.wait-chip small,
+.pause-chip small {
+  font: 500 9px var(--mono);
+  text-transform: uppercase;
+}
+.wait-chip small {
+  color: var(--blue700);
+}
+.pause-chip small {
+  color: var(--g500);
+}
+.wait-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0 0 8px;
+}
+.pause-reason {
+  margin: 0 0 4px;
+  font-weight: 500;
+}
 .assignee {
   display: flex;
   align-items: center;
@@ -694,6 +759,14 @@ a:hover {
 .status-badge.blocked {
   background: var(--amber100);
   color: var(--amber);
+}
+.status-badge.waiting {
+  background: var(--blue100);
+  color: var(--blue700);
+}
+.status-badge.paused {
+  background: var(--g100);
+  color: var(--g700);
 }
 .status-badge.done {
   background: var(--green100);
