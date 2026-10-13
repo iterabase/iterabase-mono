@@ -608,8 +608,7 @@ func exerciseHumanGateWorkspaceReplacementStage(t *testing.T, state *cpuFixtureS
 	oldUID := strings.TrimSpace(cluster.Kubectl(t, "get", "pod/"+assignedWorker, "-n", workspaceNamespace, "-o", "jsonpath={.metadata.uid}"))
 	pvcBefore := strings.TrimSpace(cluster.Kubectl(t, "get", "pvc/forge-storage-pool-sandbox", "-n", workspaceNamespace, "-o", "jsonpath={.metadata.uid}"))
 	assertRecoveryWorkspaceState(t, cluster, sessionBefore, "initial", false)
-	cluster.Kubectl(t, "delete", "pod/"+assignedWorker, "-n", workspaceNamespace, "--wait=true", "--timeout=3m")
-	waitWorkspaceReplacementPod(t, cluster, assignedWorker, oldUID, 4*time.Minute)
+	replaceWorkspaceWorker(t, cluster, assignedWorker, oldUID)
 	pvcAfter := strings.TrimSpace(cluster.Kubectl(t, "get", "pvc/forge-storage-pool-sandbox", "-n", workspaceNamespace, "-o", "jsonpath={.metadata.uid}"))
 	if pvcAfter != pvcBefore {
 		t.Fatalf("human-gate worker replacement changed the RWO claim: before=%s after=%s", pvcBefore, pvcAfter)
@@ -1173,12 +1172,20 @@ func replaceIdleWorkspaceWorkerAtGate(t *testing.T, cluster *remotecluster.Clust
 	name := strings.TrimPrefix(pod, "pod/")
 	oldUID := strings.TrimSpace(cluster.Kubectl(t, "get", pod, "-n", workspaceNamespace, "-o", "jsonpath={.metadata.uid}"))
 	pvcBefore := strings.TrimSpace(cluster.Kubectl(t, "get", "pvc/forge-storage-pool-sandbox", "-n", workspaceNamespace, "-o", "jsonpath={.metadata.uid}"))
-	cluster.Kubectl(t, "delete", pod, "-n", workspaceNamespace, "--wait=true", "--timeout=3m")
-	waitWorkspaceReplacementPod(t, cluster, name, oldUID, 4*time.Minute)
+	replaceWorkspaceWorker(t, cluster, name, oldUID)
 	pvcAfter := strings.TrimSpace(cluster.Kubectl(t, "get", "pvc/forge-storage-pool-sandbox", "-n", workspaceNamespace, "-o", "jsonpath={.metadata.uid}"))
 	if pvcAfter != pvcBefore || pvcAfter != state.agentPoolPVCUID {
 		t.Fatalf("in-band worker replacement changed AgentPool PVC: original=%s before=%s after=%s", state.agentPoolPVCUID, pvcBefore, pvcAfter)
 	}
+}
+
+// replaceWorkspaceWorker observes identity, not name absence: the AgentPool
+// controller can recreate the same name between kubectl's deletion GET and
+// list/watch, leaving --wait=true waiting for the replacement to disappear.
+func replaceWorkspaceWorker(t *testing.T, cluster *remotecluster.Cluster, name, oldUID string) {
+	t.Helper()
+	cluster.Kubectl(t, "delete", "pod/"+name, "-n", workspaceNamespace, "--wait=false", "--timeout=3m")
+	waitWorkspaceReplacementPod(t, cluster, name, oldUID, 4*time.Minute)
 }
 
 func waitWorkspaceReplacementPod(t *testing.T, cluster *remotecluster.Cluster, name, oldUID string, timeout time.Duration) {
@@ -1191,7 +1198,7 @@ func waitWorkspaceReplacementPod(t *testing.T, cluster *remotecluster.Cluster, n
 		if len(parts) == 2 && parts[0] != "" && parts[0] != oldUID && parts[1] == "True" {
 			return
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(min(2*time.Second, time.Until(deadline)))
 	}
 	t.Fatalf("worker %s was not replaced Ready (old=%s last=%q)", name, oldUID, last)
 }
