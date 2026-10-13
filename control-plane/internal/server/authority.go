@@ -44,9 +44,10 @@ type RouteClass struct {
 	RecentAuth bool
 }
 
-func probe() RouteClass   { return RouteClass{Kind: RouteProbe} }
-func public() RouteClass  { return RouteClass{Kind: RoutePublic} }
-func session() RouteClass { return RouteClass{Kind: RouteSession} }
+func probe() RouteClass        { return RouteClass{Kind: RouteProbe} }
+func public() RouteClass       { return RouteClass{Kind: RoutePublic} }
+func session() RouteClass      { return RouteClass{Kind: RouteSession} }
+func adminSession() RouteClass { return RouteClass{Kind: RouteSession, Admin: true} }
 func recentAdminSession() RouteClass {
 	return RouteClass{Kind: RouteSession, Admin: true, RecentAuth: true}
 }

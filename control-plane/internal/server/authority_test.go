@@ -59,6 +59,8 @@ var reviewedRouteClasses = map[string]server.RouteClass{
 	"POST /v1/people/{id}/disable":          {Kind: server.RouteSession, Admin: true, RecentAuth: true},
 	"POST /v1/people/{id}/enable":           {Kind: server.RouteSession, Admin: true, RecentAuth: true},
 	"POST /v1/people/{id}/sessions/revoke":  {Kind: server.RouteSession, Admin: true, RecentAuth: true},
+	"GET /v1/organization/settings":         {Kind: server.RouteSession, Admin: true},
+	"PATCH /v1/organization/settings":       {Kind: server.RouteSession, Admin: true},
 
 	"GET /v1/work-items":                            {Kind: server.RouteAction, Action: identity.ActionWorkRead},
 	"POST /v1/work-items":                           {Kind: server.RouteAction, Action: identity.ActionWorkflowsStart},

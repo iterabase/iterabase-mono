@@ -22,7 +22,7 @@ const (
 var ErrProfileConflict = errors.New("identity: profile changed since it was loaded")
 
 const localUserColumns = `lu.identity_id, lu.email, lu.email_normalized, lu.display_name,
-	lu.role, lu.locale, lu.status, COALESCE(lu.password_hash, ''), lu.password_changed_at,
+	lu.role, COALESCE(lu.locale, ''), lu.status, COALESCE(lu.password_hash, ''), lu.password_changed_at,
 	lu.created_at, lu.updated_at, COALESCE(lu.approved_access_request_id::text, ''),
 	i.key, i.kind, i.source, i.display_name`
 
@@ -53,7 +53,8 @@ func (s *Store) FindLocalUserByEmail(ctx context.Context, normalized string) (Lo
 	return lu, err
 }
 
-// UpdateLocalUserProfile updates the editable display name and locale.
+// UpdateLocalUserProfile updates the editable display name and locale. An empty
+// locale means "follow the organisation default" (DES-HOR-670-02).
 func (s *Store) UpdateLocalUserProfile(ctx context.Context, identityID, displayName, locale string, now time.Time) (LocalUser, error) {
 	return s.UpdateLocalUserProfileVersioned(ctx, identityID, displayName, locale, nil, now)
 }
@@ -63,6 +64,9 @@ func (s *Store) UpdateLocalUserProfile(ctx context.Context, identityID, displayN
 // a newer change (COV-PROFILE-001 "Prof. conflict"). A nil expected version
 // skips the precondition.
 func (s *Store) UpdateLocalUserProfileVersioned(ctx context.Context, identityID, displayName, locale string, expected *time.Time, now time.Time) (LocalUser, error) {
+	if locale != "" && !ValidLocale(locale) {
+		return LocalUser{}, ErrInvalidLocale
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return LocalUser{}, fmt.Errorf("begin profile update: %w", err)
@@ -73,13 +77,13 @@ func (s *Store) UpdateLocalUserProfileVersioned(ctx context.Context, identityID,
 	if expected != nil {
 		tag, err = tx.Exec(ctx, `
 			UPDATE identity.local_users
-			SET display_name = $2, locale = $3
+			SET display_name = $2, locale = NULLIF($3, '')
 			WHERE identity_id = $1 AND updated_at = $4`,
 			identityID, displayName, locale, expected.UTC())
 	} else {
 		tag, err = tx.Exec(ctx, `
 			UPDATE identity.local_users
-			SET display_name = $2, locale = $3
+			SET display_name = $2, locale = NULLIF($3, '')
 			WHERE identity_id = $1`, identityID, displayName, locale)
 	}
 	if err != nil {
