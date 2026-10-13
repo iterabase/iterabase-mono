@@ -109,6 +109,13 @@ when the Forge binary or this module changes (and `cpu` as the CI smoke); the
 merge queue and the `e2e-real-machine` label select them whenever any artifact
 they deploy changes (`DES-HOR-590-02`).
 
+Workspace worker replacement deletes without kubectl's name-based wait: the
+AgentPool controller can recreate the same name before that watch starts. The
+bounded observation must see a different pod UID and `Ready=True`, and the
+scenario still checks the unchanged RWO PVC and capacity/session invariants.
+A command error fails immediately; a timeout fails with the old UID and last
+observation, never a retry or a pass based only on deletion acknowledgement.
+
 Forge registers no chart-install-only Kind scenario. Product and chart behavior
 remains in the control-plane and charts owner suites; Forge's deployed checks are
 bounded dependent smokes after Forge-owned substrate and handoff assertions.
