@@ -140,7 +140,9 @@ data "aws_iam_policy_document" "forge" {
     )
   }
 
-  # Canonical Ubuntu images or images this account owns.
+  # Canonical Ubuntu images or images this account owns. ec2:Owner classifies
+  # public Canonical images as "amazon", not their numeric owner account ID.
+  # aws:ResourceAccount checks the actual owner without allowing other AMIs.
   statement {
     sid       = "LaunchFromTrustedImages"
     actions   = ["ec2:RunInstances"]
@@ -148,7 +150,7 @@ data "aws_iam_policy_document" "forge" {
 
     condition {
       test     = "StringEquals"
-      variable = "ec2:Owner"
+      variable = "aws:ResourceAccount"
       values   = ["099720109477", local.account_id]
     }
   }
