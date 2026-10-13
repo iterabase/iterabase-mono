@@ -226,6 +226,37 @@ The shell transcript appears in S3 and CloudWatch; the SSH session appears as
 `StartSession` with `documentName=AWS-StartSSHSession` in both CloudTrail
 destinations.
 
+For both Forge and support, also keep a harmless SSH session open (`sleep 120`)
+and explicitly terminate it **as the same caller**, using its session ID:
+
+```bash
+aws ssm terminate-session --session-id <own-live-session-id>
+```
+
+Match that successful `TerminateSession` and its `StartSession` by session ID in
+**both** CloudTrail destinations. A normal SSH disconnect can close the session
+without a `TerminateSession` API call; an attempt against an already-ended
+session returning `ValidationException` is not an authorization pass. As a
+different role, and as a different role-session name in the same role, trying to
+terminate or resume the still-live session must return `AccessDenied`. Test
+callers with prefix-colliding names too (for example `operator` and
+`operator-other`); no wildcard identity match is permitted.
+
+[SSM's AWS-supplied system owner tag](https://docs.aws.amazon.com/systems-manager/latest/userguide/getting-started-restrict-access-examples.html#restrict-access-example-user-sessions)
+`aws:ssmmessages:session-id` contains the full assumed-role identity
+`<role-id>:<role-session-name>`, matching `aws:userid`. The role policies require
+an exact `StringEquals` match through
+`ssm:resourceTag/aws:ssmmessages:session-id`, on session resources in this account
+and region. Missing tags fail closed. Do not infer ownership from the displayed
+session ARN's role-session-name prefix: it omits the role ID. The system tag is
+supplied by AWS, not a custom tag callers choose; no new STS tag or source-identity
+contract is needed. This check applies to terminate/resume permissions, not the
+separate data-channel grants.
+
+An authorization failure blocks the smoke: clean up the exact test environment
+and correct the policy through a reviewed PR and founder-approved apply. Never
+use administrator termination as acceptance evidence; it is cleanup only.
+
 ### 3. Budget, GuardDuty, Config
 
 ```bash
