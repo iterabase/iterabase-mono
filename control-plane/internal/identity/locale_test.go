@@ -2,7 +2,10 @@ package identity
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -121,4 +124,56 @@ func TestAuthEmailsFollowTheRecipientsResolvedLocale(t *testing.T) {
 	h.deliver(t)
 	require.Equal(t, sent+1, h.sender.count())
 	assert.Contains(t, h.sender.messages[sent].Subject, "palavra-passe")
+}
+
+func TestOrganizationDefaultLocaleConcurrentWritersConflict(t *testing.T) {
+	h := newAuthHarness(t)
+	ctx := context.Background()
+	admin := h.createAdmin(t, "admin@example.com")
+	settings, err := h.store.GetOrganizationSettings(ctx)
+	require.NoError(t, err)
+
+	// Hold the row lock so both writers read the same version and queue up.
+	blocker, err := h.store.pool.Begin(ctx)
+	require.NoError(t, err)
+	_, err = blocker.Exec(ctx, `SELECT 1 FROM identity.organization_settings WHERE id FOR UPDATE`)
+	require.NoError(t, err)
+
+	results := make([]error, 2)
+	var wg sync.WaitGroup
+	for i, locale := range []string{"pt", "en"} {
+		wg.Add(1)
+		go func(i int, locale string) {
+			defer wg.Done()
+			_, results[i] = h.store.UpdateOrganizationDefaultLocale(ctx, admin.ID, locale, &settings.UpdatedAt, h.now)
+		}(i, locale)
+	}
+	require.Eventually(t, func() bool {
+		var waiting int
+		_ = h.store.pool.QueryRow(ctx, `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND query LIKE '%organization_settings%'`).Scan(&waiting)
+		return waiting == 2
+	}, 10*time.Second, 20*time.Millisecond, "both writers wait on the settings row")
+	require.NoError(t, blocker.Rollback(ctx))
+	wg.Wait()
+
+	// Exactly one same-version write wins; the other is a conflict.
+	var succeeded, conflicted int
+	for _, err := range results {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrOrganizationSettingsConflict):
+			conflicted++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	assert.Equal(t, 1, succeeded)
+	assert.Equal(t, 1, conflicted)
+	var events int
+	require.NoError(t, h.store.pool.QueryRow(ctx, `
+		SELECT count(*) FROM identity.security_events WHERE event = $1`, EventOrganizationSettingsUpdated).Scan(&events))
+	assert.Equal(t, 1, events, "only the winning write is audited")
 }
