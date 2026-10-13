@@ -208,7 +208,9 @@ type HealthProbeSpec struct {
 // ExternalBackendSpec configures an external provider backend.
 // +kubebuilder:object:generate=true
 type ExternalBackendSpec struct {
-	// baseURL is the OpenAI-compatible endpoint of the external provider.
+	// baseURL is the provider's OpenAI SDK-style base URL, including its
+	// version path (for example https://api.provider.example/v1). The
+	// inference gateway sends chat completions to <baseURL>/chat/completions.
 	// +kubebuilder:validation:Required
 	BaseURL string `json:"baseURL"`
 

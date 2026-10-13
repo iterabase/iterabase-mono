@@ -270,6 +270,7 @@ func TestModelBackendReconcile(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "external", b.Kind)
 		assert.Equal(t, "https://api.anthropic.com", b.ServiceURL)
+		assert.Equal(t, "anthropic-key", b.AuthRef, "the credential Secret name is materialized for the gateway (HOR-597)")
 		assert.True(t, b.Deployed)
 		assert.True(t, b.Healthy, "external healthy assumed true; reachability deferred to HOR-307")
 

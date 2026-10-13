@@ -108,7 +108,7 @@ func TestServer_EndToEnd(t *testing.T) {
 
 	m := metrics.New(prometheus.NewRegistry())
 	limiter := ratelimit.NewRedisLimiter(rdb)
-	proxyHandler := proxy.NewHandler(cache, limiter, m, logger)
+	proxyHandler := proxy.NewHandler(cache, limiter, m, nil, logger)
 	deps := &Deps{
 		ProxyHandler:       proxyHandler,
 		Cache:              cache,

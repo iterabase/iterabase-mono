@@ -14,6 +14,7 @@ a file:// repository that Forge serves to Flux over read-only node SSH
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import io
 import json
@@ -22,10 +23,12 @@ import pathlib
 import re
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
+import zlib
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -264,14 +267,98 @@ def tailnet_hosts(host: Host, environment: str) -> dict[str, str]:
     return {surface: f"{environment}-{surface}.{suffix}" for surface in ("app", "inference")}
 
 
-def serve_on_tailnet(host: Host, environment: str, hosts: dict[str, str]) -> dict[str, str]:
-    """Advertise both preview Services through ingress-nginx; return their URLs."""
+def ingress_target(host: Host) -> str:
+    """The in-cluster ingress-nginx controller address, as an http:// base URL."""
     ingress = host.ssh(f"sudo k3s kubectl get svc -n {NAMESPACE} "
                        "-l app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller "
                        "-o jsonpath='{.items[0].spec.clusterIP}'")
     if not re.fullmatch(r"[0-9a-f.:]+", ingress):
         raise PreviewError(f"preview ingress-nginx has no cluster address: {ingress!r}")
-    target = f"http://[{ingress}]:80" if ":" in ingress else f"http://{ingress}:80"
+    return f"http://[{ingress}]:80" if ":" in ingress else f"http://{ingress}:80"
+
+
+def smoke_image() -> str:
+    """A 64x64 solid PNG as a data URI: small, but a real image for vision models."""
+    width = height = 64
+    raw = b"".join(b"\x00" + b"\x2a\x6f\xdb" * width for _ in range(height))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+    return "data:image/png;base64," + base64.b64encode(png).decode()
+
+
+def inference_smoke_script(target: str, inference_host: str, model_id: str) -> str:
+    """The on-host inference smoke (HOR-597): a text request, then a vision
+    request non-streaming and streaming, through ingress-nginx and the gateway
+    to the keyed external backend. Each step prints one progress line so a
+    failure names its stage. The bootstrap admin key (auth is off on previews)
+    stays on the host: it reaches curl through a config on stdin, never argv
+    or output."""
+    vision = [{"role": "user", "content": [
+        {"type": "text", "text": "Reply with one word: what colour is this image?"},
+        {"type": "image_url", "image_url": {"url": smoke_image()}},
+    ]}]
+    bodies = {
+        "text": {"model": model_id, "max_tokens": 16, "messages": [{"role": "user", "content": "Reply with: ok"}]},
+        "vision": {"model": model_id, "max_tokens": 32, "messages": vision},
+        "vision-stream": {"model": model_id, "max_tokens": 32, "stream": True, "messages": vision},
+    }
+    files = "".join(f"cat > \"$work/{name}.json\" <<'BODY'\n{json.dumps(body)}\nBODY\n" for name, body in bodies.items())
+    url = shlex.quote(f"{target}/v1/chat/completions")
+    host_header = shlex.quote(f"Host: {inference_host}")
+    return rf"""set -euo pipefail
+trap 'echo "inference smoke: failed at line $LINENO: $BASH_COMMAND"' ERR
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+{files}logs=$(sudo k3s kubectl logs -n {NAMESPACE} deploy/{RELEASE}-control-plane-api -c bootstrap 2>&1) || {{
+  echo "inference smoke: cannot read the control-plane bootstrap logs: $(tail -3 <<<"$logs")"; exit 1; }}
+key=$(sed -n 's/.*API key (scope=admin): \(cp-[^ ]*\).*/\1/p' <<<"$logs" | tail -1)
+[ -n "$key" ] || {{ echo "inference smoke: no bootstrap admin key in the control-plane API logs"; exit 1; }}
+post() {{  # name -> HTTP status; response in $work/<name>.out
+  printf 'header = "Authorization: Bearer %s"\n' "$key" | curl -s -K - -o "$work/$1.out" -w '%{{http_code}}' -m 90 \
+    -H {host_header} -H 'Content-Type: application/json' --data-binary "@$work/$1.json" {url} || true
+}}
+# A generated completion. Reasoning models may spend a small max_tokens on
+# reasoning (reasoning_content, or reasoning on some providers) before content.
+answered() {{ python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); m=r["choices"][0]["message"]
+assert r["usage"]["completion_tokens"] > 0 and any(m.get(k) for k in ("content", "reasoning_content", "reasoning"))' "$work/$1.out" 2>/dev/null; }}
+fail() {{ echo "inference smoke: $1 returned $2: $(head -c 600 "$work/$1.out" 2>/dev/null)"; exit 1; }}
+# The gateway admits the model once its snapshot holds the catalog entry.
+deadline=$((SECONDS + 600)); attempt=0
+while :; do
+  attempt=$((attempt + 1)); begun=$SECONDS
+  code=$(post text)
+  echo "inference smoke: text attempt $attempt -> $code ($((SECONDS - begun))s)"
+  case "$code" in 404|503|000) [ "$SECONDS" -lt "$deadline" ] || fail text "$code"; sleep 10 ;; *) break ;; esac
+done
+[ "$code" = 200 ] && answered text || fail text "$code"
+code=$(post vision); echo "inference smoke: vision -> $code"
+[ "$code" = 200 ] && answered vision || fail vision "$code"
+code=$(post vision-stream); echo "inference smoke: vision-stream -> $code"
+[ "$code" = 200 ] && grep -q '^data: \[DONE\]' "$work/vision-stream.out" && ! grep -q '^data: {{"error"' "$work/vision-stream.out" \
+  || fail vision-stream "$code"
+echo "inference smoke passed: text and vision requests, non-streaming and streaming, through the keyed external backend"
+"""
+
+
+def inference_smoke(host: Host, hosts: dict[str, str], model_id: str) -> None:
+    script = inference_smoke_script(ingress_target(host), hosts["inference"], model_id)
+    try:
+        # Keepalives: a silent session waiting on a slow provider must not be
+        # dropped by an idle NAT between the runner and the host.
+        print(run("ssh", *host.base, "-o", "ServerAliveInterval=15", f"ubuntu@{host.address}", "bash -s 2>&1", stdin=script),
+              file=sys.stderr)
+    except subprocess.CalledProcessError as error:
+        logs = host.ssh(f"sudo k3s kubectl logs -n {NAMESPACE} deploy/{RELEASE}-gateway --tail=2000 2>&1 "
+                        "| grep -v -E '\"path\":\"/(health|readyz)\"' | tail -40 || true")
+        raise PreviewError(f"preview inference smoke failed (exit {error.returncode}):\n{error.stdout or ''}"
+                           f"\ngateway logs (probes omitted):\n{logs}") from error
+
+
+def serve_on_tailnet(host: Host, environment: str, hosts: dict[str, str]) -> dict[str, str]:
+    """Advertise both preview Services through ingress-nginx; return their URLs."""
+    target = ingress_target(host)
     # Each surface must answer through ingress-nginx for its Service name
     # before it is advertised; a miss here is a routing defect, not a tailnet one.
     # Paths only the real backends serve (ingress-nginx's default backend also
@@ -346,6 +433,7 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
         print(cluster_evidence(host), file=sys.stderr)
         raise
     hosted_model(host, args.llm_base_url, args.model_id, os.environ["PREVIEW_LLM_API_KEY"])
+    inference_smoke(host, hosts, args.model_id)
     return {**serve_on_tailnet(host, args.name, hosts), "chart_version": version}
 
 

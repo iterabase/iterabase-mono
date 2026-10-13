@@ -1,0 +1,45 @@
+{{- if .Values.enabled }}
+# DES-HOR-597-01: the gateway reads keyed external ModelBackends' authRef
+# Secrets (provider credentials) from the Kubernetes API. Namespace-scoped
+# `get` on Secrets only, mirroring the tool gateway (ARCH-008); values stay in
+# gateway memory and never reach Postgres or workloads.
+#
+# DES-HOR-597-03: the ServiceAccount survives a rollback to a chart without it.
+# Setting serviceAccountName also defaults the deprecated spec.serviceAccount
+# alias, which a pre-SA Deployment keeps; deleting the SA would leave that pod
+# unschedulable. Without the Role/RoleBinding the kept SA holds no permissions.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "inference-gateway.name" . }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "inference-gateway.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "inference-gateway.name" . }}
+  labels:
+    {{- include "inference-gateway.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "inference-gateway.name" . }}
+  labels:
+    {{- include "inference-gateway.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "inference-gateway.name" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "inference-gateway.name" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

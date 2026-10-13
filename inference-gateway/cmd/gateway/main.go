@@ -8,11 +8,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/config"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/database"
@@ -22,6 +25,7 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/server"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/snapshot"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/spiffe"
+	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/upstreamauth"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/version"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/workload"
 )
@@ -98,6 +102,10 @@ func runServe() error {
 
 	// --- Create snapshot cache (in-memory, per-pod; LISTEN/NOTIFY-synced) ---
 	cache := snapshot.NewCache(snapshot.NewPGStore(pool), cfg.Database.URL, logger, cfg.Snapshot.RefreshInterval)
+
+	// --- Upstream credentials for keyed external backends (DES-HOR-597-01) ---
+	creds := upstreamCredentials(cache, logger)
+
 	if err := cache.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start snapshot cache: %w", err)
 	}
@@ -110,7 +118,7 @@ func runServe() error {
 	m.RegisterRedisPool(rdb)
 
 	// --- Create handlers ---
-	proxyHandler := proxy.NewHandler(cache, limiter, m, logger)
+	proxyHandler := proxy.NewHandler(cache, limiter, m, creds, logger)
 
 	deps := &server.Deps{
 		ProxyHandler:       proxyHandler,
@@ -234,4 +242,50 @@ func newLogger(cfg config.LoggingConfig) *slog.Logger {
 	}
 
 	return slog.New(handler)
+}
+
+// upstreamCredentialTTL bounds how long a resolved provider credential is
+// reused between catalog refreshes.
+const upstreamCredentialTTL = time.Minute
+
+// serviceAccountNamespaceFile is the in-cluster fallback for POD_NAMESPACE.
+const serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+// upstreamCredentials wires the authRef resolver to go stale on every snapshot
+// refresh. It returns a nil interface (not a typed nil) when unavailable.
+func upstreamCredentials(cache *snapshot.Cache, logger *slog.Logger) upstreamauth.Resolver {
+	resolver := newUpstreamCredentials(logger)
+	if resolver == nil {
+		return nil
+	}
+	cache.OnRefresh(resolver.Invalidate)
+	return resolver
+}
+
+// newUpstreamCredentials builds the in-cluster authRef resolver for the
+// gateway's own (platform) namespace. Outside a cluster (local compose) it
+// returns nil and keyed external backends fail closed with
+// upstream_auth_failed; unkeyed backends are unaffected.
+func newUpstreamCredentials(logger *slog.Logger) *upstreamauth.K8sResolver {
+	restCfg, err := rest.InClusterConfig()
+	if err != nil {
+		logger.Warn("no in-cluster Kubernetes config; keyed external backends are unavailable", "error", err)
+		return nil
+	}
+	client, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		logger.Warn("kubernetes client unavailable; keyed external backends are unavailable", "error", err)
+		return nil
+	}
+	namespace := os.Getenv("POD_NAMESPACE")
+	if namespace == "" {
+		raw, err := os.ReadFile(serviceAccountNamespaceFile)
+		if err != nil {
+			logger.Warn("gateway namespace unknown; keyed external backends are unavailable", "error", err)
+			return nil
+		}
+		namespace = strings.TrimSpace(string(raw))
+	}
+	logger.Info("upstream credential resolver ready", "namespace", namespace)
+	return upstreamauth.NewK8sResolver(client, namespace, upstreamCredentialTTL)
 }

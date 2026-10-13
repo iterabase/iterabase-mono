@@ -84,6 +84,26 @@ func TestPGStore(t *testing.T) {
 	assert.True(t, e.Available)
 	require.NotNil(t, e.ReasoningConfig.EnableThinking)
 	assert.False(t, *e.ReasoningConfig.EnableThinking)
+	assert.Equal(t, "default", e.Namespace)
+	assert.Empty(t, e.BackendAuthRef, "an in-cluster backend has no credential reference")
+
+	// HOR-597: a keyed external backend carries its credential Secret name.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO catalog.backends (key, name, namespace, kind, service_url, auth_ref, deployed, healthy)
+		VALUES ('default/hosted', 'hosted', 'default', 'external', 'https://llm.example/v1', 'hosted-llm', true, true);
+		INSERT INTO catalog.models (key, namespace, model_id, backend_ref, available)
+		VALUES ('default/hosted', 'default', 'hosted', 'hosted', true)`)
+	require.NoError(t, err)
+	entries, err = store.ListCatalog(ctx)
+	require.NoError(t, err)
+	var hosted CatalogEntry
+	for _, entry := range entries {
+		if entry.ModelID == "hosted" {
+			hosted = entry
+		}
+	}
+	assert.Equal(t, "external", hosted.BackendKind)
+	assert.Equal(t, "hosted-llm", hosted.BackendAuthRef)
 
 	// API keys.
 	keys, err := store.AllAPIKeys(ctx)

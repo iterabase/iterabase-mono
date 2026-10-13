@@ -132,7 +132,7 @@ kind: ModelBackend
 metadata: {name: forge-workspace-model, namespace: iterabase-system}
 spec:
   kind: external
-  external: {baseURL: http://forge-workspace-model.iterabase-system.svc:8080}
+  external: {baseURL: http://forge-workspace-model.iterabase-system.svc:8080/v1}
 ---
 apiVersion: platform.iterabase.com/v1alpha1
 kind: Model

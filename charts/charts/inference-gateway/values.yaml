@@ -14,6 +14,9 @@ ingress:
   enabled: true
   className: nginx
   host: "" # catch-all when empty (HTTP only); REQUIRED when tls.enabled (cert SAN)
+  # Maximum request body ingress-nginx accepts. Chat requests with inline
+  # base64 images exceed the controller's 1m default.
+  proxyBodySize: 32m
   # TLS via the prerequisite cert-manager substrate plus this platform's
   # cert-issuers dependency: clusterIssuer names a rendered ClusterIssuer
   # (selfsigned for kind/E2E, letsencrypt-prod for the prod overlay). cert-manager's

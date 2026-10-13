@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,8 @@ func TestCache_refreshAndRead(t *testing.T) {
 	aliceID := seedFixture(t, pool)
 	store := NewPGStore(pool)
 	cache := NewCache(store, connStr, slog.Default(), time.Hour) // long poll; LISTEN drives updates
+	var refreshes atomic.Int32
+	cache.OnRefresh(func() { refreshes.Add(1) })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, cache.Start(ctx))
@@ -24,6 +27,7 @@ func TestCache_refreshAndRead(t *testing.T) {
 
 	// Freshly started -> snapshot is fresh (readiness gate).
 	assert.True(t, cache.Fresh(time.Minute), "snapshot should be fresh after Start")
+	assert.GreaterOrEqual(t, refreshes.Load(), int32(1), "refresh hooks run (upstream credentials go stale)")
 
 	// Catalog entry.
 	e, ok := cache.CatalogEntry("qwen3-27b")

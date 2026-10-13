@@ -143,7 +143,7 @@ func startWorkloadServer(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 
 	m := metrics.New(prometheus.NewRegistry())
 	limiter := ratelimit.NewRedisLimiter(rdb)
-	proxyHandler := proxy.NewHandler(cache, limiter, m, logger)
+	proxyHandler := proxy.NewHandler(cache, limiter, m, nil, logger)
 	deps := &Deps{
 		ProxyHandler:       proxyHandler,
 		Cache:              cache,
@@ -438,7 +438,7 @@ func TestWorkloadMTLS_APIKeyPathRegression(t *testing.T) {
 	t.Cleanup(cache.Stop)
 	m := metrics.New(prometheus.NewRegistry())
 	limiter := ratelimit.NewRedisLimiter(setupRedis(t, ctx))
-	proxyHandler := proxy.NewHandler(cache, limiter, m, logger)
+	proxyHandler := proxy.NewHandler(cache, limiter, m, nil, logger)
 	deps := &Deps{ProxyHandler: proxyHandler, Cache: cache, Limiter: limiter, ReadinessStaleness: 60 * time.Second}
 	srv := httptest.NewServer(newRouter(logger, m, deps))
 	t.Cleanup(srv.Close)

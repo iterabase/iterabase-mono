@@ -253,12 +253,22 @@ func (r *ModelBackendReconciler) materialize(ctx context.Context, mb *v1alpha1.M
 		Model:      mb.Spec.Model,
 		ServiceURL: serviceURL,
 		Image:      mb.Spec.Image,
+		AuthRef:    authRef(mb),
 		Deployed:   deployed,
 		Healthy:    healthy,
 	}); err != nil {
 		return fmt.Errorf("upsert backend: %w", err)
 	}
 	return nil
+}
+
+// authRef is the external backend's credential Secret name. Only the name is
+// materialized; the inference gateway resolves the value (DES-HOR-597-01).
+func authRef(mb *v1alpha1.ModelBackend) string {
+	if mb.Spec.Kind != "external" || mb.Spec.External == nil {
+		return ""
+	}
+	return mb.Spec.External.AuthRef
 }
 
 // ensureDeployment creates or updates the vLLM Deployment.

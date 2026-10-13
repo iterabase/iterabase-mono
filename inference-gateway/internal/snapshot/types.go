@@ -9,6 +9,7 @@ package snapshot
 // rewrite) + per-alias config, filtered to available rows.
 type CatalogEntry struct {
 	ModelID         string          `json:"model_id"` // client-facing alias
+	Namespace       string          `json:"namespace"`
 	DisplayName     string          `json:"display_name"`
 	ContextLength   int             `json:"context_length"`
 	Capabilities    []string        `json:"capabilities"`
@@ -16,6 +17,7 @@ type CatalogEntry struct {
 	BackendKind     string          `json:"backend_kind"`
 	BackendModelID  string          `json:"backend_model_id"` // HuggingFace id; the gateway rewrites the alias -> this
 	BackendURL      string          `json:"backend_url"`
+	BackendAuthRef  string          `json:"backend_auth_ref,omitempty"` // external: credential Secret name, never the value (DES-HOR-597-01)
 	DefaultParams   DefaultParams   `json:"default_params"`
 	ReasoningConfig ReasoningConfig `json:"reasoning_config"`
 	Transforms      Transforms      `json:"transforms"`

@@ -391,8 +391,10 @@ spec:
                       credential (key API key/token).
                     type: string
                   baseURL:
-                    description: baseURL is the OpenAI-compatible endpoint of the
-                      external provider.
+                    description: |-
+                      baseURL is the provider's OpenAI SDK-style base URL, including its
+                      version path (for example https://api.provider.example/v1). The
+                      inference gateway sends chat completions to <baseURL>/chat/completions.
                     type: string
                 required:
                 - baseURL
