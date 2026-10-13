@@ -22,13 +22,20 @@ import {
   subscribe,
   uploadArtifact,
 } from "./api";
+import { browserLocale, fixedT, setLocale as setActiveLocale } from "./i18n";
 import {
+  formatDateTime,
+  formatMoney,
+  formatNumber,
+  formatShortDate,
+} from "./i18n/format";
+import {
+  legacyT,
   localized,
   pauseReasonLabel,
   stateLabel,
-  t,
   waitingProgress,
-} from "./i18n";
+} from "./i18n/legacy";
 import type {
   Blocker,
   DetailData,
@@ -48,7 +55,6 @@ import {
   authApi,
   probeSession,
 } from "./auth/authApi";
-import { authCopy } from "./auth/copy";
 import "./styles.css";
 
 const states: WorkState[] = ["todo", "in_progress", "blocked", "done"];
@@ -89,51 +95,42 @@ function money(
   currency = "EUR",
   locale: Locale = "en",
 ): string {
-  return new Intl.NumberFormat(locale === "pt" ? "pt-PT" : "en-GB", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 2,
-  }).format(Number(amount));
+  return formatMoney(amount, currency, locale);
 }
 function when(value: string | undefined, locale: Locale): string {
-  if (!value) return "";
-  return new Intl.DateTimeFormat(locale === "pt" ? "pt-PT" : "en-GB", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
+  return formatDateTime(value, locale);
 }
+const sourceKinds = [
+  "outlook",
+  "graph_email",
+  "email",
+  "api",
+  "schedule",
+  "scheduled",
+  "artifact",
+] as const;
 function sourceLabel(kind: string, locale: Locale): string {
-  const labels: Record<string, [string, string]> = {
-    outlook: ["Outlook", "Outlook"],
-    graph_email: ["Outlook", "Outlook"],
-    email: ["Email", "Email"],
-    api: ["API", "API"],
-    schedule: ["Scheduled", "Agendado"],
-    scheduled: ["Scheduled", "Agendado"],
-    artifact: ["Artifact", "Artefacto"],
-  };
-  const label = labels[kind];
-  return label ? label[locale === "pt" ? 1 : 0] : t(locale).otherSource;
+  const c = legacyT(locale);
+  const known = sourceKinds.find((candidate) => candidate === kind);
+  return known ? c(`sourceKind.${known}`) : c("otherSource");
 }
+const blockerKinds = [
+  "information",
+  "decision",
+  "approval",
+  "artifact",
+  "consequence_confirmation",
+] as const;
 function blockerKindLabel(kind: string, locale: Locale): string {
-  const labels: Record<string, [string, string]> = {
-    information: ["Information required", "Informação necessária"],
-    decision: ["Decision required", "Decisão necessária"],
-    approval: ["Approval required", "Aprovação necessária"],
-    artifact: ["Artifact required", "Artefacto necessário"],
-    consequence_confirmation: [
-      "Consequential action confirmation",
-      "Confirmação de ação consequente",
-    ],
-  };
-  return labels[kind]?.[locale === "pt" ? 1 : 0] || t(locale).actionRequired;
+  const c = legacyT(locale);
+  const known = blockerKinds.find((candidate) => candidate === kind);
+  return known ? c(`blockerKind.${known}`) : c("actionRequired");
 }
 function formulaLabel(formula: string | undefined, locale: Locale): string {
+  const c = legacyT(locale);
   if (!formula || formula === "labor_time_saved")
-    return locale === "pt"
-      ? "Tempo de trabalho manual poupado"
-      : "Manual handling time saved";
-  return t(locale).customValueFormula;
+    return c("laborTimeSavedFormula");
+  return c("customValueFormula");
 }
 function initials(name: string): string {
   return (
@@ -144,6 +141,12 @@ function initials(name: string): string {
       .map((part) => part[0]?.toUpperCase())
       .join("") || "I"
   );
+}
+/** Typed workflow results: numbers follow the locale (1.840,5 / 1,840.5). */
+function displayValue(value: unknown, locale: Locale): string {
+  return typeof value === "number"
+    ? formatNumber(value, locale)
+    : String(value);
 }
 function safeObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -195,7 +198,7 @@ function Header({
   openAccount,
   signOut,
 }: HeaderProps) {
-  const c = t(locale);
+  const c = legacyT(locale);
   const active = items.filter((item) => item.state === "in_progress").length;
   const blocked = items.filter((item) => item.state === "blocked").length;
   return (
@@ -203,51 +206,51 @@ function Header({
       <div className="brand-mark small">
         <Mark />
       </div>
-      <span className="context">{c.dashboard}</span>
+      <span className="context">{c("dashboard")}</span>
       <span className="divider" />
       <label className="global-search">
         <SearchIcon />
-        <span className="sr-only">{c.search}</span>
+        <span className="sr-only">{c("search")}</span>
         <input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder={c.search}
+          placeholder={c("search")}
         />
       </label>
       <span className="divider" />
       <span className="live-count">
         <i />
-        {active}
+        {formatNumber(active, locale)}
       </span>
       <span className={`blocked-count ${blocked ? "has-blocked" : ""}`}>
-        {blocked}
+        {formatNumber(blocked, locale)}
       </span>
-      <div className="language-switch compact">
+      <div className="language-switch compact" aria-label={c("language")}>
         <button
           className={locale === "en" ? "active" : ""}
           onClick={() => setLocale("en")}
         >
-          EN
+          {c("languageShort.en")}
         </button>
         <button
           className={locale === "pt" ? "active" : ""}
           onClick={() => setLocale("pt")}
         >
-          PT
+          {c("languageShort.pt")}
         </button>
       </div>
       <button
         className="icon-button"
-        title={c.account}
-        aria-label={c.account}
+        title={c("account")}
+        aria-label={c("account")}
         onClick={openAccount}
       >
         {initials(profileName)}
       </button>
       <button
         className="icon-button sign-out"
-        title={c.signOut}
-        aria-label={c.signOut}
+        title={c("signOut")}
+        aria-label={c("signOut")}
         onClick={signOut}
       >
         ↪
@@ -265,16 +268,16 @@ function ValueHero({
   locale: Locale;
   onExplain: () => void;
 }) {
-  const c = t(locale);
+  const c = legacyT(locale);
   if (!data) return null;
   const total = data.summary.value.totals[0];
   return (
     <section className="summary-grid">
       <article className="card hero">
         <div>
-          <span className="eyebrow">{c.hero}</span>
+          <span className="eyebrow">{c("hero")}</span>
           <button className="estimate-badge" onClick={onExplain}>
-            ⓘ {c.estimated}
+            ⓘ {c("estimated")}
           </button>
         </div>
         <strong>
@@ -282,7 +285,9 @@ function ValueHero({
             ? money(total.amount, total.currency, locale)
             : "—"}
         </strong>
-        <p>{data.summary.value.configured ? c.valueHelp : c.notConfigured}</p>
+        <p>
+          {data.summary.value.configured ? c("valueHelp") : c("notConfigured")}
+        </p>
         <div className="status-counts">
           {states.map((state) => (
             <div key={state}>
@@ -290,14 +295,14 @@ function ValueHero({
                 <i className={`dot ${state}`} />
                 {stateLabel(state, locale)}
               </span>
-              <b>{data.summary.counts[state] || 0}</b>
+              <b>{formatNumber(data.summary.counts[state] || 0, locale)}</b>
             </div>
           ))}
         </div>
       </article>
       <article className="card trend-card">
         <div className="section-heading">
-          <span className="eyebrow">{c.trend}</span>
+          <span className="eyebrow">{c("trend")}</span>
         </div>
         <Trend data={data.summary.trend} locale={locale} />
       </article>
@@ -311,12 +316,12 @@ function Trend({
   data: Array<{ date: string; amount: string; currency: string }>;
   locale: Locale;
 }) {
-  const c = t(locale);
-  if (!data.length) return <div className="empty-chart">{c.noTrend}</div>;
+  const c = legacyT(locale);
+  if (!data.length) return <div className="empty-chart">{c("noTrend")}</div>;
   const values = data.map((point) => Math.abs(Number(point.amount)));
   const max = Math.max(...values, 1);
   return (
-    <div className="trend" role="img" aria-label={c.trend}>
+    <div className="trend" role="img" aria-label={c("trend")}>
       {data.map((point, index) => (
         <div
           className="trend-point"
@@ -328,10 +333,7 @@ function Trend({
             style={{ height: `${Math.max(5, (values[index] / max) * 112)}px` }}
           />
           <small>
-            {new Intl.DateTimeFormat(locale === "pt" ? "pt-PT" : "en-GB", {
-              month: "short",
-              day: "numeric",
-            }).format(new Date(`${point.date}T12:00:00`))}
+            {formatShortDate(new Date(`${point.date}T12:00:00`), locale)}
           </small>
         </div>
       ))}
@@ -401,7 +403,9 @@ function WorkCard({
         <div className={`item-value ${item.valueDisputed ? "disputed" : ""}`}>
           {money(item.estimatedValue, item.valueCurrency, locale)}{" "}
           <small>
-            {item.valueDisputed ? t(locale).disputed : t(locale).estimated}
+            {item.valueDisputed
+              ? legacyT(locale)("disputed")
+              : legacyT(locale)("estimated")}
           </small>
         </div>
       )}
@@ -418,7 +422,7 @@ function Board({
   locale: Locale;
   open: (item: WorkItem) => void;
 }) {
-  const c = t(locale);
+  const c = legacyT(locale);
   const failed = items.filter((item) => item.state === "failed");
   return (
     <>
@@ -428,22 +432,22 @@ function Board({
             <span className="failure-icon">!</span>
             <div>
               <h2 id="failed-title">
-                {c.failed} <b>{failed.length}</b>
+                {c("failed")} <b>{formatNumber(failed.length, locale)}</b>
               </h2>
-              <p>{c.failedHelp}</p>
+              <p>{c("failedHelp")}</p>
             </div>
           </div>
           <div className="failed-items">
             {failed.map((item) => (
               <button key={item.id} onClick={() => open(item)}>
                 <span>{item.title}</span>
-                <small>{c.open} →</small>
+                <small>{c("open")} →</small>
               </button>
             ))}
           </div>
         </section>
       )}
-      <section className="board" aria-label={c.board}>
+      <section className="board" aria-label={c("board")}>
         {states.map((state) => {
           const column = items.filter(
             (item) => boardColumn(item.state) === state,
@@ -453,7 +457,7 @@ function Board({
               <div className="column-title">
                 <i className={`dot ${state}`} />
                 <h2>{stateLabel(state, locale)}</h2>
-                <span>{column.length}</span>
+                <span>{formatNumber(column.length, locale)}</span>
               </div>
               <div className="column-items">
                 {column.map((item) => (
@@ -465,7 +469,7 @@ function Board({
                   />
                 ))}
                 {!column.length && (
-                  <div className="empty-column">{c.empty}</div>
+                  <div className="empty-column">{c("empty")}</div>
                 )}
               </div>
             </div>
@@ -545,7 +549,7 @@ function DetailPanel({
   close: () => void;
   changed: () => void;
 }) {
-  const c = t(locale);
+  const c = legacyT(locale);
   const panelRef = useRef<HTMLElement>(null);
   const [detail, setDetail] = useState<DetailData | null>(null);
   const [error, setError] = useState("");
@@ -563,7 +567,7 @@ function DetailPanel({
       setError("");
     } catch (err) {
       if (!session.lost(err))
-        setError(err instanceof Error ? err.message : "Error");
+        setError(err instanceof Error ? err.message : c("unexpectedError"));
     }
   }, [session, item.id]);
   useEffect(() => {
@@ -601,13 +605,13 @@ function DetailPanel({
       await session.withCSRF((csrf) =>
         saveFeedback(csrf, detail.item, category, explanation),
       );
-      setNotice(c.feedbackSaved);
+      setNotice(c("feedbackSaved"));
       setFeedbackOpen(false);
       await refresh();
       changed();
     } catch (err) {
       if (!session.lost(err))
-        setError(err instanceof Error ? err.message : "Error");
+        setError(err instanceof Error ? err.message : c("unexpectedError"));
     } finally {
       setBusy(false);
     }
@@ -635,14 +639,14 @@ function DetailPanel({
           detail.consequences,
         ),
       );
-      setNotice(c.revisionStarted);
+      setNotice(c("revisionStarted"));
       setRetryOpen(false);
       setFeedbackOpen(false);
       await refresh();
       changed();
     } catch (err) {
       if (!session.lost(err))
-        setError(err instanceof Error ? err.message : "Error");
+        setError(err instanceof Error ? err.message : c("unexpectedError"));
     } finally {
       setBusy(false);
     }
@@ -682,12 +686,16 @@ function DetailPanel({
               {sourceLabel(item.source.kind, locale)}
             </div>
           </div>
-          <button className="icon-button" onClick={close} aria-label={c.close}>
+          <button
+            className="icon-button"
+            onClick={close}
+            aria-label={c("close")}
+          >
             <CloseIcon />
           </button>
         </header>
         <div className="panel-body">
-          {!detail && !error && <div className="loading">{c.loading}</div>}
+          {!detail && !error && <div className="loading">{c("loading")}</div>}
           {error && (
             <div className="form-error" role="alert">
               {error}
@@ -701,16 +709,16 @@ function DetailPanel({
           {detail && (
             <>
               {detail.item.state === "failed" && (
-                <Section title={c.failed}>
+                <Section title={c("failed")}>
                   <PlainValue
                     value={detail.item.failureSummary}
-                    empty={c.noDetails}
+                    empty={c("noDetails")}
                     locale={locale}
                   />
                 </Section>
               )}
               {detail.item.state === "waiting" && detail.item.wait && (
-                <Section title={c.waitingTitle}>
+                <Section title={c("waitingTitle")}>
                   <p className="wait-progress">
                     <b>
                       {waitingProgress(
@@ -721,15 +729,15 @@ function DetailPanel({
                     </b>
                     <span>
                       {detail.item.wait.completion === "any"
-                        ? c.waitingAny
-                        : c.waitingAll}
+                        ? c("waitingAny")
+                        : c("waitingAll")}
                     </span>
                     <span>
-                      {c.waitingUntil}{" "}
+                      {c("waitingUntil")}{" "}
                       {when(detail.item.wait.deadlineAt, locale)}
                     </span>
                   </p>
-                  <p className="muted">{c.stopWaitingHelp}</p>
+                  <p className="muted">{c("stopWaitingHelp")}</p>
                   <button
                     className="button secondary"
                     disabled={busy}
@@ -739,27 +747,31 @@ function DetailPanel({
                         await session.withCSRF((csrf) =>
                           stopWaiting(csrf, detail.item),
                         );
-                        setNotice(c.waitingStopped);
+                        setNotice(c("waitingStopped"));
                         await refresh();
                         changed();
                       } catch (err) {
-                        setError(err instanceof Error ? err.message : "Error");
+                        setError(
+                          err instanceof Error
+                            ? err.message
+                            : c("unexpectedError"),
+                        );
                       } finally {
                         setBusy(false);
                       }
                     }}
                   >
-                    {c.stopWaiting}
+                    {c("stopWaiting")}
                   </button>
                 </Section>
               )}
               {detail.item.state === "paused" && detail.item.pause && (
-                <Section title={c.pausedTitle}>
+                <Section title={c("pausedTitle")}>
                   <p className="pause-reason">
                     {pauseReasonLabel(detail.item.pause.reason, locale)}
                   </p>
                   <p className="muted">
-                    {c.pausedSince} {when(detail.item.pause.since, locale)}
+                    {c("pausedSince")} {when(detail.item.pause.since, locale)}
                   </p>
                 </Section>
               )}
@@ -769,28 +781,28 @@ function DetailPanel({
                   blocker={detail.blocker}
                   locale={locale}
                   onDone={async () => {
-                    setNotice(c.responseSent);
+                    setNotice(c("responseSent"));
                     await refresh();
                     changed();
                   }}
                 />
               )}
               {detail.item.state === "done" && (
-                <Section title={c.outcome}>
+                <Section title={c("outcome")}>
                   <h3>
                     {localized(outcomePresentation?.summary, locale) ||
-                      c.completedSummary}
+                      c("completedSummary")}
                   </h3>
                   <PresentedResult
                     value={output}
                     fields={outcomeNode?.resultPresentation?.fields || []}
-                    empty={c.noDetails}
+                    empty={c("noDetails")}
                     locale={locale}
                   />
                 </Section>
               )}
               {resultArtifacts.length > 0 && (
-                <Section title={c.result}>
+                <Section title={c("result")}>
                   <ArtifactList
                     session={session}
                     artifacts={resultArtifacts}
@@ -798,7 +810,7 @@ function DetailPanel({
                   />
                 </Section>
               )}
-              <Section title={c.source}>
+              <Section title={c("source")}>
                 <div className="source-card">
                   <div>
                     <strong>{detail.item.source.title}</strong>
@@ -812,13 +824,13 @@ function DetailPanel({
                       target="_blank"
                       rel="noreferrer"
                     >
-                      {c.openOriginal} ↗
+                      {c("openOriginal")} ↗
                     </a>
                   )}
                 </div>
               </Section>
               {!!detail.item.source.evidence?.length && (
-                <Section title={c.evidence}>
+                <Section title={c("evidence")}>
                   <div className="evidence-grid">
                     {detail.item.source.evidence.map((field, index) => (
                       <div key={index}>
@@ -832,7 +844,7 @@ function DetailPanel({
               {detail.item.state === "done" &&
                 (detail.item.estimatedValue ||
                   !detail.item.valueConfigured) && (
-                  <Section title={c.value}>
+                  <Section title={c("value")}>
                     {detail.item.estimatedValue ? (
                       <>
                         <div
@@ -847,8 +859,8 @@ function DetailPanel({
                           </strong>
                           <span>
                             {detail.item.valueDisputed
-                              ? c.disputed
-                              : c.estimated}
+                              ? c("disputed")
+                              : c("estimated")}
                           </span>
                         </div>
                         <ValueModelExplanation
@@ -858,13 +870,13 @@ function DetailPanel({
                       </>
                     ) : (
                       <div className="unconfigured-value">
-                        <strong>{c.notConfigured}</strong>
-                        <p>{c.unconfiguredBody}</p>
+                        <strong>{c("notConfigured")}</strong>
+                        <p>{c("unconfiguredBody")}</p>
                       </div>
                     )}
                   </Section>
                 )}
-              <Section title={c.timeline}>
+              <Section title={c("timeline")}>
                 <Timeline
                   events={detail.timeline}
                   nodes={detail.nodes}
@@ -872,13 +884,15 @@ function DetailPanel({
                 />
               </Section>
               {detail.attempts.length > 1 && (
-                <Section title={c.attempts}>
+                <Section title={c("attempts")}>
                   <div className="attempt-list">
                     {detail.attempts.map((attempt, index) => (
                       <div key={attempt.id}>
-                        <span>{index === 0 ? c.original : c.revised}</span>
+                        <span>
+                          {index === 0 ? c("original") : c("revised")}
+                        </span>
                         <strong>
-                          {c.attempt} {attempt.number}
+                          {c("attemptNumbered", { position: attempt.number })}
                         </strong>
                         <small>{when(attempt.createdAt, locale)}</small>
                         {attempt.actionableGuidance && (
@@ -899,15 +913,15 @@ function DetailPanel({
                 className="button secondary"
                 onClick={() => setFeedbackOpen(true)}
               >
-                ⚑ {c.feedback}
+                ⚑ {c("feedback")}
               </button>
             ) : (
               <div className="feedback-form">
                 <div className="footer-title">
-                  <strong>{c.whatWrong}</strong>
+                  <strong>{c("whatWrong")}</strong>
                   <button
                     className="icon-button"
-                    aria-label={c.close}
+                    aria-label={c("close")}
                     onClick={() => setFeedbackOpen(false)}
                   >
                     <CloseIcon />
@@ -920,14 +934,14 @@ function DetailPanel({
                       onClick={() => setCategory(key)}
                       key={key}
                     >
-                      {c[key]}
+                      {c(key)}
                     </button>
                   ))}
                 </div>
                 <textarea
                   value={explanation}
                   onChange={(event) => setExplanation(event.target.value)}
-                  placeholder={c.explanation}
+                  placeholder={c("explanation")}
                 />
                 <div className="footer-actions">
                   <button
@@ -935,14 +949,14 @@ function DetailPanel({
                     disabled={busy}
                     onClick={() => void saveOnly()}
                   >
-                    {c.saveFeedback}
+                    {c("saveFeedback")}
                   </button>
                   <button
                     className="button primary"
                     disabled={busy}
                     onClick={() => setRetryOpen(true)}
                   >
-                    {c.tryAgain}
+                    {c("tryAgain")}
                   </button>
                 </div>
               </div>
@@ -952,18 +966,18 @@ function DetailPanel({
         {retryOpen && detail && (
           <div className="modal-layer">
             <div className="modal" role="dialog" aria-modal="true">
-              <h2>{c.tryAgain}</h2>
-              <p>{c.guidance}</p>
+              <h2>{c("tryAgain")}</h2>
+              <p>{c("guidance")}</p>
               <textarea
                 autoFocus
                 value={guidance}
                 onChange={(event) => setGuidance(event.target.value)}
-                placeholder={c.guidanceRequired}
+                placeholder={c("guidanceRequired")}
               />
               {detail.consequences.length > 0 && (
                 <div className="consequence-box">
-                  <strong>△ {c.consequences}</strong>
-                  <p>{c.consequenceWarning}</p>
+                  <strong>△ {c("consequences")}</strong>
+                  <p>{c("consequenceWarning")}</p>
                   {detail.consequences.map((consequence) => (
                     <label key={consequence.invocationId}>
                       <input
@@ -989,7 +1003,7 @@ function DetailPanel({
                   className="button ghost"
                   onClick={() => setRetryOpen(false)}
                 >
-                  {c.cancel}
+                  {c("cancel")}
                 </button>
                 <button
                   className="button primary"
@@ -1000,7 +1014,7 @@ function DetailPanel({
                   }
                   onClick={() => void startRetry()}
                 >
-                  {c.startRevision}
+                  {c("startRevision")}
                 </button>
               </div>
             </div>
@@ -1161,7 +1175,8 @@ function PresentedFieldValue({
     equalJSON(candidate.value, value),
   );
   if (option) return localized(option.label, locale);
-  if (typeof value === "boolean") return value ? t(locale).yes : t(locale).no;
+  if (typeof value === "boolean")
+    return value ? legacyT(locale)("yes") : legacyT(locale)("no");
   const hasChildren = directResultFields(fields, field.path).length > 0;
   if (Array.isArray(value)) {
     if (hasChildren)
@@ -1195,9 +1210,9 @@ function PresentedFieldValue({
                 ? localized(entryOption.label, locale)
                 : typeof entry === "boolean"
                   ? entry
-                    ? t(locale).yes
-                    : t(locale).no
-                  : String(entry)}
+                    ? legacyT(locale)("yes")
+                    : legacyT(locale)("no")
+                  : displayValue(entry, locale)}
             </li>
           );
         })}
@@ -1214,7 +1229,9 @@ function PresentedFieldValue({
         nested
       />
     );
-  return value === null || typeof value === "object" ? "—" : String(value);
+  return value === null || typeof value === "object"
+    ? "—"
+    : displayValue(value, locale);
 }
 function customerValues(value: unknown): unknown[] {
   if (Array.isArray(value)) return value.flatMap(customerValues);
@@ -1237,7 +1254,7 @@ function PlainValue({
     return value === undefined ? (
       <p className="muted">{empty}</p>
     ) : (
-      <p>{String(value)}</p>
+      <p>{displayValue(value, locale)}</p>
     );
   const values = customerValues(value);
   if (!values.length) return <p className="muted">{empty}</p>;
@@ -1246,9 +1263,9 @@ function PlainValue({
       {values.map((item, index) => (
         <div key={index}>
           <dt>
-            {t(locale).resultDetail} {index + 1}
+            {legacyT(locale)("resultDetailNumbered", { position: index + 1 })}
           </dt>
-          <dd>{String(item)}</dd>
+          <dd>{displayValue(item, locale)}</dd>
         </div>
       ))}
     </dl>
@@ -1264,32 +1281,37 @@ function ValueModelExplanation({
   expanded?: boolean;
 }) {
   if (!model) return null;
-  const c = t(locale);
+  const c = legacyT(locale);
   const explanation =
     typeof model.explanation === "object"
       ? localized(model.explanation, locale)
       : model.explanation;
   return (
     <details className="value-explanation" open={expanded}>
-      <summary>{c.valueHelp}</summary>
+      <summary>{c("valueHelp")}</summary>
       {explanation && <p>{explanation}</p>}
       <div className="formula">
         <span>{formulaLabel(model.formula, locale)}</span>
         {model.baselineSeconds !== undefined &&
           model.loadedHourlyCost !== undefined && (
             <strong>
-              {Math.round(model.baselineSeconds / 60)} min ×{" "}
-              {money(model.loadedHourlyCost, model.currency || "EUR", locale)}
-              {c.perHour}
+              {c("minutesAtHourlyRate", {
+                minutes: Math.round(model.baselineSeconds / 60),
+                rate: money(
+                  model.loadedHourlyCost,
+                  model.currency || "EUR",
+                  locale,
+                ),
+              })}
             </strong>
           )}
       </div>
       {model.assumptions !== undefined && model.assumptions !== null && (
         <div className="value-assumptions">
-          <strong>{c.assumptions}</strong>
+          <strong>{c("assumptions")}</strong>
           <PlainValue
             value={model.assumptions}
-            empty={c.noDetails}
+            empty={c("noDetails")}
             locale={locale}
           />
         </div>
@@ -1307,7 +1329,7 @@ function ArtifactList({
   artifacts: WorkArtifact[];
   locale: Locale;
 }) {
-  const c = t(locale);
+  const c = legacyT(locale);
   return (
     <div className="artifact-list">
       {artifacts.map((artifact) => (
@@ -1320,57 +1342,51 @@ function ArtifactList({
             <strong>
               {typeof artifact.metadata?.name === "string"
                 ? artifact.metadata.name
-                : c.artifact}
+                : c("artifact")}
             </strong>
             <small>
               {artifact.mimeType}
-              {artifact.sizeBytes ? ` · ${artifact.sizeBytes} ${c.bytes}` : ""}
+              {artifact.sizeBytes
+                ? ` · ${c("sizeBytes", { count: artifact.sizeBytes })}`
+                : ""}
             </small>
           </div>
-          <span>{c.download} ↓</span>
+          <span>{c("download")} ↓</span>
         </button>
       ))}
     </div>
   );
 }
+const eventCodes = [
+  "work_item_created",
+  "attempt_created",
+  "node_started",
+  "node_completed",
+  "work_blocked",
+  "blocker_resolved",
+  "work_completed",
+  "work_failed",
+  "feedback_recorded",
+  "revision_requested",
+  "value_credited",
+  "value_deducted",
+  "consequence_confirmation_required",
+  "consequence_repetition_confirmed",
+  "work_waiting",
+  "wait_event_received",
+  "wait_stopped",
+  "work_paused",
+  "work_resumed",
+  "step_interrupted",
+] as const;
 function eventLabel(event: TimelineEvent, locale: Locale): string {
-  const labels: Record<string, [string, string]> = {
-    work_item_created: ["Work item created", "Item de trabalho criado"],
-    attempt_created: ["Attempt created", "Tentativa criada"],
-    node_started: ["Work started", "Trabalho iniciado"],
-    node_completed: [
-      String(event.params.summary || "Business step completed"),
-      "Etapa de negócio concluída",
-    ],
-    work_blocked: ["Waiting for a person", "A aguardar uma pessoa"],
-    blocker_resolved: ["Response received", "Resposta recebida"],
-    work_completed: ["Work completed", "Trabalho concluído"],
-    work_failed: ["Could not complete", "Não foi possível concluir"],
-    feedback_recorded: ["Feedback captured", "Feedback registado"],
-    revision_requested: ["Revised attempt requested", "Nova tentativa pedida"],
-    value_credited: ["Estimated value recorded", "Valor estimado registado"],
-    value_deducted: ["Estimated value deducted", "Valor estimado deduzido"],
-    consequence_confirmation_required: [
-      "Confirmation required",
-      "Confirmação necessária",
-    ],
-    consequence_repetition_confirmed: [
-      "Repeated actions confirmed",
-      "Ações repetidas confirmadas",
-    ],
-    work_waiting: ["Waiting for responses", "A aguardar respostas"],
-    wait_event_received: ["Response received", "Resposta recebida"],
-    wait_stopped: ["Stopped waiting", "Deixou de aguardar"],
-    work_paused: ["Paused", "Em pausa"],
-    work_resumed: ["Resumed", "Retomado"],
-    step_interrupted: [
-      "Step interrupted; starting it again",
-      "Etapa interrompida; a recomeçar",
-    ],
-  };
-  return (labels[event.code] || ["Work updated", "Trabalho atualizado"])[
-    locale === "pt" ? 1 : 0
-  ];
+  const c = legacyT(locale);
+  const code = eventCodes.find((candidate) => candidate === event.code);
+  if (!code) return c("event.work_updated");
+  // A completed step's summary is English-only workflow copy.
+  if (code === "node_completed" && locale === "en" && event.params.summary)
+    return String(event.params.summary);
+  return c(`event.${code}`);
 }
 function Timeline({
   events,
@@ -1456,11 +1472,11 @@ function parseSchemaField(field: JSONSchema, draft: unknown): ParsedField {
   return { present: true, valid: true, value: String(draft) };
 }
 function schemaFieldError(field: JSONSchema, locale: Locale): string {
-  const c = t(locale);
-  if (field.type === "integer") return c.invalidInteger;
-  if (field.type === "number") return c.invalidNumber;
-  if (field.type === "array") return c.invalidArray;
-  return c.invalidObject;
+  const c = legacyT(locale);
+  if (field.type === "integer") return c("invalidInteger");
+  if (field.type === "number") return c("invalidNumber");
+  if (field.type === "array") return c("invalidArray");
+  return c("invalidObject");
 }
 function BlockerForm({
   session,
@@ -1473,7 +1489,7 @@ function BlockerForm({
   locale: Locale;
   onDone: () => Promise<void>;
 }) {
-  const c = t(locale);
+  const c = legacyT(locale);
   const [drafts, setDrafts] = useState<Record<string, unknown>>({});
   const [outcome, setOutcome] = useState(
     blocker.allowedOutcomes.length === 1 ? blocker.allowedOutcomes[0] : "",
@@ -1534,7 +1550,7 @@ function BlockerForm({
       await onDone();
     } catch (err) {
       if (!session.lost(err))
-        setError(err instanceof Error ? err.message : "Error");
+        setError(err instanceof Error ? err.message : c("unexpectedError"));
     } finally {
       setBusy(false);
     }
@@ -1547,16 +1563,16 @@ function BlockerForm({
       <form onSubmit={(event) => void submit(event)}>
         {blocker.allowedOutcomes.length > 1 && (
           <label>
-            {c.blockerOutcome}
+            {c("blockerOutcome")}
             <select
               value={outcome}
               onChange={(event) => setOutcome(event.target.value)}
             >
-              <option value="">{c.chooseOutcome}</option>
+              <option value="">{c("chooseOutcome")}</option>
               {blocker.allowedOutcomes.map((option, index) => (
                 <option value={option} key={option}>
                   {localized(outcomeLabels[index], locale) ||
-                    `${c.choice} ${index + 1}`}
+                    c("choiceNumbered", { position: index + 1 })}
                 </option>
               ))}
             </select>
@@ -1568,7 +1584,7 @@ function BlockerForm({
           return (
             <label key={key}>
               {localized(fieldPresentation?.label, locale) ||
-                `${c.responseField} ${fieldIndex + 1}`}
+                c("responseFieldNumbered", { position: fieldIndex + 1 })}
               {field.enum ? (
                 <select
                   value={String(drafts[key] ?? "")}
@@ -1583,7 +1599,7 @@ function BlockerForm({
                   {field.enum.map((option, index) => (
                     <option value={index} key={JSON.stringify(option)}>
                       {localized(fieldPresentation?.options?.[index], locale) ||
-                        `${c.choice} ${index + 1}`}
+                        c("choiceNumbered", { position: index + 1 })}
                     </option>
                   ))}
                 </select>
@@ -1624,7 +1640,7 @@ function BlockerForm({
         })}
         {blocker.kind === "artifact" && (
           <label>
-            {c.uploadArtifact}
+            {c("uploadArtifact")}
             <input
               type="file"
               onChange={(event) => setFile(event.target.files?.[0] || null)}
@@ -1634,8 +1650,8 @@ function BlockerForm({
         {blocker.kind === "consequence_confirmation" &&
           consequences.length > 0 && (
             <div className="consequence-box">
-              <strong>△ {c.consequences}</strong>
-              <p>{c.blockerConsequenceWarning}</p>
+              <strong>△ {c("consequences")}</strong>
+              <p>{c("blockerConsequenceWarning")}</p>
               {consequences.map((consequence) => (
                 <label key={consequence.invocationId}>
                   <input
@@ -1658,7 +1674,7 @@ function BlockerForm({
           )}
         {error && <div className="form-error">{error}</div>}
         <button className="button primary" disabled={!valid || busy}>
-          {c.submitResponse}
+          {c("submitResponse")}
         </button>
       </form>
     </section>
@@ -1674,7 +1690,7 @@ function ValueModal({
   data: NonNullable<ReturnType<typeof useDashboardData>["data"]>;
   close: () => void;
 }) {
-  const c = t(locale);
+  const c = legacyT(locale);
   const model = data.summary.value.models[0];
   const total = data.summary.value.totals[0];
   return (
@@ -1687,21 +1703,21 @@ function ValueModal({
       <div className="modal value-modal" role="dialog" aria-modal="true">
         <button
           className="icon-button modal-close"
-          aria-label={c.close}
+          aria-label={c("close")}
           onClick={close}
         >
           <CloseIcon />
         </button>
-        <span className="eyebrow">{c.valueHelp}</span>
+        <span className="eyebrow">{c("valueHelp")}</span>
         <h2>
           {data.summary.value.configured && total
             ? money(total.amount, total.currency, locale)
-            : c.notConfigured}
+            : c("notConfigured")}
         </h2>
         {model ? (
           <ValueModelExplanation model={model} locale={locale} expanded />
         ) : (
-          <p>{c.unconfiguredBody}</p>
+          <p>{c("unconfiguredBody")}</p>
         )}
       </div>
     </div>
@@ -1711,7 +1727,7 @@ function ValueModal({
 export default function App() {
   const [authState, setAuthState] = useState<
     | { kind: "probing" }
-    | { kind: "anonymous"; message?: string }
+    | { kind: "anonymous"; message?: string; locale?: Locale }
     | { kind: "authenticated"; profile: AuthProfile; csrfToken: string }
     | { kind: "unavailable" }
   >({ kind: "probing" });
@@ -1730,7 +1746,7 @@ export default function App() {
           });
           break;
         case "anonymous":
-          setAuthState({ kind: "anonymous" });
+          setAuthState({ kind: "anonymous", locale: result.locale });
           break;
         default:
           setAuthState({ kind: "unavailable" });
@@ -1742,7 +1758,8 @@ export default function App() {
   }, []);
   useEffect(probe, [probe]);
   const onSessionLost = useCallback(
-    (message?: string) => setAuthState({ kind: "anonymous", message }),
+    (message?: string, locale?: Locale) =>
+      setAuthState({ kind: "anonymous", message, locale }),
     [],
   );
 
@@ -1750,7 +1767,7 @@ export default function App() {
     return (
       <div className="auth-page">
         <div className="auth-card" role="status" aria-busy="true">
-          {t("en").loading}
+          {legacyT(browserLocale())("loading")}
         </div>
       </div>
     );
@@ -1759,6 +1776,7 @@ export default function App() {
     return (
       <PublicAuth
         initialMessage={authState.message}
+        initialLocale={authState.locale ?? browserLocale()}
         onAuthenticated={(profile, csrfToken) => {
           setSurface("work");
           setAuthState({ kind: "authenticated", profile, csrfToken });
@@ -1767,12 +1785,12 @@ export default function App() {
     );
   }
   if (authState.kind === "unavailable") {
-    const copy = authCopy("en");
+    const copy = fixedT(browserLocale(), "auth");
     return (
       <main className="auth-page">
         <section className="auth-card">
-          <h1>{copy.unavailableTitle}</h1>
-          <p>{copy.unavailableBody}</p>
+          <h1>{copy("unavailableTitle")}</h1>
+          <p>{copy("unavailableBody")}</p>
           <button
             type="button"
             className="button primary"
@@ -1781,7 +1799,7 @@ export default function App() {
               probe();
             }}
           >
-            {copy.retry}
+            {copy("retry")}
           </button>
         </section>
       </main>
@@ -1815,10 +1833,11 @@ function WorkDashboard({
 }: {
   profile: AuthProfile;
   initialCSRF: string;
-  onSessionLost: (message?: string) => void;
+  onSessionLost: (message?: string, locale?: Locale) => void;
   onOpenAccount: () => void;
 }) {
   const [locale, setLocale] = useState<Locale>(profile.locale);
+  useEffect(() => setActiveLocale(locale), [locale]);
   // The CSRF proof lives in a ref so refreshing it does not reload the board.
   const csrf = useRef(initialCSRF);
   const [preset, setPreset] = useState("week");
@@ -1838,8 +1857,8 @@ function WorkDashboard({
     [preset, customFrom, customTo],
   );
   const expire = useCallback(
-    () => onSessionLost(authCopy(profile.locale).sessionExpired),
-    [onSessionLost, profile.locale],
+    () => onSessionLost(fixedT(locale, "common")("sessionExpired"), locale),
+    [onSessionLost, locale],
   );
   const session = useMemo<WorkSession>(
     () => ({
@@ -1886,7 +1905,7 @@ function WorkDashboard({
     }
     onSessionLost();
   }
-  const c = t(locale);
+  const c = legacyT(locale);
   const items = data?.items || [];
   return (
     <div className="app-shell">
@@ -1908,21 +1927,21 @@ function WorkDashboard({
         />
         <section className="controls">
           <div>
-            <span className="eyebrow">{c.date}</span>
+            <span className="eyebrow">{c("date")}</span>
             <select
-              aria-label={c.date}
+              aria-label={c("date")}
               value={preset}
               onChange={(event) => setPreset(event.target.value)}
             >
-              <option value="today">{c.today}</option>
-              <option value="week">{c.week}</option>
-              <option value="month">{c.month}</option>
-              <option value="custom">{c.custom}</option>
+              <option value="today">{c("today")}</option>
+              <option value="week">{c("week")}</option>
+              <option value="month">{c("month")}</option>
+              <option value="custom">{c("custom")}</option>
             </select>
             {preset === "custom" && (
               <>
                 <label>
-                  <span className="sr-only">{c.from}</span>
+                  <span className="sr-only">{c("from")}</span>
                   <input
                     type="date"
                     value={customFrom}
@@ -1930,7 +1949,7 @@ function WorkDashboard({
                   />
                 </label>
                 <label>
-                  <span className="sr-only">{c.to}</span>
+                  <span className="sr-only">{c("to")}</span>
                   <input
                     type="date"
                     value={customTo}
@@ -1940,22 +1959,20 @@ function WorkDashboard({
               </>
             )}
           </div>
-          <span>
-            {items.length} {c.itemsShown}
-          </span>
+          <span>{c("itemsShown", { count: items.length })}</span>
         </section>
         {error && (
           <div className="page-error" role="alert">
-            {c.refreshError}
+            {c("refreshError")}
           </div>
         )}
         {signOutError && (
           <div className="page-error" role="alert">
-            {authCopy(locale).signOutFailed}
+            {fixedT(locale, "common")("signOutFailed")}
           </div>
         )}
         {loading && !data ? (
-          <div className="loading page-loading">{c.loading}</div>
+          <div className="loading page-loading">{c("loading")}</div>
         ) : (
           <Board items={items} locale={locale} open={setSelected} />
         )}
@@ -1972,7 +1989,7 @@ function WorkDashboard({
                   <button
                     className="icon-button"
                     onClick={() => setSelected(null)}
-                    aria-label={c.close}
+                    aria-label={c("close")}
                   >
                     <CloseIcon />
                   </button>
@@ -1982,7 +1999,7 @@ function WorkDashboard({
                       localized copy; the raw exception is logged to the
                       operator-only console channel, not rendered here. */}
                   <div className="form-error" role="alert">
-                    {t(locale).detailCrash}
+                    {legacyT(locale)("detailCrash")}
                   </div>
                 </div>
               </aside>

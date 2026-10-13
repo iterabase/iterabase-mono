@@ -3,6 +3,7 @@ import {
   ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -11,18 +12,24 @@ import {
   AuthAPIError,
   AuthProfile,
   LocaleCode,
+  OrganizationSettings,
   Role,
   SessionInfo,
   authApi,
 } from "./authApi";
-import { AuthCopy, authCopy } from "./copy";
+import type { TFunction } from "i18next";
+import { fixedT, setLocale as setActiveLocale } from "../i18n";
+import { formatDateTime, formatNumber } from "../i18n/format";
+
+type SettingsT = TFunction<"settings">;
 
 type View = "profile" | "sessions" | "requests";
 
 interface Props {
   initialProfile: AuthProfile;
   initialCSRF: string;
-  onSessionLost: (message?: string) => void;
+  /** Reports a lost session with the language the sign-in page should use. */
+  onSessionLost: (message?: string, locale?: LocaleCode) => void;
   onOpenWork?: () => void;
 }
 
@@ -53,7 +60,16 @@ export default function AccountShell({
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const invoker = useRef<HTMLElement | null>(null);
-  const c = authCopy(locale);
+  // Stable per locale, so panels that depend on it don't reload (and drop
+  // unsaved input) on unrelated shell renders.
+  const c = useMemo(() => fixedT(locale, "settings"), [locale]);
+
+  useEffect(() => setActiveLocale(locale), [locale]);
+
+  const sessionLost = useCallback(
+    (message?: string) => onSessionLost(message, locale),
+    [onSessionLost, locale],
+  );
 
   const handleError = useCallback(
     (err: unknown) => {
@@ -62,21 +78,21 @@ export default function AccountShell({
         code === "session_expired" ||
         (err instanceof AuthAPIError && err.status === 401)
       ) {
-        onSessionLost(c.sessionExpired);
+        sessionLost(c("sessionExpired"));
         return;
       }
       if (code === "recent_auth_required") {
         setError("");
         return;
       }
-      if (code === "forbidden") setError(c.forbidden);
-      else if (code === "throttled") setError(c.throttled);
-      else if (code === "state_changed") setError(c.stateChanged);
-      else if (code === "account_exists") setError(c.accountExists);
-      else if (code === "invalid_credentials") setError(c.reauthMismatch);
-      else setError(c.unavailableBody);
+      if (code === "forbidden") setError(c("forbidden"));
+      else if (code === "throttled") setError(c("throttled"));
+      else if (code === "state_changed") setError(c("stateChanged"));
+      else if (code === "account_exists") setError(c("accountExists"));
+      else if (code === "invalid_credentials") setError(c("reauthMismatch"));
+      else setError(c("unavailableBody"));
     },
-    [c, onSessionLost],
+    [c, sessionLost],
   );
 
   // callWithCSRF refreshes the session-bound proof once when a request is
@@ -109,11 +125,11 @@ export default function AccountShell({
       await authApi.signOutCurrent(csrf);
     } catch {
       // The server session may still be valid: stay signed in and say so.
-      setError(c.signOutFailed);
+      setError(c("signOutFailed"));
       return;
     }
-    onSessionLost();
-  }, [c, csrf, onSessionLost]);
+    sessionLost();
+  }, [c, csrf, sessionLost]);
 
   function openDialog(action: PendingAction) {
     invoker.current = document.activeElement as HTMLElement | null;
@@ -142,15 +158,15 @@ export default function AccountShell({
     <div className="app-shell">
       <header className="account-header">
         <div>
-          <span className="eyebrow">{c.eyebrow}</span>
+          <span className="eyebrow">{c("eyebrow")}</span>
           <strong>
-            {c.signedInAs} {profile.displayName || profile.email}
+            {c("signedInAs")} {profile.displayName || profile.email}
           </strong>
         </div>
-        <nav aria-label={c.eyebrow} className="account-nav">
+        <nav aria-label={c("eyebrow")} className="account-nav">
           {onOpenWork && (
             <button type="button" onClick={onOpenWork}>
-              {c.navWork}
+              {c("navWork")}
             </button>
           )}
           {(["profile", "sessions"] as View[]).map((item) => (
@@ -161,7 +177,7 @@ export default function AccountShell({
               className={view === item ? "active" : ""}
               onClick={() => setView(item)}
             >
-              {item === "profile" ? c.navProfile : c.navSessions}
+              {item === "profile" ? c("navProfile") : c("navSessions")}
             </button>
           ))}
           {profile.role === "admin" && (
@@ -171,11 +187,11 @@ export default function AccountShell({
               className={view === "requests" ? "active" : ""}
               onClick={() => setView("requests")}
             >
-              {c.navRequests}
+              {c("navRequests")}
             </button>
           )}
           <button type="button" onClick={() => void signOut()}>
-            {c.signOut}
+            {c("signOut")}
           </button>
         </nav>
       </header>
@@ -223,7 +239,29 @@ export default function AccountShell({
             withCSRF={callWithCSRF}
             onError={handleError}
             confirm={(dialog) => setConfirm(dialog)}
-            onSignedOut={() => onSessionLost()}
+            onSignedOut={() => sessionLost()}
+          />
+        )}
+        {view === "requests" && profile.role === "admin" && (
+          <OrganizationLanguagePanel
+            copy={c}
+            setNotice={setNotice}
+            withCSRF={callWithCSRF}
+            onError={handleError}
+            onSaved={async () => {
+              // People who follow the organisation, including this Admin,
+              // switch language with it; others keep their own.
+              try {
+                const refreshed = await authApi.profile();
+                setProfile(refreshed.profile);
+                setCSRF(refreshed.csrfToken);
+                setLocale(refreshed.profile.locale);
+                return refreshed.profile.locale;
+              } catch (err) {
+                handleError(err);
+                return undefined;
+              }
+            }}
           />
         )}
         {view === "requests" && profile.role === "admin" && (
@@ -244,7 +282,7 @@ export default function AccountShell({
           <p>{confirm.body}</p>
           <div className="dialog-actions">
             <button type="button" onClick={() => setConfirm(null)}>
-              {c.revokeCancel}
+              {c("revokeCancel")}
             </button>
             <button
               type="button"
@@ -285,7 +323,7 @@ export default function AccountShell({
 
 interface ProfilePanelProps {
   profile: AuthProfile;
-  copy: AuthCopy;
+  copy: SettingsT;
   busy: boolean;
   onSaved: (profile: AuthProfile) => void;
   onReload: () => Promise<void>;
@@ -306,9 +344,10 @@ function ProfilePanel({
 }: ProfilePanelProps) {
   const [displayName, setDisplayName] = useState(profile.displayName);
   // The language is a pending value: the UI keeps the saved language until the
-  // server confirms the update (COV-PROFILE-001).
-  const [pendingLocale, setPendingLocale] = useState<LocaleCode>(
-    profile.locale,
+  // server confirms the update (COV-PROFILE-001). "" follows the organisation
+  // default (DES-HOR-670-02).
+  const [pendingLocale, setPendingLocale] = useState<LocaleCode | "">(
+    profile.localePreference,
   );
   const [saving, setSaving] = useState(false);
   const [fieldError, setFieldError] = useState("");
@@ -316,13 +355,13 @@ function ProfilePanel({
 
   useEffect(() => {
     setDisplayName(profile.displayName);
-    setPendingLocale(profile.locale);
+    setPendingLocale(profile.localePreference);
   }, [profile]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (displayName.trim() === "") {
-      setFieldError(copy.displayName);
+      setFieldError(copy("displayName"));
       return;
     }
     setFieldError("");
@@ -340,7 +379,7 @@ function ProfilePanel({
       onSaved(result.profile);
       // The saved language becomes the active UI language, so the confirmation
       // is rendered in that language too.
-      setNotice(authCopy(result.profile.locale).profileSaved);
+      setNotice(fixedT(result.profile.locale, "settings")("profileSaved"));
     } catch (err) {
       if (err instanceof AuthAPIError && err.code === "profile_conflict") {
         setConflict(true);
@@ -354,8 +393,8 @@ function ProfilePanel({
 
   return (
     <section className="account-card" aria-busy={busy || saving}>
-      <h2>{copy.profileTitle}</h2>
-      <p className="auth-intro">{copy.profileIntro}</p>
+      <h2>{copy("profileTitle")}</h2>
+      <p className="auth-intro">{copy("profileIntro")}</p>
       {fieldError && (
         <div className="form-error" role="alert">
           {fieldError}
@@ -363,7 +402,7 @@ function ProfilePanel({
       )}
       {conflict && (
         <div className="form-error" role="alert">
-          {copy.profileConflict}{" "}
+          {copy("profileConflict")}{" "}
           <button
             type="button"
             onClick={() => {
@@ -371,13 +410,13 @@ function ProfilePanel({
               void onReload();
             }}
           >
-            {copy.retry}
+            {copy("retry")}
           </button>
         </div>
       )}
       <form className="auth-form" onSubmit={submit}>
         <label>
-          <span>{copy.displayName}</span>
+          <span>{copy("displayName")}</span>
           <input
             value={displayName}
             maxLength={200}
@@ -385,41 +424,192 @@ function ProfilePanel({
           />
         </label>
         <label>
-          <span>{copy.language}</span>
+          <span>{copy("language")}</span>
           <select
             value={pendingLocale}
             onChange={(event) =>
-              setPendingLocale(event.target.value as LocaleCode)
+              setPendingLocale(event.target.value as LocaleCode | "")
             }
           >
-            <option value="en">English</option>
-            <option value="pt">Português</option>
+            <option value="">
+              {profile.organizationLocale
+                ? copy("languageFollowOrganization", {
+                    language: copy(
+                      `languageName.${profile.organizationLocale}`,
+                    ),
+                  })
+                : copy("languageFollowBrowser")}
+            </option>
+            <option value="en">{copy("languageName.en")}</option>
+            <option value="pt">{copy("languageName.pt")}</option>
           </select>
         </label>
         <label>
-          <span>{copy.profileEmailReadonly}</span>
+          <span>{copy("profileEmailReadonly")}</span>
           <input value={profile.email} readOnly disabled />
         </label>
         <label>
-          <span>{copy.profileRoleReadonly}</span>
+          <span>{copy("profileRoleReadonly")}</span>
           <input
             value={
-              profile.role === "admin" ? copy.roleAdmin : copy.roleOperator
+              profile.role === "admin"
+                ? copy("roleAdmin")
+                : copy("roleOperator")
             }
             readOnly
             disabled
           />
         </label>
         <button type="submit" disabled={saving}>
-          {saving ? copy.profileSaving : copy.profileSave}
+          {saving ? copy("profileSaving") : copy("profileSave")}
         </button>
       </form>
     </section>
   );
 }
 
+interface OrganizationLanguagePanelProps {
+  copy: SettingsT;
+  setNotice: (notice: string) => void;
+  withCSRF: <T>(action: (csrf: string) => Promise<T>) => Promise<T>;
+  onError: (err: unknown) => void;
+  /** Refreshes the viewer's profile and returns their effective locale. */
+  onSaved: () => Promise<LocaleCode | undefined>;
+}
+
+// The organisation default language (DES-HOR-670-02): Admin-only and logged
+// with the Admin's name. HOR-585 moves it to Settings → People.
+function OrganizationLanguagePanel({
+  copy,
+  setNotice,
+  withCSRF,
+  onError,
+  onSaved,
+}: OrganizationLanguagePanelProps) {
+  const [settings, setSettings] = useState<OrganizationSettings | null>(null);
+  const [pending, setPending] = useState<LocaleCode | "">("");
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+
+  // Loads on mount and on explicit retry only: a shell re-render must never
+  // reset the Admin's unsaved choice.
+  const load = useCallback(async () => {
+    setLoadFailed(false);
+    setConflict(false);
+    try {
+      const loaded = await authApi.organizationSettings();
+      setSettings(loaded);
+      setPending(loaded.defaultLocale);
+    } catch (err) {
+      if (err instanceof AuthAPIError && err.status === 403) {
+        onErrorRef.current(err);
+        return;
+      }
+      setLoadFailed(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!settings || pending === "") return;
+    const chosen = pending;
+    setSaving(true);
+    setConflict(false);
+    setNotice("");
+    try {
+      const updated = await withCSRF((token) =>
+        authApi.updateOrganizationSettings(token, {
+          defaultLocale: chosen,
+          expectedUpdatedAt: settings.updatedAt,
+        }),
+      );
+      setSettings(updated);
+      // The confirmation uses the viewer's resolved language, which is the
+      // new default only if they follow the organisation.
+      const viewerLocale = await onSaved();
+      setNotice(
+        (viewerLocale ? fixedT(viewerLocale, "settings") : copy)(
+          "organizationLanguageSaved",
+        ),
+      );
+    } catch (err) {
+      if (err instanceof AuthAPIError && err.code === "settings_conflict") {
+        setConflict(true);
+      } else {
+        onError(err);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="account-card" aria-busy={settings === null || saving}>
+      <h2>{copy("organizationLanguageTitle")}</h2>
+      <p className="auth-intro">{copy("organizationLanguageIntro")}</p>
+      {settings === null && !loadFailed && (
+        <p className="loading" role="status">
+          {copy("loading")}
+        </p>
+      )}
+      {loadFailed && (
+        <div className="form-error" role="alert">
+          {copy("unavailableBody")}{" "}
+          <button type="button" onClick={() => void load()}>
+            {copy("retry")}
+          </button>
+        </div>
+      )}
+      {conflict && (
+        <div className="form-error" role="alert">
+          {copy("settingsConflict")}{" "}
+          <button type="button" onClick={() => void load()}>
+            {copy("retry")}
+          </button>
+        </div>
+      )}
+      {settings && (
+        <form className="auth-form" onSubmit={submit}>
+          <label>
+            <span>{copy("organizationLanguageLabel")}</span>
+            <select
+              value={pending}
+              onChange={(event) =>
+                setPending(event.target.value as LocaleCode | "")
+              }
+            >
+              {settings.defaultLocale === "" && (
+                <option value="" disabled>
+                  {copy("organizationLanguageNotSet")}
+                </option>
+              )}
+              <option value="en">{copy("languageName.en")}</option>
+              <option value="pt">{copy("languageName.pt")}</option>
+            </select>
+          </label>
+          <button
+            type="submit"
+            disabled={
+              saving || pending === "" || pending === settings.defaultLocale
+            }
+          >
+            {saving ? copy("profileSaving") : copy("organizationLanguageSave")}
+          </button>
+        </form>
+      )}
+    </section>
+  );
+}
+
 interface SessionsPanelProps {
-  copy: AuthCopy;
+  copy: SettingsT;
   locale: LocaleCode;
   busy: boolean;
   setNotice: (notice: string) => void;
@@ -451,9 +641,9 @@ function SessionsPanel({
         onSignedOut();
         return;
       }
-      setLoadError(copy.sessionsError);
+      setLoadError(copy("sessionsError"));
     }
-  }, [copy.sessionsError, onSignedOut]);
+  }, [copy("sessionsError"), onSignedOut]);
 
   useEffect(() => {
     void load();
@@ -463,18 +653,18 @@ function SessionsPanel({
 
   return (
     <section className="account-card" aria-busy={busy || sessions === null}>
-      <h2>{copy.sessionsTitle}</h2>
-      <p className="auth-intro">{copy.sessionsIntro}</p>
+      <h2>{copy("sessionsTitle")}</h2>
+      <p className="auth-intro">{copy("sessionsIntro")}</p>
       {sessions === null && !loadError && (
         <p className="loading" role="status">
-          {copy.sessionsLoading}
+          {copy("sessionsLoading")}
         </p>
       )}
       {loadError && (
         <div className="form-error" role="alert">
           {loadError}{" "}
           <button type="button" onClick={() => void load()}>
-            {copy.retry}
+            {copy("retry")}
           </button>
         </div>
       )}
@@ -486,20 +676,20 @@ function SessionsPanel({
                 <div>
                   <strong>{sessionLabel(session, copy)}</strong>
                   {session.current && (
-                    <span className="badge">{copy.currentSession}</span>
+                    <span className="badge">{copy("currentSession")}</span>
                   )}
                 </div>
                 <dl>
                   <div>
-                    <dt>{copy.created}</dt>
+                    <dt>{copy("created")}</dt>
                     <dd>{formatTime(session.createdAt, locale)}</dd>
                   </div>
                   <div>
-                    <dt>{copy.lastActive}</dt>
+                    <dt>{copy("lastActive")}</dt>
                     <dd>
                       {session.lastActiveAt
                         ? formatTime(session.lastActiveAt, locale)
-                        : copy.activityUnavailable}
+                        : copy("activityUnavailable")}
                     </dd>
                   </div>
                 </dl>
@@ -508,9 +698,9 @@ function SessionsPanel({
                   onClick={() =>
                     session.current
                       ? confirm({
-                          title: copy.revokeSessionConfirm,
-                          body: copy.revokeSessionConsequence,
-                          confirmLabel: copy.signOutThisDevice,
+                          title: copy("revokeSessionConfirm"),
+                          body: copy("revokeSessionConsequence"),
+                          confirmLabel: copy("signOutThisDevice"),
                           run: async () => {
                             try {
                               await withCSRF((token) => authApi.signOut(token));
@@ -520,22 +710,22 @@ function SessionsPanel({
                           },
                         })
                       : confirm({
-                          title: copy.revokeSessionConfirm,
-                          body: copy.revokeSessionConsequence,
-                          confirmLabel: copy.revokeConfirm,
+                          title: copy("revokeSessionConfirm"),
+                          body: copy("revokeSessionConsequence"),
+                          confirmLabel: copy("revokeConfirm"),
                           run: async () => {
                             await withCSRF((token) =>
                               authApi.revokeSession(token, session.id),
                             );
-                            setNotice(copy.revoked);
+                            setNotice(copy("revoked"));
                             await load();
                           },
                         })
                   }
                 >
                   {session.current
-                    ? copy.signOutThisDevice
-                    : copy.signOutSession}
+                    ? copy("signOutThisDevice")
+                    : copy("signOutSession")}
                 </button>
               </li>
             ))}
@@ -545,20 +735,20 @@ function SessionsPanel({
               type="button"
               onClick={() =>
                 confirm({
-                  title: copy.revokeOthersConfirm,
-                  body: copy.revokeOthersConsequence,
-                  confirmLabel: copy.revokeOthers,
+                  title: copy("revokeOthersConfirm"),
+                  body: copy("revokeOthersConsequence"),
+                  confirmLabel: copy("revokeOthers"),
                   run: async () => {
                     await withCSRF((token) =>
                       authApi.revokeOtherSessions(token),
                     );
-                    setNotice(copy.revoked);
+                    setNotice(copy("revoked"));
                     await load();
                   },
                 })
               }
             >
-              {copy.revokeOthers} ({others.length})
+              {copy("revokeOthers")} ({formatNumber(others.length, locale)})
             </button>
           )}
         </>
@@ -567,30 +757,24 @@ function SessionsPanel({
   );
 }
 
-function sessionLabel(session: SessionInfo, copy: AuthCopy): string {
+function sessionLabel(session: SessionInfo, copy: SettingsT): string {
   const client = [session.browser, session.os, session.device]
     .filter(Boolean)
     .join(" · ");
-  const region = session.region || session.country || copy.regionUnavailable;
+  const region = session.region || session.country || copy("regionUnavailable");
   if (!client)
-    return region === copy.regionUnavailable ? copy.clientUnavailable : region;
+    return region === copy("regionUnavailable")
+      ? copy("clientUnavailable")
+      : region;
   return `${client} — ${region}`;
 }
 
 function formatTime(value: string, locale: LocaleCode): string {
-  if (!value) return "";
-  try {
-    return new Intl.DateTimeFormat(locale === "pt" ? "pt-PT" : "en-GB", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date(value));
-  } catch {
-    return value;
-  }
+  return formatDateTime(value, locale);
 }
 
 interface AccessRequestsPanelProps {
-  copy: AuthCopy;
+  copy: SettingsT;
   locale: LocaleCode;
   busy: boolean;
   setNotice: (notice: string) => void;
@@ -623,9 +807,9 @@ function AccessRequestsPanel({
         setRequests([]);
         return;
       }
-      setLoadError(copy.requestsError);
+      setLoadError(copy("requestsError"));
     }
-  }, [copy.requestsError, onError]);
+  }, [copy("requestsError"), onError]);
 
   useEffect(() => {
     void load();
@@ -633,22 +817,22 @@ function AccessRequestsPanel({
 
   return (
     <section className="account-card" aria-busy={busy || requests === null}>
-      <h2>{copy.requestsTitle}</h2>
-      <p className="auth-intro">{copy.requestsIntro}</p>
+      <h2>{copy("requestsTitle")}</h2>
+      <p className="auth-intro">{copy("requestsIntro")}</p>
       {requests === null && !loadError && (
         <p className="loading" role="status">
-          {copy.requestsLoading}
+          {copy("requestsLoading")}
         </p>
       )}
       {loadError && (
         <div className="form-error" role="alert">
           {loadError}{" "}
           <button type="button" onClick={() => void load()}>
-            {copy.retry}
+            {copy("retry")}
           </button>
         </div>
       )}
-      {requests && requests.length === 0 && <p>{copy.requestsEmpty}</p>}
+      {requests && requests.length === 0 && <p>{copy("requestsEmpty")}</p>}
       {requests && requests.length > 0 && (
         <ul className="request-list">
           {requests.map((request) => (
@@ -657,14 +841,14 @@ function AccessRequestsPanel({
                 <strong>{request.email}</strong>
                 {request.verifiedAt && (
                   <span className="badge">
-                    {copy.verifyVerified}{" "}
+                    {copy("verifyVerified")}{" "}
                     {formatTime(request.verifiedAt, locale)}
                   </span>
                 )}
               </div>
               <div className="dialog-actions">
                 <button type="button" onClick={() => setReview(request)}>
-                  {copy.requestsReview}
+                  {copy("requestsReview")}
                 </button>
                 <button
                   type="button"
@@ -674,7 +858,7 @@ function AccessRequestsPanel({
                         await withCSRF((token) =>
                           authApi.decline(token, request.id),
                         );
-                        setNotice(copy.declineDone);
+                        setNotice(copy("declineDone"));
                         await load();
                       } catch (err) {
                         onError(err);
@@ -682,7 +866,7 @@ function AccessRequestsPanel({
                     })
                   }
                 >
-                  {copy.requestsDecline}
+                  {copy("requestsDecline")}
                 </button>
               </div>
             </li>
@@ -692,15 +876,15 @@ function AccessRequestsPanel({
 
       {review && (
         <Dialog
-          title={copy.approveTitle}
+          title={copy("approveTitle")}
           onClose={() => setReview(null)}
           copy={copy}
         >
           <p>
-            {copy.approveIntro} {review.email}
+            {copy("approveIntro")} {review.email}
           </p>
           <fieldset>
-            <legend>{copy.approveAs}</legend>
+            <legend>{copy("approveAs")}</legend>
             <label>
               <input
                 type="radio"
@@ -709,7 +893,7 @@ function AccessRequestsPanel({
                 checked={role === "operator"}
                 onChange={() => setRole("operator")}
               />
-              <span>{copy.roleOperator}</span>
+              <span>{copy("roleOperator")}</span>
             </label>
             <label>
               <input
@@ -719,12 +903,12 @@ function AccessRequestsPanel({
                 checked={role === "admin"}
                 onChange={() => setRole("admin")}
               />
-              <span>{copy.roleAdmin}</span>
+              <span>{copy("roleAdmin")}</span>
             </label>
           </fieldset>
           <div className="dialog-actions">
             <button type="button" onClick={() => setReview(null)}>
-              {copy.reauthCancel}
+              {copy("reauthCancel")}
             </button>
             <button
               type="button"
@@ -739,7 +923,7 @@ function AccessRequestsPanel({
                     await withCSRF((token) =>
                       authApi.approve(token, target.id, chosen),
                     );
-                    setNotice(copy.approveDone);
+                    setNotice(copy("approveDone"));
                     await load();
                   } catch (err) {
                     onError(err);
@@ -747,7 +931,7 @@ function AccessRequestsPanel({
                 });
               }}
             >
-              {copy.approveSubmit}
+              {copy("approveSubmit")}
             </button>
           </div>
         </Dialog>
@@ -765,7 +949,7 @@ function Dialog({
   title: string;
   children: ReactNode;
   onClose: () => void;
-  copy: AuthCopy;
+  copy: SettingsT;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -792,7 +976,7 @@ function Dialog({
       >
         <h2>{title}</h2>
         {children}
-        {copy.retry === "" && null}
+        {copy("retry") === "" && null}
       </div>
     </div>
   );
@@ -804,15 +988,15 @@ function ReauthDialog({
   onCancel,
   onSubmit,
 }: {
-  copy: AuthCopy;
+  copy: SettingsT;
   busy: boolean;
   onCancel: () => void;
   onSubmit: (password: string) => void;
 }) {
   const [password, setPassword] = useState("");
   return (
-    <Dialog title={copy.reauthTitle} onClose={onCancel} copy={copy}>
-      <p>{copy.reauthIntro}</p>
+    <Dialog title={copy("reauthTitle")} onClose={onCancel} copy={copy}>
+      <p>{copy("reauthIntro")}</p>
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -820,7 +1004,7 @@ function ReauthDialog({
         }}
       >
         <label>
-          <span>{copy.password}</span>
+          <span>{copy("password")}</span>
           <input
             type="password"
             autoComplete="current-password"
@@ -830,10 +1014,10 @@ function ReauthDialog({
         </label>
         <div className="dialog-actions">
           <button type="button" onClick={onCancel}>
-            {copy.reauthCancel}
+            {copy("reauthCancel")}
           </button>
           <button type="submit" disabled={busy || password === ""}>
-            {copy.reauthSubmit}
+            {copy("reauthSubmit")}
           </button>
         </div>
       </form>

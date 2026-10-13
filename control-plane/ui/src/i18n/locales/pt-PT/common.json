@@ -1,0 +1,23 @@
+{
+  "brand": "Iterabase",
+  "displayName": "O seu nome",
+  "eyebrow": "Segurança da conta",
+  "language": "Idioma",
+  "languageName": {
+    "en": "English",
+    "pt": "Português (Portugal)"
+  },
+  "languageShort": {
+    "en": "EN",
+    "pt": "PT"
+  },
+  "loading": "A carregar…",
+  "password": "Palavra-passe",
+  "retry": "Tentar novamente",
+  "roleAdmin": "Administrador",
+  "roleOperator": "Operador",
+  "sessionExpired": "A sua sessão expirou. Inicie sessão novamente para continuar.",
+  "signOutFailed": "Não foi possível terminar a sessão. Continua com sessão iniciada; tente novamente.",
+  "throttled": "Demasiadas tentativas. Tente novamente mais tarde.",
+  "unavailableBody": "A autenticação do browser não está disponível nesta instalação neste momento."
+}
