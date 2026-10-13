@@ -85,6 +85,11 @@ func (h *Handler) registerAuthRoutes(r chi.Router) {
 	h.route(r, http.MethodGet, "/v1/access-requests", action(identity.ActionPeopleRead), h.listAccessRequests)
 	h.route(r, http.MethodPost, "/v1/access-requests/{id}/approve", recentAdminSession(), h.approveAccessRequest)
 	h.route(r, http.MethodPost, "/v1/access-requests/{id}/decline", recentAdminSession(), h.declineAccessRequest)
+
+	// Organisation settings (HOR-670): browser-only, current Admin, CSRF on
+	// writes; logged with the Admin's identity.
+	h.route(r, http.MethodGet, "/v1/organization/settings", adminSession(), h.getOrganizationSettings)
+	h.route(r, http.MethodPatch, "/v1/organization/settings", adminSession(), h.updateOrganizationSettings)
 }
 
 // requireOrigin enforces the exact configured origin on unsafe browser
@@ -211,6 +216,9 @@ func (h *Handler) authSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Before sign-in the language follows the organisation default, then the
+	// browser (DES-HOR-670-02).
+	anonymous := authSessionResponse{Locale: h.webLocale(r, "")}
 	token, err := h.authCfg.sessionCookie(r)
 	if err != nil {
 		if errors.Is(err, ErrBearerNotAccepted) {
@@ -218,7 +226,7 @@ func (h *Handler) authSession(w http.ResponseWriter, r *http.Request) {
 				"This area requires a browser session; API keys are not accepted here.")
 			return
 		}
-		writeJSON(w, http.StatusOK, authSessionResponse{})
+		writeJSON(w, http.StatusOK, anonymous)
 		return
 	}
 	session, err := h.store.ResolveBrowserSessionWithNetwork(r.Context(), token, h.authCfg.now(), h.sessionNetwork(r))
@@ -226,23 +234,23 @@ func (h *Handler) authSession(w http.ResponseWriter, r *http.Request) {
 		// An expired or ineligible browser session is the anonymous state for
 		// the bootstrap probe; the refusal is still audited.
 		h.auditSessionRefusal(r, err)
-		writeJSON(w, http.StatusOK, authSessionResponse{})
+		writeJSON(w, http.StatusOK, anonymous)
 		return
 	}
 	user, err := h.store.GetLocalUser(r.Context(), session.IdentityID)
 	if err != nil {
-		writeJSON(w, http.StatusOK, authSessionResponse{})
+		writeJSON(w, http.StatusOK, anonymous)
 		return
 	}
 	csrfRaw, err := h.store.RotateSessionCSRF(r.Context(), session.ID)
 	if err != nil {
-		writeJSON(w, http.StatusOK, authSessionResponse{})
+		writeJSON(w, http.StatusOK, anonymous)
 		return
 	}
-	profile := profileFor(user)
+	profile := h.profileFor(r, user)
 	profile.RecentPasswordAt = session.RecentPasswordAt
 	writeJSON(w, http.StatusOK, authSessionResponse{
-		Authenticated: true, Profile: &profile, CSRFToken: csrfRaw,
+		Authenticated: true, Profile: &profile, CSRFToken: csrfRaw, Locale: profile.Locale,
 	})
 }
 
@@ -520,7 +528,7 @@ func (h *Handler) finishSignIn(r *http.Request, w http.ResponseWriter, user iden
 	}
 	h.authCfg.setSessionCookie(w, raw, session.AbsoluteExpiresAt)
 	authWrite(w, http.StatusOK, signInResponse{
-		Profile:   profileFor(user),
+		Profile:   h.profileFor(r, user),
 		CSRFToken: csrfRaw,
 	})
 }
@@ -604,7 +612,7 @@ func (h *Handler) getProfile(w http.ResponseWriter, r *http.Request) {
 		h.writeSessionError(r, w, identity.ErrSessionIneligible)
 		return
 	}
-	profile := profileFor(user)
+	profile := h.profileFor(r, user)
 	profile.RecentPasswordAt = session.RecentPasswordAt
 	authWrite(w, http.StatusOK, signInResponse{
 		Profile:   profile,
@@ -636,9 +644,14 @@ func (h *Handler) updateProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// An empty locale means "follow the organisation default".
 	locale := user.Locale
 	if req.Locale != nil {
-		locale = normalizeLocale(*req.Locale)
+		locale = *req.Locale
+		if locale != "" && !identity.ValidLocale(locale) {
+			authError(w, http.StatusBadRequest, "invalid_locale", "Choose English, Portuguese or the organisation default.")
+			return
+		}
 	}
 	updated, err := h.store.UpdateLocalUserProfileVersioned(r.Context(), session.IdentityID, displayName, locale, req.ExpectedUpdatedAt, h.authCfg.now())
 	switch {
@@ -648,7 +661,7 @@ func (h *Handler) updateProfile(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		authError(w, http.StatusInternalServerError, "unavailable", "This is temporarily unavailable. Try again shortly.")
 	default:
-		authWrite(w, http.StatusOK, signInResponse{Profile: profileFor(updated)})
+		authWrite(w, http.StatusOK, signInResponse{Profile: h.profileFor(r, updated)})
 	}
 }
 
@@ -876,16 +889,26 @@ type authSessionResponse struct {
 	Authenticated bool             `json:"authenticated"`
 	Profile       *profileResponse `json:"profile,omitempty"`
 	CSRFToken     string           `json:"csrfToken,omitempty"`
+	// Locale is the effective UI language, also before sign-in.
+	Locale string `json:"locale,omitempty"`
 }
 
 type profileResponse struct {
-	ID               string     `json:"id"`
-	Email            string     `json:"email"`
-	DisplayName      string     `json:"displayName"`
-	Role             string     `json:"role"`
-	Locale           string     `json:"locale"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
-	RecentPasswordAt *time.Time `json:"recentPasswordAt,omitempty"`
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	DisplayName string `json:"displayName"`
+	Role        string `json:"role"`
+	// Locale is the effective language: the person's choice, then the
+	// organisation default, then the browser, then English.
+	Locale string `json:"locale"`
+	// LocalePreference is the person's own choice; empty follows the
+	// organisation default.
+	LocalePreference string `json:"localePreference"`
+	// OrganizationLocale is the organisation default; empty until an Admin
+	// chooses one.
+	OrganizationLocale string     `json:"organizationLocale"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
+	RecentPasswordAt   *time.Time `json:"recentPasswordAt,omitempty"`
 }
 
 type sessionResponse struct {
@@ -907,15 +930,34 @@ type accessRequestResponse struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 }
 
-func profileFor(user identity.LocalUser) profileResponse {
+func (h *Handler) profileFor(r *http.Request, user identity.LocalUser) profileResponse {
+	organization := h.organizationLocale(r)
 	return profileResponse{
-		ID:          user.ID,
-		Email:       user.Email,
-		DisplayName: user.DisplayName,
-		Role:        user.Role,
-		Locale:      user.Locale,
-		UpdatedAt:   user.UpdatedAt,
+		ID:                 user.ID,
+		Email:              user.Email,
+		DisplayName:        user.DisplayName,
+		Role:               user.Role,
+		Locale:             identity.ResolveWebLocale(user.Locale, organization, r.Header.Get("Accept-Language")),
+		LocalePreference:   user.Locale,
+		OrganizationLocale: organization,
+		UpdatedAt:          user.UpdatedAt,
 	}
+}
+
+// organizationLocale reads the organisation default language. A read failure
+// degrades to "not chosen" so a settings outage never blocks sign-in.
+func (h *Handler) organizationLocale(r *http.Request) string {
+	settings, err := h.store.GetOrganizationSettings(r.Context())
+	if err != nil {
+		h.logWarn("reading organization settings failed", err)
+		return ""
+	}
+	return settings.DefaultLocale
+}
+
+// webLocale resolves the effective UI language for this request.
+func (h *Handler) webLocale(r *http.Request, preference string) string {
+	return identity.ResolveWebLocale(preference, h.organizationLocale(r), r.Header.Get("Accept-Language"))
 }
 
 func normalizeLocale(locale string) string {

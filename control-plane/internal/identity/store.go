@@ -40,7 +40,7 @@ type LocalUser struct {
 	EmailNormalized         string
 	DisplayName             string
 	Role                    string // admin | operator (legacy `user` normalizes to operator)
-	Locale                  string // en | pt
+	Locale                  string // en | pt | "" (follows the organisation default)
 	Status                  string // setup_pending | active | disabled
 	PasswordHash            string
 	PasswordChangedAt       *time.Time

@@ -101,11 +101,15 @@ func (s *Store) RequestPasswordReset(ctx context.Context, normalized string, now
 	if err := InvalidateAuthLinksTx(ctx, tx, AuthLinkResetPassword, "", user.ID, now, "resend"); err != nil {
 		return false, err
 	}
+	locale, err := resolveLocale(ctx, tx, user.ID)
+	if err != nil {
+		return false, err
+	}
 	if _, err := QueueAuthEmailTx(ctx, tx, AuthEmailIntent{
 		Purpose:             AuthLinkResetPassword,
 		RecipientEmail:      user.Email,
 		RecipientIdentityID: user.ID,
-		Locale:              user.Locale,
+		Locale:              locale,
 	}); err != nil {
 		return false, err
 	}
@@ -213,11 +217,15 @@ func (s *Store) ResendSetupInstructions(ctx context.Context, raw string, now tim
 	if err := InvalidateAuthLinksTx(ctx, tx, AuthLinkSetupPassword, "", user.ID, now, "resend"); err != nil {
 		return false, err
 	}
+	locale, err := resolveLocale(ctx, tx, user.ID)
+	if err != nil {
+		return false, err
+	}
 	if _, err := QueueAuthEmailTx(ctx, tx, AuthEmailIntent{
 		Purpose:             AuthLinkSetupPassword,
 		RecipientEmail:      user.Email,
 		RecipientIdentityID: user.ID,
-		Locale:              user.Locale,
+		Locale:              locale,
 	}); err != nil {
 		return false, err
 	}

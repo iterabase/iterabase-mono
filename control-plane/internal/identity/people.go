@@ -28,7 +28,7 @@ type Person struct {
 	Email            string
 	DisplayName      string
 	Role             string
-	Locale           string
+	Locale           string // en | pt | "" (follows the organisation default)
 	Status           string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
@@ -43,7 +43,7 @@ type PersonConsequences struct {
 	CredentialsSuspended int64
 }
 
-const personColumns = `lu.identity_id, lu.email, lu.display_name, lu.role, lu.locale,
+const personColumns = `lu.identity_id, lu.email, lu.display_name, lu.role, COALESCE(lu.locale, ''),
 	lu.status, lu.created_at, lu.updated_at, lu.role_changed_at, lu.account_changed_at`
 
 func scanPerson(row pgx.Row) (Person, error) {

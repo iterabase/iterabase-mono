@@ -108,24 +108,24 @@ func TestMigrations(t *testing.T) {
 
 	// HOR-489: fresh installs grant only the durable workload-authorization
 	// reads. A migration-22 OPO1 database already has this exact ACL, so moving
-	// down migrations 31 through 23 intentionally preserves it; reapplying
+	// down migrations 32 through 23 intentionally preserves it; reapplying
 	// them must be an idempotent metadata advance with no manual role update.
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
-	require.NoError(t, database.MigrateDown(connStr, 9))
+	require.NoError(t, database.MigrateDown(connStr, 10))
 	var migrationVersion int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
 	assert.Equal(t, 22, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 	require.NoError(t, database.MigrateUp(connStr))
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
-	assert.Equal(t, 31, migrationVersion)
+	assert.Equal(t, 32, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 
 	// HOR-254 must migrate an existing gateway ledger without requiring an
-	// unavailable customer-safe summary backfill. Step back from 31 (HOR-582),
-	// through 30 (HOR-597) and the earlier migrations to the pre-HOR-254 schema;
-	// seed a historical write, then apply all sixteen again.
-	require.NoError(t, database.MigrateDown(connStr, 16))
+	// unavailable customer-safe summary backfill. Step back from 32 (HOR-670),
+	// through 31 (HOR-582), 30 (HOR-597) and the earlier migrations to the
+	// pre-HOR-254 schema; seed a historical write, then apply all seventeen again.
+	require.NoError(t, database.MigrateDown(connStr, 17))
 	_, err = pool.Exec(ctx, `
 		INSERT INTO toolgateway.tool_versions
 		    (name,version,digest,description,input_schema,effect_class,credential_slots,artifact_capabilities,timeout_ms)
@@ -359,8 +359,9 @@ func TestV2OnlyAuthorityMigrationUpgradesALegacyInstallation(t *testing.T) {
 
 	// Step back to the pre-HOR-453 schema (migration 25) and seed a legacy
 	// install shaped like OPO1. The combined tree has 29 (wait/pause),
-	// 30 (backend auth_ref) and 31 (V2-only authority), so step down six.
-	require.NoError(t, database.MigrateDown(connStr, 6))
+	// 30 (backend auth_ref), 31 (V2-only authority) and 32 (locale preference),
+	// so step down seven.
+	require.NoError(t, database.MigrateDown(connStr, 7))
 	version, dirty, err := database.MigrateVersion(connStr)
 	require.NoError(t, err)
 	require.False(t, dirty)

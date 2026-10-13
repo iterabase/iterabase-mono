@@ -316,7 +316,7 @@ Required fields/constraints:
 - `identity_id` PK/FK to canonical human identity.
 - canonical normalized email, unique for non-purged human accounts.
 - original validated delivery email.
-- display name and `en|pt` locale.
+- display name and `en|pt` locale, or `NULL` to follow the organisation default (HOR-670, [`v2-localization.md`](v2-localization.md)).
 - role exactly `operator|admin`.
 - setup state exactly `setup_pending|active|disabled` according to transition rules.
 - nullable self-describing password hash only while setup is pending.
@@ -469,7 +469,8 @@ These endpoints accept only their submitted credential/token, use enumeration-re
 
 ### Cookie-session customer APIs
 
-- Current profile and locale.
+- Current profile and locale (effective locale, own preference and organisation default; see [`v2-localization.md`](v2-localization.md)).
+- Admin organisation default language (`/v1/organization/settings`, HOR-670).
 - Password reauthentication/change.
 - Session list/current/revoke/sign-out.
 - Admin verified-access-request read/review.
