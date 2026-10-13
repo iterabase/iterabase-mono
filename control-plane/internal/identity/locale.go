@@ -52,14 +52,18 @@ type rowQuerier interface {
 
 // GetOrganizationSettings returns the deployment-wide settings.
 func (s *Store) GetOrganizationSettings(ctx context.Context) (OrganizationSettings, error) {
-	return getOrganizationSettings(ctx, s.pool)
+	return getOrganizationSettings(ctx, s.pool, "")
 }
 
-func getOrganizationSettings(ctx context.Context, q rowQuerier) (OrganizationSettings, error) {
+const organizationSettingsQuery = `
+	SELECT COALESCE(default_locale, ''), COALESCE(updated_by_identity_id::text, ''), updated_at
+	FROM identity.organization_settings WHERE id`
+
+// getOrganizationSettings reads the settings row; lock is appended to the
+// query (for example " FOR UPDATE").
+func getOrganizationSettings(ctx context.Context, q rowQuerier, lock string) (OrganizationSettings, error) {
 	var settings OrganizationSettings
-	err := q.QueryRow(ctx, `
-		SELECT COALESCE(default_locale, ''), COALESCE(updated_by_identity_id::text, ''), updated_at
-		FROM identity.organization_settings WHERE id`).Scan(
+	err := q.QueryRow(ctx, organizationSettingsQuery+lock).Scan(
 		&settings.DefaultLocale, &settings.UpdatedByIdentityID, &settings.UpdatedAt)
 	if err != nil {
 		return OrganizationSettings{}, fmt.Errorf("get organization settings: %w", err)
@@ -81,7 +85,9 @@ func (s *Store) UpdateOrganizationDefaultLocale(ctx context.Context, actorID, lo
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	previous, err := getOrganizationSettings(ctx, tx)
+	// Lock the row before comparing versions, so concurrent writers based on
+	// the same version serialize and the later one sees the change.
+	previous, err := getOrganizationSettings(ctx, tx, " FOR UPDATE")
 	if err != nil {
 		return OrganizationSettings{}, err
 	}
@@ -108,7 +114,7 @@ func (s *Store) UpdateOrganizationDefaultLocale(ctx context.Context, actorID, lo
 	}); err != nil {
 		return OrganizationSettings{}, err
 	}
-	updated, err := getOrganizationSettings(ctx, tx)
+	updated, err := getOrganizationSettings(ctx, tx, "")
 	if err != nil {
 		return OrganizationSettings{}, err
 	}
