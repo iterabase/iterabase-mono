@@ -14,11 +14,14 @@ Read the root [`AGENTS.md`](../AGENTS.md) first. Its context, Git, ticket, valid
 Per-customer resources belong to the Forge AWS provider (HOR-593), not here. CI fixture accounts are `docs/runbooks/aws-ci.md` (HOR-591). The operator procedure is [`docs/runbooks/aws-hosted.md`](../docs/runbooks/aws-hosted.md).
 
 ```bash
-make check      # fmt-check + validate + lint, no AWS credentials
+make check      # fmt-check + validate + mocked plan tests + lint, no cloud credentials
 make fmt-check
 make validate   # terraform init -backend=false + validate per stack
+make test       # native Terraform mocked plans, no backend state or cloud API calls
 make lint       # tflint with .tflint.hcl
 ```
+
+Baseline regression tests live in `hosted-aws/baseline/tests/*.tftest.hcl`. They mock both providers and assert the configured IAM statements, not the mocked policy-document JSON. A mocked plan does not prove live AWS authorization; after a reviewed/merged change and founder-approved apply, the runbook's launch dry run and live smoke remain required.
 
 Tool versions are pinned in `.github/inputs/remote-content.json` (`ci_tools`: `terraform`, `tflint`) and installed in CI by checksum. Provider versions are locked in each stack's `.terraform.lock.hcl` for linux and darwin, amd64 and arm64; refresh with `terraform providers lock -platform=linux_amd64 -platform=linux_arm64 -platform=darwin_amd64 -platform=darwin_arm64`.
 

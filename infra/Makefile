@@ -5,9 +5,9 @@ TERRAFORM ?= terraform
 TFLINT ?= tflint
 STACKS := hosted-aws/bootstrap hosted-aws/baseline
 
-.PHONY: check fmt-check validate lint
+.PHONY: check fmt-check validate test lint
 
-check: fmt-check validate lint
+check: fmt-check validate test lint
 
 fmt-check:
 	$(TERRAFORM) fmt -check -recursive -diff .
@@ -19,6 +19,10 @@ validate:
 		$(TERRAFORM) -chdir="$$stack" init -backend=false -input=false -lockfile=readonly >/dev/null; \
 		$(TERRAFORM) -chdir="$$stack" validate; \
 	done
+
+# Native mocked plans: no backend state or cloud credentials.
+test: validate
+	$(TERRAFORM) -chdir=hosted-aws/baseline test -no-color
 
 lint:
 	@for stack in $(STACKS); do \

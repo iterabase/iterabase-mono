@@ -18,7 +18,7 @@ provider (HOR-593), which reads the baseline only through its SSM contract.
 | Who applies | The founder, locally, with an IAM Identity Center admin session (`DES-HOR-603-02`). CI only runs `make infra-check` and holds no credentials for this account. |
 | State | `iterabase-hosted-tfstate-<account-id>`, created by `bootstrap/` (local state). The baseline uses key `baseline/terraform.tfstate`; Forge uses `envs/<name>/`. S3-native locking (`use_lockfile`). |
 | Consumer contract | SSM parameters under `/iterabase/hosted/baseline/v1/*` (`DES-HOR-603-03`). See [Contract keys](#contract-keys). |
-| Forge role | `iterabase-hosted-forge`: tagged-only EC2 lifecycle in the shared subnets (allowed instance types, IMDSv2, Canonical or own AMIs), `envs/*` state, backup-prefix teardown, node roles only under `/iterabase/env/` with the boundary (`DES-HOR-603-08`), SSH and port-forwarding sessions to tagged instances. |
+| Forge role | `iterabase-hosted-forge`: tagged-only EC2 lifecycle in the shared subnets (allowed instance types, IMDSv2, Canonical or own AMIs by `aws:ResourceAccount`), `envs/*` state, backup-prefix teardown, node roles only under `/iterabase/env/` with the boundary (`DES-HOR-603-08`), SSH and port-forwarding sessions to tagged instances. |
 | Support role | `iterabase-hosted-support`: interactive Session Manager shells (logged) and break-glass SSH over SSM to tagged instances. |
 | Session audit | Interactive shells: content to `iterabase-hosted-session-logs-<account-id>` (`sessions/`) and `/iterabase/hosted/ssm-sessions`, 365 days. SSH and port forwarding: CloudTrail `StartSession`/`TerminateSession` events in `iterabase-hosted-audit-<account-id>` (`cloudtrail/`) and `/iterabase/hosted/cloudtrail`, 365 days. AWS does not log SSH session content (`DES-HOR-603-07`). |
 | Network | `iterabase-hosted-shared` VPC `10.40.0.0/16`, one public `/20` per AZ tagged `kubernetes.io/role/elb=1`, S3 gateway endpoint, default security group with no rules. No inbound SSH anywhere; SSM uses the instances' internet egress, so no SSM interface endpoints. |
@@ -170,16 +170,33 @@ aws iam put-role-policy --role-name hor-603-smoke --policy-name smoke-node --pol
 aws iam create-instance-profile --path /iterabase/env/ --instance-profile-name hor-603-smoke
 aws iam add-role-to-instance-profile --instance-profile-name hor-603-smoke --role-name hor-603-smoke
 
+# Use the full ARN for the non-root-path instance profile.
+profile_arn=$(aws iam get-instance-profile --instance-profile-name hor-603-smoke --query InstanceProfile.Arn --output text)
 subnet=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/subnet-ids --query Parameter.Value --output text | cut -d, -f1)
 vpc=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/vpc-id --query Parameter.Value --output text)
 sg=$(aws ec2 create-security-group --group-name hor-603-smoke --description "no inbound" --vpc-id "$vpc" \
   --tag-specifications 'ResourceType=security-group,Tags=[{Key=iterabase-env,Value=hor-603-smoke}]' --query GroupId --output text)
 aws ec2 run-instances --image-id "$ami" --instance-type m7i-flex.large --subnet-id "$subnet" \
-  --security-group-ids "$sg" --iam-instance-profile Name=hor-603-smoke --metadata-options HttpTokens=required \
+  --security-group-ids "$sg" --iam-instance-profile Arn="$profile_arn" --metadata-options HttpTokens=required \
   --user-data file://smoke-user-data.yaml \
   --tag-specifications 'ResourceType=instance,Tags=[{Key=iterabase-env,Value=hor-603-smoke}]' \
                        'ResourceType=volume,Tags=[{Key=iterabase-env,Value=hor-603-smoke}]'
 ```
+
+Before the real launch, use `--dry-run` with the **same** launch arguments.
+Authorized requests return the expected **nonzero** `DryRunOperation` error;
+`UnauthorizedOperation` is a failed preflight, not a reason to launch as admin.
+IAM instance profiles can take time to propagate: retry an invalid-profile
+parameter error for up to two minutes after creation, then stop if it persists.
+Do not retry an authorization failure by widening the live policy.
+
+A trusted-image authorization failure can be decoded as the administrator with
+`aws sts decode-authorization-message --encoded-message <message>`. The image
+condition uses [`aws:ResourceAccount`](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html#condition-keys-resourceaccount)
+to allow only Canonical (`099720109477`) and the hosted account. `ec2:Owner`
+classifies public Canonical images as `amazon`, so comparing it to numeric
+account IDs denies valid launches; allowing `amazon` instead would broaden the
+approved trust boundary.
 
 `smoke-user-data.yaml` adds your SSH public key to the `ubuntu` user. Also
 record that an untagged `run-instances` and an `m7i.4xlarge` launch are denied.
