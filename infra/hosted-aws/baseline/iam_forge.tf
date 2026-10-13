@@ -312,10 +312,19 @@ data "aws_iam_policy_document" "forge" {
     resources = ["${local.ssm_document_arn}/AWS-StartSSHSession", "${local.ssm_document_arn}/AWS-StartPortForwardingSession"]
   }
 
+  # An assumed role's session ARN starts with its role-session name, not the
+  # full aws:userid. SSM's immutable system owner tag carries that full ID.
   statement {
     sid       = "OwnSessions"
+    effect    = "Allow"
     actions   = ["ssm:TerminateSession", "ssm:ResumeSession"]
-    resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:session/$${aws:userid}-*"]
+    resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:session/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ssm:resourceTag/aws:ssmmessages:session-id"
+      values   = ["$${aws:userid}"]
+    }
   }
 
   # The client side of the session: StartSession creates it, this opens it.
