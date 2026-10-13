@@ -36,6 +36,8 @@ const operatorProfile = {
   displayName: "Ada Lovelace",
   role: "operator" as const,
   locale: "en" as const,
+  localePreference: "en" as const,
+  organizationLocale: "" as const,
   updatedAt: "2026-09-23T10:00:00Z",
 };
 
@@ -451,6 +453,211 @@ describe("AccountShell", () => {
     );
     await user.click(screen.getByRole("button", { name: "Sessions" }));
     await waitFor(() => expect(onSessionLost).toHaveBeenCalled());
+  });
+});
+
+describe("Language preference (HOR-670)", () => {
+  it("opens the sign-in page in the organisation or browser language", () => {
+    render(<PublicAuth initialLocale="pt" onAuthenticated={vi.fn()} />);
+    expect(
+      screen.getByRole("heading", { name: "Iniciar sessão" }),
+    ).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe("pt-PT");
+  });
+
+  it("lets a person follow the organisation default again", async () => {
+    const patch = vi.fn();
+    const following = {
+      ...operatorProfile,
+      locale: "pt" as const,
+      localePreference: "" as const,
+      organizationLocale: "pt" as const,
+    };
+    stubFetch([
+      [
+        "/v1/profile",
+        (init) => {
+          if (init?.method !== "PATCH")
+            return json({ profile: operatorProfile, csrfToken: "csrf" });
+          patch(JSON.parse(String(init.body)));
+          return json({ profile: following });
+        },
+      ],
+    ]);
+    const user = userEvent.setup();
+    render(
+      <AccountShell
+        initialProfile={{ ...operatorProfile, organizationLocale: "pt" }}
+        initialCSRF="csrf-token"
+        onSessionLost={vi.fn()}
+      />,
+    );
+    const language = screen.getByLabelText("Language");
+    expect(
+      within(language).getByRole("option", {
+        name: "Organisation default (Português (Portugal))",
+      }),
+    ).toBeInTheDocument();
+    await user.selectOptions(language, "");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Alterações guardadas.",
+    );
+    expect(patch).toHaveBeenCalledWith(expect.objectContaining({ locale: "" }));
+    expect(screen.getByRole("heading", { name: "Perfil" })).toBeInTheDocument();
+  });
+
+  it("lets an Admin set the organisation default language", async () => {
+    const patch = vi.fn();
+    stubFetch([
+      [
+        "/v1/organization/settings",
+        (init) => {
+          if (init?.method !== "PATCH")
+            return json({
+              defaultLocale: "",
+              updatedAt: "2026-09-23T10:00:00Z",
+            });
+          patch(JSON.parse(String(init.body)));
+          return json({
+            defaultLocale: "pt",
+            updatedBy: adminProfile.id,
+            updatedAt: "2026-09-23T12:00:00Z",
+          });
+        },
+      ],
+      [
+        "/v1/profile",
+        () =>
+          json({
+            profile: {
+              ...adminProfile,
+              locale: "pt",
+              localePreference: "",
+              organizationLocale: "pt",
+            },
+            csrfToken: "csrf",
+          }),
+      ],
+      ["/v1/access-requests", () => json([])],
+    ]);
+    const user = userEvent.setup();
+    render(
+      <AccountShell
+        initialProfile={{ ...adminProfile, localePreference: "" }}
+        initialCSRF="csrf"
+        onSessionLost={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Access requests" }));
+    const select = await screen.findByLabelText("Default language");
+    expect(
+      within(select).getByRole("option", {
+        name: "Not set (each person's browser language)",
+      }),
+    ).toBeDisabled();
+    await user.selectOptions(select, "pt");
+    await user.click(
+      screen.getByRole("button", { name: "Save default language" }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Idioma predefinido guardado.",
+    );
+    expect(patch).toHaveBeenCalledWith({
+      defaultLocale: "pt",
+      expectedUpdatedAt: "2026-09-23T10:00:00Z",
+    });
+    // The Admin follows the organisation, so the shell switches to PT-PT.
+    expect(
+      screen.getByRole("heading", { name: "Idioma da organização" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the Admin's unsaved organisation language across shell updates", async () => {
+    stubFetch([
+      [
+        "/v1/organization/settings",
+        () => json({ defaultLocale: "en", updatedAt: "2026-09-23T10:00:00Z" }),
+      ],
+      [
+        "/v1/access-requests",
+        () =>
+          json([
+            {
+              id: "request-1",
+              email: "grace@example.com",
+              verifiedAt: "2026-09-23T11:00:00Z",
+              createdAt: "2026-09-23T10:00:00Z",
+            },
+          ]),
+      ],
+    ]);
+    const user = userEvent.setup();
+    render(
+      <AccountShell
+        initialProfile={adminProfile}
+        initialCSRF="csrf"
+        onSessionLost={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Access requests" }));
+    const select = await screen.findByLabelText("Default language");
+    await user.selectOptions(select, "pt");
+    // Unrelated shell activity: review a request and open reauthentication.
+    await user.click(await screen.findByRole("button", { name: "Review" }));
+    await user.click(screen.getByRole("radio", { name: "Operator" }));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    expect(
+      screen.getByText(/Enter your current password to continue/),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Default language")).toHaveValue("pt");
+  });
+
+  it("confirms in the Admin's own language when they don't follow the organisation", async () => {
+    stubFetch([
+      [
+        "/v1/organization/settings",
+        (init) =>
+          init?.method === "PATCH"
+            ? json({
+                defaultLocale: "pt",
+                updatedBy: adminProfile.id,
+                updatedAt: "2026-09-23T12:00:00Z",
+              })
+            : json({ defaultLocale: "en", updatedAt: "2026-09-23T10:00:00Z" }),
+      ],
+      [
+        "/v1/profile",
+        () =>
+          json({
+            profile: { ...adminProfile, organizationLocale: "pt" },
+            csrfToken: "csrf",
+          }),
+      ],
+      ["/v1/access-requests", () => json([])],
+    ]);
+    const user = userEvent.setup();
+    render(
+      <AccountShell
+        initialProfile={adminProfile}
+        initialCSRF="csrf"
+        onSessionLost={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Access requests" }));
+    await user.selectOptions(
+      await screen.findByLabelText("Default language"),
+      "pt",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Save default language" }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Default language saved.",
+    );
+    expect(
+      screen.getByRole("heading", { name: "Organisation language" }),
+    ).toBeInTheDocument();
   });
 });
 

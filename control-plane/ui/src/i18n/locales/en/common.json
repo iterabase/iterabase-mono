@@ -1,0 +1,23 @@
+{
+  "brand": "Iterabase",
+  "displayName": "Your name",
+  "eyebrow": "Account security",
+  "language": "Language",
+  "languageName": {
+    "en": "English",
+    "pt": "Português (Portugal)"
+  },
+  "languageShort": {
+    "en": "EN",
+    "pt": "PT"
+  },
+  "loading": "Loading…",
+  "password": "Password",
+  "retry": "Try again",
+  "roleAdmin": "Admin",
+  "roleOperator": "Operator",
+  "sessionExpired": "Your session expired. Sign in again to continue.",
+  "signOutFailed": "Could not sign out. You are still signed in; try again.",
+  "throttled": "Too many attempts. Try again shortly.",
+  "unavailableBody": "Browser authentication is not available in this deployment right now."
+}

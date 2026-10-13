@@ -6,7 +6,18 @@ export interface AuthProfile {
   email: string;
   displayName: string;
   role: Role;
+  /** The effective language: own choice, organisation, browser, English. */
   locale: LocaleCode;
+  /** The person's own choice; "" follows the organisation default. */
+  localePreference: LocaleCode | "";
+  /** The organisation default; "" until an Admin chooses one. */
+  organizationLocale: LocaleCode | "";
+  updatedAt: string;
+}
+
+export interface OrganizationSettings {
+  defaultLocale: LocaleCode | "";
+  updatedBy?: string;
   updatedAt: string;
 }
 
@@ -157,7 +168,7 @@ export const authApi = {
     csrf: string,
     body: {
       displayName?: string;
-      locale?: LocaleCode;
+      locale?: LocaleCode | "";
       expectedUpdatedAt?: string;
     },
   ) =>
@@ -182,6 +193,17 @@ export const authApi = {
       csrf,
     ),
   accessRequests: () => request<AccessRequest[]>("/v1/access-requests"),
+  organizationSettings: () =>
+    request<OrganizationSettings>("/v1/organization/settings"),
+  updateOrganizationSettings: (
+    csrf: string,
+    body: { defaultLocale: LocaleCode; expectedUpdatedAt?: string },
+  ) =>
+    request<OrganizationSettings>(
+      "/v1/organization/settings",
+      { method: "PATCH", body: JSON.stringify(body) },
+      csrf,
+    ),
   approve: (csrf: string, id: string, role: Role) =>
     request<{ state: string; role: Role }>(
       `/v1/access-requests/${id}/approve`,
@@ -198,7 +220,7 @@ export const authApi = {
 
 export type ProbeResult =
   | { kind: "authenticated"; profile: AuthProfile; csrfToken: string }
-  | { kind: "anonymous" }
+  | { kind: "anonymous"; locale?: LocaleCode }
   | { kind: "unavailable" };
 
 /**
@@ -217,6 +239,7 @@ export async function probeSession(): Promise<ProbeResult> {
       authenticated?: boolean;
       profile?: AuthProfile;
       csrfToken?: string;
+      locale?: string;
     };
     if (payload.authenticated && payload.profile && payload.csrfToken) {
       return {
@@ -225,7 +248,13 @@ export async function probeSession(): Promise<ProbeResult> {
         csrfToken: payload.csrfToken,
       };
     }
-    return { kind: "anonymous" };
+    return {
+      kind: "anonymous",
+      locale:
+        payload.locale === "pt" || payload.locale === "en"
+          ? payload.locale
+          : undefined,
+    };
   } catch {
     return { kind: "unavailable" };
   }

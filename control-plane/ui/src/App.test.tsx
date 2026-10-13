@@ -162,6 +162,10 @@ function fetchMock(
               path: ["customer", "country"],
               label: { en: "Country", pt: "País" },
             },
+            {
+              path: ["quantity"],
+              label: { en: "Quantity", pt: "Quantidade" },
+            },
           ],
         },
         visit: 1,
@@ -173,6 +177,7 @@ function fetchMock(
         output: {
           classification: "pricing",
           customer: { name: "ACME", country: "Portugal" },
+          quantity: 1840.5,
         },
         createdAt: item.createdAt,
       },
@@ -636,6 +641,7 @@ describe("Platform v1 Dashboard", () => {
       await screen.findByRole("heading", { name: "Quotation processed" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Pricing")).toBeInTheDocument();
+    expect(screen.getByText("1,840.5")).toBeInTheDocument();
     const itemValueExplanation = screen
       .getAllByText("How this is estimated")
       .at(-1);
@@ -643,15 +649,18 @@ describe("Platform v1 Dashboard", () => {
     await user.click(itemValueExplanation!);
     expect(screen.getByText("Customer assumptions")).toBeInTheDocument();
     expect(screen.getByText("Manual handling time saved")).toBeInTheDocument();
-    expect(screen.getByText(/€30\.00\/hour/)).toBeInTheDocument();
+    // Whole amounts drop the decimals (HOR-670): €30, 30 €.
+    expect(screen.getByText(/min × €30\/hour/)).toBeInTheDocument();
     expect(screen.getByText("Customer baseline")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "PT" }));
     expect(
       screen.getByText("Tempo de trabalho manual poupado"),
     ).toBeInTheDocument();
-    expect(screen.getByText(/\/hora/)).toBeInTheDocument();
+    expect(screen.getByText(/min × 30 €\/hora/)).toBeInTheDocument();
     expect(screen.getByText("Classificação")).toBeInTheDocument();
     expect(screen.getByText("Preços")).toBeInTheDocument();
+    // Typed numeric results follow the locale (HOR-670).
+    expect(screen.getByText("1.840,5")).toBeInTheDocument();
     expect(screen.getAllByText("Cliente").length).toBeGreaterThan(0);
     expect(screen.getByText("Nome")).toBeInTheDocument();
     expect(screen.getAllByText("ACME").length).toBeGreaterThan(0);

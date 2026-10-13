@@ -1,6 +1,16 @@
-import { FormEvent, RefObject, useEffect, useRef, useState } from "react";
+import {
+  FormEvent,
+  RefObject,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { AuthAPIError, AuthProfile, LocaleCode, authApi } from "./authApi";
-import { AuthCopy, authCopy } from "./copy";
+import type { TFunction } from "i18next";
+import { fixedT, setLocale as setActiveLocale } from "../i18n";
+
+type AuthT = TFunction<"auth">;
 
 type View =
   | { kind: "sign-in" }
@@ -30,6 +40,8 @@ type View =
 
 interface Props {
   initialMessage?: string;
+  /** The organisation default, else the browser language (DES-HOR-670-02). */
+  initialLocale?: LocaleCode;
   onAuthenticated: (profile: AuthProfile, csrfToken: string) => void;
 }
 
@@ -55,8 +67,12 @@ function initialState(): View {
   }
 }
 
-export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
-  const [locale, setLocale] = useState<LocaleCode>("en");
+export default function PublicAuth({
+  initialMessage,
+  initialLocale = "en",
+  onAuthenticated,
+}: Props) {
+  const [locale, setLocale] = useState<LocaleCode>(initialLocale);
   const [view, setView] = useState<View>(initialState);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -72,11 +88,13 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
   const [error, setError] = useState(initialMessage || "");
   const [notice, setNotice] = useState("");
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const c = authCopy(locale);
+  const c = useMemo(() => fixedT(locale, "auth"), [locale]);
 
   useEffect(() => {
     window.history.replaceState(null, "", window.location.pathname);
   }, []);
+
+  useEffect(() => setActiveLocale(locale), [locale]);
 
   // A valid setup link discloses only its bounded read-only context: the
   // verified work email and the approved role.
@@ -201,7 +219,7 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
     event.preventDefault();
     if (view.kind !== "setup") return;
     if (password !== confirmPassword) {
-      setPasswordMismatch(c.passwordMismatch);
+      setPasswordMismatch(c("passwordMismatch"));
       return;
     }
     setPasswordMismatch("");
@@ -230,7 +248,7 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
     event.preventDefault();
     if (view.kind !== "reset") return;
     if (password !== confirmPassword) {
-      setPasswordMismatch(c.passwordMismatch);
+      setPasswordMismatch(c("passwordMismatch"));
       return;
     }
     setPasswordMismatch("");
@@ -259,7 +277,7 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
     if (view.kind !== "setup-terminal") return;
     void run(async () => {
       await authApi.resendSetup(view.token);
-      setNotice(c.setupResendSent);
+      setNotice(c("setupResendSent"));
     });
   }
 
@@ -267,16 +285,16 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
     <main className="auth-page">
       <section className="auth-card" aria-live="polite">
         <header className="auth-brand">
-          <span className="eyebrow">{c.eyebrow}</span>
-          <h1>{c.brand}</h1>
-          <div className="auth-locale" role="group" aria-label={c.language}>
+          <span className="eyebrow">{c("eyebrow")}</span>
+          <h1>{c("brand")}</h1>
+          <div className="auth-locale" role="group" aria-label={c("language")}>
             <button
               type="button"
               className={locale === "en" ? "active" : ""}
               aria-pressed={locale === "en"}
               onClick={() => setLocale("en")}
             >
-              EN
+              {c("languageShort.en")}
             </button>
             <button
               type="button"
@@ -284,7 +302,7 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
               aria-pressed={locale === "pt"}
               onClick={() => setLocale("pt")}
             >
-              PT
+              {c("languageShort.pt")}
             </button>
           </div>
         </header>
@@ -324,8 +342,8 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
 
         {view.kind === "verify-checking" && (
           <div className="auth-state" aria-busy="true">
-            <h2 ref={headingRef}>{c.verifyChecking}</h2>
-            <p className="loading">{c.loading}</p>
+            <h2 ref={headingRef}>{c("verifyChecking")}</h2>
+            <p className="loading">{c("loading")}</p>
           </div>
         )}
 
@@ -334,8 +352,8 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
             <h2>{verifyErrorTitle(view.reason, c)}</h2>
             <p>
               {view.reason === "expired" || view.reason === "superseded"
-                ? c.verifyExpired
-                : c.verifyInvalid}
+                ? c("verifyExpired")
+                : c("verifyInvalid")}
             </p>
             <div className="auth-links">
               <button
@@ -343,14 +361,14 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
                 className="link-button"
                 onClick={() => setView({ kind: "request" })}
               >
-                {c.requestAccessLink}
+                {c("requestAccessLink")}
               </button>
               <button
                 type="button"
                 className="link-button"
                 onClick={() => setView({ kind: "sign-in" })}
               >
-                {c.backToSignIn}
+                {c("backToSignIn")}
               </button>
             </div>
           </div>
@@ -361,33 +379,33 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
             <h2>{requestStateTitle(view.state, c)}</h2>
             <p>{requestStateBody(view.state, c)}</p>
             <button type="button" onClick={() => setView({ kind: "sign-in" })}>
-              {c.backToSignIn}
+              {c("backToSignIn")}
             </button>
           </div>
         )}
 
         {view.kind === "setup" && (
           <form className="auth-form" onSubmit={onSetup} aria-busy={busy}>
-            <h2>{c.setupTitle}</h2>
-            <p className="auth-intro">{c.setupIntro}</p>
+            <h2>{c("setupTitle")}</h2>
+            <p className="auth-intro">{c("setupIntro")}</p>
             {contextLoading && (
               <p className="loading" role="status">
-                {c.loading}
+                {c("loading")}
               </p>
             )}
             {setupContext && (
               <>
                 <label>
-                  <span>{c.email}</span>
+                  <span>{c("email")}</span>
                   <input value={setupContext.email} readOnly disabled />
                 </label>
                 <label>
-                  <span>{c.role}</span>
+                  <span>{c("role")}</span>
                   <input
                     value={
                       setupContext.role === "admin"
-                        ? c.roleAdmin
-                        : c.roleOperator
+                        ? c("roleAdmin")
+                        : c("roleOperator")
                     }
                     readOnly
                     disabled
@@ -396,7 +414,7 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
               </>
             )}
             <label>
-              <span>{c.displayName}</span>
+              <span>{c("displayName")}</span>
               <input
                 required
                 value={displayName}
@@ -404,15 +422,15 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
               />
             </label>
             <label>
-              <span>{c.language}</span>
+              <span>{c("language")}</span>
               <select
                 value={locale}
                 onChange={(event) =>
                   setLocale(event.target.value as LocaleCode)
                 }
               >
-                <option value="en">English</option>
-                <option value="pt">Português</option>
+                <option value="en">{c("languageName.en")}</option>
+                <option value="pt">{c("languageName.pt")}</option>
               </select>
             </label>
             <PasswordFields
@@ -430,7 +448,7 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
               mismatch={passwordMismatch}
             />
             <button type="submit" disabled={busy}>
-              {busy ? c.setupCompleting : c.finishSetup}
+              {busy ? c("setupCompleting") : c("finishSetup")}
             </button>
           </form>
         )}
@@ -440,28 +458,28 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
             <h2>{setupTitle(view.reason, c)}</h2>
             <p>{setupBody(view.reason, c)}</p>
             <button type="button" disabled={busy} onClick={onResendSetup}>
-              {c.setupResend}
+              {c("setupResend")}
             </button>
             <button type="button" onClick={() => setView({ kind: "sign-in" })}>
-              {c.backToSignIn}
+              {c("backToSignIn")}
             </button>
           </div>
         )}
 
         {view.kind === "setup-done" && (
           <div className="auth-state" role="status">
-            <h2>{c.setupDoneTitle}</h2>
-            <p>{c.setupDoneBody}</p>
+            <h2>{c("setupDoneTitle")}</h2>
+            <p>{c("setupDoneBody")}</p>
             <button type="button" onClick={() => setView({ kind: "sign-in" })}>
-              {c.signIn}
+              {c("signIn")}
             </button>
           </div>
         )}
 
         {view.kind === "reset" && (
           <form className="auth-form" onSubmit={onReset} aria-busy={busy}>
-            <h2>{c.resetTitle}</h2>
-            <p className="auth-intro">{c.resetIntro}</p>
+            <h2>{c("resetTitle")}</h2>
+            <p className="auth-intro">{c("resetIntro")}</p>
             <PasswordFields
               copy={c}
               password={password}
@@ -477,7 +495,7 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
               mismatch={passwordMismatch}
             />
             <button type="submit" disabled={busy}>
-              {busy ? c.resetCompleting : c.resetSubmit}
+              {busy ? c("resetCompleting") : c("resetSubmit")}
             </button>
           </form>
         )}
@@ -487,17 +505,17 @@ export default function PublicAuth({ initialMessage, onAuthenticated }: Props) {
             <h2>{resetTitle(view.reason, c)}</h2>
             <p>{resetBody(view.reason, c)}</p>
             <button type="button" onClick={() => setView({ kind: "sign-in" })}>
-              {c.backToSignIn}
+              {c("backToSignIn")}
             </button>
           </div>
         )}
 
         {view.kind === "reset-done" && (
           <div className="auth-state" role="status">
-            <h2>{c.resetDoneTitle}</h2>
-            <p>{c.resetDoneBody}</p>
+            <h2>{c("resetDoneTitle")}</h2>
+            <p>{c("resetDoneBody")}</p>
             <button type="button" onClick={() => setView({ kind: "sign-in" })}>
-              {c.signIn}
+              {c("signIn")}
             </button>
           </div>
         )}
@@ -514,7 +532,7 @@ function PasswordFields({
   setConfirm,
   mismatch,
 }: {
-  copy: AuthCopy;
+  copy: AuthT;
   password: string;
   confirm: string;
   setPassword: (value: string) => void;
@@ -524,7 +542,7 @@ function PasswordFields({
   return (
     <>
       <label>
-        <span>{copy.password}</span>
+        <span>{copy("password")}</span>
         <input
           type="password"
           autoComplete="new-password"
@@ -537,7 +555,7 @@ function PasswordFields({
         />
       </label>
       <label>
-        <span>{copy.confirmPassword}</span>
+        <span>{copy("confirmPassword")}</span>
         <input
           type="password"
           autoComplete="new-password"
@@ -556,7 +574,7 @@ function PasswordFields({
         </p>
       )}
       <p id="password-guidance" className="auth-guidance">
-        {copy.passwordGuidance}
+        {copy("passwordGuidance")}
       </p>
     </>
   );
@@ -564,7 +582,7 @@ function PasswordFields({
 
 interface SignInViewProps {
   view: View;
-  copy: AuthCopy;
+  copy: AuthT;
   busy: boolean;
   email: string;
   password: string;
@@ -608,10 +626,10 @@ function SignInView({
   if (view.kind === "request-accepted") {
     return (
       <div className="auth-state" role="status">
-        <h2>{copy.requestTitle}</h2>
-        <p>{copy.requestAccepted}</p>
+        <h2>{copy("requestTitle")}</h2>
+        <p>{copy("requestAccepted")}</p>
         <button type="button" onClick={() => setMode("sign-in")}>
-          {copy.backToSignIn}
+          {copy("backToSignIn")}
         </button>
       </div>
     );
@@ -619,10 +637,10 @@ function SignInView({
   if (view.kind === "forgot-accepted") {
     return (
       <div className="auth-state" role="status">
-        <h2>{copy.forgotTitle}</h2>
-        <p>{copy.forgotAccepted}</p>
+        <h2>{copy("forgotTitle")}</h2>
+        <p>{copy("forgotAccepted")}</p>
         <button type="button" onClick={() => setMode("sign-in")}>
-          {copy.backToSignIn}
+          {copy("backToSignIn")}
         </button>
       </div>
     );
@@ -632,11 +650,11 @@ function SignInView({
     return (
       <form className="auth-form" onSubmit={onRequest} aria-busy={busy}>
         <h2 ref={headingRef} tabIndex={-1}>
-          {copy.requestTitle}
+          {copy("requestTitle")}
         </h2>
-        <p className="auth-intro">{copy.requestIntro}</p>
+        <p className="auth-intro">{copy("requestIntro")}</p>
         <label>
-          <span>{copy.email}</span>
+          <span>{copy("email")}</span>
           <input
             type="email"
             autoComplete="email"
@@ -646,25 +664,25 @@ function SignInView({
           />
         </label>
         <label>
-          <span>{copy.language}</span>
+          <span>{copy("language")}</span>
           <select
-            aria-label={copy.language}
+            aria-label={copy("language")}
             value={locale}
             onChange={(event) => setLocale(event.target.value as LocaleCode)}
           >
-            <option value="en">English</option>
-            <option value="pt">Português</option>
+            <option value="en">{copy("languageName.en")}</option>
+            <option value="pt">{copy("languageName.pt")}</option>
           </select>
         </label>
         <button type="submit" disabled={busy}>
-          {busy ? copy.requestSubmitting : copy.requestSubmit}
+          {busy ? copy("requestSubmitting") : copy("requestSubmit")}
         </button>
         <button
           type="button"
           className="link-button"
           onClick={() => setMode("sign-in")}
         >
-          {copy.backToSignIn}
+          {copy("backToSignIn")}
         </button>
       </form>
     );
@@ -674,11 +692,11 @@ function SignInView({
     return (
       <form className="auth-form" onSubmit={onForgot} aria-busy={busy}>
         <h2 ref={headingRef} tabIndex={-1}>
-          {copy.forgotTitle}
+          {copy("forgotTitle")}
         </h2>
-        <p className="auth-intro">{copy.forgotIntro}</p>
+        <p className="auth-intro">{copy("forgotIntro")}</p>
         <label>
-          <span>{copy.email}</span>
+          <span>{copy("email")}</span>
           <input
             type="email"
             autoComplete="email"
@@ -688,14 +706,14 @@ function SignInView({
           />
         </label>
         <button type="submit" disabled={busy}>
-          {copy.forgotSubmit}
+          {copy("forgotSubmit")}
         </button>
         <button
           type="button"
           className="link-button"
           onClick={() => setMode("sign-in")}
         >
-          {copy.backToSignIn}
+          {copy("backToSignIn")}
         </button>
       </form>
     );
@@ -704,11 +722,11 @@ function SignInView({
   return (
     <form className="auth-form" onSubmit={onSignIn} aria-busy={busy}>
       <h2 ref={headingRef} tabIndex={-1}>
-        {copy.signInTitle}
+        {copy("signInTitle")}
       </h2>
-      <p className="auth-intro">{copy.signInIntro}</p>
+      <p className="auth-intro">{copy("signInIntro")}</p>
       <label>
-        <span>{copy.email}</span>
+        <span>{copy("email")}</span>
         <input
           type="email"
           autoComplete="username"
@@ -718,7 +736,7 @@ function SignInView({
         />
       </label>
       <label>
-        <span>{copy.password}</span>
+        <span>{copy("password")}</span>
         <input
           type="password"
           autoComplete="current-password"
@@ -728,7 +746,7 @@ function SignInView({
         />
       </label>
       <button type="submit" disabled={busy}>
-        {busy ? copy.signingIn : copy.signIn}
+        {busy ? copy("signingIn") : copy("signIn")}
       </button>
       <div className="auth-links">
         <button
@@ -736,14 +754,14 @@ function SignInView({
           className="link-button"
           onClick={() => setMode("forgot")}
         >
-          {copy.forgotPassword}
+          {copy("forgotPassword")}
         </button>
         <button
           type="button"
           className="link-button"
           onClick={() => setMode("request")}
         >
-          {copy.requestAccessLink}
+          {copy("requestAccessLink")}
         </button>
       </div>
     </form>
@@ -765,94 +783,98 @@ function reasonFor(
   }
 }
 
-function verifyErrorTitle(reason: string, copy: AuthCopy): string {
+function verifyErrorTitle(reason: string, copy: AuthT): string {
   switch (reason) {
     case "expired":
-      return copy.verifyExpired;
+      return copy("verifyExpired");
     case "superseded":
-      return copy.verifySuperseded;
+      return copy("verifySuperseded");
     case "unavailable":
-      return copy.verifyUnavailable;
+      return copy("verifyUnavailable");
     default:
-      return copy.verifyInvalid;
+      return copy("verifyInvalid");
   }
 }
 
-function requestStateTitle(state: string, copy: AuthCopy): string {
+function requestStateTitle(state: string, copy: AuthT): string {
   switch (state) {
     case "approved":
-      return copy.verifyApproved;
+      return copy("verifyApproved");
     case "declined":
-      return copy.verifyDeclined;
+      return copy("verifyDeclined");
     case "expired":
-      return copy.verifyExpired;
+      return copy("verifyExpired");
     default:
-      return copy.verifyWaitingTitle;
+      return copy("verifyWaitingTitle");
   }
 }
 
-function requestStateBody(state: string, copy: AuthCopy): string {
+function requestStateBody(state: string, copy: AuthT): string {
   switch (state) {
     case "approved":
-      return copy.verifyApproved;
+      return copy("verifyApproved");
     case "declined":
-      return copy.verifyDeclined;
+      return copy("verifyDeclined");
     case "expired":
-      return copy.verifyExpired;
+      return copy("verifyExpired");
     default:
-      return copy.verifyWaitingBody;
+      return copy("verifyWaitingBody");
   }
 }
 
-function setupTitle(reason: string, copy: AuthCopy): string {
+function setupTitle(reason: string, copy: AuthT): string {
   switch (reason) {
     case "expired":
-      return copy.setupExpired;
+      return copy("setupExpired");
     case "superseded":
-      return copy.setupSuperseded;
+      return copy("setupSuperseded");
     case "ineligible":
-      return copy.setupIneligible;
+      return copy("setupIneligible");
     default:
-      return copy.setupReused;
+      return copy("setupReused");
   }
 }
 
-function setupBody(reason: string, copy: AuthCopy): string {
-  return reason === "ineligible" ? copy.setupIneligible : copy.setupRecover;
+function setupBody(reason: string, copy: AuthT): string {
+  return reason === "ineligible"
+    ? copy("setupIneligible")
+    : copy("setupRecover");
 }
 
-function resetTitle(reason: string, copy: AuthCopy): string {
+function resetTitle(reason: string, copy: AuthT): string {
   switch (reason) {
     case "expired":
-      return copy.resetExpired;
+      return copy("resetExpired");
     case "superseded":
-      return copy.resetSuperseded;
+      return copy("resetSuperseded");
     case "ineligible":
-      return copy.resetIneligible;
+      return copy("resetIneligible");
     default:
-      return copy.resetReused;
+      return copy("resetReused");
   }
 }
 
-function resetBody(reason: string, copy: AuthCopy): string {
-  return reason === "ineligible" ? copy.resetIneligible : copy.resetRecover;
+function resetBody(reason: string, copy: AuthT): string {
+  return reason === "ineligible"
+    ? copy("resetIneligible")
+    : copy("resetRecover");
 }
 
-function messageFor(code: string, copy: AuthCopy): string {
+function messageFor(code: string, copy: AuthT): string {
   switch (code) {
     case "throttled":
-      return copy.throttled;
+      return copy("throttled");
     case "invalid_email":
-      return copy.invalidEmail;
+      return copy("invalidEmail");
     case "password_policy":
-      return copy.passwordGuidance;
+      return copy("passwordGuidance");
     case "session_expired":
-      return copy.sessionExpired;
+      return copy("sessionExpired");
     case "invalid_credentials":
-      return copy.genericSignInError;
+      return copy("genericSignInError");
     case "auth_unavailable":
-      return copy.unavailableBody;
+      return copy("unavailableBody");
     default:
-      return copy.unavailableBody;
+      return copy("unavailableBody");
   }
 }
