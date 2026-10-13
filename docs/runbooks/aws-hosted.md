@@ -1,6 +1,6 @@
 # Hosted AWS account operations
 
-Authority: HOR-603 and its approved decisions `DES-HOR-603-01`..`08`, recorded on
+Authority: HOR-603 and its approved decisions `DES-HOR-603-01`..`09`, recorded on
 the HOR-603 ticket. The Terraform lives in [`infra/hosted-aws/`](../../infra/hosted-aws)
 and its invariants in [`infra/AGENTS.md`](../../infra/AGENTS.md). The CI account
 is separate and documented in [`aws-ci.md`](aws-ci.md).
@@ -25,7 +25,7 @@ provider (HOR-593), which reads the baseline only through its SSM contract.
 | Backups | `iterabase-hosted-backups-<account-id>`, prefix `envs/<name>/`, SSE-KMS with `alias/iterabase-hosted-backup`. Only administrators, the Forge role and `/iterabase/env/` node roles reach the bucket and key. |
 | Image mirror | ECR pull-through cache prefix `ghcr` for `ghcr.io` (`DES-HOR-603-05`), 30 most recent images per repository. |
 | Security | Multi-region CloudTrail with log-file validation, AWS Config recording every supported resource, GuardDuty with severity ≥ 7 findings to the alert topic. |
-| Cost | `iterabase-hosted-monthly` gross cost budget (credits excluded), forecast alert at 80% and actual alert at 100% to the `iterabase-hosted-alerts` SNS topic. Cost allocation tags `iterabase-hosted` and `iterabase-env`. |
+| Cost | `iterabase-hosted-monthly` gross cost budget (credits excluded), forecast alert at 80% and actual alert at 100% to the `iterabase-hosted-alerts` SNS topic. Resource tag keys `iterabase-hosted` and `iterabase-env` are unchanged; their Billing activation belongs to the Organization management account, not hosted Terraform (`DES-HOR-603-09`). |
 | DNS and mail | Cloudflare zone (`PIVOT-ARCH-003`), SES identity for the mail domain with Easy DKIM, `bounce.<mail-domain>` MAIL FROM (SPF) and DMARC. A scoped Cloudflare token (DNS Write + Zone Read on the zone only) for external-dns and cert-manager, published as a SecureString in the contract. |
 
 ## Recorded identities
@@ -45,6 +45,7 @@ Fill this in while executing and copy the completed table to the HOR-603 ticket.
 | SES identity / production access case ID | |
 | Cloudflare zone ID / cluster token name | |
 | Budget name / SNS subscription confirmed | |
+| Management account / caller / dated proof that both cost-allocation keys are Active | |
 
 ## Part 1 — Console and out-of-band setup (founder)
 
@@ -52,9 +53,12 @@ Fill this in while executing and copy the completed table to the HOR-603 ticket.
    Organizations → Add an AWS account → Create, name `iterabase-hosted`. Record
    the account ID.
 2. **Identity Center access.** Assign the founder's admin user the
-   `AdministratorAccess` permission set on `iterabase-hosted`. Every step below
-   runs as that session (`aws sts get-caller-identity` must show the hosted
-   account and an `AWSReservedSSO_AdministratorAccess_*` role), never as root.
+   `AdministratorAccess` permission set on `iterabase-hosted`. Terraform and
+   hosted-account validation run as that session (`aws sts get-caller-identity`
+   must show the hosted account and an `AWSReservedSSO_AdministratorAccess_*`
+   role), never as root. [Billing tag activation](#cost-allocation-tags--management-account-founder)
+   is the explicit management-account exception, with its own verified identity
+   and separate founder approval.
 3. **Support plan.** Billing and Cost Management → Support plans: subscribe the
    plan budgeted in the financial model's AWS sheet (shared lines). Record it.
 4. **Quotas** in `eu-west-1`: request "Running On-Demand Standard (A, C, D, H,
@@ -109,11 +113,66 @@ After the first apply:
 2. **Leave the SES sandbox.** SES → Account dashboard → Request production
    access: transactional mail, the mail domain, bounce and complaint handling
    through the MAIL FROM domain. Record the case ID.
-3. **Cost allocation tags.** Once billing has seen `iterabase-hosted` and
-   `iterabase-env` (up to 24 hours after tagged resources exist), set
-   `activate_cost_allocation_tags = true` and apply again.
+3. **Cost allocation tags.** Follow the separately approved
+   [management-account procedure](#cost-allocation-tags--management-account-founder)
+   below. No hosted-account apply activates these keys.
 4. Revoke or narrow the founder Cloudflare token if it was created only for
    the apply.
+
+### Cost allocation tags — management account (founder)
+
+`DES-HOR-603-09` separates **resource tagging** from **Billing activation**.
+Terraform keeps tagging baseline resources `iterabase-hosted=baseline`; HOR-593
+keeps tagging customer resources `iterabase-env=<environment>`. Only the
+Organization management/payer account can manage cost-allocation activation for
+member accounts; [AWS documents this ownership](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/cost-alloc-tags.html).
+Hosted administrator access cannot change it. Do not widen hosted IAM, add a
+cross-account Terraform provider or silently switch mutation accounts.
+
+1. Obtain separate founder approval for management-account activation. Source
+   PR approval or a hosted saved-plan approval does not authorize this action.
+2. Sign in through Identity Center to the **Organization management account**,
+   not `iterabase-hosted` or `iterabase-ci`, and verify its identity against AWS
+   Organizations. Use an explicit management-account profile for the optional
+   read-only CLI checks below; never use root or pass these credentials to CI.
+3. Billing and Cost Management → Cost allocation tags → User-defined cost
+   allocation tags: find the exact keys `iterabase-hosted` and `iterabase-env`.
+   Keys can take up to 24 hours to appear after the corresponding tagged
+   resources exist. If a key is missing, leave this gate pending; do not launch
+   an unapproved fixture, repeat a hosted apply or assume it is active.
+4. Leave already-Active keys unchanged. Select only inactive keys from this
+   pair and choose **Activate**. Activation is payer-wide, not a change to tag
+   values or a replacement for the hosted account's budget. Do not deactivate
+   other keys. [AWS's activation procedure](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/activating-tags.html)
+   describes the discovery and activation delays; allow up to another 24 hours
+   for activation to take effect rather than blindly resubmitting it.
+5. Verify **both** exact keys are **Active** in the management account. Record
+   account ID, caller, date and console/API evidence on HOR-603. Successful
+   resource tagging, a hosted `AccessDenied` or static/mock checks are not
+   activation proof. Until both keys are Active, acceptance remains pending.
+
+Optional read-only verification, never run with the hosted profile:
+
+```bash
+aws sts get-caller-identity --profile <management-profile>
+aws ce list-cost-allocation-tags --profile <management-profile> --region us-east-1 \
+  --type UserDefined --tag-keys iterabase-hosted iterabase-env \
+  --query 'CostAllocationTags[].{Key:TagKey,Status:Status}'
+```
+
+Cost Explorer's Billing API is queried in `us-east-1`; hosted infrastructure
+remains in `eu-west-1`. The recorded management identity must match the payer,
+and the readback must contain both keys, each with `Status=Active`.
+
+**Upgrade safety:** remove the obsolete `activate_cost_allocation_tags` input
+from private tfvars/environment overrides before the next baseline plan. The
+hosted activation resource and toggle have been removed; no new hosted apply
+is needed for Billing activation. If an older state contains
+`aws_ce_cost_allocation_tag.hosted` instances, stop before applying a deletion:
+that could deactivate payer-wide keys. Arrange a separately approved state-only
+ownership handoff without changing remote activation, then require a reviewed
+plan with no cost-tag deactivation. Never use `terraform destroy` to transfer
+this ownership.
 
 ## Contract keys
 

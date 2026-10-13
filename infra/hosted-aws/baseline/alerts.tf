@@ -100,11 +100,3 @@ resource "aws_cloudwatch_event_target" "guardduty_high" {
   rule = aws_cloudwatch_event_rule.guardduty_high.name
   arn  = aws_sns_topic.alerts.arn
 }
-
-# Customer environments are attributed by env_tag_key; baseline by hosted_tag_key.
-resource "aws_ce_cost_allocation_tag" "hosted" {
-  for_each = var.activate_cost_allocation_tags ? toset([local.hosted_tag_key, local.env_tag_key]) : toset([])
-
-  tag_key = each.key
-  status  = "Active"
-}
