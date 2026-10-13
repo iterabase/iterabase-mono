@@ -31,6 +31,8 @@ interface Props {
   /** Reports a lost session with the language the sign-in page should use. */
   onSessionLost: (message?: string, locale?: LocaleCode) => void;
   onOpenWork?: () => void;
+  /** Reports profile changes (language included) so other surfaces use them. */
+  onProfileChange?: (profile: AuthProfile) => void;
 }
 
 interface PendingAction {
@@ -49,6 +51,7 @@ export default function AccountShell({
   initialCSRF,
   onSessionLost,
   onOpenWork,
+  onProfileChange,
 }: Props) {
   const [profile, setProfile] = useState(initialProfile);
   const [csrf, setCSRF] = useState(initialCSRF);
@@ -65,6 +68,15 @@ export default function AccountShell({
   const c = useMemo(() => fixedT(locale, "settings"), [locale]);
 
   useEffect(() => setActiveLocale(locale), [locale]);
+
+  // Saved Profile changes and organisation-language refreshes outlive this
+  // surface: the app keeps the latest profile for the work board and the next
+  // visit here (DES-HOR-670-02).
+  const onProfileChangeRef = useRef(onProfileChange);
+  onProfileChangeRef.current = onProfileChange;
+  useEffect(() => {
+    if (profile !== initialProfile) onProfileChangeRef.current?.(profile);
+  }, [profile, initialProfile]);
 
   const sessionLost = useCallback(
     (message?: string) => onSessionLost(message, locale),

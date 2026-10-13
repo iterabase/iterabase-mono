@@ -436,6 +436,79 @@ describe("Platform v1 Dashboard", () => {
     expect(headersOf(signOut?.[1])["X-CSRF-Token"]).toBe("csrf-1");
   });
 
+  it("keeps a saved Profile language when returning to the board (HOR-670)", async () => {
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input) === "/v1/profile" && init?.method === "PATCH") {
+        sessionProfile = { ...adminProfile, locale: "pt" };
+        return json({ profile: sessionProfile });
+      }
+      return fetchMock(input, init);
+    });
+    const user = await connect();
+    await user.click(screen.getByRole("button", { name: "Account" }));
+    await screen.findByRole("heading", { name: "Profile" });
+    await user.selectOptions(screen.getByLabelText("Language"), "pt");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Alterações guardadas.",
+    );
+    await user.click(screen.getByRole("button", { name: "Trabalho" }));
+    expect(
+      await screen.findByRole("heading", { name: "Concluído" }),
+    ).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe("pt-PT");
+    await user.click(screen.getByRole("button", { name: "Conta" }));
+    expect(
+      await screen.findByRole("heading", { name: "Perfil" }),
+    ).toBeInTheDocument();
+  });
+
+  it("follows a changed organisation default on the board when the Admin follows it (HOR-670)", async () => {
+    sessionProfile = {
+      ...adminProfile,
+      localePreference: "",
+      organizationLocale: "",
+    } as typeof adminProfile;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/v1/organization/settings") {
+        if (init?.method === "PATCH") {
+          sessionProfile = {
+            ...sessionProfile,
+            locale: "pt",
+            organizationLocale: "pt",
+          } as typeof adminProfile;
+          return json({
+            defaultLocale: "pt",
+            updatedAt: "2026-09-23T12:00:00Z",
+          });
+        }
+        return json({ defaultLocale: "", updatedAt: "2026-09-23T10:00:00Z" });
+      }
+      if (url === "/v1/access-requests") return json([]);
+      return fetchMock(input, init);
+    });
+    const user = await connect();
+    await user.click(screen.getByRole("button", { name: "Account" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Access requests" }),
+    );
+    await user.selectOptions(
+      await screen.findByLabelText("Default language"),
+      "pt",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Save default language" }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Idioma predefinido guardado.",
+    );
+    await user.click(screen.getByRole("button", { name: "Trabalho" }));
+    expect(
+      await screen.findByRole("heading", { name: "Concluído" }),
+    ).toBeInTheDocument();
+  });
+
   function signOutCalls() {
     return vi
       .mocked(fetch)
