@@ -57,7 +57,7 @@ func newTestHandler(t *testing.T, cache snapshot.Reader) (*Handler, *httptest.Se
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"` + gotModel + `","choices":[{"message":{"content":"hi"}}],"usage":{"total_tokens":5}}`))
 	}))
-	return NewHandler(cache, nil, nil, slog.Default()), backend, &gotModel
+	return NewHandler(cache, nil, nil, nil, slog.Default()), backend, &gotModel
 }
 
 func TestHandler_RoutesAndRewritesModel(t *testing.T) {
@@ -155,7 +155,7 @@ func TestHandler_NonStreaming_ContentLengthMatchesRewrittenBody(t *testing.T) {
 	e.BackendURL = backend.URL
 	cache.catalog["qwen3.6-27b"] = e
 
-	h := NewHandler(cache, nil, nil, slog.Default())
+	h := NewHandler(cache, nil, nil, nil, slog.Default())
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		bytes.NewReader([]byte(`{"model":"qwen3.6-27b","messages":[{"role":"user","content":"hi"}]}`)))
 	req = req.WithContext(middleware.WithIdentityID(req.Context(), "identity-1"))

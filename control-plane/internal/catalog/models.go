@@ -46,6 +46,7 @@ type CatalogEntry struct {
 	Transforms      []byte
 	RateLimits      []byte
 	Available       bool
+	BackendAuthRef  string // external backend's credential Secret name (never the value)
 }
 
 // UpsertModel inserts a model keyed by `key`, or revives+updates it. The caller
@@ -101,7 +102,7 @@ func (s *Store) GetModelByKey(ctx context.Context, key string) (Model, error) {
 // EffectiveCatalog reads catalog.effective_catalog — the gateway's contract.
 func (s *Store) EffectiveCatalog(ctx context.Context) ([]CatalogEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT model_key, namespace, model_id, display_name, context_length, capabilities, backend_ref, backend_kind, backend_model_id, backend_url, default_params, reasoning_config, transforms, rate_limits, available
+		SELECT model_key, namespace, model_id, display_name, context_length, capabilities, backend_ref, backend_kind, backend_model_id, backend_url, default_params, reasoning_config, transforms, rate_limits, available, COALESCE(backend_auth_ref, '')
 		FROM catalog.effective_catalog ORDER BY namespace, model_id`)
 	if err != nil {
 		return nil, fmt.Errorf("query effective_catalog: %w", err)
@@ -111,7 +112,7 @@ func (s *Store) EffectiveCatalog(ctx context.Context) ([]CatalogEntry, error) {
 	var out []CatalogEntry
 	for rows.Next() {
 		var e CatalogEntry
-		if err := rows.Scan(&e.ModelKey, &e.Namespace, &e.ModelID, &e.DisplayName, &e.ContextLength, &e.Capabilities, &e.BackendRef, &e.BackendKind, &e.BackendModelID, &e.BackendURL, &e.DefaultParams, &e.ReasoningConfig, &e.Transforms, &e.RateLimits, &e.Available); err != nil {
+		if err := rows.Scan(&e.ModelKey, &e.Namespace, &e.ModelID, &e.DisplayName, &e.ContextLength, &e.Capabilities, &e.BackendRef, &e.BackendKind, &e.BackendModelID, &e.BackendURL, &e.DefaultParams, &e.ReasoningConfig, &e.Transforms, &e.RateLimits, &e.Available, &e.BackendAuthRef); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

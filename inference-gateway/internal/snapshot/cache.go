@@ -28,6 +28,7 @@ type Cache struct {
 	caps        map[string][]Capability
 	rl          map[string]IdentityRateLimits
 	lastRefresh time.Time
+	onRefresh   []func()
 
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -40,6 +41,12 @@ type Cache struct {
 // (pool connections aren't held for LISTEN).
 func NewCache(store Store, connStr string, logger *slog.Logger, refreshInterval time.Duration) *Cache {
 	return &Cache{store: store, connStr: connStr, logger: logger, interval: refreshInterval, retryInterval: 5 * time.Second, listenReady: make(chan struct{})}
+}
+
+// OnRefresh registers fn to run after every successful refresh (e.g. to mark
+// cached upstream credentials stale). Register before Start.
+func (c *Cache) OnRefresh(fn func()) {
+	c.onRefresh = append(c.onRefresh, fn)
 }
 
 // Start loads the initial snapshot and starts the LISTEN + poll loops.
@@ -116,6 +123,9 @@ func (c *Cache) refresh(ctx context.Context) error {
 	c.catalog, c.apiKeys, c.caps, c.rl = cat, kh, capMap, rlMap
 	c.lastRefresh = time.Now()
 	c.mu.Unlock()
+	for _, fn := range c.onRefresh {
+		fn()
+	}
 
 	c.logger.Debug("snapshot refreshed",
 		"catalog", len(cat), "api_keys", len(kh), "identities_caps", len(capMap), "rate_limits", len(rlMap))

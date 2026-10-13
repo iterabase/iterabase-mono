@@ -33,9 +33,10 @@ func NewPGStore(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 func (s *PGStore) ListCatalog(ctx context.Context) ([]CatalogEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT model_id, display_name, context_length, capabilities, backend_ref,
+		SELECT model_id, namespace, display_name, context_length, capabilities, backend_ref,
 		       backend_kind, backend_model_id, backend_url,
-		       default_params, reasoning_config, transforms, rate_limits, available
+		       default_params, reasoning_config, transforms, rate_limits, available,
+		       COALESCE(backend_auth_ref, '')
 		FROM catalog.effective_catalog`)
 	if err != nil {
 		return nil, fmt.Errorf("query effective_catalog: %w", err)
@@ -49,8 +50,8 @@ func (s *PGStore) ListCatalog(ctx context.Context) ([]CatalogEntry, error) {
 		var contextLength *int
 		var backendModelID *string
 		var caps, dp, rc, tf, rl []byte
-		if err := rows.Scan(&e.ModelID, &displayName, &contextLength, &caps, &e.BackendRef,
-			&e.BackendKind, &backendModelID, &e.BackendURL, &dp, &rc, &tf, &rl, &e.Available); err != nil {
+		if err := rows.Scan(&e.ModelID, &e.Namespace, &displayName, &contextLength, &caps, &e.BackendRef,
+			&e.BackendKind, &backendModelID, &e.BackendURL, &dp, &rc, &tf, &rl, &e.Available, &e.BackendAuthRef); err != nil {
 			return nil, fmt.Errorf("scan catalog entry: %w", err)
 		}
 		if displayName != nil {

@@ -1,17 +1,14 @@
 package proxy
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
-	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/middleware"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/ratelimit"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/snapshot"
 )
@@ -33,24 +30,18 @@ func (h *Handler) handleStreaming(
 ) {
 	body = injectStreamOptions(body)
 
-	backendURL := fmt.Sprintf("%s/v1/chat/completions", entry.BackendURL)
-
-	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, backendURL, bytes.NewReader(body))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create proxy request", "server_error")
+	proxyReq, ue := h.newUpstreamRequest(r.Context(), entry, body)
+	if ue != nil {
+		h.writeUpstreamError(w, entry, 0, ue, nil)
 		return
-	}
-	proxyReq.Header.Set("Content-Type", "application/json")
-	if v := middleware.RequestIDFromContext(r.Context()); v != "" {
-		proxyReq.Header.Set("X-Request-ID", v)
 	}
 
 	backendStart := time.Now()
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
-		h.logger.Error("streaming backend request failed",
-			"backend", entry.BackendURL, "model", entry.ModelID, "error", err)
-		writeError(w, http.StatusBadGateway, "backend request failed", "backend_error")
+		if ue := transportError(r.Context()); ue != nil {
+			h.writeUpstreamError(w, entry, 0, ue, err)
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -60,7 +51,13 @@ func (h *Handler) handleStreaming(
 			Observe(time.Since(backendStart).Seconds())
 	}
 
-	// If backend returns non-200, forward the error as-is (not SSE).
+	// A classified provider failure before the first byte uses the same
+	// mapping as non-streaming (DES-HOR-597-02); any other non-200 is a client
+	// error forwarded as-is (not SSE).
+	if ue := classifyUpstreamStatus(resp.StatusCode, resp.Header); ue != nil {
+		h.writeUpstreamError(w, entry, resp.StatusCode, ue, nil)
+		return
+	}
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		respBody = rewriteModelInResponse(respBody, entry.ModelID)
@@ -106,13 +103,17 @@ func (h *Handler) handleStreaming(
 		firstContentAt  time.Time
 		gotFirstContent bool
 		finalUsage      *streamUsage
+		sawDone         bool
+		providerError   bool
 	)
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	events := newSSEReader(resp.Body)
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		ev, ok := events.next()
+		if !ok {
+			break
+		}
 
 		select {
 		case <-r.Context().Done():
@@ -120,20 +121,29 @@ func (h *Handler) handleStreaming(
 		default:
 		}
 
-		if !strings.HasPrefix(line, "data: ") {
-			fmt.Fprintf(w, "%s\n", line)
+		// Comments are keep-alives; their text is the provider's, so only
+		// the fact of one is forwarded.
+		if ev.comment {
+			fmt.Fprint(w, ": keep-alive\n\n")
 			flusher.Flush()
 			continue
 		}
 
-		data := strings.TrimPrefix(line, "data: ")
-
-		if data == "[DONE]" {
+		if ev.isMessage() && ev.data == "[DONE]" {
+			sawDone = true
 			fmt.Fprintf(w, "data: [DONE]\n\n")
 			flusher.Flush()
 			break
 		}
 
+		// Any other non-chunk event is a mid-stream failure: its diagnostic
+		// body (which may echo the credential) is never forwarded, and the
+		// stream ends with the one classified event below, never [DONE].
+		if !isCompletionChunk(ev) {
+			providerError = true
+			break
+		}
+		data := ev.data
 		chunk, rewritten := processStreamChunk(data, entry.ModelID)
 
 		now := time.Now()
@@ -168,9 +178,17 @@ func (h *Handler) handleStreaming(
 		flusher.Flush()
 	}
 
-	if err := scanner.Err(); err != nil {
-		h.logger.Error("error reading streaming response",
-			"backend", entry.BackendURL, "model", entry.ModelID, "error", err)
+	// The provider failed after the stream started: the status is already
+	// sent, so end with one classified error event and no [DONE].
+	if !sawDone && r.Context().Err() == nil {
+		ue := upstreamUnavailable("")
+		cause := events.err()
+		if providerError {
+			cause = errProviderStreamError
+		}
+		h.recordUpstreamError(entry, resp.StatusCode, ue, cause)
+		fmt.Fprint(w, streamErrorEvent(ue))
+		flusher.Flush()
 	}
 
 	if h.metrics != nil && finalUsage != nil {
@@ -231,6 +249,9 @@ func processStreamChunk(data string, aliasName string) (*streamChunk, string) {
 	}
 	return &chunk, string(rewritten)
 }
+
+// errProviderStreamError records a provider error event without its body.
+var errProviderStreamError = errors.New("provider sent an error event mid-stream")
 
 func chunkHasContent(data string) bool {
 	var parsed struct {

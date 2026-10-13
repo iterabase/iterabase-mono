@@ -194,7 +194,7 @@ kind: ModelBackend
 metadata: {name: deterministic-model, namespace: iterabase-system}
 spec:
   kind: external
-  external: {baseURL: http://deterministic-model.default.svc:8080}
+  external: {baseURL: http://deterministic-model.default.svc:8080/v1}
 ---
 apiVersion: platform.iterabase.com/v1alpha1
 kind: Model

@@ -98,8 +98,14 @@ func applySystemPromptPrefix(parsed map[string]any, transforms snapshot.Transfor
 	}
 	role, _ := firstMsg["role"].(string)
 	if role == "system" {
-		existingContent, _ := firstMsg["content"].(string)
-		firstMsg["content"] = prefix + "\n" + existingContent
+		// Array-form content (text/image parts) keeps every part unchanged
+		// behind a leading text part; string content is prefixed in place.
+		if parts, isParts := firstMsg["content"].([]any); isParts {
+			firstMsg["content"] = append([]any{map[string]any{"type": "text", "text": prefix}}, parts...)
+		} else {
+			existingContent, _ := firstMsg["content"].(string)
+			firstMsg["content"] = prefix + "\n" + existingContent
+		}
 		messages[0] = firstMsg
 	} else {
 		systemMsg := map[string]any{"role": "system", "content": prefix}

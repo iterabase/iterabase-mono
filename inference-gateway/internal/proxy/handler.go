@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/middleware"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/ratelimit"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/snapshot"
+	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/upstreamauth"
 )
 
 // Handler is the main proxy handler for OpenAI-compatible endpoints. It routes
@@ -25,16 +25,20 @@ type Handler struct {
 	cache   snapshot.Reader
 	limiter ratelimit.Limiter
 	metrics *metrics.Metrics
+	creds   upstreamauth.Resolver
 	client  *http.Client
 	logger  *slog.Logger
 }
 
-// NewHandler creates a new proxy handler.
-func NewHandler(cache snapshot.Reader, limiter ratelimit.Limiter, m *metrics.Metrics, logger *slog.Logger) *Handler {
+// NewHandler creates a new proxy handler. creds resolves keyed external
+// backends' credentials; when nil, requests to a keyed backend fail closed
+// with upstream_auth_failed.
+func NewHandler(cache snapshot.Reader, limiter ratelimit.Limiter, m *metrics.Metrics, creds upstreamauth.Resolver, logger *slog.Logger) *Handler {
 	return &Handler{
 		cache:   cache,
 		limiter: limiter,
 		metrics: m,
+		creds:   creds,
 		client: &http.Client{
 			Timeout: 300 * time.Second, // Long timeout for inference
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -142,31 +146,35 @@ func (h *Handler) handleNonStreaming(
 	entry *snapshot.CatalogEntry,
 	identityID string,
 ) {
-	backendURL := fmt.Sprintf("%s/v1/chat/completions", entry.BackendURL)
-
-	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, backendURL, bytes.NewReader(body))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create proxy request", "server_error")
+	proxyReq, ue := h.newUpstreamRequest(r.Context(), entry, body)
+	if ue != nil {
+		h.writeUpstreamError(w, entry, 0, ue, nil)
 		return
-	}
-	proxyReq.Header.Set("Content-Type", "application/json")
-	if v := middleware.RequestIDFromContext(r.Context()); v != "" {
-		proxyReq.Header.Set("X-Request-ID", v)
 	}
 
 	backendStart := time.Now()
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
-		h.logger.Error("backend request failed", "backend", entry.BackendURL, "model", entry.ModelID, "error", err)
-		writeError(w, http.StatusBadGateway, "backend request failed", "backend_error")
+		if ue := transportError(r.Context()); ue != nil {
+			h.writeUpstreamError(w, entry, 0, ue, err)
+		}
 		return
 	}
 	defer resp.Body.Close()
 
+	// The status decides a classified failure; its body is discarded unread,
+	// so a truncated or stalled error body cannot reclassify it.
+	if ue := classifyUpstreamStatus(resp.StatusCode, resp.Header); ue != nil {
+		h.writeUpstreamError(w, entry, resp.StatusCode, ue, nil)
+		return
+	}
+
 	respBody, err := io.ReadAll(resp.Body)
 	backendDuration := time.Since(backendStart).Seconds()
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "failed to read backend response", "backend_error")
+		if ue := transportError(r.Context()); ue != nil {
+			h.writeUpstreamError(w, entry, resp.StatusCode, ue, err)
+		}
 		return
 	}
 	if h.metrics != nil {
@@ -300,12 +308,16 @@ func rewriteModelInResponse(body []byte, aliasName string) []byte {
 }
 
 func writeError(w http.ResponseWriter, status int, message string, code string) {
+	writeTypedError(w, status, "invalid_request_error", message, code)
+}
+
+func writeTypedError(w http.ResponseWriter, status int, errType, message, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
 			"message": message,
-			"type":    "invalid_request_error",
+			"type":    errType,
 			"code":    code,
 		},
 	}); err != nil {

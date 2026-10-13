@@ -30,6 +30,7 @@ type Backend struct {
 	Model      string // HuggingFace id (vLLM/SGLang --model)
 	ServiceURL string // in-cluster Service URL / external baseURL
 	Image      string
+	AuthRef    string // external: name of the Secret holding the provider credential (never the value)
 	Deployed   bool
 	Healthy    bool
 }
@@ -50,8 +51,8 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // revive-on-recreate.
 func (s *Store) UpsertBackend(ctx context.Context, b Backend) (Backend, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO catalog.backends (key, name, namespace, kind, model, service_url, image, deployed, healthy)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO catalog.backends (key, name, namespace, kind, model, service_url, image, auth_ref, deployed, healthy)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), $9, $10)
 		ON CONFLICT (key) DO UPDATE
 			SET name        = EXCLUDED.name,
 			    namespace   = EXCLUDED.namespace,
@@ -59,12 +60,13 @@ func (s *Store) UpsertBackend(ctx context.Context, b Backend) (Backend, error) {
 			    model       = EXCLUDED.model,
 			    service_url = EXCLUDED.service_url,
 			    image       = EXCLUDED.image,
+			    auth_ref    = EXCLUDED.auth_ref,
 			    deployed    = EXCLUDED.deployed,
 			    healthy     = EXCLUDED.healthy,
 			    deleted_at  = NULL,
 			    updated_at  = now()
-		RETURNING id, key, name, namespace, kind, model, service_url, image, deployed, healthy`,
-		b.Key, b.Name, b.Namespace, b.Kind, b.Model, b.ServiceURL, b.Image, b.Deployed, b.Healthy)
+		RETURNING id, key, name, namespace, kind, model, service_url, image, COALESCE(auth_ref, ''), deployed, healthy`,
+		b.Key, b.Name, b.Namespace, b.Kind, b.Model, b.ServiceURL, b.Image, b.AuthRef, b.Deployed, b.Healthy)
 	return scanBackend(row)
 }
 
@@ -83,7 +85,7 @@ func (s *Store) SoftDeleteBackendByKey(ctx context.Context, key string) error {
 // GetBackendByKey fetches an active backend by its natural key.
 func (s *Store) GetBackendByKey(ctx context.Context, key string) (Backend, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, key, name, namespace, kind, model, service_url, image, deployed, healthy
+		SELECT id, key, name, namespace, kind, model, service_url, image, COALESCE(auth_ref, ''), deployed, healthy
 		FROM catalog.backends WHERE key = $1 AND deleted_at IS NULL`, key)
 	b, err := scanBackend(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -92,9 +94,9 @@ func (s *Store) GetBackendByKey(ctx context.Context, key string) (Backend, error
 	return b, err
 }
 
-// scanBackend scans a 10-column backend row.
+// scanBackend scans an 11-column backend row.
 func scanBackend(row pgx.Row) (Backend, error) {
 	var b Backend
-	err := row.Scan(&b.ID, &b.Key, &b.Name, &b.Namespace, &b.Kind, &b.Model, &b.ServiceURL, &b.Image, &b.Deployed, &b.Healthy)
+	err := row.Scan(&b.ID, &b.Key, &b.Name, &b.Namespace, &b.Kind, &b.Model, &b.ServiceURL, &b.Image, &b.AuthRef, &b.Deployed, &b.Healthy)
 	return b, err
 }

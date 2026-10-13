@@ -53,6 +53,19 @@ Supervisor (workload mTLS, HOR-398)            │
   request `model` field is rewritten alias → `backend_model_id`; per-alias
   transforms applied (default params, reasoning config, system prompt). No
   weighted round-robin / health checker.
+- **External providers (HOR-597, DES-HOR-597-01):** a keyed `external`
+  `ModelBackend` publishes only its `authRef` Secret *name* in the catalog. The
+  gateway reads that Secret's `key` from the Kubernetes API in its own
+  namespace (ServiceAccount with namespace-scoped `get` on Secrets), holds the
+  value in memory (stale on every snapshot refresh, at most 1 minute old), and
+  sends it upstream as `Authorization: Bearer`. It is never logged, never
+  stored in Postgres, and never reaches workloads; the client's own credential
+  is never forwarded. Outside a cluster, keyed backends fail closed. Request
+  bodies, including image content parts, pass through unchanged.
+  An external `baseURL` is the provider's OpenAI SDK base including its
+  version path (`https://provider/v1`); requests go to
+  `<baseURL>/chat/completions` (DES-HOR-597-04). In-cluster backends keep
+  `<service URL>/v1/chat/completions`.
 - **Rate limits:** per-identity RPM/TPM (from the snapshot) enforced via a Redis
   sliding window — the only shared state. TPM incremented from response usage.
 - **Redis:** rate-limit counters only.
@@ -123,6 +136,29 @@ logging:      {level: info, format: json}
 | `GET` | `/readyz` | – | Readiness (snapshot freshness gate) |
 | `GET` | `/metrics` on the dedicated metrics port | – | Prometheus; never exposed through API ingress or workload mTLS |
 | `GET` | `/admin/v1/snapshot` | `X-Admin-Key` | Consumed catalog / debug (read-only, no secrets) |
+
+Provider failures are classified in the OpenAI error envelope
+(DES-HOR-597-02); the runtime pauses on the retryable codes (HOR-649):
+
+| Provider condition | Response | `error.code` | Retryable |
+|---|---|---|---|
+| Unreachable, timeout, or any `5xx` (including `529` and a CDN's `520`–`524`) | `503` + `Retry-After` | `upstream_unavailable` | yes |
+| `429` | `429` + `Retry-After` | `upstream_rate_limited` | yes |
+| `401`/`403`, or the `authRef` credential is unavailable | `502` | `upstream_auth_failed` | no |
+| Other `4xx` | forwarded unchanged | provider's | no |
+
+The status alone decides a classified failure; the provider's error body is
+never read or passed through. `Retry-After` keeps the provider's value in
+either form (seconds or HTTP-date), else `5`. When a stream fails after it
+started — the connection drops, it ends without `[DONE]`, or the provider sends
+anything but a completion chunk (an error envelope, an `error` event, non-JSON
+data; all discarded) — the gateway ends it with one
+`data: {"error":{"code":"upstream_unavailable",...}}` event and no `[DONE]`.
+The provider stream is parsed as whole SSE events in any valid framing (with or
+without the space after `data:`, multi-line data, LF/CRLF/CR line ends) and
+re-emitted as single-line `data: ` events; provider comments become a bare
+`: keep-alive`, and `id`/`retry` fields are dropped.
+Each classified failure increments `gateway_upstream_errors_total{model,code}`.
 
 `/v1` responses carry rate-limit headers (`X-RateLimit-Limit/Remaining/Reset-Requests`
 + `-Tokens`); `429` + `Retry-After` when exceeded. The request `model` field uses

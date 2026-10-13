@@ -24,8 +24,10 @@ metadata:
   name: {{ include "inference-gateway.name" . }}
   labels:
     {{- include "inference-gateway.labels" . | nindent 4 }}
-  {{- if or $tlsEnabled $ednsHostname $ednsTarget }}
   annotations:
+    # Vision requests carry base64 images inline (HOR-597); ingress-nginx's 1m
+    # default would reject them before they reach the gateway.
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.proxyBodySize | quote }}
     {{- if $tlsEnabled }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
     {{- end }}
@@ -35,7 +37,6 @@ metadata:
     {{- if $ednsTarget }}
     external-dns.alpha.kubernetes.io/target: {{ $ednsTarget | quote }}
     {{- end }}
-  {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   {{- if $tlsEnabled }}

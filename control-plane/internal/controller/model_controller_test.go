@@ -167,6 +167,7 @@ func TestModelReconcile(t *testing.T) {
 		assert.Equal(t, "Qwen/Qwen3-27B", e.BackendModelID, "backend_model_id is the HF id the gateway rewrites to")
 		assert.Equal(t, "vLLM", e.BackendKind)
 		assert.True(t, e.Available)
+		assert.Empty(t, e.BackendAuthRef, "an in-cluster backend carries no credential reference")
 
 		// Per-alias config is carried through (reasoning off).
 		var rc struct {
@@ -195,6 +196,24 @@ func TestModelReconcile(t *testing.T) {
 		e, ok := findEntry("qwen3-27b-sick")
 		require.True(t, ok, "view row exists (backend present) but unavailable")
 		assert.False(t, e.Available, "available = Model.available AND backend.healthy")
+	})
+
+	t.Run("external backend exposes its credential Secret name", func(t *testing.T) {
+		createModel(t, "m-external", "hosted-model", "be-external", nil)
+		createBackend(t, "be-external", "hosted/model", true, true)
+		_, err := store.UpsertBackend(ctx, catalog.Backend{
+			Key: "default/be-external", Name: "be-external", Namespace: "default", Kind: "external",
+			ServiceURL: "https://llm.example/v1", AuthRef: "external-llm", Deployed: true, Healthy: true,
+		})
+		require.NoError(t, err)
+		waitReconciled(t, "m-external", true)
+
+		// HOR-597: the gateway resolves the Secret by name; the value never
+		// reaches Postgres.
+		e, ok := findEntry("hosted-model")
+		require.True(t, ok)
+		assert.Equal(t, "external", e.BackendKind)
+		assert.Equal(t, "external-llm", e.BackendAuthRef)
 	})
 
 	t.Run("aliases — two models, one backend", func(t *testing.T) {

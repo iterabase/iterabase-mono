@@ -54,6 +54,7 @@ CREATE TABLE catalog.backends (
     kind text NOT NULL,
     model text,
     service_url text NOT NULL,
+    auth_ref text,
     deployed boolean NOT NULL DEFAULT false,
     healthy boolean NOT NULL DEFAULT false,
     deleted_at timestamptz
@@ -75,10 +76,10 @@ CREATE TABLE catalog.models (
     deleted_at timestamptz
 );
 CREATE VIEW catalog.effective_catalog AS
-    SELECT m.model_id, m.display_name, m.context_length, m.capabilities, m.backend_ref,
+    SELECT m.model_id, m.namespace, m.display_name, m.context_length, m.capabilities, m.backend_ref,
            b.kind AS backend_kind, b.model AS backend_model_id, b.service_url AS backend_url,
            m.default_params, m.reasoning_config, m.transforms, m.rate_limits,
-           (m.available AND b.healthy) AS available
+           (m.available AND b.healthy) AS available, b.auth_ref AS backend_auth_ref
     FROM catalog.models m
     JOIN catalog.backends b ON b.name = m.backend_ref AND b.namespace = m.namespace AND b.deleted_at IS NULL
     WHERE m.deleted_at IS NULL;

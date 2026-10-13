@@ -25,6 +25,7 @@ type Metrics struct {
 	BackendHealth                           *prometheus.GaugeVec
 	RateLimitHitsTotal                      *prometheus.CounterVec
 	BackendRequestDuration                  *prometheus.HistogramVec
+	UpstreamErrorsTotal                     *prometheus.CounterVec
 	SnapshotFresh                           prometheus.Gauge
 	SnapshotLastRefresh                     prometheus.Gauge
 	Registry                                *prometheus.Registry
@@ -94,6 +95,9 @@ func NewWithBuild(reg *prometheus.Registry, version, commit string) *Metrics {
 			Name: "gateway_backend_request_duration_seconds", Help: "Backend response time.",
 			Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120},
 		}, []string{"model", "backend_ref"}),
+		UpstreamErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_upstream_errors_total", Help: "Classified model provider failures by error code.",
+		}, []string{"model", "code"}),
 		SnapshotFresh: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "inference_gateway_snapshot_fresh", Help: "Whether the consumed control-plane snapshot is within the readiness staleness bound.",
 		}),
@@ -105,7 +109,7 @@ func NewWithBuild(reg *prometheus.Registry, version, commit string) *Metrics {
 		m.RequestsTotal, m.RequestDuration, m.TimeToFirstToken, m.InterTokenLatency,
 		m.TokensPerSecond, m.TokensPerRequest, m.CompletionTokensPerSecondByPromptBucket,
 		m.PromptTokensTotal, m.CompletionTokensTotal, m.ActiveStreams, m.BackendHealth,
-		m.RateLimitHitsTotal, m.BackendRequestDuration, m.SnapshotFresh, m.SnapshotLastRefresh,
+		m.RateLimitHitsTotal, m.BackendRequestDuration, m.UpstreamErrorsTotal, m.SnapshotFresh, m.SnapshotLastRefresh,
 	)
 	return m
 }

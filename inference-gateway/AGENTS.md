@@ -6,7 +6,7 @@ Stay inside `inference-gateway/` for OpenAI-compatible inference routing, snapsh
 
 ## Project Overview
 
-Go (1.25) OpenAI-compatible API gateway for vLLM inference backends. Routes
+Go (1.26) OpenAI-compatible API gateway for vLLM inference backends. Routes
 `/v1/chat/completions` and `/v1/models` through a load balancer with auth,
 rate limiting, streaming (SSE), request transforms, and an admin CRUD API.
 
@@ -110,7 +110,7 @@ gatewaymw     "github.com/nunocgoncalves/iterabase-mono/inference-gateway/intern
   ```
 - Use `writeError(w, status, message, code)` helpers — don't write raw errors.
 - Log errors with structured logging: `h.logger.Error("msg", "key", value)`.
-- For infrastructure failures (backend down, DB error), report to health checker and return 502/503.
+- Provider failures use the classified `upstream_*` codes in `internal/proxy/upstream.go` (DES-HOR-597-02); never pass a provider's error body or credential through.
 
 ### Middleware Pattern
 
