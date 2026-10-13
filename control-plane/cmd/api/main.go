@@ -6,10 +6,10 @@
 //	  control-plane-api [--config path] serve
 //	  control-plane-api [--config path] migrate up
 //	  control-plane-api [--config path] migrate down [steps]
-//	  control-plane-api [--config path] bootstrap [--admin-email e] [--service-account name] [--reset]
+//	  control-plane-api [--config path] bootstrap [--admin-email e] [--admin-locale en|pt] [--recover-admin]
 //
-// The API serves JWKS, the delegated-token endpoint (POST /v1/token), and the
-// admin endpoints for local users + API keys (HOR-242).
+// The API serves the browser shell, the browser-authentication journey, and the
+// customer work, artifact, and People APIs under V2 authority (HOR-582).
 package main
 
 import (
@@ -29,7 +29,6 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/logging"
 	cpmetrics "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/metrics"
-	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/permissions"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/server"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/version"
 	workstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/work"
@@ -120,35 +119,25 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		artifacts.StartSweeper(ctx)
 	}
 
-	issuer, err := identity.NewIssuer(cfg.JWT.SigningKeyPath, cfg.JWT.KeyID, cfg.JWT.Issuer, cfg.JWT.Audience, cfg.JWT.TTL)
-	if err != nil {
-		return fmt.Errorf("loading jwt issuer: %w", err)
-	}
-
 	store := identity.NewStore(pool)
 	authServices, authWorker, err := buildAuthServices(cfg, logger, store)
 	if err != nil {
 		return fmt.Errorf("configuring browser authentication: %w", err)
 	}
-	if authWorker != nil {
-		go authWorker.Run(ctx)
-		logger.Info("authentication-email worker started", "origin", cfg.Auth.PublicOrigin)
-	}
+	go authWorker.Run(ctx)
+	logger.Info("authentication-email worker started", "origin", cfg.Auth.PublicOrigin)
 
 	m := cpmetrics.New("api", version.Version(), version.Commit())
 	m.RegisterDatabasePool(pool)
 	httpSrv := &http.Server{
 		Addr: cfg.API.Addr,
 		Handler: server.New(server.Services{
-			Pool:        pool,
-			Store:       store,
-			Permissions: permissions.NewStore(pool),
-			Issuer:      issuer,
-			Mode:        cfg.Identity.Mode,
-			Work:        workstore.NewStore(pool),
-			Artifacts:   artifacts,
-			Metrics:     m,
-			Auth:        authServices,
+			Pool:      pool,
+			Store:     store,
+			Work:      workstore.NewStore(pool),
+			Artifacts: artifacts,
+			Metrics:   m,
+			Auth:      authServices,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -219,13 +208,10 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: control-plane-api [--config path] <serve | migrate up | migrate down [steps] | bootstrap [flags]>")
 }
 
-// buildAuthServices wires the browser-authentication surface. It fails closed
-// when an enabled surface lacks a valid origin, session bounds, trusted-proxy
+// buildAuthServices wires the always-on browser-authentication surface. It
+// fails closed without a valid origin, session bounds, trusted-proxy
 // configuration, GeoIP database, or verified-TLS SMTP transport.
 func buildAuthServices(cfg *config.Config, logger *slog.Logger, store *identity.Store) (*server.AuthServices, *identity.AuthEmailWorker, error) {
-	if !cfg.Auth.Enabled || store == nil {
-		return &server.AuthServices{Enabled: false, Store: store}, nil, nil
-	}
 	origin, err := config.AuthPublicOrigin(cfg)
 	if err != nil {
 		return nil, nil, err
@@ -242,6 +228,10 @@ func buildAuthServices(cfg *config.Config, logger *slog.Logger, store *identity.
 	if err != nil {
 		return nil, nil, err
 	}
+	roots, err := identity.LoadSMTPRootCAs(cfg.Auth.Email.CAFile)
+	if err != nil {
+		return nil, nil, err
+	}
 	sender, err := identity.NewSMTPSender(identity.SMTPConfig{
 		Host:     cfg.Auth.Email.Host,
 		Port:     cfg.Auth.Email.Port,
@@ -249,12 +239,12 @@ func buildAuthServices(cfg *config.Config, logger *slog.Logger, store *identity.
 		From:     cfg.Auth.Email.From,
 		Username: cfg.Auth.Email.Username,
 		Password: cfg.Auth.Email.Password,
+		RootCAs:  roots,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	authServices := &server.AuthServices{
-		Enabled:         true,
 		PublicOrigin:    origin,
 		IdleTTL:         idle,
 		AbsoluteTTL:     absolute,
@@ -299,31 +289,28 @@ func bootstrapWorkerOwner() string {
 	return fmt.Sprintf("%s/%d", host, os.Getpid())
 }
 
-// runBootstrap creates the first Admin through the normal email setup channel
-// when browser authentication is enabled (no credential is ever printed), or
-// runs the legacy API-key bootstrap for pre-V2 installs. --recover-admin is the
-// cluster-operator recovery path and is permitted only with no active Admin.
-//
-//nolint:gocyclo // explicit legacy/V2 branch; both contracts are fail-closed.
+// runBootstrap is the RBAC-less first-boot init step. On an installation
+// without a bootstrap marker it makes the configured first Admin a
+// `setup_pending` Admin and queues normal setup email (DES-HOR-582-03); every
+// later run is a strict no-op. --recover-admin is the cluster-operator recovery
+// path and is permitted only with no active Admin. No credential is ever
+// created or printed.
 func runBootstrap(cfg *config.Config, logger *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 	var adminEmail string
 	var adminLocale string
 	var recoverAdmin bool
-	var reset bool
-	var serviceAccounts multiString
 	fs.StringVar(&adminEmail, "admin-email", "",
-		"Email (and identity key) for the bootstrap admin user")
+		"Email of the first Admin (defaults to auth.bootstrap.admin_email)")
 	fs.StringVar(&adminLocale, "admin-locale", "",
-		"Locale (en|pt) for the bootstrap admin setup email")
+		"Locale (en|pt) for the first Admin setup email (defaults to auth.bootstrap.admin_locale)")
 	fs.BoolVar(&recoverAdmin, "recover-admin", false,
 		"Cluster-operator recovery: only when no active Admin exists; revokes the named human's password, sessions, and owned keys")
-	fs.BoolVar(&reset, "reset", false,
-		"Legacy: revoke existing keys for the admin and seeded service accounts, then issue new ones")
-	fs.Var(&serviceAccounts, "service-account",
-		"Legacy: name of a service account to seed (repeatable); issues a token-scope key")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if err := config.ValidateAuthServe(cfg); err != nil {
+		return fmt.Errorf("bootstrap configuration: %w", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -336,22 +323,6 @@ func runBootstrap(cfg *config.Config, logger *slog.Logger, args []string) error 
 	defer pool.Close()
 	store := identity.NewStore(pool)
 
-	if cfg.Auth.Enabled {
-		if err := config.ValidateAuthServe(cfg); err != nil {
-			return fmt.Errorf("browser-auth bootstrap configuration: %w", err)
-		}
-		return runBrowserBootstrap(ctx, cfg, logger, store, adminEmail, adminLocale, recoverAdmin, reset, serviceAccounts)
-	}
-	if recoverAdmin {
-		return fmt.Errorf("bootstrap --recover-admin requires auth.enabled: V2 recovery uses the browser setup channel")
-	}
-	return runLegacyBootstrap(ctx, cfg, logger, store, adminEmail, reset, serviceAccounts)
-}
-
-func runBrowserBootstrap(ctx context.Context, cfg *config.Config, logger *slog.Logger, store *identity.Store, adminEmail, adminLocale string, recoverAdmin, reset bool, serviceAccounts []string) error {
-	if reset || len(serviceAccounts) > 0 {
-		return fmt.Errorf("bootstrap refuses to print or create API keys while auth.enabled is true; use --recover-admin for recovery")
-	}
 	if adminEmail == "" {
 		adminEmail = cfg.Auth.Bootstrap.AdminEmail
 	}
@@ -367,59 +338,9 @@ func runBrowserBootstrap(ctx context.Context, cfg *config.Config, logger *slog.L
 	if err != nil {
 		return err
 	}
-	logger.Info("browser-auth bootstrap completed",
+	logger.Info("bootstrap completed",
 		"state", result.State, "admin_email", result.AdminEmail, "recover", recoverAdmin)
-	fmt.Printf("Bootstrap %s for %s. First-time setup instructions are queued; no credential is printed and no browser session is created.\n",
+	fmt.Printf("Bootstrap %s for %s. First-time setup instructions are queued when needed; no credential is printed and no browser session is created.\n",
 		result.State, result.AdminEmail)
 	return nil
 }
-
-func runLegacyBootstrap(ctx context.Context, cfg *config.Config, logger *slog.Logger, store *identity.Store, adminEmail string, reset bool, serviceAccounts []string) error {
-	if adminEmail == "" {
-		adminEmail = "admin@control-plane.local"
-	}
-	// Admin local user + admin-scope key.
-	admin, err := store.UpsertLocalUser(ctx, adminEmail, adminEmail, "admin")
-	if err != nil {
-		return fmt.Errorf("upsert admin: %w", err)
-	}
-	if reset {
-		if err := store.RevokeAPIKeysForIdentity(ctx, admin.ID, identity.ScopeAdmin); err != nil {
-			return fmt.Errorf("revoking admin keys: %w", err)
-		}
-	}
-	adminFull, _, err := store.CreateAPIKey(ctx, admin.ID, "bootstrap", identity.ScopeAdmin, nil)
-	if err != nil {
-		return fmt.Errorf("create admin key: %w", err)
-	}
-
-	fmt.Println("Bootstrap complete. Store these securely; they will not be shown again.")
-	fmt.Printf("Admin (%s) API key (scope=admin): %s\n", adminEmail, adminFull)
-	// Seeded service accounts + token-scope keys.
-	for _, name := range serviceAccounts {
-		sa, err := store.UpsertServiceAccount(ctx, name, name)
-		if err != nil {
-			return fmt.Errorf("upsert service account %q: %w", name, err)
-		}
-		if reset {
-			if err := store.RevokeAPIKeysForIdentity(ctx, sa.ID, identity.ScopeToken); err != nil {
-				return fmt.Errorf("revoking %s keys: %w", name, err)
-			}
-		}
-		saFull, _, err := store.CreateAPIKey(ctx, sa.ID, "bootstrap", identity.ScopeToken, nil)
-		if err != nil {
-			return fmt.Errorf("create %s key: %w", name, err)
-		}
-		fmt.Printf("Service account %q API key (scope=token): %s\n", name, saFull)
-	}
-
-	logger.Info("bootstrap completed",
-		"admin_email", adminEmail, "service_accounts", []string(serviceAccounts), "reset", reset)
-	return nil
-}
-
-// multiString is a repeatable string flag value.
-type multiString []string
-
-func (m *multiString) String() string     { return fmt.Sprintf("%v", []string(*m)) }
-func (m *multiString) Set(v string) error { *m = append(*m, v); return nil }

@@ -4,14 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto"
-	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -127,82 +122,6 @@ func mustDecode(t *testing.T, body []byte, target any) {
 	if err := json.Unmarshal(body, target); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-}
-
-type jwkSet struct {
-	Keys []jwk `json:"keys"`
-}
-
-type jwk struct {
-	Kty string `json:"kty"`
-	Kid string `json:"kid"`
-	Alg string `json:"alg"`
-	N   string `json:"n"`
-	E   string `json:"e"`
-}
-
-func (key jwk) rsaPublicKey() (*rsa.PublicKey, error) {
-	modulus, err := base64.RawURLEncoding.DecodeString(key.N)
-	if err != nil {
-		return nil, fmt.Errorf("decode JWK modulus: %w", err)
-	}
-	exponent, err := base64.RawURLEncoding.DecodeString(key.E)
-	if err != nil {
-		return nil, fmt.Errorf("decode JWK exponent: %w", err)
-	}
-	return &rsa.PublicKey{N: new(big.Int).SetBytes(modulus), E: int(new(big.Int).SetBytes(exponent).Int64())}, nil
-}
-
-func verifyRS256(token string, keys jwkSet) (map[string]any, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("JWT has %d parts", len(parts))
-	}
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return nil, fmt.Errorf("decode JWT header: %w", err)
-	}
-	var header struct {
-		Alg string `json:"alg"`
-		Kid string `json:"kid"`
-	}
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return nil, fmt.Errorf("decode JWT header JSON: %w", err)
-	}
-	if header.Alg != "RS256" {
-		return nil, fmt.Errorf("JWT alg=%q want RS256", header.Alg)
-	}
-	var selected *jwk
-	for index := range keys.Keys {
-		if keys.Keys[index].Kty == "RSA" && (header.Kid == "" || keys.Keys[index].Kid == header.Kid) {
-			selected = &keys.Keys[index]
-			break
-		}
-	}
-	if selected == nil {
-		return nil, fmt.Errorf("JWKS has no RSA key for kid %q", header.Kid)
-	}
-	publicKey, err := selected.rsaPublicKey()
-	if err != nil {
-		return nil, err
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return nil, fmt.Errorf("decode JWT signature: %w", err)
-	}
-	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
-		return nil, fmt.Errorf("verify JWT signature: %w", err)
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("decode JWT payload: %w", err)
-	}
-	var claims map[string]any
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("decode JWT claims: %w", err)
-	}
-	return claims, nil
 }
 
 type timelineEvent struct {

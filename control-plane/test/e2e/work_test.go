@@ -53,11 +53,12 @@ type feedbackResponse struct {
 
 func setupWorkJourneyStage(t *testing.T, state *deployedState) {
 	t.Helper()
-	state.captureBootstrapKeys(t)
-	state.createWorkIdentity(t, "work-journey@local")
+	state.ensurePrincipals(t)
 	state.applyWorkFixture(t)
 
-	status, body := state.request(t, http.MethodGet, "/v1/work-items", state.adminKey, nil, nil)
+	// A credential without workflows.start cannot start work.
+	status, body := state.requestJSONWithHeaders(t, http.MethodPost, "/v1/work-items", state.adminKey, workStartBody("Case without action"),
+		map[string]string{"Idempotency-Key": "hor-582-no-start-action"})
 	requireStatus(t, status, http.StatusForbidden, body)
 	status, body = state.requestJSON(t, http.MethodPost, "/v1/work-items", state.workKey, workStartBody("Case without key"))
 	requireStatus(t, status, http.StatusBadRequest, body)
@@ -172,6 +173,14 @@ func concurrentIdempotentStartStage(t *testing.T, state *deployedState) {
 	if !attributed {
 		t.Fatal("work_item_created event is not attributable to the authenticated starter")
 	}
+	// The three principals come from the authenticated boundary: an API start
+	// through the Operator's personal credential records the Operator as both
+	// initiating human and request actor, with the credential as evidence.
+	principals := state.databaseQuery(t, "SELECT initiating_human_identity_id::text || ':' || request_actor_identity_id::text || ':' || "+
+		"authorization_source || ':' || (authorization_api_key_id IS NOT NULL)::text FROM work.work_items WHERE id='"+state.workItemID+"'")
+	if want := state.workIdentityID + ":" + state.workIdentityID + ":api:true"; principals != want {
+		t.Fatalf("work item principals=%q want %q", principals, want)
+	}
 	initialSSE := state.streamEventsAfter(t, 0, len(initialTimeline))
 	assertStrictCursorOrder(t, initialSSE, 0)
 	state.initialCursor = initialSSE[len(initialSSE)-1].Cursor
@@ -188,10 +197,12 @@ func workCommandsAndHistoryStage(t *testing.T, state *deployedState) {
 		t.Fatal("open blocker has no ID")
 	}
 
-	status, denied := state.requestJSON(t, http.MethodPost, "/v1/work-blockers/"+blocker.ID+"/responses", state.adminKey,
+	// A blocker response can confirm consequences: bearer credentials are
+	// refused and only the signed-in Operator's session responds.
+	status, denied := state.requestJSON(t, http.MethodPost, "/v1/work-blockers/"+blocker.ID+"/responses", state.workKey,
 		map[string]any{"outcome": "accepted", "response": map[string]any{"approved": true}})
-	requireStatus(t, status, http.StatusForbidden, denied)
-	status, body = state.requestJSON(t, http.MethodPost, "/v1/work-blockers/"+blocker.ID+"/responses", state.workKey,
+	requireStatus(t, status, http.StatusUnauthorized, denied)
+	status, body = state.sessionJSON(t, state.operator, http.MethodPost, "/v1/work-blockers/"+blocker.ID+"/responses",
 		map[string]any{"outcome": "accepted", "response": map[string]any{"approved": true}})
 	requireStatus(t, status, http.StatusOK, body)
 
@@ -239,7 +250,7 @@ func workCommandsAndHistoryStage(t *testing.T, state *deployedState) {
 		t.Fatalf("saving feedback created %d attempts, want 1", len(attempts))
 	}
 
-	status, body = state.requestJSON(t, http.MethodPost, "/v1/work-items/"+state.workItemID+"/revisions", state.workKey,
+	status, body = state.sessionJSON(t, state.operator, http.MethodPost, "/v1/work-items/"+state.workItemID+"/revisions",
 		map[string]any{"feedbackId": feedback.ID, "actionableGuidance": "Review the supplied evidence and confirm again."})
 	requireStatus(t, status, http.StatusCreated, body)
 	var revised workItemResponse
@@ -253,7 +264,7 @@ func workCommandsAndHistoryStage(t *testing.T, state *deployedState) {
 		t.Fatalf("blocked revision attempt=%q want=%q", revised.CurrentAttemptID, revisedAttemptID)
 	}
 	state.revisedAttemptID = revisedAttemptID
-	status, body = state.requestJSON(t, http.MethodPost, "/v1/work-blockers/"+revised.Blocker.ID+"/responses", state.workKey,
+	status, body = state.sessionJSON(t, state.operator, http.MethodPost, "/v1/work-blockers/"+revised.Blocker.ID+"/responses",
 		map[string]any{"outcome": "accepted", "response": map[string]any{"approved": true}})
 	requireStatus(t, status, http.StatusOK, body)
 

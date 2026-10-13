@@ -50,12 +50,3 @@ func TestParseBearer(t *testing.T) {
 		})
 	}
 }
-
-func TestValidScope(t *testing.T) {
-	assert.True(t, ValidScope(ScopeAdmin))
-	assert.True(t, ValidScope(ScopeToken))
-	assert.True(t, ValidScope(ScopeGateway))
-	assert.True(t, ValidScope(ScopeWork))
-	assert.False(t, ValidScope("superuser"))
-	assert.False(t, ValidScope(""))
-}

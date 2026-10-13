@@ -104,8 +104,10 @@ type deployedState struct {
 	toolV2            []toolFixture
 	fluxRevision      string
 	fluxDigest        string
+	admin             webSession
+	operator          webSession
+	usedLinks         map[string]bool
 	adminKey          string
-	tokenKey          string
 	workKey           string
 	workIdentityID    string
 	workItemID        string
@@ -152,7 +154,7 @@ func newDeployedState(t *testing.T) *deployedState {
 		ctx: context.Background(), repoRoot: repoRoot,
 		controlRoot: filepath.Join(repoRoot, "control-plane"), chartsRoot: filepath.Join(repoRoot, "charts"),
 		outputDir: outputDir, diagnosticsDir: diagnosticsDir, requestLog: requestLog, redactor: redactor,
-		runner: process.Runner{Redactor: redactor, OutputDir: outputDir},
+		runner: process.Runner{Redactor: redactor, OutputDir: outputDir}, usedLinks: map[string]bool{},
 	}
 	state.resolveRuntime(t)
 	return state
@@ -295,6 +297,7 @@ func installControlPlanePlatformStage(t *testing.T, state *deployedState) {
 			"toolRunner": map[string]any{"enabled": false},
 			"artifact":   map[string]any{"enabled": true},
 			"ingress":    map[string]any{"enabled": false},
+			"auth":       authValues(),
 		},
 	}
 	valuesPath := state.writeJSON(t, "control-plane-platform-values.json", values)
@@ -358,74 +361,11 @@ func assertDeploymentReadyStage(t *testing.T, state *deployedState) {
 	requireStatus(t, status, http.StatusOK, body)
 }
 
-func (state *deployedState) captureBootstrapKeys(t *testing.T) {
-	t.Helper()
-	state.captureBootstrapKeysExcluding(t, nil)
-}
-
-func (state *deployedState) captureBootstrapKeysExcluding(t *testing.T, excludedUIDs map[string]struct{}) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(state.ctx, 30*time.Second)
-	defer cancel()
-	keys, pod, err := state.readBootstrapKeys(ctx, excludedUIDs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state.redactor.Add(keys["admin"], keys["token"])
-	state.adminKey = keys["admin"]
-	state.tokenKey = keys["token"]
-	t.Logf("captured bootstrap credential scopes from %s", pod.safeSummary())
-}
-
 var (
-	bootstrapKeyPattern                = regexp.MustCompile(`API key \(scope=([^)]+)\): (\S+)`)
 	kubectlUnknownStreamWarningPattern = regexp.MustCompile(
 		`^E\d{4} \d{2}:\d{2}:\d{2}\.\d+\s+\d+ websocket\.go:\d+\] Unknown stream id \d+, discarding message$`,
 	)
 )
-
-func parseBootstrapKeys(output string) map[string]string {
-	keys := make(map[string]string)
-	for _, match := range bootstrapKeyPattern.FindAllStringSubmatch(output, -1) {
-		keys[match[1]] = match[2]
-	}
-	return keys
-}
-
-func parseRequiredBootstrapKeys(output string) (map[string]string, error) {
-	keys := parseBootstrapKeys(output)
-	if keys["admin"] == "" || keys["token"] == "" {
-		return keys, fmt.Errorf("bootstrap did not emit the required admin and token credentials")
-	}
-	return keys, nil
-}
-
-func (state *deployedState) createWorkIdentity(t *testing.T, email string) {
-	t.Helper()
-	status, body := state.requestJSON(t, http.MethodPost, "/v1/users", state.adminKey, map[string]any{"email": email, "role": "user"})
-	requireStatus(t, status, http.StatusCreated, body)
-	var user struct {
-		ID string `json:"id"`
-	}
-	mustDecode(t, body, &user)
-	if user.ID == "" {
-		t.Fatal("created work identity has no ID")
-	}
-	status, body = state.requestJSON(t, http.MethodPost, "/v1/api-keys", state.adminKey, map[string]any{
-		"identityID": user.ID, "name": "deployed-e2e", "scope": "work",
-	})
-	requireStatus(t, status, http.StatusCreated, body)
-	var key struct {
-		FullKey string `json:"fullKey"`
-	}
-	mustDecode(t, body, &key)
-	if key.FullKey == "" {
-		t.Fatal("created work API key is empty")
-	}
-	state.redactor.Add(key.FullKey)
-	state.workIdentityID = user.ID
-	state.workKey = key.FullKey
-}
 
 func (state *deployedState) applyWorkFixture(t *testing.T) {
 	t.Helper()
@@ -562,7 +502,13 @@ func (state *deployedState) restartAPI(t *testing.T) {
 	state.stopAPIForward(t)
 	state.kubectl(t, 30*time.Second, "rollout", "restart", "deployment/"+controlPlaneRelease+"-control-plane-api", "-n", controlPlaneNamespace)
 	state.kubectl(t, 7*time.Minute, "rollout", "status", "deployment/"+controlPlaneRelease+"-control-plane-api", "-n", controlPlaneNamespace, "--timeout=6m")
-	state.captureBootstrapKeysExcluding(t, previousUIDs) // register the exact new pod's credentials before diagnostics can retain logs
+	ctx, cancel = context.WithTimeout(state.ctx, 30*time.Second)
+	pod, err := state.assertBootstrapPrintedNoCredential(ctx, previousUIDs) // the restarted pod's first-boot run is a strict no-op
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("bootstrap printed no credential on %s", pod.safeSummary())
 	state.openAPI(t)
 	status, body := state.request(t, http.MethodGet, "/readyz", "", nil, nil)
 	requireStatus(t, status, http.StatusOK, body)
@@ -668,32 +614,14 @@ func (state *deployedState) recordRequest(t *testing.T, evidence requestEvidence
 	}
 }
 
-func (state *deployedState) registerBootstrapSecrets() error {
-	if state.cluster == nil || state.redactor == nil {
-		return fmt.Errorf("bootstrap secret registration requires an active cluster and redactor")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	keys, _, err := state.readBootstrapKeys(ctx, nil)
-	if err != nil {
-		return err
-	}
-	state.redactor.Add(keys["admin"], keys["token"])
-	return nil
-}
-
 func controlPlaneDiagnostics(t *testing.T, state *deployedState) {
 	t.Helper()
 	if state.cluster == nil {
 		return
 	}
-	// Bootstrap emits credentials from an init-container boundary. Resolve them
-	// directly into memory before any generic log collector can retain evidence,
-	// including failures that occurred before the scenario's identity setup.
-	if err := state.registerBootstrapSecrets(); err != nil {
-		t.Logf("skip deployed diagnostics because bootstrap credentials could not be registered: %v", err)
-		return
-	}
+	// Bootstrap prints no credential. Session tokens, passwords, one-time link
+	// tokens, and fixture API keys are registered with the redactor when they
+	// are created, before any generic log collector can retain evidence.
 	// Add owner-specific database/object-store health without querying Secrets.
 	health := []string{}
 	if out, err := state.client.Kubectl(state.ctx, 45*time.Second, "exec", "-n", controlPlaneNamespace,

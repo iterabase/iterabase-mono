@@ -12,7 +12,6 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/database"
-	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/testutil"
 )
 
@@ -68,7 +67,7 @@ func TestMigrations(t *testing.T) {
 	assert.True(t, extExists, "pgvector extension should be installed after MigrateUp")
 
 	// HOR-242: identity tables should exist after MigrateUp.
-	for _, table := range []string{"identities", "external_mappings", "local_users", "api_keys"} {
+	for _, table := range []string{"identities", "local_users", "api_keys"} {
 		var exists bool
 		err := pool.QueryRow(ctx,
 			"SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'identity' AND tablename = $1)", table,
@@ -77,13 +76,15 @@ func TestMigrations(t *testing.T) {
 		assert.True(t, exists, "identity.%s should exist after MigrateUp", table)
 	}
 
-	// HOR-243: permissions table + view should exist after MigrateUp.
-	var policyTableExists bool
-	err = pool.QueryRow(ctx,
-		"SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'permissions' AND tablename = 'policies')",
-	).Scan(&policyTableExists)
-	require.NoError(t, err)
-	assert.True(t, policyTableExists, "permissions.policies should exist after MigrateUp")
+	// HOR-582: the retired legacy authority objects are gone; the workload
+	// capability view remains for the gateway.
+	for _, relation := range []string{
+		"identity.external_mappings", "identity.authority_state", "identity.active_api_keys", "permissions.policies",
+	} {
+		var exists bool
+		require.NoError(t, pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, relation).Scan(&exists))
+		assert.False(t, exists, "%s must not exist after MigrateUp", relation)
+	}
 
 	var viewExists bool
 	err = pool.QueryRow(ctx,
@@ -107,27 +108,24 @@ func TestMigrations(t *testing.T) {
 
 	// HOR-489: fresh installs grant only the durable workload-authorization
 	// reads. A migration-22 OPO1 database already has this exact ACL, so moving
-	// down migrations 30, 29, 28, 27, 26, 25, 24, and 23 intentionally preserves
-	// it and reapplying them must be an idempotent metadata advance with no
-	// manual role update.
+	// down migrations 31 through 23 intentionally preserves it; reapplying
+	// them must be an idempotent metadata advance with no manual role update.
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
-	require.NoError(t, database.MigrateDown(connStr, 8))
+	require.NoError(t, database.MigrateDown(connStr, 9))
 	var migrationVersion int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
 	assert.Equal(t, 22, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 	require.NoError(t, database.MigrateUp(connStr))
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
-	assert.Equal(t, 30, migrationVersion)
+	assert.Equal(t, 31, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 
 	// HOR-254 must migrate an existing gateway ledger without requiring an
-	// unavailable customer-safe summary backfill. Roll back migration 30
-	// (HOR-597), 29
-	// (HOR-649), 28 and 27 (HOR-454), 26, 25, 24, migration 23, the three
-	// HOR-396 migrations, plus HOR-425, HOR-397, HOR-399, and HOR-254; seed a
-	// pre-existing write descriptor/invocation; and apply all fifteen again.
-	require.NoError(t, database.MigrateDown(connStr, 15))
+	// unavailable customer-safe summary backfill. Step back from 31 (HOR-582),
+	// through 30 (HOR-597) and the earlier migrations to the pre-HOR-254 schema;
+	// seed a historical write, then apply all sixteen again.
+	require.NoError(t, database.MigrateDown(connStr, 16))
 	_, err = pool.Exec(ctx, `
 		INSERT INTO toolgateway.tool_versions
 		    (name,version,digest,description,input_schema,effect_class,credential_slots,artifact_capabilities,timeout_ms)
@@ -254,8 +252,8 @@ func assertGatewayWorkloadPrivileges(t *testing.T, ctx context.Context, pool *pg
 }
 
 // TestIdentityConstraints exercises the identity schema against a real Postgres,
-// validating CHECK constraints, unique bindings, and soft-delete behavior that
-// the reconciler + identity service rely on. Requires Docker.
+// validating CHECK constraints and soft-delete behavior the identity service
+// relies on. Requires Docker.
 func TestIdentityConstraints(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -279,37 +277,30 @@ func TestIdentityConstraints(t *testing.T) {
 
 	require.NoError(t, database.MigrateUp(connStr))
 
-	// Insert a CR-sourced identity.
 	var id string
 	err = pool.QueryRow(ctx, `
 		INSERT INTO identity.identities (key, kind, source, display_name)
-		VALUES ('default/alice', 'user', 'external', 'Alice Wong') RETURNING id`,
+		VALUES ('default/alice', 'user', 'local', 'Alice Wong') RETURNING id`,
 	).Scan(&id)
 	require.NoError(t, err)
-
-	// Bind two external IDs.
-	_, err = pool.Exec(ctx, `
-		INSERT INTO identity.external_mappings (identity_id, provider, type, external_id) VALUES
-		($1, 'teams', 'user', 'aad:aaaa-1111'),
-		($1, 'slack', 'user', 'U012345ABCD')`, id)
-	require.NoError(t, err)
-
-	// Duplicate binding (same provider/type/external_id) must be rejected.
-	_, err = pool.Exec(ctx, `
-		INSERT INTO identity.external_mappings (identity_id, provider, type, external_id)
-		VALUES ($1, 'slack', 'user', 'U012345ABCD')`, id)
-	assert.Error(t, err, "duplicate external binding should violate UNIQUE constraint")
 
 	// Invalid kind must be rejected.
 	_, err = pool.Exec(ctx, `
 		INSERT INTO identity.identities (key, kind, source) VALUES ('bad', 'robot', 'local')`)
 	assert.Error(t, err, "invalid kind should violate CHECK constraint")
 
-	// Invalid api_key scope must be rejected.
+	// A live key without the complete V2 credential shape is unrepresentable:
+	// only fully specified V2 credentials or revoked legacy history may exist.
 	_, err = pool.Exec(ctx, `
-		INSERT INTO identity.api_keys (identity_id, key_hash, prefix, scope)
-		VALUES ($1, 'hash', 'cp-xxxx', 'superuser')`, id)
-	assert.Error(t, err, "invalid scope should violate CHECK constraint")
+		INSERT INTO identity.api_keys (identity_id, key_hash, prefix)
+		VALUES ($1, 'hash', 'cp-xxxx')`, id)
+	assert.Error(t, err, "an untyped live key should violate api_keys_v2_complete")
+
+	// The legacy role spelling is gone.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO identity.local_users (identity_id, email, email_normalized, role)
+		VALUES ($1, 'alice@example.com', 'alice@example.com', 'user')`, id)
+	assert.Error(t, err, "role must be exactly admin or operator")
 
 	// Soft delete: set deleted_at; identity row persists for usage/history.
 	_, err = pool.Exec(ctx, `UPDATE identity.identities SET deleted_at = now() WHERE key = 'default/alice'`)
@@ -349,69 +340,185 @@ func waitForPool(t *testing.T, ctx context.Context, connStr string) *pgxpool.Poo
 	return nil
 }
 
-// TestAuthJourneyMigrationPreservesLegacyIdentity proves migration 26 keeps
-// existing canonical identities, leaves the pre-epoch `user` role untouched for
-// HOR-454's authority epoch (normalized at every V2 authorization decision),
-// requires email setup instead of inventing a password, and leaves explicitly
-// scoped API keys usable.
-func TestAuthJourneyMigrationPreservesLegacyIdentity(t *testing.T) {
+// TestV2OnlyAuthorityMigrationUpgradesALegacyInstallation proves the OPO1
+// forward migration (DES-HOR-582-02): a pre-V2 installation with legacy roles,
+// scoped keys, IdentityMapping bindings, and PermissionPolicy rows upgrades in
+// one step to V2-only authority. Canonical identities and delivery emails are
+// preserved, humans complete email setup instead of receiving a password, no
+// legacy key can authenticate, the retired authority objects are gone, the
+// broad capability is limited to workload identities, and the gateway role
+// holds exactly the DES-HOR-451-14 grant union.
+//
+//nolint:gocyclo // One sequential upgrade proof.
+func TestV2OnlyAuthorityMigrationUpgradesALegacyInstallation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 	pool, connStr := testutil.NewPostgres(t)
 	ctx := context.Background()
 
-	// Step back to the pre-HOR-453 schema, seed a legacy install, then upgrade.
-	// HOR-454 added migrations 27 (V2 authority expand) and 28 (three-principal
-	// seam), HOR-649 added 29 (runtime wait/pause) and HOR-597 added 30 (backend
-	// auth_ref), so the pre-HOR-453 baseline is five steps down.
-	require.NoError(t, database.MigrateDown(connStr, 5))
+	// Step back to the pre-HOR-453 schema (migration 25) and seed a legacy
+	// install shaped like OPO1. The combined tree has 29 (wait/pause),
+	// 30 (backend auth_ref) and 31 (V2-only authority), so step down six.
+	require.NoError(t, database.MigrateDown(connStr, 6))
 	version, dirty, err := database.MigrateVersion(connStr)
 	require.NoError(t, err)
 	require.False(t, dirty)
 	assert.Equal(t, uint(25), version)
 
-	var identityID string
+	_, err = pool.Exec(ctx, `DO $$ BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway') THEN CREATE ROLE gateway NOLOGIN; END IF;
+	END $$`)
+	require.NoError(t, err)
+
+	var humanID, workflowID string
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO identity.identities (key, kind, source, display_name)
 		VALUES ('Legacy.User@Example.com', 'user', 'local', 'Legacy User')
-		RETURNING id`).Scan(&identityID))
+		RETURNING id`).Scan(&humanID))
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO identity.identities (key, kind, source, display_name)
+		VALUES ('workflow:default/invoices', 'workflow', 'local', 'Invoices')
+		RETURNING id`).Scan(&workflowID))
 	_, err = pool.Exec(ctx, `
 		INSERT INTO identity.local_users (identity_id, email, role)
-		VALUES ($1, 'Legacy.User@Example.com', 'user')`, identityID)
+		VALUES ($1, 'Legacy.User@Example.com', 'user')`, humanID)
+	require.NoError(t, err)
+	for _, scope := range []string{"work", "admin", "token", "gateway"} {
+		_, err = pool.Exec(ctx, `
+			INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope)
+			VALUES ($1, $2, $3, 'legacy', $4)`, humanID, "legacy-hash-"+scope, "cp-"+scope, scope)
+		require.NoError(t, err)
+	}
+	_, err = pool.Exec(ctx, `
+		INSERT INTO identity.external_mappings (identity_id, provider, type, external_id)
+		VALUES ($1, 'teams', 'user', 'aad:legacy')`, humanID)
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
-		INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope)
-		VALUES ($1, 'legacy-hash', 'cp-legacy', 'deployed-e2e', 'work')`, identityID)
+		INSERT INTO permissions.policies (key, subject_kind, subject_key, rate_limits)
+		VALUES ('default/legacy', 'user', 'Legacy.User@Example.com', '{"rpm": 10, "tpm": 1000}')`)
 	require.NoError(t, err)
+
+	// Work, timeline, artifact, and security history attributed to the human.
+	var workItemID, artifactID string
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO work.work_items (workflow_key, scope_identity_id, title, start_identity_id,
+			start_idempotency_key, start_payload_hash)
+		VALUES ('default/invoices', $2, 'Invoice 42', $1, 'legacy-1', 'hash')
+		RETURNING id`, humanID, workflowID).Scan(&workItemID))
+	_, err = pool.Exec(ctx, `
+		INSERT INTO work.timeline_events (work_item_id, code, actor_identity_id)
+		VALUES ($1, 'feedback_recorded', $2)`, workItemID, humanID)
+	require.NoError(t, err)
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO artifact.artifacts (storage_key, source_type, created_by_identity_id, mime_type)
+		VALUES ('legacy/invoice-42.pdf', 'user_upload', $1, 'application/pdf')
+		RETURNING id`, humanID).Scan(&artifactID))
+	historyBefore := legacyHistory(t, ctx, pool)
 
 	require.NoError(t, database.MigrateUp(connStr))
 
+	// History is untouched and still attributed to the same canonical human.
+	assert.Equal(t, historyBefore, legacyHistory(t, ctx, pool), "work and artifact history is preserved")
+	var starter, actor, creator string
+	require.NoError(t, pool.QueryRow(ctx, `SELECT start_identity_id::text FROM work.work_items WHERE id = $1`, workItemID).Scan(&starter))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT actor_identity_id::text FROM work.timeline_events WHERE work_item_id = $1`, workItemID).Scan(&actor))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT created_by_identity_id::text FROM artifact.artifacts WHERE id = $1`, artifactID).Scan(&creator))
+	assert.Equal(t, []string{humanID, humanID, humanID}, []string{starter, actor, creator})
+
+	// Canonical identity, delivery email, and email-setup requirement survive;
+	// the role is exactly operator.
 	var role, status, normalized, email string
 	require.NoError(t, pool.QueryRow(ctx, `
 		SELECT role, status, email_normalized, email FROM identity.local_users WHERE identity_id = $1`,
-		identityID).Scan(&role, &status, &normalized, &email))
-	assert.Equal(t, "user", role, "the HOR-454 epoch ticket performs the role rewrite")
-	assert.Equal(t, "operator", identity.NormalizeRole(role), "V2 decisions normalize the legacy spelling")
+		humanID).Scan(&role, &status, &normalized, &email))
+	assert.Equal(t, "operator", role)
 	assert.Equal(t, "setup_pending", status, "existing humans complete email setup")
-
-	// The widened check accepts the V2 spelling without a data rewrite.
-	_, err = pool.Exec(ctx, `
-		WITH ident AS (
-			INSERT INTO identity.identities (key, kind, source, display_name)
-			VALUES ('v2@example.com', 'user', 'local', 'V2 User')
-			RETURNING id
-		)
-		INSERT INTO identity.local_users (identity_id, email, email_normalized, role, status)
-		SELECT id, 'v2@example.com', 'v2@example.com', 'operator', 'setup_pending' FROM ident`)
-	assert.NoError(t, err, "V2 write paths may store operator before the epoch")
 	assert.Equal(t, "legacy.user@example.com", normalized)
 	assert.Equal(t, "Legacy.User@Example.com", email, "delivery email is preserved")
 
-	var scope string
-	var revoked *time.Time
+	// Every legacy key is revoked history; none is a live credential.
+	var live, revoked int
 	require.NoError(t, pool.QueryRow(ctx, `
-		SELECT scope, revoked_at FROM identity.api_keys WHERE identity_id = $1`, identityID).Scan(&scope, &revoked))
-	assert.Equal(t, "work", scope, "explicitly scoped API access survives the migration")
-	assert.Nil(t, revoked)
+		SELECT count(*) FILTER (WHERE status <> 'revoked' OR revoked_at IS NULL),
+		       count(*) FILTER (WHERE status = 'revoked' AND revoked_at IS NOT NULL)
+		FROM identity.api_keys WHERE identity_id = $1`, humanID).Scan(&live, &revoked))
+	assert.Zero(t, live)
+	assert.Equal(t, 4, revoked)
+	var projected int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM identity.effective_api_credentials`).Scan(&projected))
+	assert.Zero(t, projected, "no legacy key enters the V2 credential projection")
+	for _, column := range []string{"scope", "credential_epoch"} {
+		var exists bool
+		require.NoError(t, pool.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM information_schema.columns
+			WHERE table_schema='identity' AND table_name='api_keys' AND column_name=$1)`, column).Scan(&exists))
+		assert.False(t, exists, "identity.api_keys.%s is retired", column)
+	}
+
+	// Retired authority objects are gone.
+	for _, relation := range []string{
+		"identity.external_mappings", "identity.authority_state", "identity.active_api_keys", "permissions.policies",
+	} {
+		var exists bool
+		require.NoError(t, pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, relation).Scan(&exists))
+		assert.False(t, exists, "%s must not exist", relation)
+	}
+
+	// The broad capability covers workload identities only; no human wildcard.
+	var humanCaps, workflowCaps, limits int
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE identity_id = $1), count(*) FILTER (WHERE identity_id = $2)
+		FROM permissions.effective_capabilities`, humanID, workflowID).Scan(&humanCaps, &workflowCaps))
+	assert.Zero(t, humanCaps)
+	assert.Equal(t, 1, workflowCaps)
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM permissions.effective_rate_limits`).Scan(&limits))
+	assert.Zero(t, limits)
+
+	// The gateway role holds exactly the DES-HOR-451-14 union.
+	approved := []string{
+		"catalog.effective_api_catalog", "catalog.effective_catalog", "identity.inference_api_credentials",
+		"permissions.effective_capabilities", "permissions.effective_rate_limits",
+		"runtime.run_pool_assignments", "runtime.turn_assignments", "runtime.turns", "runtime.workflow_runs",
+		"toolgateway.pools",
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname IN ('identity', 'permissions', 'catalog', 'toolgateway', 'runtime', 'usage')
+		  AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+		  AND has_table_privilege('gateway', c.oid, 'SELECT')
+		ORDER BY 1`)
+	require.NoError(t, err)
+	var readable []string
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		readable = append(readable, name)
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, approved, readable)
+	var canInsertUsage bool
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT has_table_privilege('gateway', 'usage.inference_events', 'INSERT')`).Scan(&canInsertUsage))
+	assert.True(t, canInsertUsage)
+}
+
+// legacyHistory fingerprints the work, timeline, and artifact rows an
+// authority migration must leave untouched (ids and attribution).
+func legacyHistory(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for relation, attribution := range map[string]string{
+		"work.work_items":      "start_identity_id",
+		"work.timeline_events": "actor_identity_id",
+		"artifact.artifacts":   "created_by_identity_id",
+	} {
+		var fingerprint string
+		require.NoError(t, pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT count(*)::text || ':' || coalesce(md5(string_agg(id::text || '/' || coalesce(%s::text, ''), ',' ORDER BY id)), '') FROM %s`,
+			attribution, relation)).Scan(&fingerprint))
+		out[relation] = fingerprint
+	}
+	return out
 }

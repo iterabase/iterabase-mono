@@ -3,6 +3,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -13,19 +14,91 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nunocgoncalves/iterabase-mono/forge/test/e2e/internal/passwordhash"
 	"github.com/nunocgoncalves/iterabase-mono/forge/test/e2e/internal/remotecluster"
 	"golang.org/x/crypto/ssh"
 )
 
 const workspaceNamespace = "iterabase-system"
 
-var bootstrapCredentialPattern = regexp.MustCompile(`API key \(scope=([^)]+)\): (\S+)`)
+// The fixture overlay's always-on sign-in origin and the seeded Operator.
+const (
+	workspacePublicOrigin  = "https://app.forge-e2e.iterabase.test"
+	workspaceOperatorEmail = "workspace-operator@forge-e2e.iterabase.test"
+)
+
+// workspaceSession is a signed-in browser session: the opaque cookie and its
+// session-bound CSRF proof.
+type workspaceSession struct {
+	cookie string
+	csrf   string
+}
+
+func (session workspaceSession) headers() map[string]string {
+	return map[string]string{"Cookie": session.cookie, "X-CSRF-Token": session.csrf, "Origin": workspacePublicOrigin}
+}
+
+func randomHex(t *testing.T, size int) string {
+	t.Helper()
+	buffer := make([]byte, size)
+	if _, err := rand.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(buffer)
+}
+
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+// workspacePasswordHash encodes the control plane's Argon2id password hash.
+func workspacePasswordHash(t *testing.T, password string) string {
+	t.Helper()
+	encoded, err := passwordhash.Hash(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+// signInWorkspaceOperator signs in through the public browser-session endpoint.
+func signInWorkspaceOperator(t *testing.T, baseURL, password string) workspaceSession {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"email": workspaceOperatorEmail, "password": password})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/v1/auth/sign-in", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", workspacePublicOrigin)
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("workspace Operator sign-in: %v", err)
+	}
+	defer response.Body.Close()
+	var payload struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&payload) != nil || payload.CSRFToken == "" {
+		t.Fatalf("workspace Operator sign-in returned HTTP %d", response.StatusCode)
+	}
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == "__Host-iterabase_session" && cookie.Value != "" {
+			return workspaceSession{cookie: cookie.Name + "=" + cookie.Value, csrf: payload.CSRFToken}
+		}
+	}
+	t.Fatal("workspace Operator sign-in set no session cookie")
+	return workspaceSession{}
+}
 
 type workspaceWorkItem struct {
 	ID               string `json:"id"`
@@ -166,42 +239,41 @@ spec:
 		cluster.Kubectl(t, "wait", "--for=jsonpath={.status.ready}=true", "workflow/"+workflow, "-n", workspaceNamespace, "--timeout=3m")
 	}
 
-	apiPod := cluster.FirstPodName(t, workspaceNamespace, "app.kubernetes.io/name=control-plane,app.kubernetes.io/component=api")
-	bootstrap := cluster.PodLogs(t, workspaceNamespace, apiPod, "bootstrap")
-	keys := map[string]string{}
-	for _, match := range bootstrapCredentialPattern.FindAllStringSubmatch(bootstrap, -1) {
-		keys[match[1]] = match[2]
+	// V2-only authority (HOR-582): the scenario seeds one active Operator with a
+	// self-describing Argon2id password and a hash-only V2 personal work
+	// credential (the HOR-514 lifecycle does not exist yet), then signs in
+	// through the real browser-session endpoint. Blocker responses are
+	// cookie-session only.
+	password := "forge-workspace-" + randomHex(t, 12)
+	key := "cp-" + strings.ToUpper(randomHex(t, 16))
+	state.diagnostics.redactor.Add(password, key)
+	operatorID := workspaceDatabaseQuery(t, cluster, state, fmt.Sprintf(`
+		WITH human AS (
+			INSERT INTO identity.identities (key, kind, source, display_name)
+			VALUES ('%[1]s', 'user', 'local', 'Forge workspace E2E') RETURNING id
+		), account AS (
+			INSERT INTO identity.local_users
+				(identity_id, email, email_normalized, display_name, role, status, password_hash, password_changed_at)
+			SELECT id, '%[1]s', '%[1]s', 'Forge workspace E2E', 'operator', 'active', '%[2]s', now() FROM human
+			RETURNING identity_id
+		)
+		INSERT INTO identity.api_keys
+			(identity_id, key_hash, prefix, name, key_type, owner_user_identity_id, actor_identity_id,
+			 actions, rate_rpm, rate_tpm, expires_at, credential_family_id, status)
+		SELECT identity_id, '%[3]s', '%[4]s', 'forge-workspace-e2e', 'personal', identity_id, identity_id,
+			ARRAY['workflows.start','work.read','work.feedback.write','artifacts.read','artifacts.upload']::text[],
+			600, 600000, now() + interval '1 day', gen_random_uuid(), 'active'
+		FROM account RETURNING identity_id`,
+		workspaceOperatorEmail, workspacePasswordHash(t, password), sha256Hex(key), key[:12]))
+	if operatorID == "" {
+		t.Fatal("seed workspace Operator returned no identity")
 	}
-	if keys["admin"] == "" {
-		t.Fatal("exact candidate bootstrap did not emit an admin credential")
-	}
-	state.workspaceAdminKey = keys["admin"]
-	state.diagnostics.redactor.Add(state.workspaceAdminKey)
+	state.workspaceWorkKey = key
 
 	baseURL, stop := openWorkspaceAPI(t, cluster, state)
 	defer stop()
-	status, body := workspaceAPIRequest(t, baseURL, state.workspaceAdminKey, http.MethodPost, "/v1/users", map[string]any{
-		"email": "forge-workspace-e2e@example.test", "role": "user",
-	}, nil)
-	requireWorkspaceStatus(t, status, http.StatusCreated)
-	var user struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(body, &user); err != nil || user.ID == "" {
-		t.Fatalf("decode workspace E2E identity: %v", err)
-	}
-	status, body = workspaceAPIRequest(t, baseURL, state.workspaceAdminKey, http.MethodPost, "/v1/api-keys", map[string]any{
-		"identityID": user.ID, "name": "forge-workspace-e2e", "scope": "work",
-	}, nil)
-	requireWorkspaceStatus(t, status, http.StatusCreated)
-	var key struct {
-		FullKey string `json:"fullKey"`
-	}
-	if err := json.Unmarshal(body, &key); err != nil || key.FullKey == "" {
-		t.Fatalf("decode workspace E2E work credential: %v", err)
-	}
-	state.workspaceWorkKey = key.FullKey
-	state.diagnostics.redactor.Add(state.workspaceWorkKey)
+	state.workspaceSession = signInWorkspaceOperator(t, baseURL, password)
+	state.diagnostics.redactor.Add(state.workspaceSession.cookie, state.workspaceSession.csrf)
 }
 
 func exerciseConcurrentWorkspaceWorkStage(t *testing.T, state *cpuFixtureState) {
@@ -247,8 +319,8 @@ func exerciseConcurrentWorkspaceWorkStage(t *testing.T, state *cpuFixtureState) 
 		t.Fatalf("concurrent workspace work did not execute exactly one isolated bash command per session: %s", bashCalls)
 	}
 	assertConcurrentWorkspaceMarkers(t, cluster, workerA, expected[0].SessionID, expected[1].SessionID)
-	respondWorkspaceBlocker(t, baseURL, state.workspaceWorkKey, first.ID)
-	respondWorkspaceBlocker(t, baseURL, state.workspaceWorkKey, second.ID)
+	respondWorkspaceBlocker(t, baseURL, state.workspaceWorkKey, state.workspaceSession, first.ID)
+	respondWorkspaceBlocker(t, baseURL, state.workspaceWorkKey, state.workspaceSession, second.ID)
 	_ = waitWorkspaceWorkState(t, baseURL, state.workspaceWorkKey, first.ID, "done", 2*time.Minute)
 	_ = waitWorkspaceWorkState(t, baseURL, state.workspaceWorkKey, second.ID, "done", 2*time.Minute)
 }
@@ -615,7 +687,7 @@ func exerciseHumanGateWorkspaceReplacementStage(t *testing.T, state *cpuFixtureS
 	}
 	assertRecoveryWorkspaceState(t, cluster, sessionBefore, "replacement", false)
 
-	respondWorkspaceBlocker(t, baseURL, state.workspaceWorkKey, item.ID)
+	respondWorkspaceBlocker(t, baseURL, state.workspaceWorkKey, state.workspaceSession, item.ID)
 	waitWorkspaceDatabaseValue(t, cluster, state, fmt.Sprintf(`SELECT count(*) FROM runtime.turn_assignments WHERE attempt_id='%s'`, item.CurrentAttemptID), "2", 4*time.Minute)
 	item = waitWorkspaceWorkState(t, baseURL, state.workspaceWorkKey, item.ID, "blocked", 2*time.Minute)
 	recoveryEvents := workspaceDatabaseQuery(t, cluster, state, fmt.Sprintf(`SELECT string_agg(seq::text || ':' || kind || ':' || payload::text, E'\n' ORDER BY seq) FROM runtime.events WHERE run_id='%s'`, item.CurrentAttemptID))
@@ -633,7 +705,7 @@ func exerciseHumanGateWorkspaceReplacementStage(t *testing.T, state *cpuFixtureS
 	if bashCalls != "2" {
 		t.Fatalf("worker replacement duplicated or omitted the intended workspace consequence: bash calls=%s", bashCalls)
 	}
-	respondWorkspaceBlocker(t, baseURL, state.workspaceWorkKey, item.ID)
+	respondWorkspaceBlocker(t, baseURL, state.workspaceWorkKey, state.workspaceSession, item.ID)
 	_ = waitWorkspaceWorkState(t, baseURL, state.workspaceWorkKey, item.ID, "done", 2*time.Minute)
 }
 
@@ -743,7 +815,7 @@ func startWorkspaceWork(t *testing.T, baseURL, key, workflowKey, title, idempote
 	return item
 }
 
-func respondWorkspaceBlocker(t *testing.T, baseURL, key, itemID string) {
+func respondWorkspaceBlocker(t *testing.T, baseURL, key string, session workspaceSession, itemID string) {
 	t.Helper()
 	status, body := workspaceAPIRequest(t, baseURL, key, http.MethodGet, "/v1/work-items/"+itemID+"/blocker", nil, nil)
 	requireWorkspaceStatus(t, status, http.StatusOK)
@@ -751,9 +823,9 @@ func respondWorkspaceBlocker(t *testing.T, baseURL, key, itemID string) {
 	if err := json.Unmarshal(body, &blocker); err != nil || blocker.ID == "" {
 		t.Fatalf("decode human-gate blocker: %v", err)
 	}
-	status, _ = workspaceAPIRequest(t, baseURL, key, http.MethodPost, "/v1/work-blockers/"+blocker.ID+"/responses", map[string]any{
+	status, _ = workspaceAPIRequest(t, baseURL, "", http.MethodPost, "/v1/work-blockers/"+blocker.ID+"/responses", map[string]any{
 		"outcome": "continued", "response": map[string]any{},
-	}, nil)
+	}, session.headers())
 	requireWorkspaceStatus(t, status, http.StatusOK)
 }
 

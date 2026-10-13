@@ -42,10 +42,6 @@
 {{- printf "%s-tool-runner-tls" .Release.Name -}}
 {{- end -}}
 
-{{- define "control-plane.jwtSecretName" -}}
-{{- if .Values.jwt.secret -}}{{- .Values.jwt.secret -}}{{- else -}}{{- printf "%s-control-plane-jwt" .Release.Name -}}{{- end -}}
-{{- end -}}
-
 {{- define "control-plane.pgHost" -}}
 {{- if .Values.postgresql.host -}}{{- .Values.postgresql.host -}}{{- else -}}{{- printf "%s-postgresql" .Release.Name -}}{{- end -}}
 {{- end -}}
@@ -145,6 +141,22 @@ gateway:
 {{- default (printf "%s-control-plane-auth-email" .Release.Name) .Values.auth.email.existingSecret -}}
 {{- end -}}
 
+{{- define "control-plane.authSMTPCAMountPath" -}}
+/etc/control-plane/smtp-ca
+{{- end -}}
+
+{{/*
+The authentication-email relay host. The `ses` provider uses the Amazon SES
+SMTP interface of the configured region unless a host is set explicitly.
+*/}}
+{{- define "control-plane.authSMTPHost" -}}
+{{- if .Values.auth.email.host -}}
+{{- .Values.auth.email.host -}}
+{{- else if eq (toString .Values.auth.email.provider) "ses" -}}
+{{- printf "email-smtp.%s.amazonaws.com" (required "auth.email.ses.region is required for the ses provider" .Values.auth.email.ses.region) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "control-plane.authGeoIPMountPath" -}}
 /etc/control-plane/geoip
 {{- end -}}
@@ -158,30 +170,33 @@ gateway:
 {{- end -}}
 
 # Browser-authentication environment shared by the bootstrap init container and
-# the api container. It fails closed at render time when an enabled surface is
-# missing its approved prerequisites.
+# the api container. Sign-in is always on (HOR-582): rendering fails closed when
+# any approved prerequisite is missing.
 {{- define "control-plane.authEnv" -}}
-{{- if .Values.auth.enabled }}
+{{- if not (has (toString .Values.auth.email.provider) (list "smtp" "ses")) }}
+{{- fail "auth.email.provider must be smtp or ses" }}
+{{- end }}
+{{- if and (eq (toString .Values.auth.email.provider) "ses") (not .Values.auth.email.username) }}
+{{- fail "auth.email.username and auth.email.existingSecret are required for the ses provider: SES SMTP credentials are per environment" }}
+{{- end }}
 {{- if not (has .Values.auth.email.mode (list "starttls" "tls")) }}
 {{- fail "auth.email.mode must be starttls or tls (verified TLS is required)" }}
 {{- end }}
 {{- if not (regexMatch "^https://[^/?#]+$" (toString .Values.auth.publicOrigin)) }}
 {{- fail "auth.publicOrigin must be an absolute https origin without a path, query, or fragment" }}
 {{- end }}
-- name: AUTH_ENABLED
-  value: "true"
 - name: AUTH_PUBLIC_ORIGIN
-  value: {{ required "auth.publicOrigin is required when auth.enabled" .Values.auth.publicOrigin | quote }}
+  value: {{ required "auth.publicOrigin is required: sign-in is always on" .Values.auth.publicOrigin | quote }}
 - name: AUTH_FORWARDED_HEADER
   value: {{ .Values.auth.forwardedHeader | default "X-Forwarded-For" | quote }}
 - name: AUTH_SMTP_HOST
-  value: {{ required "auth.email.host is required when auth.enabled" .Values.auth.email.host | quote }}
+  value: {{ required "auth.email.host is required (or auth.email.provider=ses)" (include "control-plane.authSMTPHost" .) | quote }}
 - name: AUTH_SMTP_PORT
   value: {{ .Values.auth.email.port | quote }}
 - name: AUTH_SMTP_MODE
   value: {{ .Values.auth.email.mode | quote }}
 - name: AUTH_SMTP_FROM
-  value: {{ required "auth.email.from is required when auth.enabled" .Values.auth.email.from | quote }}
+  value: {{ required "auth.email.from is required: sign-in is always on" .Values.auth.email.from | quote }}
 {{- if .Values.auth.email.username }}
 {{- if not .Values.auth.email.existingSecret }}
 {{- fail "auth.email.existingSecret is required when auth.email.username is set: the SMTP relay password is operator-owned and must not be generated" }}
@@ -193,6 +208,10 @@ gateway:
     secretKeyRef:
       name: {{ include "control-plane.authEmailSecretName" . }}
       key: {{ .Values.auth.email.passwordKey | default "smtp-password" }}
+{{- end }}
+{{- if .Values.auth.email.caSecret }}
+- name: AUTH_SMTP_CA_FILE
+  value: {{ printf "%s/%s" (include "control-plane.authSMTPCAMountPath" .) (.Values.auth.email.caKey | default "ca.crt") | quote }}
 {{- end }}
 {{- if .Values.auth.session.idleTTL }}
 - name: AUTH_SESSION_IDLE_TTL
@@ -224,7 +243,6 @@ gateway:
     secretKeyRef:
       name: {{ include "control-plane.authBootstrapSecretName" . }}
       key: {{ .Values.auth.bootstrap.localeKey | default "admin-locale" }}
-{{- end }}
 {{- end -}}
 
 {{- define "control-plane.labels" -}}

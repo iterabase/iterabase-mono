@@ -4,6 +4,7 @@ import axe from "axe-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AccountShell from "./AccountShell";
 import PublicAuth from "./PublicAuth";
+import { probeSession } from "./authApi";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -450,5 +451,60 @@ describe("AccountShell", () => {
     );
     await user.click(screen.getByRole("button", { name: "Sessions" }));
     await waitFor(() => expect(onSessionLost).toHaveBeenCalled());
+  });
+});
+
+describe("probeSession", () => {
+  it("reads the anonymous state without an enabled flag", async () => {
+    stubFetch([["/v1/auth/session", () => json({ authenticated: false })]]);
+    await expect(probeSession()).resolves.toEqual({ kind: "anonymous" });
+    expect(vi.mocked(fetch).mock.calls[0][1]?.credentials).toBe("include");
+  });
+
+  it("returns the signed-in profile and CSRF proof", async () => {
+    stubFetch([
+      [
+        "/v1/auth/session",
+        () =>
+          json({
+            authenticated: true,
+            profile: operatorProfile,
+            csrfToken: "csrf-token",
+          }),
+      ],
+    ]);
+    await expect(probeSession()).resolves.toEqual({
+      kind: "authenticated",
+      profile: operatorProfile,
+      csrfToken: "csrf-token",
+    });
+  });
+
+  it("reports unconfigured browser auth as unavailable", async () => {
+    stubFetch([
+      [
+        "/v1/auth/session",
+        () => json({ error: "unavailable", code: "auth_unavailable" }, 503),
+      ],
+    ]);
+    await expect(probeSession()).resolves.toEqual({ kind: "unavailable" });
+  });
+});
+
+describe("AccountShell work navigation", () => {
+  it("offers the way back to the work board when the app provides one", async () => {
+    const onOpenWork = vi.fn();
+    stubFetch([]);
+    const user = userEvent.setup();
+    render(
+      <AccountShell
+        initialProfile={operatorProfile}
+        initialCSRF="csrf"
+        onSessionLost={vi.fn()}
+        onOpenWork={onOpenWork}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Work" }));
+    expect(onOpenWork).toHaveBeenCalled();
   });
 });

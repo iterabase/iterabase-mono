@@ -13,46 +13,36 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 )
 
-func (h *Handler) artifactActor(r *http.Request) (identity.Identity, bool) {
-	v, ok := r.Context().Value(ctxIdentity).(identity.Identity)
-	return v, ok
+// registerArtifactRoutes mounts the customer artifact APIs (architecture 9.3).
+// Deletion is a personal current-Admin API action with no browser surface.
+func (h *Handler) registerArtifactRoutes(r chi.Router) {
+	h.route(r, http.MethodPost, "/v1/artifacts", action(identity.ActionArtifactsUpload), h.uploadArtifact)
+	h.route(r, http.MethodGet, "/v1/artifacts/{id}", action(identity.ActionArtifactsRead), h.getArtifact)
+	h.route(r, http.MethodHead, "/v1/artifacts/{id}", action(identity.ActionArtifactsRead), h.headArtifact)
+	h.route(r, http.MethodDelete, "/v1/artifacts/{id}", bearerAction(identity.ActionArtifactsDelete), h.deleteArtifact)
 }
 
-func (h *Handler) authorizeArtifact(w http.ResponseWriter, r *http.Request, action string) bool {
+// artifactPrincipal returns the principal requireAction resolved for the route.
+func (h *Handler) artifactPrincipal(w http.ResponseWriter, r *http.Request) (Principal, bool) {
 	if h.artifacts == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "artifact service not configured"})
-		return false
+		return Principal{}, false
 	}
-	actor, ok := h.artifactActor(r)
+	p, ok := principalFromContext(r.Context())
 	if !ok {
-		writeJSON(w, http.StatusUnauthorized, errorBody{Error: "missing identity"})
-		return false
+		authError(w, http.StatusUnauthorized, "session_expired", "Your session expired. Sign in again to continue.")
+		return Principal{}, false
 	}
-	if h.perms == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "permissions not configured"})
-		return false
-	}
-	caps, err := h.perms.EffectiveCapabilities(r.Context(), actor.ID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "evaluating permission"})
-		return false
-	}
-	for _, c := range caps {
-		if (c.Resource == "*" || c.Resource == "artifact") && (c.Action == "*" || c.Action == action) {
-			return true
-		}
-	}
-	writeJSON(w, http.StatusForbidden, errorBody{Error: "artifact:" + action + " permission required"})
-	return false
+	return p, true
 }
 
 // uploadArtifact accepts a raw streaming body. Content-Type is required;
 // Content-Length and X-Artifact-SHA256 are optional integrity claims.
 func (h *Handler) uploadArtifact(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeArtifact(w, r, "write") {
+	principal, ok := h.artifactPrincipal(w, r)
+	if !ok {
 		return
 	}
-	actor, _ := h.artifactActor(r)
 	mimeType := r.Header.Get("Content-Type")
 	var expectedSize *int64
 	if r.ContentLength >= 0 {
@@ -61,7 +51,7 @@ func (h *Handler) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	a, err := h.artifacts.Upload(r.Context(), artifactstore.UploadInput{
 		SourceType: artifactstore.SourceUserUpload, SourceRef: r.Header.Get("X-Artifact-Source"),
-		CreatedByIdentityID: actor.ID, MIMEType: mimeType, ExpectedSize: expectedSize,
+		CreatedByIdentityID: principal.ActorID, MIMEType: mimeType, ExpectedSize: expectedSize,
 		ExpectedDigest: r.Header.Get("X-Artifact-SHA256"),
 	}, r.Body)
 	if err != nil {
@@ -72,7 +62,7 @@ func (h *Handler) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getArtifact(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeArtifact(w, r, "read") {
+	if _, ok := h.artifactPrincipal(w, r); !ok {
 		return
 	}
 	a, body, err := h.artifacts.Open(r.Context(), chi.URLParam(r, "id"))
@@ -91,7 +81,7 @@ func (h *Handler) getArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) headArtifact(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeArtifact(w, r, "read") {
+	if _, ok := h.artifactPrincipal(w, r); !ok {
 		return
 	}
 	a, err := h.artifacts.Stat(r.Context(), chi.URLParam(r, "id"))
@@ -108,8 +98,7 @@ func (h *Handler) headArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deleteArtifact(w http.ResponseWriter, r *http.Request) {
-	if h.artifacts == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "artifact service not configured"})
+	if _, ok := h.artifactPrincipal(w, r); !ok {
 		return
 	}
 	if _, err := h.artifacts.Delete(r.Context(), chi.URLParam(r, "id"), "admin_explicit"); err != nil {

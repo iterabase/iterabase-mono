@@ -28,6 +28,9 @@ func deployedMetadata(name, description, makeTarget string, timeout int, referen
 		References: references,
 		RequiredArtifacts: []string{
 			"control-plane-image", "control-plane-chart", "iterabase-platform-chart", "cert-manager-substrate-chart", "lvm-storage-substrate-chart",
+			// The verified-TLS SMTP sink every deployed scenario's always-on
+			// sign-in needs (HOR-582).
+			"runtime-fixture-image",
 		},
 		FixtureModes: []sharede2e.FixtureMode{sharede2e.FixtureSource},
 		MakeTarget:   makeTarget, TimeoutMinutes: timeout,
@@ -37,7 +40,7 @@ func deployedMetadata(name, description, makeTarget string, timeout int, referen
 func deployedExecutionMetadata(name, description, makeTarget string, timeout int, references []string) sharede2e.ScenarioMetadata {
 	metadata := deployedMetadata(name, description, makeTarget, timeout, references)
 	metadata.RequiredArtifacts = append(metadata.RequiredArtifacts,
-		"harness-image", "tool-runner-image", "inference-gateway-image", "inference-gateway-chart", "runtime-fixture-image")
+		"harness-image", "tool-runner-image", "inference-gateway-image", "inference-gateway-chart")
 	return metadata
 }
 
@@ -62,7 +65,8 @@ func deployedControlPlaneScenario() sharede2e.Definition {
 			{Name: "import-runtime-images", DependsOn: []string{"create-kind"}, Run: importRuntimeImagesStage},
 			{Name: "install-certificate-substrate", DependsOn: []string{"import-runtime-images"}, Run: installCertificateSubstrateStage},
 			{Name: "install-lvm-storage-substrate", DependsOn: []string{"install-certificate-substrate"}, Run: installLVMStorageSubstrateStage},
-			{Name: "install-control-plane", DependsOn: []string{"install-lvm-storage-substrate"}, Run: installControlPlanePlatformStage},
+			{Name: "install-mail-sink", DependsOn: []string{"install-lvm-storage-substrate"}, Run: installMailSinkStage},
+			{Name: "install-control-plane", DependsOn: []string{"install-mail-sink"}, Run: installControlPlanePlatformStage},
 			{Name: "assert-deployment-ready", DependsOn: []string{"install-control-plane"}, Run: assertDeploymentReadyStage},
 			{Name: "exercise-identity-api", DependsOn: []string{"assert-deployment-ready"}, Run: exerciseIdentityAPIStage},
 			{Name: "setup-work-journey", DependsOn: []string{"assert-deployment-ready"}, Run: setupWorkJourneyStage},
@@ -96,7 +100,8 @@ func deployedExecutionContractsScenario() sharede2e.Definition {
 			{Name: "install-certificate-substrate", DependsOn: []string{"import-runtime-images"}, Run: installCertificateSubstrateStage},
 			{Name: "install-lvm-storage-substrate", DependsOn: []string{"install-certificate-substrate"}, Run: installLVMStorageSubstrateStage},
 			{Name: "install-execution-fixtures", DependsOn: []string{"install-lvm-storage-substrate"}, Run: installExecutionFixtureStage},
-			{Name: "install-execution-platform", DependsOn: []string{"install-execution-fixtures"}, Run: installExecutionPlatformStage},
+			{Name: "install-mail-sink", DependsOn: []string{"install-execution-fixtures"}, Run: installMailSinkStage},
+			{Name: "install-execution-platform", DependsOn: []string{"install-mail-sink"}, Run: installExecutionPlatformStage},
 			{Name: "assert-execution-platform-ready", DependsOn: []string{"install-execution-platform"}, Run: assertExecutionPlatformReadyStage},
 			{Name: "setup-execution-resources", DependsOn: []string{"assert-execution-platform-ready"}, Run: setupExecutionResourcesStage},
 			{Name: "exercise-product-only-install", DependsOn: []string{"setup-execution-resources"}, Run: exerciseProductOnlyInstallStage},

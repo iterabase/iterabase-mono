@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-render=$(helm template runner-check charts/control-plane \
+render=$(helm template runner-check charts/control-plane -f values-control-plane-auth.yaml \
   --set postgresql.enabled=false \
   --set gateway.enabled=true \
   --set toolRunner.enabled=true \
@@ -27,7 +27,7 @@ grep -q 'port: run-metrics' <<<"$render"
 # The gateway consumes its static runner allow-list only at startup. The pod
 # template checksum must change when an operator approves another namespace so
 # a normal Helm reconcile rolls the Deployment without Forge special-casing it.
-changed_render=$(helm template runner-check charts/control-plane \
+changed_render=$(helm template runner-check charts/control-plane -f values-control-plane-auth.yaml \
   --set postgresql.enabled=false \
   --set gateway.enabled=true \
   --set toolRunner.enabled=true \
@@ -56,7 +56,7 @@ grep -q 'name: FLUX_ENABLED, value: "true"' <<<"$materializer"
 
 # Product-only install (DES-HOR-651-01): the product layer ships in the image,
 # so disabling the overlay client layer removes every Flux credential surface.
-product_only=$(helm template runner-check charts/control-plane \
+product_only=$(helm template runner-check charts/control-plane -f values-control-plane-auth.yaml \
   --set postgresql.enabled=false \
   --set gateway.enabled=true \
   --set toolRunner.enabled=true \

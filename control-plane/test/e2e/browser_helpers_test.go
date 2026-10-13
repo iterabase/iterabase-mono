@@ -117,7 +117,7 @@ func TestCollectBrowserEvidenceRedactsTextBeforeRetentionAndRemovesRawCopies(t *
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, variant := range browserEvidenceCredentialVariants(state.adminKey, state.tokenKey, state.workKey) {
+		for _, variant := range browserEvidenceCredentialVariants(state.browserSecrets()...) {
 			if bytes.Contains(data, []byte(variant)) {
 				t.Fatalf("retained %s contains credential variant %q", name, variant)
 			}
@@ -156,9 +156,10 @@ func newBrowserEvidenceCollectionFixture(t *testing.T, unsafeOpaque bool) (*depl
 	outputDir := t.TempDir()
 	state := &deployedState{
 		outputDir: outputDir, diagnosticsDir: filepath.Join(outputDir, "diagnostics"),
-		adminKey: "cp-browser-admin", tokenKey: "cp-browser-token", workKey: "cp-browser-work",
+		adminKey: "cp-browser-admin", workKey: "cp-browser-work",
+		operator: webSession{password: "browser-operator-password"},
 	}
-	state.redactor = redact.New(state.adminKey, state.tokenKey, state.workKey)
+	state.redactor = redact.New(state.browserSecrets()...)
 	artifactRoot := filepath.Join(outputDir, "browser-artifacts")
 	if err := os.MkdirAll(filepath.Join(artifactRoot, "safe-opaque"), 0o700); err != nil {
 		t.Fatal(err)
@@ -168,7 +169,7 @@ func newBrowserEvidenceCollectionFixture(t *testing.T, unsafeOpaque bool) (*depl
 		filepath.Join(artifactRoot, "network.jsonl"):                 []byte(`{"message":"` + state.adminKey + `"}`),
 		filepath.Join(artifactRoot, "sanitized.marker"):              []byte("Playwright evidence sanitized\n"),
 		filepath.Join(outputDir, "playwright-npm-ci.log"):            []byte("npm completed\n"),
-		filepath.Join(outputDir, "playwright-test.log"):              []byte("test token=" + state.tokenKey + "\n"),
+		filepath.Join(outputDir, "playwright-test.log"):              []byte("test password=" + state.operator.password + "\n"),
 		filepath.Join(artifactRoot, "safe-opaque", "screenshot.png"): {0, 1, 2, 3},
 	}
 	if unsafeOpaque {

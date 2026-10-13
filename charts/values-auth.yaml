@@ -1,0 +1,11 @@
+# Render/install fixture for the always-on V2 authentication prerequisites
+# (HOR-582). Static checks and owner E2E pass it with every umbrella render;
+# real installations supply their own values from the deployment overlay.
+control-plane:
+  auth:
+    publicOrigin: https://app.example.com
+    email:
+      host: smtp.example.com
+      from: Iterabase <no-reply@example.com>
+    bootstrap:
+      adminEmail: admin@example.com

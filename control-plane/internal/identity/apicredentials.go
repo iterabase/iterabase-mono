@@ -49,7 +49,6 @@ type Credential struct {
 	ActorRole        string
 	RateRPM          int
 	RateTPM          int
-	Epoch            string
 	Eligible         bool
 	SuspensionReason string
 }
@@ -57,14 +56,14 @@ type Credential struct {
 //nolint:gosec // Column list, not a credential literal.
 const credentialColumns = `api_key_id, credential_family_id, credential_version, key_type,
 	credential_status, expires_at, actions, owner_identity_id, owner_status, owner_role,
-	actor_identity_id, actor_kind, actor_role, rate_rpm, rate_tpm, credential_epoch,
+	actor_identity_id, actor_kind, actor_role, rate_rpm, rate_tpm,
 	eligible, COALESCE(suspension_reason, '')`
 
 func scanCredential(row pgx.Row) (Credential, error) {
 	var c Credential
 	err := row.Scan(&c.ID, &c.FamilyID, &c.Version, &c.Kind,
 		&c.Status, &c.ExpiresAt, &c.Actions, &c.OwnerIdentityID, &c.OwnerStatus, &c.OwnerRole,
-		&c.ActorIdentityID, &c.ActorKind, &c.ActorRole, &c.RateRPM, &c.RateTPM, &c.Epoch,
+		&c.ActorIdentityID, &c.ActorKind, &c.ActorRole, &c.RateRPM, &c.RateTPM,
 		&c.Eligible, &c.SuspensionReason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Credential{}, ErrNotFound
@@ -201,7 +200,7 @@ func (s *Store) CreateCredentialVersion(ctx context.Context, params CreateCreden
 	if err := validateOwnerEligibility(params.Kind, owner); err != nil {
 		return "", Credential{}, err
 	}
-	if err := ValidateActions(params.Kind, params.Actions, NormalizeRole(owner.Role)); err != nil {
+	if err := ValidateActions(params.Kind, params.Actions, owner.Role); err != nil {
 		return "", Credential{}, fmt.Errorf("%w: %v", ErrInvalidCredentialAction, err)
 	}
 
@@ -211,9 +210,9 @@ func (s *Store) CreateCredentialVersion(ctx context.Context, params CreateCreden
 			(identity_id, key_hash, prefix, name, purpose, expires_at,
 			 key_type, owner_user_identity_id, actor_identity_id, actions,
 			 rate_rpm, rate_tpm, credential_family_id, credential_version,
-			 created_by_identity_id, credential_epoch, status)
+			 created_by_identity_id, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-			gen_random_uuid(), 1, $13, 'v2', 'active')
+			gen_random_uuid(), 1, $13, 'active')
 		RETURNING id, credential_family_id`,
 		params.ActorIdentity, hash, prefix, params.Name, params.Purpose, params.ExpiresAt.UTC(),
 		params.Kind, params.OwnerIdentity, params.ActorIdentity, params.Actions,
@@ -281,7 +280,7 @@ func validateOwnerEligibility(kind string, owner LocalUser) error {
 	if owner.Status != LocalUserActive {
 		return ErrOwnerNotEligible
 	}
-	role := NormalizeRole(owner.Role)
+	role := owner.Role
 	switch kind {
 	case CredentialKindPersonal:
 		if role != RoleAdmin && role != RoleOperator {

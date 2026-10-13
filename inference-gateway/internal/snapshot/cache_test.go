@@ -35,13 +35,6 @@ func TestCache_refreshAndRead(t *testing.T) {
 	assert.Equal(t, "http://vllm", e.BackendURL)
 	assert.Equal(t, "Qwen/Qwen3-27B", e.BackendModelID)
 
-	// API key -> identity.
-	id, ok := cache.IdentityByAPIKey("h1")
-	require.True(t, ok)
-	assert.Equal(t, aliceID, id)
-	_, ok = cache.IdentityByAPIKey("nope")
-	assert.False(t, ok)
-
 	// Capabilities (broad-default wildcard).
 	caps := cache.Capabilities(aliceID)
 	require.Len(t, caps, 1)

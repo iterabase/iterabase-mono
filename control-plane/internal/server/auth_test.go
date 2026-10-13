@@ -13,9 +13,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	artifactstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/server"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/testutil"
+	workstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/work"
 )
 
 const authTestOrigin = "https://app.example.com"
@@ -39,10 +41,11 @@ func newAuthAPIHarness(t *testing.T) *authAPIHarness {
 		now:   time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC),
 	}
 	harness.router = server.New(server.Services{
-		Pool:  pool,
-		Store: store,
+		Pool:      pool,
+		Store:     store,
+		Work:      workstore.NewStore(pool),
+		Artifacts: artifactstore.NewService(artifactstore.NewStore(pool), newMemoryObjects(), artifactstore.Config{MaxSize: 1 << 20}, nil),
 		Auth: &server.AuthServices{
-			Enabled:      true,
 			PublicOrigin: authTestOrigin,
 			Store:        store,
 			Location:     identity.NoLocation{},
@@ -192,6 +195,20 @@ func (s signedIn) unsafeHeaders() map[string]string {
 	}
 }
 
+// personalKey issues a V2 personal credential for an active owner. Expiry is
+// anchored to the wall clock because the live projection evaluates it against
+// the database clock.
+func (h *authAPIHarness) personalKey(ownerID string, actions ...string) string {
+	h.t.Helper()
+	full, _, err := h.store.CreateCredentialVersion(context.Background(), identity.CreateCredentialParams{
+		Kind: identity.CredentialKindPersonal, OwnerIdentity: ownerID, ActorIdentity: ownerID,
+		Name: "test", Actions: actions, RateRPM: 60, RateTPM: 60000,
+		ExpiresAt: time.Now().UTC().Add(24 * time.Hour), Now: h.now,
+	})
+	require.NoError(h.t, err)
+	return full
+}
+
 func (h *authAPIHarness) activeUser(email, role, password string) identity.LocalUser {
 	h.t.Helper()
 	ctx := context.Background()
@@ -213,7 +230,7 @@ func (h *authAPIHarness) activeUser(email, role, password string) identity.Local
 	return updated
 }
 
-func TestAuthRoutesFailSafeWhenDisabled(t *testing.T) {
+func TestAuthRoutesFailClosedWithoutConfiguration(t *testing.T) {
 	router := server.New(server.Services{})
 	request := httptest.NewRequest(http.MethodPost, "/v1/auth/sign-in", bytes.NewReader([]byte(`{"email":"a@b.com","password":"x"}`)))
 	request.Header.Set("Content-Type", "application/json")
@@ -346,11 +363,10 @@ func TestBearerIsRejectedOnBrowserSecurityRoutes(t *testing.T) {
 	// A valid bearer key alongside a valid cookie is still refused.
 	user, err := h.store.FindLocalUserByEmail(context.Background(), "admin@example.com")
 	require.NoError(t, err)
-	_, key, err := h.store.CreateAPIKey(context.Background(), user.ID, "machine", identity.ScopeAdmin, nil)
-	require.NoError(t, err)
+	key := h.personalKey(user.ID, identity.ActionPeopleRead)
 
 	headers := admin.headers()
-	headers["Authorization"] = "Bearer " + key.Prefix
+	headers["Authorization"] = "Bearer " + key
 	response := h.do(http.MethodGet, "/v1/profile", nil, headers)
 	assert.Equal(t, http.StatusUnauthorized, response.status)
 	assert.Equal(t, "bearer_not_accepted", response.body["code"])
@@ -382,10 +398,11 @@ func TestCSRFOriginAndThrottleContract(t *testing.T) {
 	foreign := h.do(http.MethodPost, "/v1/auth/sign-out", nil, session.unsafeHeaders())
 	assert.Equal(t, http.StatusNoContent, foreign.status)
 
+	live := h.signIn("ada@example.com", "ada-long-password", user)
 	request := httptest.NewRequest(http.MethodPost, "/v1/auth/sign-out", nil)
 	request.Header.Set("Origin", "https://evil.example.com")
-	request.Header.Set("Cookie", session.cookie.Name+"="+session.cookie.Value)
-	request.Header.Set("X-CSRF-Token", session.csrf)
+	request.Header.Set("Cookie", live.cookie.Name+"="+live.cookie.Value)
+	request.Header.Set("X-CSRF-Token", live.csrf)
 	recorder := httptest.NewRecorder()
 	h.router.ServeHTTP(recorder, request)
 	assert.Equal(t, http.StatusForbidden, recorder.Code)
@@ -532,12 +549,11 @@ func assertSessionCookieContract(t *testing.T, cookie *http.Cookie) {
 func TestAuthSessionBootstrapProbe(t *testing.T) {
 	h := newAuthAPIHarness(t)
 
-	// Anonymous: 200 with enabled + unauthenticated so the app renders sign-in
-	// without a failed network response.
+	// Anonymous: 200 and unauthenticated so the app renders sign-in without a
+	// failed network response.
 	anonymous := h.do(http.MethodGet, "/v1/auth/session", nil, nil)
 	require.Equal(t, http.StatusOK, anonymous.status)
-	assert.Equal(t, true, anonymous.body["enabled"])
-	assert.NotEqual(t, true, anonymous.body["authenticated"])
+	assert.Equal(t, false, anonymous.body["authenticated"])
 	assert.Equal(t, "no-store", anonymous.header.Get("Cache-Control"))
 
 	// Authenticated: the same endpoint returns the profile and a fresh CSRF
@@ -546,7 +562,6 @@ func TestAuthSessionBootstrapProbe(t *testing.T) {
 	session := h.signIn("ada@example.com", "ada-long-password", user)
 	authenticated := h.do(http.MethodGet, "/v1/auth/session", nil, session.headers())
 	require.Equal(t, http.StatusOK, authenticated.status)
-	assert.Equal(t, true, authenticated.body["enabled"])
 	assert.Equal(t, true, authenticated.body["authenticated"])
 	profile := authenticated.body["profile"].(map[string]any)
 	assert.Equal(t, "ada@example.com", profile["email"])
@@ -567,16 +582,14 @@ func TestAuthSessionBootstrapProbe(t *testing.T) {
 	assert.Equal(t, "bearer_not_accepted", bearer.body["code"])
 }
 
-func TestAuthSessionProbeDisabledSurface(t *testing.T) {
+func TestAuthSessionProbeWithoutConfigurationIsUnavailable(t *testing.T) {
 	router := server.New(server.Services{})
 	request := httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil)
 	request.Header.Set("Origin", authTestOrigin)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
-	require.Equal(t, http.StatusOK, recorder.Code)
-	var body map[string]any
-	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
-	assert.Equal(t, false, body["enabled"])
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "auth_unavailable")
 }
 
 func TestSetupContextEndpointDisclosesBoundedContext(t *testing.T) {

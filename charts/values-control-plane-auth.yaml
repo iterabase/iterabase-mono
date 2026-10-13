@@ -1,0 +1,10 @@
+# Render fixture for the always-on V2 authentication prerequisites (HOR-582)
+# when the control-plane chart is rendered directly. Real installations supply
+# their own values from the deployment overlay.
+auth:
+  publicOrigin: https://app.example.com
+  email:
+    host: smtp.example.com
+    from: Iterabase <no-reply@example.com>
+  bootstrap:
+    adminEmail: admin@example.com

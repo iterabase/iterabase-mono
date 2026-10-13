@@ -4,7 +4,8 @@ import { type Page } from "@playwright/test";
 import { requiredEnv } from "../env";
 import { expect, test, type BrowserObservability } from "./fixtures";
 
-const workKey = requiredEnv("ITERABASE_BROWSER_WORK_KEY");
+const email = requiredEnv("ITERABASE_BROWSER_EMAIL");
+const password = requiredEnv("ITERABASE_BROWSER_PASSWORD");
 const coordinator = requiredEnv("ITERABASE_BROWSER_COORDINATOR");
 const doneTitle = requiredEnv("ITERABASE_BROWSER_DONE_TITLE");
 const approvalTitle = requiredEnv("ITERABASE_BROWSER_APPROVAL_TITLE");
@@ -25,14 +26,22 @@ async function assertFreshBrowserState(page: Page): Promise<void> {
     .toEqual({ cookie: "", local: [], session: [] });
 }
 
+// signIn reaches the work board only through the browser session: the
+// HttpOnly session cookie is invisible to page script and nothing is kept in
+// browser storage.
+async function signIn(page: Page, secret = password): Promise<void> {
+  await page.getByLabel("Work email").fill(email);
+  await page.getByLabel("Password", { exact: true }).fill(secret);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+}
+
 async function connect(page: Page): Promise<void> {
   await page.goto("/");
   await assertFreshBrowserState(page);
-  const key = page.getByLabel("Work API key");
-  await key.focus();
-  await expect(key).toBeFocused();
-  await key.fill(workKey);
-  await page.getByRole("button", { name: "Connect" }).click();
+  const field = page.getByLabel("Work email");
+  await field.focus();
+  await expect(field).toBeFocused();
+  await signIn(page);
   await expect(page.getByRole("region", { name: "Work" })).toBeVisible();
   await expect(page.getByText(doneTitle, { exact: true })).toBeVisible();
   await assertFreshBrowserState(page);
@@ -55,26 +64,31 @@ function allowNetworkOutage(observability: BrowserObservability): void {
   );
 }
 
-test("uses in-memory authentication, real loading/error responses, and both locales", async ({
+test("reaches work only through a browser session, with real loading/error responses and both locales", async ({
   page,
   observability,
 }) => {
   observability.allowHTTPStatus(
     401,
-    /^\/v1\/work-(dashboard|items)$/,
-    "The invalid-key customer error state deliberately exercises the deployed authentication rejection.",
+    /^\/v1\/auth\/sign-in$/,
+    "The wrong-password customer error state deliberately exercises the deployed sign-in rejection.",
   );
   observability.allowConsoleError(
     /Failed to load resource: the server responded with a status of 401/,
-    "Chromium reports the same explicitly allowlisted deployed invalid-key rejection in its console channel.",
+    "Chromium reports the same explicitly allowlisted deployed sign-in rejection in its console channel.",
+  );
+  observability.allowRequestFailure(
+    /^\/v1\/auth\/sign-out$/,
+    /^net::ERR_ABORTED$/,
+    "Chromium reports a fetch answered 204 No Content as net::ERR_ABORTED although the fetch resolves; the journey asserts the signed-out state and the reload proves the server session ended.",
   );
   await page.goto("/");
   await assertFreshBrowserState(page);
+  await expect(page.getByLabel("Work API key")).toHaveCount(0);
 
-  await page.getByLabel("Work API key").fill("invalid-browser-key");
-  await page.getByRole("button", { name: "Connect" }).click();
+  await signIn(page, "not-the-operator-password");
   await expect(page.getByRole("alert")).toHaveText(
-    "The key could not open the Dashboard.",
+    "We could not sign you in with those details.",
   );
 
   let delayed = false;
@@ -85,21 +99,25 @@ test("uses in-memory authentication, real loading/error responses, and both loca
     }
     await route.continue();
   });
-  await page.getByLabel("Work API key").fill(workKey);
-  await page.getByRole("button", { name: "Connect" }).click();
-  await expect(page.getByRole("button", { name: "Connecting…" })).toBeVisible();
+  await signIn(page);
   await expect(page.getByText(doneTitle, { exact: true })).toBeVisible();
   await assertFreshBrowserState(page);
 
   await page.getByRole("button", { name: "PT", exact: true }).click();
   await expect(page.getByRole("region", { name: "Trabalho" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Concluído" })).toBeVisible();
-  await page.getByRole("button", { name: "Desligar" }).click();
+  await page.getByRole("button", { name: "Terminar sessão" }).click();
   await expect(
-    page.getByRole("heading", { name: "Ligar ao Painel" }),
+    page.getByRole("button", { name: /^(Sign in|Iniciar sessão)$/ }),
   ).toBeVisible();
-  await expect(page.getByLabel("Chave da API de trabalho")).toHaveValue("");
   await assertFreshBrowserState(page);
+
+  // Signing out ended the server session: a reload returns to sign-in.
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: /^(Sign in|Iniciar sessão)$/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("region", { name: "Work" })).toHaveCount(0);
 });
 
 test("covers portfolio search, customer-safe detail, download, keyboard, and accessibility", async ({
@@ -257,7 +275,7 @@ test("renders the customer error state and reconnects SSE after a Go-owned netwo
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
-test("keeps the critical connect, board, and detail path usable at a mobile viewport", async ({
+test("keeps the critical sign-in, board, and detail path usable at a mobile viewport", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });

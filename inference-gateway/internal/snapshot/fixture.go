@@ -1,6 +1,6 @@
 package snapshot
 
-// FixtureSchema is a test-only mirror of the control-plane contract (the 4 views
+// FixtureSchema is a test-only mirror of the control-plane contract (the views
 // the gateway reads), NOT the control-plane's actual migrations — so gateway
 // tests stay decoupled from the control-plane component (B+C approach). Exported so
 // the server integration test can reuse it.
@@ -15,19 +15,7 @@ CREATE TABLE identity.identities (
     kind text NOT NULL,
     deleted_at timestamptz
 );
-CREATE TABLE identity.api_keys (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    identity_id uuid NOT NULL REFERENCES identity.identities(id) ON DELETE CASCADE,
-    key_hash text NOT NULL UNIQUE,
-    scope text NOT NULL,
-    expires_at timestamptz,
-    revoked_at timestamptz
-);
-CREATE VIEW identity.active_api_keys AS
-    SELECT key_hash, identity_id
-    FROM identity.api_keys
-    WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now());
-
+-- Test-only backing rows for the effective_rate_limits view contract.
 CREATE TABLE permissions.policies (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     subject_kind text NOT NULL,
@@ -37,7 +25,7 @@ CREATE TABLE permissions.policies (
 );
 CREATE VIEW permissions.effective_capabilities AS
     SELECT i.id AS identity_id, '*'::text AS resource, '*'::text AS action
-    FROM identity.identities i WHERE i.deleted_at IS NULL;
+    FROM identity.identities i WHERE i.deleted_at IS NULL AND i.kind NOT IN ('user', 'group');
 CREATE VIEW permissions.effective_rate_limits AS
     SELECT i.id AS identity_id,
            MIN((p.rate_limits->>'rpm')::int) AS rpm,

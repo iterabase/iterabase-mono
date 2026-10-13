@@ -2,7 +2,7 @@
 
 Read the root [`AGENTS.md`](../AGENTS.md) first. Its context, Git, ticket, validation, and architecture-approval rules apply here.
 
-Stay inside `inference-gateway/` for OpenAI-compatible inference routing, snapshot consumption, API-key/workload authentication, Redis rate limiting, and backend proxy behavior. Inspect `control-plane/` only for an explicitly named shared database or workload contract; deployment packaging remains owned by `charts/`.
+Stay inside `inference-gateway/` for OpenAI-compatible inference routing, snapshot consumption, customer/workload authentication, Redis rate limiting, and backend proxy behavior. Inspect `control-plane/` only for an explicitly named shared database or workload contract; deployment packaging remains owned by `charts/`.
 
 ## Project Overview
 

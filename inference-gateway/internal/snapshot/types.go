@@ -57,12 +57,6 @@ type ModelRateLimits struct {
 	TPM *int `json:"tpm,omitempty"`
 }
 
-// APIKey is an active API key (hash -> identity) from identity.api_keys.
-type APIKey struct {
-	KeyHash    string
-	IdentityID string
-}
-
 // Capability is a row of permissions.effective_capabilities: an identity is
 // granted (resource, action). Wildcard '*' matches any.
 type Capability struct {

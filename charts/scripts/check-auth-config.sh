@@ -1,20 +1,14 @@
 #!/usr/bin/env bash
-# Renders the browser-authentication configuration and asserts the enablement
-# contract: an enabled surface drops the legacy bootstrap service-account args
-# (which runBootstrap refuses), carries the shared auth env, and fails closed
-# when a prerequisite is missing.
+# Renders the always-on V2 authentication configuration (HOR-582) and asserts
+# its contract: no auth-disabled mode, no legacy JWT or bootstrap key path, the
+# shared auth env on the bootstrap init container and the api container, the
+# SES and private-relay CA paths, and fail-closed rendering when any
+# prerequisite is missing.
 set -euo pipefail
 
 chart=charts/control-plane
 release=auth-check
-
-enabled_args=(
-  --set auth.enabled=true
-  --set auth.publicOrigin=https://app.example.com
-  --set auth.email.host=smtp.example.com
-  --set auth.email.from=auth@example.com
-  --set auth.bootstrap.adminEmail=admin@example.com
-)
+values=(-f values-control-plane-auth.yaml)
 
 fail() {
   echo "ERROR: $*" >&2
@@ -27,39 +21,58 @@ expect_fail() {
   fi
 }
 
-enabled=$(helm template "$release" "$chart" "${enabled_args[@]}")
+rendered=$(helm template "$release" "$chart" "${values[@]}")
 
-bootstrap_block=$(awk '/- name: bootstrap$/{flag=1} flag{print} /- name: api$/{if(flag){exit}}' <<<"$enabled")
-if grep -q -- '--service-account' <<<"$bootstrap_block"; then
-  fail "enabled auth still passes legacy --service-account args to the bootstrap init container"
+bootstrap_block=$(awk '/- name: bootstrap$/{flag=1} flag{print} /- name: api$/{if(flag){exit}}' <<<"$rendered")
+grep -q -- '- bootstrap' <<<"$bootstrap_block" || fail "missing bootstrap init container"
+if grep -q -- '--service-account\|--reset' <<<"$bootstrap_block"; then
+  fail "the bootstrap init container still passes legacy key-issuance args"
 fi
 
-auth_env_count=$(grep -c 'name: AUTH_ENABLED' <<<"$enabled")
-[[ "$auth_env_count" -eq 2 ]] || fail "expected AUTH_ENABLED on the bootstrap init container and the api container (got ${auth_env_count})"
+auth_env_count=$(grep -c 'name: AUTH_PUBLIC_ORIGIN' <<<"$rendered")
+[[ "$auth_env_count" -eq 2 ]] || fail "expected the auth env on the bootstrap init container and the api container (got ${auth_env_count})"
+for retired in AUTH_ENABLED JWT_SIGNING_KEY_PATH JWT_KEY_ID IDENTITY_MODE control-plane-jwt; do
+  if grep -q "$retired" <<<"$rendered"; then
+    fail "retired legacy configuration $retired is still rendered"
+  fi
+done
+for retired in identitymappings permissionpolicies egressroutes; do
+  if grep -q "$retired" <<<"$rendered"; then
+    fail "retired CRD $retired is still rendered (CRD or RBAC)"
+  fi
+done
 
-grep -q "^  name: ${release}-control-plane-auth-bootstrap$" <<<"$enabled" || fail "missing first-Admin Secret"
+grep -q "^  name: ${release}-control-plane-auth-bootstrap$" <<<"$rendered" || fail "missing first-Admin Secret"
 
-with_smtp=$(helm template "$release" "$chart" "${enabled_args[@]}" \
+with_smtp=$(helm template "$release" "$chart" "${values[@]}" \
   --set auth.email.username=relay --set auth.email.existingSecret=relay-smtp)
 grep -q 'name: relay-smtp' <<<"$with_smtp" || fail "SMTP credential Secret is not referenced"
 grep -q 'key: smtp-password' <<<"$with_smtp" || fail "SMTP credential key is not referenced"
 
-# Enabled surfaces fail closed when a prerequisite is missing.
-expect_fail helm template "$release" "$chart" \
-  --set auth.enabled=true \
-  --set auth.email.host=smtp.example.com \
-  --set auth.email.from=auth@example.com \
-  --set auth.bootstrap.adminEmail=admin@example.com
-expect_fail helm template "$release" "$chart" "${enabled_args[@]}" --set auth.email.mode=plain
-expect_fail helm template "$release" "$chart" "${enabled_args[@]}" --set auth.publicOrigin=http://app.example.com
-expect_fail helm template "$release" "$chart" "${enabled_args[@]}" --set auth.email.username=relay
-expect_fail helm template "$release" "$chart" "${enabled_args[@]}" --set auth.bootstrap.adminEmail=""
+# Hosted installs: Amazon SES SMTP in the configured region with a
+# per-environment credential.
+ses=$(helm template "$release" "$chart" "${values[@]}" \
+  --set auth.email.provider=ses --set auth.email.host= \
+  --set auth.email.username=ses-user --set auth.email.existingSecret=ses-smtp)
+grep -q 'value: "email-smtp.eu-west-1.amazonaws.com"' <<<"$ses" || fail "SES provider does not derive the regional SMTP host"
+grep -q 'name: ses-smtp' <<<"$ses" || fail "SES SMTP credential Secret is not referenced"
+expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.email.provider=ses --set auth.email.host=
+expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.email.provider=sendgrid
 
-# The disabled surface keeps the legacy bootstrap path and renders no auth env.
-disabled=$(helm template "$release" "$chart")
-grep -q -- '--service-account' <<<"$disabled" || fail "disabled auth must keep the legacy bootstrap service accounts"
-if grep -q 'AUTH_ENABLED' <<<"$disabled"; then
-  fail "disabled auth must not render the browser-auth environment"
-fi
+# A private relay CA is mounted and named, never a verification bypass.
+with_ca=$(helm template "$release" "$chart" "${values[@]}" --set auth.email.caSecret=relay-ca)
+grep -q 'value: "/etc/control-plane/smtp-ca/ca.crt"' <<<"$with_ca" || fail "SMTP CA file is not configured"
+grep -q 'secretName: "relay-ca"' <<<"$with_ca" || fail "SMTP CA Secret is not mounted"
 
-echo "OK: browser-auth chart enablement, prerequisites, and legacy fallback render correctly"
+# Every install fails closed when a prerequisite is missing; there is no
+# unauthenticated default.
+expect_fail helm template "$release" "$chart"
+expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.publicOrigin=
+expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.email.mode=plain
+expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.publicOrigin=http://app.example.com
+expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.email.username=relay
+expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.email.host= --set auth.email.provider=smtp
+expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.email.from=
+expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.bootstrap.adminEmail=
+
+echo "OK: always-on authentication configuration, SES, relay CA, and fail-closed prerequisites render correctly"

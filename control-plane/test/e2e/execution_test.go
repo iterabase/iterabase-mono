@@ -261,7 +261,7 @@ spec:
 	waitForAgentPoolReady(t, state, "execution-pool", 3*time.Minute)
 	state.kubectl(t, 3*time.Minute, "wait", "--for=jsonpath={.status.ready}=true", "workflow/execution-read", "-n", controlPlaneNamespace, "--timeout=2m")
 	assertWorkerIdentity(t, state)
-	state.createWorkIdentity(t, "execution-e2e@example.test")
+	state.ensurePrincipals(t)
 }
 
 func waitForAgentPoolReady(t *testing.T, state *deployedState, name string, timeout time.Duration) {
@@ -418,7 +418,10 @@ func exerciseWorkerLossCancellationStage(t *testing.T, state *deployedState) {
 	}
 	oldUID := state.kubectl(t, 30*time.Second, "get", "pod", pod, "-n", controlPlaneNamespace, "-o", "jsonpath={.metadata.uid}")
 	lostTurn := state.databaseQuery(t, fmt.Sprintf(`SELECT t.id::text || '|' || t.session_id FROM runtime.turn_assignments a JOIN runtime.turns t ON t.id=a.turn_id WHERE a.attempt_id='%s' AND a.state='active'`, item.CurrentAttemptID))
-	state.kubectl(t, time.Minute, "delete", "pod", pod, "-n", controlPlaneNamespace, "--wait=true")
+	// The AgentPool recreates the worker under the same name, which can hide
+	// the deletion from `kubectl delete --wait`; the replacement wait below is
+	// keyed on a new UID instead.
+	state.kubectl(t, time.Minute, "delete", "pod", pod, "-n", controlPlaneNamespace, "--wait=false")
 	err = poll.Until(state.ctx, 30*time.Second, 250*time.Millisecond, func(_ context.Context) (bool, string, error) {
 		current := stats()
 		return current.Cancelled > before.Cancelled, fmt.Sprintf("cancelled=%d", current.Cancelled), nil
@@ -539,7 +542,7 @@ func exerciseImmutableToolGenerationStage(t *testing.T, state *deployedState) {
 	requireStatus(t, status, http.StatusOK, blockerBody)
 	var blocker blockerResponse
 	mustDecode(t, blockerBody, &blocker)
-	status, response := state.requestJSON(t, http.MethodPost, "/v1/work-blockers/"+blocker.ID+"/responses", state.workKey,
+	status, response := state.sessionJSON(t, state.operator, http.MethodPost, "/v1/work-blockers/"+blocker.ID+"/responses",
 		map[string]any{"outcome": "continued", "response": map[string]any{}})
 	requireStatus(t, status, http.StatusOK, response)
 	_ = waitForWorkState(t, state, pinned.ID, "done", 4*time.Minute)
@@ -797,7 +800,7 @@ func exerciseIsolationCompositionStage(t *testing.T, state *deployedState) {
 	requireStatus(t, status, http.StatusOK, blockerBody)
 	var blocker blockerResponse
 	mustDecode(t, blockerBody, &blocker)
-	status, response := state.requestJSON(t, http.MethodPost, "/v1/work-blockers/"+blocker.ID+"/responses", state.workKey,
+	status, response := state.sessionJSON(t, state.operator, http.MethodPost, "/v1/work-blockers/"+blocker.ID+"/responses",
 		map[string]any{"outcome": "continued", "response": map[string]any{}})
 	requireStatus(t, status, http.StatusOK, response)
 	itemA = waitForWorkState(t, state, itemA.ID, "done", 4*time.Minute)
@@ -901,13 +904,13 @@ func exerciseConsequenceConfirmationStage(t *testing.T, state *deployedState) {
 	var feedback feedbackResponse
 	mustDecode(t, feedbackBody, &feedback)
 	revisionPath := "/v1/work-items/" + item.ID + "/revisions"
-	status, denied := state.requestJSON(t, http.MethodPost, revisionPath, state.workKey,
+	status, denied := state.sessionJSON(t, state.operator, http.MethodPost, revisionPath,
 		map[string]any{"feedbackId": feedback.ID, "actionableGuidance": "Repeat only after confirmation."})
 	requireStatus(t, status, http.StatusConflict, denied)
-	status, denied = state.requestJSON(t, http.MethodPost, revisionPath, state.workKey,
+	status, denied = state.sessionJSON(t, state.operator, http.MethodPost, revisionPath,
 		map[string]any{"feedbackId": feedback.ID, "actionableGuidance": "Repeat only after confirmation.", "confirmedInvocationIds": []string{"00000000-0000-0000-0000-000000000000"}})
 	requireStatus(t, status, http.StatusConflict, denied)
-	status, revisionBody := state.requestJSON(t, http.MethodPost, revisionPath, state.workKey,
+	status, revisionBody := state.sessionJSON(t, state.operator, http.MethodPost, revisionPath,
 		map[string]any{"feedbackId": feedback.ID, "actionableGuidance": "Repeat only after confirmation.", "confirmedInvocationIds": []string{consequences[0].InvocationID}})
 	requireStatus(t, status, http.StatusCreated, revisionBody)
 	var revised workItemResponse
@@ -1006,8 +1009,12 @@ func exerciseWaitAndWriteInterruptionStage(t *testing.T, state *deployedState) {
 	if expected := state.databaseQuery(t, fmt.Sprintf(`SELECT expected_count FROM runtime.waits WHERE attempt_id='%s' AND completed_at IS NULL`, item.CurrentAttemptID)); expected != "1" {
 		t.Fatalf("open wait expects %q events, want 1", expected)
 	}
+	// Stopping a wait carries the blocker-response authority (DES-HOR-649-06):
+	// bearer credentials are refused and only the Operator's session stops it.
 	status, body := state.request(t, http.MethodPost, "/v1/work-items/"+item.ID+"/wait/stop", state.workKey, nil, nil)
-	requireStatus(t, status, http.StatusOK, body)
+	requireStatus(t, status, http.StatusUnauthorized, body)
+	status, stoppedBody := state.sessionJSON(t, state.operator, http.MethodPost, "/v1/work-items/"+item.ID+"/wait/stop", nil)
+	requireStatus(t, status, http.StatusOK, stoppedBody)
 	done := waitForWorkState(t, state, item.ID, "done", 3*time.Minute)
 	if done.CurrentAttemptID != item.CurrentAttemptID {
 		t.Fatalf("stop waiting started a new attempt: before=%s after=%s", item.CurrentAttemptID, done.CurrentAttemptID)
@@ -1015,8 +1022,8 @@ func exerciseWaitAndWriteInterruptionStage(t *testing.T, state *deployedState) {
 	if outcome := state.databaseQuery(t, fmt.Sprintf(`SELECT completion_outcome FROM runtime.node_executions WHERE attempt_id='%s' AND node_key='collect'`, item.CurrentAttemptID)); outcome != "cancelled" {
 		t.Fatalf("stopped wait outcome = %q, want cancelled", outcome)
 	}
-	status, body = state.request(t, http.MethodPost, "/v1/work-items/"+item.ID+"/wait/stop", state.workKey, nil, nil)
-	requireStatus(t, status, http.StatusBadRequest, body)
+	status, stoppedBody = state.sessionJSON(t, state.operator, http.MethodPost, "/v1/work-items/"+item.ID+"/wait/stop", nil)
+	requireStatus(t, status, http.StatusBadRequest, stoppedBody)
 
 	state.applyYAML(t, "write-interruption.yaml", workflowYAML("write-interruption", "e2e/write-interruption", "1", "E2E_MODE:consequence E2E_SLOW", false,
 		[]string{"platform.fixture_write"}, "", ""))
@@ -1028,7 +1035,10 @@ func exerciseWaitAndWriteInterruptionStage(t *testing.T, state *deployedState) {
 	if pod == "" {
 		t.Fatal("the turn that wrote has no active assigned worker to lose")
 	}
-	state.kubectl(t, time.Minute, "delete", "pod", pod, "-n", controlPlaneNamespace, "--wait=true")
+	// The AgentPool recreates the worker under the same name, which can hide
+	// the deletion from `kubectl delete --wait`; the failed item and the Ready
+	// replacement below prove the loss instead.
+	state.kubectl(t, time.Minute, "delete", "pod", pod, "-n", controlPlaneNamespace, "--wait=false")
 	stopped := waitForWorkState(t, state, written.ID, "failed", 3*time.Minute)
 	if decision := state.databaseQuery(t, fmt.Sprintf(`SELECT decision FROM runtime.turn_interruptions WHERE attempt_id='%s'`, stopped.CurrentAttemptID)); decision != "stop_after_write" {
 		t.Fatalf("write interruption decision = %q, want stop_after_write", decision)

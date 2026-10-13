@@ -146,7 +146,7 @@ A normal F2 failure bundle includes cluster resources, events, pod describes, cu
 
 Each behaviour is tested once, at the cheapest tier that can prove it:
 
-- The control-plane identity, work, artifact, and browser journeys share one install in `deployed-control-plane`, as independent stages after readiness. API-key scope assertions stay in the F1 server `TestAPI`; the scenario keeps the IdentityMapping path, JWKS across restart, and revocation on mapping deletion.
+- The control-plane identity, work, artifact, and browser journeys share one install in `deployed-control-plane`, as independent stages after readiness. The exhaustive route classification stays in the F1 server `TestEveryRouteIsClassified`; the scenario proves the emailed first-Admin setup and access-request onboarding, the deployed action matrix with direct negatives, retired-route negatives, and next-request loss of authority (HOR-582).
 - `observability-tls` owns the former `internal-tls` assertions (same values and CA chain). The gateway's `verify-full`/`rediss://` client configuration is a static `helm template` check (`charts/scripts/check-gateway-tls-client.sh`). Endpoint separation and Grafana UIDs are render-script checks; the sidecar-provisioning check stays live.
 - The manager-contract RBAC checks live in `check-manager-contract.sh`; the live scenario has no fixed wait.
 - `forge/cpu-workspace` owns the LVM foundation, two-worker pool, grow, reapply, and delete checks; `forge/cpu` no longer repeats them. Both run on separate parallel hosts.

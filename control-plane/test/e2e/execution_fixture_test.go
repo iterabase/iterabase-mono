@@ -184,6 +184,7 @@ func executionPlatformValues(state *deployedState, clientTools bool) map[string]
 			},
 			"artifact": map[string]any{"enabled": true},
 			"ingress":  map[string]any{"enabled": false},
+			"auth":     authValues(),
 		},
 	}
 }
@@ -204,7 +205,7 @@ func assertExecutionPlatformReadyStage(t *testing.T, state *deployedState) {
 	assertComponentImage(t, state, "app.kubernetes.io/name=inference-gateway", state.inferenceImage.digest, []string{"gateway"})
 	assertComponentImage(t, state, "app.kubernetes.io/component=tool-runner", state.toolRunnerImage.digest, []string{"materializer", "runner"})
 	state.openAPI(t)
-	state.captureBootstrapKeys(t)
+	state.ensurePrincipals(t)
 	assertWorkloadRejectsAnonymousCaller(t, state)
 }
 

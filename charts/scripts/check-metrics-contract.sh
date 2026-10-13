@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cp=$(helm template metrics charts/control-plane \
+cp=$(helm template metrics charts/control-plane -f values-control-plane-auth.yaml \
   --set metrics.enabled=true \
   --set gateway.enabled=true \
   --set dispatch.enabled=true \
@@ -14,7 +14,7 @@ dcgm=$(helm template metrics charts/observability \
 lvm=$(helm template metrics charts/observability \
   --show-only templates/lvm-storage-servicemonitor.yaml)
 dcgm_off=$(helm template metrics-off charts/observability)
-cp_off=$(helm template metrics-off charts/control-plane)
+cp_off=$(helm template metrics-off charts/control-plane -f values-control-plane-auth.yaml)
 ig_off=$(helm template metrics-off charts/inference-gateway)
 
 for rendered in "$cp" "$ig"; do

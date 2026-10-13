@@ -3,7 +3,7 @@
 > Canonical source: [`iterabase-mono/control-plane`](https://github.com/nunocgoncalves/iterabase-mono/tree/master/control-plane). The former standalone repository is historical and read-only.
 
 The Horizonshift/Iterabase control plane: a Go Kubernetes operator + HTTP API
-that provides identity, per-caller permissions, sandbox reconciliation,
+that provides V2 customer authority (browser sessions, People, API credentials), sandbox reconciliation,
 a durable turn runtime, and the model catalog the inference-gateway consumes.
 
 Per-customer, fully isolated, self-hosted. See the Platform Direction doc
@@ -13,11 +13,10 @@ monorepo directory is the source of truth for control-plane infrastructure inten
 ## Status
 
 **Walking skeleton.** HOR-241 landed the two-binary foundation (operator +
-API, DB schema, config, CI). HOR-242 adds the identity store: the
-`IdentityMapping` CRD + reconciler, local users, API keys, delegated JWT/JWKS
-issuance, and the admin bootstrap. HOR-243 adds the permission engine: the
-`PermissionPolicy` CRD + reconciler and the `effective_capabilities` view
-(broad-default). HOR-306/268 add the model catalog (`ModelBackend`/`Model` CRDs
+API, DB schema, config, CI). HOR-453/454/582 replace the original identity and
+permission CRDs with the V2-only authority: always-on browser sign-in, People
+administration, V2 API credentials, and one reviewed authority class per HTTP
+route (see [Authority](#authority-hor-582)). HOR-306/268 add the model catalog (`ModelBackend`/`Model` CRDs
 + the `effective_catalog` view). HOR-246 adds the durable turn runtime: the
 `runtime` schema + store (workflow_run/step/turn state machines + append-only
 event/audit log) — the data layer HOR-249 (orchestration) and HOR-252 (workflow
@@ -61,20 +60,19 @@ namespace. The harness image is Node (`harness/Dockerfile`). See `Dockerfile`
 ```
 cmd/manager/        K8s operator (controller-runtime)
 cmd/api/            HTTP API + migrate/bootstrap subcommands
-api/v1alpha1/       CRD types (IdentityMapping, PermissionPolicy, ModelBackend, Model); group platform.iterabase.com
+api/v1alpha1/       CRD types (AgentPool, ModelBackend, Model, Workflow); group platform.iterabase.com
 internal/config/    YAML + env config (api) + DatabaseFromEnv (manager)
 internal/database/  pgx pool + embedded golang-migrate migrations
-internal/identity/  identity store, API keys, JWT/JWKS issuer, resolver
-internal/permissions/ permission store + effective_capabilities view (HOR-243)
+internal/identity/  identities, local accounts, browser sessions, auth email, V2 API credentials, bootstrap
 internal/catalog/   model catalog store (backends + models) + effective_catalog view (HOR-306/268)
 internal/artifact/  immutable metadata/lifecycle, MinIO streaming, retention/deletion (HOR-399)
 internal/gateway/   tool gateway: registry, authorization, credential resolution, durable invocation ledger (HOR-392)
 internal/dispatch/  durable dispatch Work server: warm-worker bidi stream, one-credit dispatch, worker fencing, active-assignment context, TurnEvent ACK/dedup, cancellation/worker-loss (HOR-249)
 internal/spiffe/    shared SPIFFE/mTLS identity verifier (HOR-392; reused by HOR-249)
-internal/controller/ CRD reconcilers (Git -> DB bridge): identitymapping, permissionpolicy, modelbackend, model
+internal/controller/ CRD reconcilers (Git -> DB bridge): agentpool, modelbackend, model, workflow
 internal/runtime/   durable turn + graph runtime state and technical event log — HOR-246/254
 internal/work/      work items, graph orchestration, blockers, feedback, value, business events — HOR-254
-internal/server/    chi HTTP routes (health, identity/admin, work REST + SSE)
+internal/server/    chi HTTP routes, each registered with one authority class (auth, People, work REST + SSE, artifacts)
 ui/                 React/Vite customer Dashboard embedded in the API — HOR-396
 internal/logging/   shared slog logger + logr bridge
 internal/version/   build-time version metadata
@@ -106,7 +104,7 @@ make install-hooks      # use .githooks/pre-commit
 
 The API reads `control-plane.example.yaml` (copy to `control-plane.yaml`) or
 env vars (`DATABASE_URL`, `API_ADDR`, `METRICS_ADDR`, `LOG_LEVEL`, `LOG_FORMAT`,
-`JWT_SIGNING_KEY_PATH`, `JWT_KEY_ID`, `IDENTITY_MODE`, and `ARTIFACT_*`). The
+`AUTH_*`, and `ARTIFACT_*`). The
 manager reads only `DATABASE_URL` from the environment. When configured,
 API/gateway/dispatch serve bounded Prometheus telemetry on a dedicated
 plaintext in-cluster `METRICS_ADDR`; application ingress and mandatory-mTLS RPC
@@ -119,63 +117,47 @@ disposable pi children expose no listener.
 Postgres is the system of record. The initial migration (`000001_init_schemas`)
 creates four schema namespaces — `identity`, `permissions`, `usage`, `ai_data` —
 plus the `pgvector` extension. `000002_identity` (HOR-242) adds the identity
-store: `identities`, `external_mappings`, `local_users`, `api_keys`.
+store; `000030_v2_only_authority` (HOR-582) moves an existing installation to
+V2-only authority in one forward step.
 permissions → HOR-243, durable turns/events → HOR-246; `usage`/`ai_data`
 content is post-v1. The `egress` schema (HOR-244) is dropped by 000012 under
 ARCH-009 (HOR-245). Requires a pgvector-enabled Postgres
 image (tests use `pgvector/pgvector:pg16`).
 
-## Identity (HOR-242)
+## Authority (HOR-582)
 
-The operator materializes `IdentityMapping` CRs into Postgres (Git → DB bridge);
-the API never touches Kubernetes. Two auth paths:
+Customer authority is V2-only and always on
+([`docs/architecture/v2-authentication-authority.md`](../docs/architecture/v2-authentication-authority.md)).
+There is no auth-disabled mode, no legacy scoped key, no delegated JWT, and no
+CRD-based customer authority.
 
-- **Path 1 (user → gateway, API key):** a long-lived `cp-` key (scope `gateway`)
-  bound to a local user / service account; the gateway validates it from a
-  control-plane-synced snapshot.
-- **Path 2 (user → agent → gateway, delegated JWT):** a service account
-  (scope `token`) calls `POST /v1/token` with a surface user; control-plane
-  resolves it (enrolled mode: linked `IdentityMapping` required) and issues a
-  short-lived RS256 JWT (`sub` = identity id) for the gateway to enforce.
+- **Browser sessions** reach the work UI and every cookie-only security and
+  consequence-capable command. Unsafe methods require the exact public origin
+  and the session-bound `X-CSRF-Token`. An Operator session holds every
+  non-Admin personal action; an Admin session holds the complete personal
+  catalogue. Role and account state are re-read on every request.
+- **V2 API credentials** (personal or automation; lifecycle in HOR-514) hold an
+  immutable subset of the fixed action catalogue and are resolved live on every
+  request; a bearer request never falls back to a cookie.
+- Every HTTP route is registered through `Handler.route` with exactly one class
+  (`probe`, `public`, `session`, `action`, `bearer_action`), and
+  `TestEveryRouteIsClassified` fails on an unclassified or reclassified route.
+- `POST /v1/work-items` records the initiating human, request actor, and
+  authorization evidence from the authenticated boundary; work list, detail,
+  start, revision, and dashboard responses clip value data unless the
+  principal holds the Admin-only `value.read`.
 
-API endpoints:
+**Bootstrap** (`control-plane-api bootstrap`, the RBAC-less init container
+after `migrate up`) runs once per installation, keyed on the bootstrap marker:
+it makes the overlay-named first Admin a `setup_pending` Admin (converting an
+existing account with that email) and queues a one-time setup link through the
+configured mail relay. It never creates or prints a credential.
+`--recover-admin` is the cluster-operator path when no active Admin exists. See
+[`docs/browser-auth-operations.md`](docs/browser-auth-operations.md).
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | `/.well-known/jwks.json` | – | JWT verification key set |
-| POST | `/v1/token` | `scope=token` | resolve surface user → delegated JWT |
-| POST/GET | `/v1/users`, `GET /v1/users/{id}` | `scope=admin` | local-user CRUD |
-| POST/GET | `/v1/api-keys`, `DELETE /v1/api-keys/{id}` | `scope=admin` | API-key management |
-
-**Bootstrap** (`control-plane-api bootstrap`, run as an init container after
-`migrate up`) creates the admin local user + admin key and, with
-`--service-account <name>`, seeds service accounts; keys are printed once.
-`--reset` revokes + reissues. The JWT signing key is an RSA private key mounted
-from a Kubernetes Secret (forge-provisioned). Open mode + SSO are fast-follows
-(HOR-313/314).
-
-## Permissions (HOR-243)
-
-The operator materializes `PermissionPolicy` CRs into Postgres (`permissions`
-schema), mirroring the IdentityMapping Git→DB bridge. The permission engine is
-the **`permissions.effective_capabilities` view**: `identity_id → (resource,
-action)` rows where presence = allow, absence = deny. Consumers (the
-inference-gateway HOR-247, agent-fleet) read the view **directly** — no
-request-path calls to control-plane — and own their own Redis cache +
-freshness (LISTEN/NOTIFY on the `permissions_changed` channel, emitted by
-triggers on `permissions.policies` and `identity.identities`).
-
-**Broad-default (v1):** every linked (active) identity gets a single wildcard
-`('*', '*')` capability; unknown/soft-deleted identities get no rows (denied).
-`PermissionPolicy` CRs are materialized but **not enforced** in v1 — their
-`subject` is stored; fine-grained `scopes` (narrowing) land in deepen-phase,
-enriching the view's contents without changing the contract or consumer code.
-
-Admin debug endpoint (reads the same view):
-
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | `/v1/permissions/identities/{id}` | `scope=admin` | effective capabilities for an identity (404 if none) |
+The `permissions.effective_capabilities` view now grants the broad workload
+capability only to non-human workload identities (workflow scope identities);
+the inference gateway reads it for the workload mTLS path.
 
 ## Tool gateway (HOR-392)
 
@@ -426,9 +408,8 @@ the HOR-249 boundary.
 
 All CRDs use group `platform.iterabase.com` / `v1alpha1`, reconciled by this
 operator: `AgentPool` (HOR-245), `ModelBackend` (HOR-306), `Model`
-(HOR-268), `IdentityMapping` (HOR-242, **defined here**), `PermissionPolicy`
-(HOR-243, **defined here**), `Workflow` (HOR-252, **defined here**), `Tool`
-(HOR-271). The others land with their tickets.
+(HOR-268), and `Workflow` (HOR-252, **defined here**). `IdentityMapping` and
+`PermissionPolicy` retired with the V2-only authority (HOR-582).
 
 ## Workflow definitions (HOR-252)
 
@@ -534,7 +515,7 @@ Work APIs require a `work`-scope bearer key and operation capability
 | `GET` | `/v1/work-items/{id}/consequences` | Customer-safe external-action tokens required by a revision |
 | `GET` | `/v1/work-items/{id}/blocker` | Current actionable request |
 | `POST` | `/v1/work-blockers/{id}/responses` | Resolve human/consequence gate |
-| `POST` | `/v1/work-items/{id}/wait/stop` | Stop the open wait and continue through its `cancelled` outcome (`work:respond`) |
+| `POST` | `/v1/work-items/{id}/wait/stop` | Stop the open wait and continue through its `cancelled` outcome (cookie session + CSRF only, like blocker responses) |
 | `GET` | `/v1/work-items/{id}/feedback` / `/v1/work-items/{id}/feedback/{feedbackID}` | Original-attempt feedback and revised-attempt association |
 | `POST` | `/v1/work-items/{id}/feedback` | Save feedback without starting work |
 | `POST` | `/v1/work-items/{id}/revisions` | Explicit revised attempt with exact consequence confirmation |

@@ -29,8 +29,8 @@ if legacy.exists():
     raise SystemExit("dispatch TLS must not return to an independently evaluated template")
 PY
 
-helm template "$release" "$chart" --namespace "$namespace" --set dispatch.enabled=true > "$workdir/rendered.yaml"
-helm template "$other_release" "$chart" --namespace "$namespace" --set dispatch.enabled=true > "$workdir/unrelated.yaml"
+helm template "$release" "$chart" -f values-control-plane-auth.yaml --namespace "$namespace" --set dispatch.enabled=true > "$workdir/rendered.yaml"
+helm template "$other_release" "$chart" -f values-control-plane-auth.yaml --namespace "$namespace" --set dispatch.enabled=true > "$workdir/unrelated.yaml"
 
 python3 - "$workdir/rendered.yaml" "$workdir" "$release" <<'PY'
 import base64

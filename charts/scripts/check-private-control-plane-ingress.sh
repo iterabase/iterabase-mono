@@ -10,7 +10,7 @@ collision_error=$(mktemp)
 invalid_proxied_error=$(mktemp)
 trap 'rm -f "$collision_error" "$invalid_proxied_error"' EXIT
 
-if helm template collision "$script_dir/../charts/control-plane" \
+if helm template collision "$script_dir/../charts/control-plane" -f "$script_dir/../values-control-plane-auth.yaml" \
   --namespace "$namespace" \
   --set global.internalTLS.enabled=true \
   --set ingress.enabled=true \
@@ -24,7 +24,7 @@ if helm template collision "$script_dir/../charts/control-plane" \
 fi
 grep -q "must differ from the internal API TLS Secret" "$collision_error"
 
-if helm template invalid-proxied "$script_dir/../charts/control-plane" \
+if helm template invalid-proxied "$script_dir/../charts/control-plane" -f "$script_dir/../values-control-plane-auth.yaml" \
   --namespace "$namespace" \
   --set ingress.enabled=true \
   --set ingress.host=app.example.com \

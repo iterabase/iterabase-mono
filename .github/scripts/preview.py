@@ -14,7 +14,6 @@ a file:// repository that Forge serves to Flux over read-only node SSH
 from __future__ import annotations
 
 import argparse
-import base64
 import gzip
 import io
 import json
@@ -23,16 +22,16 @@ import pathlib
 import re
 import shlex
 import shutil
-import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
-import zlib
+import time
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import e2e_inputs  # noqa: E402
+import preview_inference  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CHARTS = ROOT / "charts" / "charts"
@@ -107,8 +106,9 @@ def package_charts(version: str, workdir: pathlib.Path) -> dict[str, pathlib.Pat
     return archives
 
 
-def preview_values(images: dict[str, dict[str, str]], model: str, hosts: dict[str, str]) -> str:
-    """The CI-owned preview overlay values (C9): build-once images and the hosted model.
+def preview_values(images: dict[str, dict[str, str]], model: str, hosts: dict[str, str], admin_email: str) -> str:
+    """The CI-owned preview overlay values (C9): build-once images, the hosted
+    model, and the always-on sign-in surface (HOR-582).
 
     Block YAML, because it is appended to the overlay's own values.client.yaml;
     scalars are JSON-quoted so no value can break the document.
@@ -124,11 +124,15 @@ def preview_values(images: dict[str, dict[str, str]], model: str, hosts: dict[st
             # DES-HOR-590-06: the real Ingress objects route the Tailscale
             # Service names; TLS ends at Tailscale, so the Ingresses are HTTP.
             "ingress": {"enabled": True, "className": "nginx", "host": hosts["app"], "tls": {"enabled": False}},
+            # Sign-in is always on: the browser origin is the preview's own
+            # Tailscale Service, and the overlay names the first Admin.
+            "auth": {"publicOrigin": f"https://{hosts['app']}", "bootstrap": {"adminEmail": admin_email}},
         },
         "minio": {"persistence": {"size": "5Gi"}},
         "inference-gateway": {
             "image": image("inference-gateway-image"),
             "ingress": {"host": hosts["inference"], "tls": {"enabled": False}},
+            "workload": {"enabled": True},
         },
     }
     return "# CI-owned preview values (HOR-590 C6/C9); appended to the fixture overlay's values.client.yaml.\n" + block_yaml(values)
@@ -252,6 +256,41 @@ spec: {{modelID: {json.dumps(model_id)}, displayName: Preview hosted model, back
     host.ssh("sudo k3s kubectl apply -f -", stdin=manifest)
 
 
+ADMIN_EMAIL = re.compile(r"[a-z0-9._+-]+@[a-z0-9.-]+\.[a-z]{2,}")
+
+
+def seed_admin(host: Host, email: str, password: str) -> None:
+    """Make the overlay-named first Admin active with a known password (HOR-582).
+
+    Previews have no mail relay until SES (HOR-603), so the emailed setup link
+    cannot arrive. In the default `seeded` mode the deploy sets the bootstrap
+    Admin's Argon2id password from the PREVIEW_ADMIN_PASSWORD secret on every
+    deploy (so a rotated secret applies); `onboarding` mode leaves the real
+    first-Admin email flow untouched. Previews are tailnet-only CI evidence.
+    """
+    if not ADMIN_EMAIL.fullmatch(email):
+        raise PreviewError(f"preview Admin email is invalid: {email!r}")
+    if not 12 <= len(password) <= 128:
+        raise PreviewError("set the PREVIEW_ADMIN_PASSWORD repository secret (12-128 characters) for the seeded "
+                           "preview Admin, or label the pull request preview-onboarding")
+    hashed = subprocess.run(["go", "run", "./forge/test/e2e/cmd/password-hash"], cwd=ROOT, input=password + "\n",
+                            capture_output=True, text=True, check=True).stdout.strip()
+    if not re.fullmatch(r"\$argon2id\$v=19\$m=65536,t=3,p=1\$[A-Za-z0-9+/]+\$[A-Za-z0-9+/]+", hashed):
+        raise PreviewError("preview Admin password hash is malformed")
+    sql = (f"UPDATE identity.local_users SET status = 'active', password_hash = '{hashed}', "
+           f"password_changed_at = now(), account_changed_at = now() "
+           f"WHERE email_normalized = '{email}' AND role = 'admin' AND status IN ('setup_pending', 'active') "
+           f"RETURNING identity_id;\n")
+    psql = (f"sudo k3s kubectl exec -i -n {NAMESPACE} statefulset/{RELEASE}-postgresql -c postgresql -- "
+            "psql -U controlplane -d controlplane -At -v ON_ERROR_STOP=1")
+    # Bootstrap creates the Admin in the api init container; wait for it.
+    for _ in range(60):
+        if host.ssh(psql, stdin=sql).strip():
+            return
+        time.sleep(5)
+    raise PreviewError(f"preview bootstrap Admin {email} did not appear")
+
+
 def tailnet_hosts(host: Host, environment: str) -> dict[str, str]:
     """The Tailscale Service DNS names for this preview (DES-HOR-590-06)."""
     # A new host joins the tailnet from its boot script; wait for that to finish
@@ -277,73 +316,8 @@ def ingress_target(host: Host) -> str:
     return f"http://[{ingress}]:80" if ":" in ingress else f"http://{ingress}:80"
 
 
-def smoke_image() -> str:
-    """A 64x64 solid PNG as a data URI: small, but a real image for vision models."""
-    width = height = 64
-    raw = b"".join(b"\x00" + b"\x2a\x6f\xdb" * width for _ in range(height))
-
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-           + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
-    return "data:image/png;base64," + base64.b64encode(png).decode()
-
-
-def inference_smoke_script(target: str, inference_host: str, model_id: str) -> str:
-    """The on-host inference smoke (HOR-597): a text request, then a vision
-    request non-streaming and streaming, through ingress-nginx and the gateway
-    to the keyed external backend. Each step prints one progress line so a
-    failure names its stage. The bootstrap admin key (auth is off on previews)
-    stays on the host: it reaches curl through a config on stdin, never argv
-    or output."""
-    vision = [{"role": "user", "content": [
-        {"type": "text", "text": "Reply with one word: what colour is this image?"},
-        {"type": "image_url", "image_url": {"url": smoke_image()}},
-    ]}]
-    bodies = {
-        "text": {"model": model_id, "max_tokens": 16, "messages": [{"role": "user", "content": "Reply with: ok"}]},
-        "vision": {"model": model_id, "max_tokens": 32, "messages": vision},
-        "vision-stream": {"model": model_id, "max_tokens": 32, "stream": True, "messages": vision},
-    }
-    files = "".join(f"cat > \"$work/{name}.json\" <<'BODY'\n{json.dumps(body)}\nBODY\n" for name, body in bodies.items())
-    url = shlex.quote(f"{target}/v1/chat/completions")
-    host_header = shlex.quote(f"Host: {inference_host}")
-    return rf"""set -euo pipefail
-trap 'echo "inference smoke: failed at line $LINENO: $BASH_COMMAND"' ERR
-work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-{files}logs=$(sudo k3s kubectl logs -n {NAMESPACE} deploy/{RELEASE}-control-plane-api -c bootstrap 2>&1) || {{
-  echo "inference smoke: cannot read the control-plane bootstrap logs: $(tail -3 <<<"$logs")"; exit 1; }}
-key=$(sed -n 's/.*API key (scope=admin): \(cp-[^ ]*\).*/\1/p' <<<"$logs" | tail -1)
-[ -n "$key" ] || {{ echo "inference smoke: no bootstrap admin key in the control-plane API logs"; exit 1; }}
-post() {{  # name -> HTTP status; response in $work/<name>.out
-  printf 'header = "Authorization: Bearer %s"\n' "$key" | curl -s -K - -o "$work/$1.out" -w '%{{http_code}}' -m 90 \
-    -H {host_header} -H 'Content-Type: application/json' --data-binary "@$work/$1.json" {url} || true
-}}
-# A generated completion. Reasoning models may spend a small max_tokens on
-# reasoning (reasoning_content, or reasoning on some providers) before content.
-answered() {{ python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); m=r["choices"][0]["message"]
-assert r["usage"]["completion_tokens"] > 0 and any(m.get(k) for k in ("content", "reasoning_content", "reasoning"))' "$work/$1.out" 2>/dev/null; }}
-fail() {{ echo "inference smoke: $1 returned $2: $(head -c 600 "$work/$1.out" 2>/dev/null)"; exit 1; }}
-# The gateway admits the model once its snapshot holds the catalog entry.
-deadline=$((SECONDS + 600)); attempt=0
-while :; do
-  attempt=$((attempt + 1)); begun=$SECONDS
-  code=$(post text)
-  echo "inference smoke: text attempt $attempt -> $code ($((SECONDS - begun))s)"
-  case "$code" in 404|503|000) [ "$SECONDS" -lt "$deadline" ] || fail text "$code"; sleep 10 ;; *) break ;; esac
-done
-[ "$code" = 200 ] && answered text || fail text "$code"
-code=$(post vision); echo "inference smoke: vision -> $code"
-[ "$code" = 200 ] && answered vision || fail vision "$code"
-code=$(post vision-stream); echo "inference smoke: vision-stream -> $code"
-[ "$code" = 200 ] && grep -q '^data: \[DONE\]' "$work/vision-stream.out" && ! grep -q '^data: {{"error"' "$work/vision-stream.out" \
-  || fail vision-stream "$code"
-echo "inference smoke passed: text and vision requests, non-streaming and streaming, through the keyed external backend"
-"""
-
-
 def inference_smoke(host: Host, hosts: dict[str, str], model_id: str) -> None:
-    script = inference_smoke_script(ingress_target(host), hosts["inference"], model_id)
+    script = preview_inference.smoke_script(ingress_target(host), hosts["inference"], model_id)
     try:
         # Keepalives: a silent session waiting on a slow provider must not be
         # dropped by an idle NAT between the runner and the host.
@@ -415,7 +389,7 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if key != "FORGE_OVERLAY_TOKEN"}
     env["FORGE_HOME"] = str(workdir / "forge-home")
     hosts = tailnet_hosts(host, args.name)
-    host.ssh_bytes(overlay_script(), overlay_archive(preview_values(images, args.model_id, hosts)))
+    host.ssh_bytes(overlay_script(), overlay_archive(preview_values(images, args.model_id, hosts, args.admin_email)))
     host.ssh(f"sudo install -d -o ubuntu {HOST_CHARTS}")
     for chart, archive in archives.items():
         host.copy(archive, f"/tmp/{archive.name}")
@@ -433,8 +407,11 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
         print(cluster_evidence(host), file=sys.stderr)
         raise
     hosted_model(host, args.llm_base_url, args.model_id, os.environ["PREVIEW_LLM_API_KEY"])
+    if args.admin_mode == "seeded":
+        seed_admin(host, args.admin_email, os.environ.get("PREVIEW_ADMIN_PASSWORD", ""))
     inference_smoke(host, hosts, args.model_id)
-    return {**serve_on_tailnet(host, args.name, hosts), "chart_version": version}
+    return {**serve_on_tailnet(host, args.name, hosts), "chart_version": version,
+            "admin_email": args.admin_email, "admin_mode": args.admin_mode}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -450,6 +427,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ssh-key", required=True)
     parser.add_argument("--llm-base-url", required=True)
     parser.add_argument("--model-id", required=True)
+    parser.add_argument("--admin-email", required=True)
+    parser.add_argument("--admin-mode", choices=("seeded", "onboarding"), default="seeded",
+                        help="seeded: sign in with PREVIEW_ADMIN_PASSWORD; onboarding: the real emailed setup flow")
     args = parser.parse_args(argv)
     try:
         result = deploy(args)

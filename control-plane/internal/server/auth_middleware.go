@@ -27,11 +27,9 @@ const (
 	RoleOperator = "operator"
 )
 
-// AuthServices configures the browser-authentication surface. When Enabled is
-// false every browser route fails closed with the customer-safe unavailable
-// state.
+// AuthServices configures the browser-authentication surface. Sign-in is
+// always on; a missing configuration fails every authenticated route closed.
 type AuthServices struct {
-	Enabled         bool
 	PublicOrigin    string
 	CookieName      string
 	IdleTTL         time.Duration

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,36 +30,59 @@ func (h *Handler) workReady(w http.ResponseWriter) bool {
 	return true
 }
 
-func (h *Handler) workActor(r *http.Request) (identity.Identity, bool) {
-	v, ok := r.Context().Value(ctxIdentity).(identity.Identity)
-	return v, ok
+// registerWorkRoutes mounts the customer work APIs (architecture 9.3). Reads
+// share `work.read`; a direct start is `workflows.start`; saving feedback is
+// `work.feedback.write`. Blocker responses and revisions can confirm
+// consequential invocations, so they accept only a cookie browser session.
+func (h *Handler) registerWorkRoutes(r chi.Router) {
+	read := action(identity.ActionWorkRead)
+	h.route(r, http.MethodGet, "/v1/work-items", read, h.listWorkItems)
+	h.route(r, http.MethodPost, "/v1/work-items", action(identity.ActionWorkflowsStart), h.startWorkItem)
+	h.route(r, http.MethodGet, "/v1/work-items/{id}", read, h.getWorkItem)
+	h.route(r, http.MethodGet, "/v1/work-items/{id}/attempts", read, h.listWorkAttempts)
+	h.route(r, http.MethodGet, "/v1/work-attempts/{id}/nodes", read, h.listWorkNodes)
+	h.route(r, http.MethodGet, "/v1/work-items/{id}/timeline", read, h.listWorkTimeline)
+	h.route(r, http.MethodGet, "/v1/work-items/{id}/artifacts", read, h.listWorkArtifacts)
+	h.route(r, http.MethodGet, "/v1/work-items/{id}/consequences", read, h.getWorkConsequences)
+	h.route(r, http.MethodGet, "/v1/work-items/{id}/blocker", read, h.getWorkBlocker)
+	h.route(r, http.MethodGet, "/v1/work-items/{id}/feedback", read, h.listWorkFeedback)
+	h.route(r, http.MethodGet, "/v1/work-items/{id}/feedback/{feedbackID}", read, h.getWorkFeedback)
+	h.route(r, http.MethodPost, "/v1/work-items/{id}/feedback", action(identity.ActionWorkFeedbackWrite), h.saveWorkFeedback)
+	h.route(r, http.MethodPost, "/v1/work-items/{id}/revisions", session(), h.createWorkRevision)
+	h.route(r, http.MethodPost, "/v1/work-blockers/{id}/responses", session(), h.respondWorkBlocker)
+	h.route(r, http.MethodPost, "/v1/work-items/{id}/wait/stop", session(), h.stopWorkWait)
+	h.route(r, http.MethodGet, "/v1/work-dashboard", read, h.getWorkDashboard)
+	h.route(r, http.MethodGet, "/v1/work-events", read, h.streamWorkEvents)
 }
 
-func (h *Handler) authorizeWork(w http.ResponseWriter, r *http.Request, action string) bool {
+// workPrincipal returns the authenticated principal for a work route. Action
+// routes carry it from requireAction; cookie-only routes derive it from the
+// resolved browser session.
+func (h *Handler) workPrincipal(w http.ResponseWriter, r *http.Request) (Principal, bool) {
 	if !h.workReady(w) {
-		return false
+		return Principal{}, false
 	}
-	actor, ok := h.workActor(r)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, errorBody{Error: "missing identity"})
-		return false
+	if p, ok := principalFromContext(r.Context()); ok {
+		return p, true
 	}
-	if h.perms == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "permissions not configured"})
-		return false
+	if p, ok := sessionPrincipalFromContext(r.Context()); ok {
+		return p, true
 	}
-	caps, err := h.perms.EffectiveCapabilities(r.Context(), actor.ID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "evaluating permission"})
-		return false
+	authError(w, http.StatusUnauthorized, "session_expired", "Your session expired. Sign in again to continue.")
+	return Principal{}, false
+}
+
+// clipWorkItem removes value data unless the principal currently holds the
+// Admin-only `value.read` action (architecture 9.3).
+func clipWorkItem(p Principal, item *workstore.WorkItem) {
+	if p.Can(identity.ActionValueRead) {
+		return
 	}
-	for _, c := range caps {
-		if (c.Resource == "*" || c.Resource == "work") && (c.Action == "*" || c.Action == action) {
-			return true
-		}
-	}
-	writeJSON(w, http.StatusForbidden, errorBody{Error: "work:" + action + " permission required"})
-	return false
+	item.ValueConfigured = false
+	item.ValueModel = nil
+	item.EstimatedValue = nil
+	item.ValueCurrency = nil
+	item.ValueDisputed = false
 }
 
 type startWorkRequest struct {
@@ -71,10 +95,10 @@ type startWorkRequest struct {
 }
 
 func (h *Handler) startWorkItem(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "start") {
+	principal, ok := h.workPrincipal(w, r)
+	if !ok {
 		return
 	}
-	actor, _ := h.workActor(r)
 	key := r.Header.Get("Idempotency-Key")
 	if key == "" {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "Idempotency-Key is required"})
@@ -91,7 +115,22 @@ func (h *Handler) startWorkItem(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid request body"})
 		return
 	}
-	item, created, err := h.work.Start(r.Context(), workstore.StartInput{ActorIdentityID: actor.ID, WorkflowKey: req.WorkflowKey, WorkflowVersion: req.WorkflowVersion, IdempotencyKey: key, Title: req.Title, Source: req.Source, SourcePresentation: req.SourcePresentation, ArtifactRefs: req.ArtifactRefs})
+	item, created, err := h.work.Start(r.Context(), workstore.StartInput{
+		// The three principals come only from the authenticated boundary
+		// (architecture 7.15); the request body cannot supply them.
+		ActorIdentityID:           principal.ActorID,
+		InitiatingHumanIdentityID: principal.InitiatingHumanID,
+		AuthorizationSource:       principal.Source,
+		AuthorizationAPIKeyID:     principal.APIKeyID,
+		AuthorizationSessionID:    principal.SessionID,
+		WorkflowKey:               req.WorkflowKey,
+		WorkflowVersion:           req.WorkflowVersion,
+		IdempotencyKey:            key,
+		Title:                     req.Title,
+		Source:                    req.Source,
+		SourcePresentation:        req.SourcePresentation,
+		ArtifactRefs:              req.ArtifactRefs,
+	})
 	if err != nil {
 		writeWorkError(w, err)
 		return
@@ -100,11 +139,13 @@ func (h *Handler) startWorkItem(w http.ResponseWriter, r *http.Request) {
 	if created {
 		status = http.StatusCreated
 	}
+	clipWorkItem(principal, &item)
 	writeJSON(w, status, item)
 }
 
 func (h *Handler) listWorkItems(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	principal, ok := h.workPrincipal(w, r)
+	if !ok {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -124,10 +165,14 @@ func (h *Handler) listWorkItems(w http.ResponseWriter, r *http.Request) {
 		writeWorkError(w, err)
 		return
 	}
+	for i := range items {
+		clipWorkItem(principal, &items[i])
+	}
 	writeJSON(w, http.StatusOK, items)
 }
 func (h *Handler) getWorkItem(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	principal, ok := h.workPrincipal(w, r)
+	if !ok {
 		return
 	}
 	item, err := h.work.GetWorkItem(r.Context(), chi.URLParam(r, "id"))
@@ -135,10 +180,11 @@ func (h *Handler) getWorkItem(w http.ResponseWriter, r *http.Request) {
 		writeWorkError(w, err)
 		return
 	}
+	clipWorkItem(principal, &item)
 	writeJSON(w, http.StatusOK, item)
 }
 func (h *Handler) listWorkAttempts(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	if _, ok := h.workPrincipal(w, r); !ok {
 		return
 	}
 	items, err := h.work.ListAttempts(r.Context(), chi.URLParam(r, "id"))
@@ -149,7 +195,7 @@ func (h *Handler) listWorkAttempts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 func (h *Handler) listWorkNodes(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	if _, ok := h.workPrincipal(w, r); !ok {
 		return
 	}
 	nodes, err := h.work.ListNodeExecutions(r.Context(), chi.URLParam(r, "id"))
@@ -160,7 +206,7 @@ func (h *Handler) listWorkNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, nodes)
 }
 func (h *Handler) listWorkArtifacts(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	if _, ok := h.workPrincipal(w, r); !ok {
 		return
 	}
 	artifacts, err := h.work.ListArtifacts(r.Context(), chi.URLParam(r, "id"))
@@ -171,21 +217,60 @@ func (h *Handler) listWorkArtifacts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, artifacts)
 }
 
+// valueEvent reports whether a timeline event carries Admin-only value data
+// (REQ-026/027): value credits and deductions.
+func valueEvent(event workstore.TimelineEvent) bool {
+	return strings.HasPrefix(event.Code, "value_")
+}
+
 func (h *Handler) listWorkTimeline(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	principal, ok := h.workPrincipal(w, r)
+	if !ok {
 		return
 	}
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	events, err := h.work.ListTimeline(r.Context(), chi.URLParam(r, "id"), after, limit)
-	if err != nil {
-		writeWorkError(w, err)
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	itemID := chi.URLParam(r, "id")
+	if principal.Can(identity.ActionValueRead) {
+		events, err := h.work.ListTimeline(r.Context(), itemID, after, limit)
+		if err != nil {
+			writeWorkError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, events)
 		return
+	}
+	// Without value.read, value events are omitted. Keep reading past them so
+	// a page is only short when the timeline is exhausted, and every returned
+	// cursor stays a valid resume point.
+	events := []workstore.TimelineEvent{}
+	for len(events) < limit {
+		page, err := h.work.ListTimeline(r.Context(), itemID, after, limit)
+		if err != nil {
+			writeWorkError(w, err)
+			return
+		}
+		for _, event := range page {
+			after = event.Cursor
+			if valueEvent(event) {
+				continue
+			}
+			events = append(events, event)
+			if len(events) == limit {
+				break
+			}
+		}
+		if len(page) < limit {
+			break
+		}
 	}
 	writeJSON(w, http.StatusOK, events)
 }
 func (h *Handler) getWorkConsequences(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	if _, ok := h.workPrincipal(w, r); !ok {
 		return
 	}
 	consequences, err := h.work.ConsequencesForItem(r.Context(), chi.URLParam(r, "id"))
@@ -197,7 +282,7 @@ func (h *Handler) getWorkConsequences(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getWorkBlocker(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	if _, ok := h.workPrincipal(w, r); !ok {
 		return
 	}
 	blocker, err := h.work.OpenBlockerForItem(r.Context(), chi.URLParam(r, "id"))
@@ -216,16 +301,16 @@ type blockerResponseRequest struct {
 }
 
 func (h *Handler) respondWorkBlocker(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "respond") {
+	principal, ok := h.workPrincipal(w, r)
+	if !ok {
 		return
 	}
-	actor, _ := h.workActor(r)
 	var req blockerResponseRequest
 	if decodeJSON(r, &req) != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid request body"})
 		return
 	}
-	b, err := h.work.RespondBlocker(r.Context(), workstore.BlockerResponseInput{BlockerID: chi.URLParam(r, "id"), ActorIdentityID: actor.ID, Outcome: req.Outcome, Response: req.Response, ArtifactRefs: req.ArtifactRefs, ConfirmedInvocationIDs: req.ConfirmedInvocationIDs})
+	b, err := h.work.RespondBlocker(r.Context(), workstore.BlockerResponseInput{BlockerID: chi.URLParam(r, "id"), ActorIdentityID: principal.ActorID, Outcome: req.Outcome, Response: req.Response, ArtifactRefs: req.ArtifactRefs, ConfirmedInvocationIDs: req.ConfirmedInvocationIDs})
 	if err != nil {
 		writeWorkError(w, err)
 		return
@@ -234,24 +319,24 @@ func (h *Handler) respondWorkBlocker(w http.ResponseWriter, r *http.Request) {
 }
 
 // stopWorkWait ends the item's open wait through its `cancelled` outcome
-// (DES-HOR-649-02). It carries exactly the blocker-response authority
-// (DES-HOR-649-06; both move to cookie+CSRF together) and
-// does not cancel the work item.
+// (DES-HOR-649-02). It carries exactly the blocker-response authority, a
+// cookie session with CSRF (DES-HOR-649-06), and does not cancel the work item.
 func (h *Handler) stopWorkWait(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "respond") {
+	principal, ok := h.workPrincipal(w, r)
+	if !ok {
 		return
 	}
-	actor, _ := h.workActor(r)
-	item, err := h.work.StopWaiting(r.Context(), workstore.StopWaitingInput{WorkItemID: chi.URLParam(r, "id"), ActorIdentityID: actor.ID})
+	item, err := h.work.StopWaiting(r.Context(), workstore.StopWaitingInput{WorkItemID: chi.URLParam(r, "id"), ActorIdentityID: principal.ActorID})
 	if err != nil {
 		writeWorkError(w, err)
 		return
 	}
+	clipWorkItem(principal, &item)
 	writeJSON(w, http.StatusOK, item)
 }
 
 func (h *Handler) listWorkFeedback(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	if _, ok := h.workPrincipal(w, r); !ok {
 		return
 	}
 	feedback, err := h.work.ListFeedback(r.Context(), chi.URLParam(r, "id"))
@@ -263,7 +348,7 @@ func (h *Handler) listWorkFeedback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getWorkFeedback(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	if _, ok := h.workPrincipal(w, r); !ok {
 		return
 	}
 	feedback, err := h.work.GetFeedback(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "feedbackID"))
@@ -282,16 +367,16 @@ type feedbackRequest struct {
 }
 
 func (h *Handler) saveWorkFeedback(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "feedback") {
+	principal, ok := h.workPrincipal(w, r)
+	if !ok {
 		return
 	}
-	actor, _ := h.workActor(r)
 	var req feedbackRequest
 	if decodeJSON(r, &req) != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid request body"})
 		return
 	}
-	f, err := h.work.SaveFeedback(r.Context(), workstore.FeedbackInput{WorkItemID: chi.URLParam(r, "id"), AttemptID: req.AttemptID, ActorIdentityID: actor.ID, Category: req.Category, Explanation: req.Explanation, CorrectedResult: req.CorrectedResult})
+	f, err := h.work.SaveFeedback(r.Context(), workstore.FeedbackInput{WorkItemID: chi.URLParam(r, "id"), AttemptID: req.AttemptID, ActorIdentityID: principal.ActorID, Category: req.Category, Explanation: req.Explanation, CorrectedResult: req.CorrectedResult})
 	if err != nil {
 		writeWorkError(w, err)
 		return
@@ -306,25 +391,27 @@ type revisionRequest struct {
 }
 
 func (h *Handler) createWorkRevision(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "retry") {
+	principal, ok := h.workPrincipal(w, r)
+	if !ok {
 		return
 	}
-	actor, _ := h.workActor(r)
 	var req revisionRequest
 	if decodeJSON(r, &req) != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid request body"})
 		return
 	}
-	item, err := h.work.CreateRevision(r.Context(), workstore.RevisionInput{WorkItemID: chi.URLParam(r, "id"), ActorIdentityID: actor.ID, FeedbackID: req.FeedbackID, ActionableGuidance: req.ActionableGuidance, ConfirmedInvocationIDs: req.ConfirmedInvocationIDs})
+	item, err := h.work.CreateRevision(r.Context(), workstore.RevisionInput{WorkItemID: chi.URLParam(r, "id"), ActorIdentityID: principal.ActorID, FeedbackID: req.FeedbackID, ActionableGuidance: req.ActionableGuidance, ConfirmedInvocationIDs: req.ConfirmedInvocationIDs})
 	if err != nil {
 		writeWorkError(w, err)
 		return
 	}
+	clipWorkItem(principal, &item)
 	writeJSON(w, http.StatusCreated, item)
 }
 
 func (h *Handler) getWorkDashboard(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	principal, ok := h.workPrincipal(w, r)
+	if !ok {
 		return
 	}
 	now := time.Now().UTC()
@@ -351,32 +438,21 @@ func (h *Handler) getWorkDashboard(w http.ResponseWriter, r *http.Request) {
 		writeWorkError(w, err)
 		return
 	}
+	if !principal.Can(identity.ActionValueRead) {
+		summary.Value = workstore.ValueSummary{Totals: []workstore.CurrencyAmount{}, Models: []workstore.ValueModelSnapshot{}}
+		summary.Trend = []workstore.ValueTrendPoint{}
+	}
 	writeJSON(w, http.StatusOK, summary)
-}
-
-func (h *Handler) createValueModel(w http.ResponseWriter, r *http.Request) {
-	if !h.workReady(w) {
-		return
-	}
-	var req workstore.ValueModelInput
-	if decodeJSON(r, &req) != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid request body"})
-		return
-	}
-	model, err := h.work.CreateValueModel(r.Context(), req)
-	if err != nil {
-		writeWorkError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, model)
 }
 
 // streamWorkEvents is a resumable customer-safe SSE stream. Last-Event-ID is
 // the durable timeline cursor; polling is a fallback over the same contract.
 func (h *Handler) streamWorkEvents(w http.ResponseWriter, r *http.Request) {
-	if !h.authorizeWork(w, r, "read") {
+	principal, ok := h.workPrincipal(w, r)
+	if !ok {
 		return
 	}
+	valueVisible := principal.Can(identity.ActionValueRead)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "streaming unsupported"})
@@ -393,21 +469,10 @@ func (h *Handler) streamWorkEvents(w http.ResponseWriter, r *http.Request) {
 	defer poll.Stop()
 	defer heartbeat.Stop()
 	send := func() error {
-		for {
-			events, err := h.work.TimelineSince(r.Context(), cursor, 500)
-			if err != nil {
-				return err
-			}
-			for _, event := range events {
-				data, _ := json.Marshal(event)
-				if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Cursor, event.Code, data); err != nil {
-					return err
-				}
-				cursor = event.Cursor
-			}
-			if len(events) < 500 {
-				break
-			}
+		next, err := h.writeWorkEvents(r.Context(), w, cursor, valueVisible)
+		cursor = next
+		if err != nil {
+			return err
 		}
 		flusher.Flush()
 		return nil
@@ -428,6 +493,31 @@ func (h *Handler) streamWorkEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flusher.Flush()
+		}
+	}
+}
+
+// writeWorkEvents writes every timeline event after cursor as SSE frames and
+// returns the new cursor. Without value.read, value events stay server-side
+// but the cursor still moves past them so a resume never replays them.
+func (h *Handler) writeWorkEvents(ctx context.Context, w http.ResponseWriter, cursor int64, valueVisible bool) (int64, error) {
+	for {
+		events, err := h.work.TimelineSince(ctx, cursor, 500)
+		if err != nil {
+			return cursor, err
+		}
+		for _, event := range events {
+			cursor = event.Cursor
+			if !valueVisible && valueEvent(event) {
+				continue
+			}
+			data, _ := json.Marshal(event)
+			if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Cursor, event.Code, data); err != nil {
+				return cursor, err
+			}
+		}
+		if len(events) < 500 {
+			return cursor, nil
 		}
 	}
 }

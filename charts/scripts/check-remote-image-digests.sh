@@ -3,9 +3,9 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
-helm template iterabase "$root/charts/iterabase-platform" > "$tmp/default.yaml"
-helm template iterabase "$root/charts/iterabase-platform" -f "$root/values-observability.yaml" > "$tmp/observability.yaml"
-helm template iterabase "$root/charts/iterabase-platform" \
+helm template iterabase "$root/charts/iterabase-platform" -f "$root/values-auth.yaml" > "$tmp/default.yaml"
+helm template iterabase "$root/charts/iterabase-platform" -f "$root/values-auth.yaml" -f "$root/values-observability.yaml" > "$tmp/observability.yaml"
+helm template iterabase "$root/charts/iterabase-platform" -f "$root/values-auth.yaml" \
   --set external-dns.enabled=true --set reloader.enabled=true --set metallb.enabled=true \
   > "$tmp/optional.yaml"
 helm template iterabase-cert-manager "$root/charts/cert-manager-substrate" > "$tmp/cert-manager.yaml"

@@ -23,6 +23,7 @@ interface Props {
   initialProfile: AuthProfile;
   initialCSRF: string;
   onSessionLost: (message?: string) => void;
+  onOpenWork?: () => void;
 }
 
 interface PendingAction {
@@ -40,6 +41,7 @@ export default function AccountShell({
   initialProfile,
   initialCSRF,
   onSessionLost,
+  onOpenWork,
 }: Props) {
   const [profile, setProfile] = useState(initialProfile);
   const [csrf, setCSRF] = useState(initialCSRF);
@@ -102,13 +104,16 @@ export default function AccountShell({
   );
 
   const signOut = useCallback(async () => {
+    setError("");
     try {
-      await authApi.signOut(csrf);
+      await authApi.signOutCurrent(csrf);
     } catch {
-      /* sign-out is best effort; the local state goes anonymous regardless */
+      // The server session may still be valid: stay signed in and say so.
+      setError(c.signOutFailed);
+      return;
     }
     onSessionLost();
-  }, [csrf, onSessionLost]);
+  }, [c, csrf, onSessionLost]);
 
   function openDialog(action: PendingAction) {
     invoker.current = document.activeElement as HTMLElement | null;
@@ -143,6 +148,11 @@ export default function AccountShell({
           </strong>
         </div>
         <nav aria-label={c.eyebrow} className="account-nav">
+          {onOpenWork && (
+            <button type="button" onClick={onOpenWork}>
+              {c.navWork}
+            </button>
+          )}
           {(["profile", "sessions"] as View[]).map((item) => (
             <button
               key={item}

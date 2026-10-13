@@ -2,7 +2,7 @@
 set -euo pipefail
 
 render() {
-  helm template artifact-check charts/control-plane \
+  helm template artifact-check charts/control-plane -f values-control-plane-auth.yaml \
     --set gateway.enabled=true \
     --set artifact.enabled=true \
     "$@"
@@ -33,7 +33,7 @@ assert_max_size() {
 assert_max_size 1073741824
 assert_max_size 1048576 --set artifact.maxSizeBytes=1048576
 
-gateway=$(helm template artifact-check charts/control-plane \
+gateway=$(helm template artifact-check charts/control-plane -f values-control-plane-auth.yaml \
   --set gateway.enabled=true \
   --set artifact.enabled=true \
   --show-only templates/gateway.yaml)

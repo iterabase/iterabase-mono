@@ -1,6 +1,6 @@
 // Package identity implements the control-plane identity service: the Postgres
-// store for identities and their credentials, JWT/JWKS issuance, and surface-to-
-// identity resolution. It is shared by the manager (reconciler) and the api
+// store for identities, local accounts, browser sessions, and V2 API
+// credentials. It is shared by the manager (workflow identities) and the api
 // (HTTP endpoints + bootstrap).
 package identity
 
@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,8 +18,7 @@ import (
 var (
 	// ErrNotFound is returned when no identity/binding matches.
 	ErrNotFound = errors.New("identity: not found")
-	// ErrInvalidAPIKey is returned when an API key is absent, revoked, expired,
-	// or bound to a soft-deleted identity.
+	// ErrInvalidAPIKey is returned when a bearer value matches no V2 credential.
 	ErrInvalidAPIKey = errors.New("identity: invalid api key")
 )
 
@@ -51,35 +49,9 @@ type LocalUser struct {
 	ApprovedAccessRequestID string
 }
 
-// APIKey is a row from identity.api_keys (never includes the full key).
-type APIKey struct {
-	ID         string
-	IdentityID string
-	Prefix     string
-	Name       string
-	Scope      string
-	ExpiresAt  *time.Time
-	LastUsedAt *time.Time
-	RevokedAt  *time.Time
-	CreatedAt  time.Time
-}
-
-// Binding pairs an identity to an external provider ID.
-type Binding struct {
-	Provider   string // slack | teams
-	Type       string // user | group
-	ExternalID string
-}
-
 // Store reads and writes the identity schema via a pgx connection pool.
 type Store struct {
 	pool *pgxpool.Pool
-
-	// The V2 authority epoch is irreversible (DES-HOR-451-12), so a permanently
-	// observed `v2` is latched in memory and never re-read. A `legacy`
-	// observation is never latched.
-	epochMu sync.RWMutex
-	epochV2 bool
 }
 
 // NewStore wraps a pool for identity operations.
@@ -107,84 +79,17 @@ func (s *Store) UpsertIdentity(ctx context.Context, key, kind, source, displayNa
 	return scanIdentity(row)
 }
 
-// SoftDeleteIdentityByKey marks the identity inactive (deleted_at) and removes
-// its external mappings, in one transaction. Used by the reconciler on CR
-// deletion: access is revoked (no bindings -> not resolvable) while the row is
-// kept for usage/history (HOR-242 Q9).
+// SoftDeleteIdentityByKey marks the identity inactive (deleted_at). Used by the
+// workflow reconciler on CR deletion: the row is kept for usage/history while
+// its workload capability is withdrawn (HOR-242 Q9).
 func (s *Store) SoftDeleteIdentityByKey(ctx context.Context, key string) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM identity.external_mappings
-		WHERE identity_id = (SELECT id FROM identity.identities WHERE key = $1)`, key); err != nil {
-		return fmt.Errorf("delete mappings: %w", err)
-	}
-
-	ct, err := tx.Exec(ctx, `
+	// Zero rows is fine: the identity was already deleted or never existed.
+	if _, err := s.pool.Exec(ctx, `
 		UPDATE identity.identities SET deleted_at = now()
-		WHERE key = $1 AND deleted_at IS NULL`, key)
-	if err != nil {
+		WHERE key = $1 AND deleted_at IS NULL`, key); err != nil {
 		return fmt.Errorf("soft delete: %w", err)
 	}
-	_ = ct // may be zero if already deleted or never existed; both are fine
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
 	return nil
-}
-
-// ReplaceExternalMappings atomically replaces the identity's external bindings
-// with the given set (deduped). A binding claimed by another identity violates
-// the UNIQUE(provider,type,external_id) constraint and is returned as an error
-// so the reconciler can surface it in status.
-func (s *Store) ReplaceExternalMappings(ctx context.Context, identityID string, bindings []Binding) error {
-	deduped := dedupeBindings(bindings)
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if _, err := tx.Exec(ctx, `DELETE FROM identity.external_mappings WHERE identity_id = $1`, identityID); err != nil {
-		return fmt.Errorf("clear mappings: %w", err)
-	}
-
-	for _, b := range deduped {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO identity.external_mappings (identity_id, provider, type, external_id)
-			VALUES ($1, $2, $3, $4)`, identityID, b.Provider, b.Type, b.ExternalID); err != nil {
-			return fmt.Errorf("insert binding %s/%s/%s: %w", b.Provider, b.Type, b.ExternalID, err)
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-	return nil
-}
-
-// ResolveByExternalID resolves an external binding to an active identity. Used
-// by the token endpoint (Path 2) and (in open mode, deferred) auto-provisioning.
-func (s *Store) ResolveByExternalID(ctx context.Context, provider, bindingType, externalID string) (Identity, error) {
-	row := s.pool.QueryRow(ctx, `
-		SELECT i.id, i.key, i.kind, i.source, i.display_name
-		FROM identity.external_mappings m
-		JOIN identity.identities i ON i.id = m.identity_id
-		WHERE m.provider = $1 AND m.type = $2 AND m.external_id = $3
-		  AND i.deleted_at IS NULL`,
-		provider, bindingType, externalID)
-
-	id, err := scanIdentity(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Identity{}, ErrNotFound
-	}
-	return id, err
 }
 
 // GetIdentityByID fetches an active identity by its UUID.
@@ -201,8 +106,8 @@ func (s *Store) GetIdentityByID(ctx context.Context, id string) (Identity, error
 }
 
 // UpsertLocalUser creates or revives a local-user identity keyed by `key`
-// (canonical normalized email), and upserts its local_users satellite row.
-// Idempotent for the legacy bootstrap/API path.
+// (canonical normalized email), and upserts its `setup_pending` local_users
+// satellite row. Idempotent; it never sets a password or creates a session.
 func (s *Store) UpsertLocalUser(ctx context.Context, key, email, role string) (LocalUser, error) {
 	delivery, normalized, ok := CanonicalEmail(email)
 	if !ok {
@@ -261,144 +166,6 @@ func (s *Store) UpsertLocalUser(ctx context.Context, key, email, role string) (L
 	return lu, nil
 }
 
-// UpsertServiceAccount creates or revives a service-account identity keyed by
-// `key` (the SA name). Service accounts have api_keys but no satellite table.
-func (s *Store) UpsertServiceAccount(ctx context.Context, key, displayName string) (Identity, error) {
-	row := s.pool.QueryRow(ctx, `
-		INSERT INTO identity.identities (key, kind, source, display_name)
-		VALUES ($1, 'service_account', 'local', $2)
-		ON CONFLICT (key) DO UPDATE
-			SET deleted_at   = NULL,
-			    display_name = EXCLUDED.display_name,
-			    updated_at   = now()
-		RETURNING id, key, kind, source, display_name`, key, displayName)
-	return scanIdentity(row)
-}
-
-// CreateAPIKey generates a new API key for an identity and stores its hash.
-// The full key is returned once; only the hash + prefix are persisted.
-func (s *Store) CreateAPIKey(ctx context.Context, identityID, name, scope string, expiresAt *time.Time) (string, APIKey, error) {
-	if !ValidScope(scope) {
-		return "", APIKey{}, fmt.Errorf("invalid scope %q", scope)
-	}
-	full, prefix, hash, err := GenerateAPIKey()
-	if err != nil {
-		return "", APIKey{}, err
-	}
-
-	var k APIKey
-	err = s.pool.QueryRow(ctx, `
-		INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, identity_id, prefix, name, scope, expires_at, last_used_at, revoked_at, created_at`,
-		identityID, hash, prefix, name, scope, expiresAt).
-		Scan(&k.ID, &k.IdentityID, &k.Prefix, &k.Name, &k.Scope, &k.ExpiresAt, &k.LastUsedAt, &k.RevokedAt, &k.CreatedAt)
-	if err != nil {
-		return "", APIKey{}, fmt.Errorf("insert api_key: %w", err)
-	}
-	return full, k, nil
-}
-
-// RevokeAPIKeysForIdentity revokes all non-revoked keys of the given scope for
-// an identity. Used by bootstrap --reset.
-func (s *Store) RevokeAPIKeysForIdentity(ctx context.Context, identityID, scope string) error {
-	_, err := s.pool.Exec(ctx, `
-		UPDATE identity.api_keys SET revoked_at = now()
-		WHERE identity_id = $1 AND scope = $2 AND revoked_at IS NULL`, identityID, scope)
-	if err != nil {
-		return fmt.Errorf("revoke api_keys: %w", err)
-	}
-	return nil
-}
-
-// ValidateAPIKey looks up a key by its hash, enforcing revocation/expiry and
-// that the bound identity is active, and updates last_used_at. Returns the key
-// and its identity.
-func (s *Store) ValidateAPIKey(ctx context.Context, fullKey string) (APIKey, Identity, error) {
-	hash := HashAPIKey(fullKey)
-
-	var k APIKey
-	var ident Identity
-	err := s.pool.QueryRow(ctx, `
-		SELECT k.id, k.identity_id, k.prefix, k.name, k.scope, k.expires_at, k.last_used_at, k.revoked_at, k.created_at,
-		       i.id, i.key, i.kind, i.source, i.display_name
-		FROM identity.api_keys k
-		JOIN identity.identities i ON i.id = k.identity_id
-		WHERE k.key_hash = $1
-		  AND k.revoked_at IS NULL
-		  AND (k.expires_at IS NULL OR k.expires_at > now())
-		  AND i.deleted_at IS NULL`, hash).
-		Scan(&k.ID, &k.IdentityID, &k.Prefix, &k.Name, &k.Scope, &k.ExpiresAt, &k.LastUsedAt, &k.RevokedAt, &k.CreatedAt,
-			&ident.ID, &ident.Key, &ident.Kind, &ident.Source, &ident.DisplayName)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return APIKey{}, Identity{}, ErrInvalidAPIKey
-	}
-	if err != nil {
-		return APIKey{}, Identity{}, fmt.Errorf("validate api_key: %w", err)
-	}
-
-	// Best-effort last-used stamp; do not fail auth on a write error.
-	_, _ = s.pool.Exec(ctx, `UPDATE identity.api_keys SET last_used_at = now() WHERE id = $1`, k.ID)
-	return k, ident, nil
-}
-
-// ListAPIKeys returns all API keys (newest first), for the admin endpoint.
-func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, identity_id, prefix, name, scope, expires_at, last_used_at, revoked_at, created_at
-		FROM identity.api_keys ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, fmt.Errorf("list api_keys: %w", err)
-	}
-	defer rows.Close()
-
-	var out []APIKey
-	for rows.Next() {
-		var k APIKey
-		if err := rows.Scan(&k.ID, &k.IdentityID, &k.Prefix, &k.Name, &k.Scope, &k.ExpiresAt, &k.LastUsedAt, &k.RevokedAt, &k.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, k)
-	}
-	return out, rows.Err()
-}
-
-// RevokeAPIKey soft-revokes a key by ID.
-func (s *Store) RevokeAPIKey(ctx context.Context, id string) error {
-	ct, err := s.pool.Exec(ctx, `UPDATE identity.api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`, id)
-	if err != nil {
-		return fmt.Errorf("revoke api_key: %w", err)
-	}
-	if ct.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// ListLocalUsers returns all local users (newest first).
-func (s *Store) ListLocalUsers(ctx context.Context) ([]LocalUser, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+localUserColumns+`
-		FROM identity.local_users lu
-		JOIN identity.identities i ON i.id = lu.identity_id
-		WHERE i.deleted_at IS NULL
-		ORDER BY lu.created_at DESC`)
-	if err != nil {
-		return nil, fmt.Errorf("list local_users: %w", err)
-	}
-	defer rows.Close()
-
-	var out []LocalUser
-	for rows.Next() {
-		lu, err := scanLocalUser(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, lu)
-	}
-	return out, rows.Err()
-}
-
 // GetLocalUser returns the local user for an identity ID.
 func (s *Store) GetLocalUser(ctx context.Context, identityID string) (LocalUser, error) {
 	lu, err := scanLocalUser(s.pool.QueryRow(ctx, `
@@ -424,20 +191,4 @@ func (s *Store) identityInTx(ctx context.Context, tx pgx.Tx, id string) (Identit
 	return scanIdentity(tx.QueryRow(ctx, `
 		SELECT id, key, kind, source, display_name
 		FROM identity.identities WHERE id = $1`, id))
-}
-
-// dedupeBindings removes duplicate bindings (same provider/type/external_id)
-// preserving order, so a CR with repeated entries does not violate the UNIQUE
-// constraint on insert.
-func dedupeBindings(in []Binding) []Binding {
-	seen := make(map[Binding]struct{}, len(in))
-	out := make([]Binding, 0, len(in))
-	for _, b := range in {
-		if _, ok := seen[b]; ok {
-			continue
-		}
-		seen[b] = struct{}{}
-		out = append(out, b)
-	}
-	return out
 }

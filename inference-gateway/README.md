@@ -4,7 +4,7 @@
 
 The Horizonshift/Iterabase inference gateway: an OpenAI-compatible Go service
 that routes client requests to vLLM/SGLang backends. It consumes the model
-catalog, API keys, capabilities, and rate limits from the **control-plane**
+catalog, workload capabilities, and rate limits from the **control-plane**
 (directly from the shared Postgres, LISTEN/NOTIFY-synced) and enforces
 per-identity rate limits via Redis. Per-customer, self-hosted; pairs with the
 control-plane operator, which owns the catalog/auth/policy CRDs.
@@ -16,36 +16,42 @@ gateway infrastructure intent.
 ## Status
 
 **Walking skeleton.** HOR-247 rewired the gateway onto the control-plane
-snapshot: it reads `catalog.effective_catalog`, `identity.api_keys`,
+snapshot: it reads `catalog.effective_catalog`,
 `permissions.effective_capabilities`, and `permissions.effective_rate_limits`
 directly from the shared Postgres (in-memory cache, LISTEN/NOTIFY-refreshed)
 and routes alias → backend. The legacy self-managed registry / auth / admin /
 load balancer is gone. Requires control-plane v0.0.5 (HOR-328) on the shared
 Postgres.
 
+**Customer listener (HOR-582).** Legacy scoped API keys and the
+`identity.active_api_keys` lookup retired with the control-plane's V2-only
+authority (`DES-HOR-582-01`). Until HOR-513 delivers live V2 credential
+enforcement (`identity.inference_api_credentials`), the customer listener
+denies every bearer request before any backend call. The workload mTLS
+listener is unaffected.
+
 ## Architecture
 
 ```
-Direct callers (API key)
-  ──> [ Auth: API key -> identity ] ──> [ RateLimit: per-identity (Redis) ]
-      ──> [ Route alias -> backend_url + rewrite model + transforms ] ──> vLLM/SGLang
+Direct callers (customer bearer)
+  ──> [ Auth: denied until HOR-513 V2 credentials ]
 
 Supervisor (workload mTLS, HOR-398)            │
   ──> [ mTLS h2 + SPIFFE ] ──> [ WorkloadAuth: pool + active turn scope ]
       ──> [ RateLimit: effective identity (Redis) ] ──> same proxy pipeline ──┘
                                 │
-                  snapshot cache (catalog / API keys / capabilities / rate limits)
+                  snapshot cache (catalog / capabilities / rate limits)
                                 │
             shared Postgres (control-plane schemas)        Redis (rate-limit counters)
 ```
 
-- **Catalog / auth / policy / rate-limits:** read-only from the control-plane's
-  Postgres views (`catalog.effective_catalog`, `identity.api_keys`,
+- **Catalog / workload capability / rate-limits:** read-only from the
+  control-plane's Postgres views (`catalog.effective_catalog`,
   `permissions.effective_capabilities`, `permissions.effective_rate_limits`).
   The gateway **owns no tables** (no `migrate` subcommand; the control-plane
   creates the schemas).
 - **Snapshot cache:** in-memory, per pod; refreshed on start, on LISTEN/NOTIFY
-  (`catalog_changed` / `api_keys_changed` / `permissions_changed`), and on a 30s
+  (`catalog_changed` / `permissions_changed`), and on a 30s
   poll fallback. `/readyz` goes unhealthy if the snapshot is stale, so a pod with
   a dead LISTEN drops from the Service LB. Multi-replica-safe: each pod LISTENs.
 - **Routing:** alias → single `backend_url` (the catalog's `available` flag is
@@ -76,7 +82,7 @@ Supervisor (workload mTLS, HOR-398)            │
   `runtime.run_pool_assignments`, read live on the request path — not cached)
   against `X-Iterabase-Run-Id` / `X-Iterabase-Turn-Id`. The run's
   `scope_identity_id` becomes the effective identity (catalogue authz, usage,
-  rate limits reuse the API-key pipeline); the requested model must equal the
+  rate limits share the proxy pipeline); the requested model must equal the
   turn's assigned model (deny model-mismatched). Stale/fenced/inactive/terminal
   turns are denied without fallback. The disposable child receives no
   credential — the mTLS cert is held by the supervisor only.
@@ -84,9 +90,8 @@ Supervisor (workload mTLS, HOR-398)            │
 ## Quick start
 
 The gateway reads the control-plane's schemas, so run it alongside a
-control-plane (whose migrations create the schemas). The model aliases and API
-keys come from control-plane `Model` / `IdentityMapping` / `PermissionPolicy`
-CRs.
+control-plane (whose migrations create the schemas). The model aliases come
+from control-plane `Model` CRs.
 
 ```bash
 export DATABASE_URL="postgres://..."   # shared Postgres (control-plane schemas)
@@ -130,8 +135,8 @@ logging:      {level: info, format: json}
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `POST` | `/v1/chat/completions` | Bearer API key | Proxy to the backend (streaming + non-streaming) |
-| `GET` | `/v1/models` | Bearer API key | Available aliases |
+| `POST` | `/v1/chat/completions` | Customer bearer (denied until HOR-513) | Proxy to the backend (streaming + non-streaming) |
+| `GET` | `/v1/models` | Customer bearer (denied until HOR-513) | Available aliases |
 | `GET` | `/health` | – | Liveness |
 | `GET` | `/readyz` | – | Readiness (snapshot freshness gate) |
 | `GET` | `/metrics` on the dedicated metrics port | – | Prometheus; never exposed through API ingress or workload mTLS |
@@ -179,7 +184,7 @@ internal/
   database/                PG connection pool (no migrations — gateway owns no tables)
   snapshot/                control-plane views reader + in-memory LISTEN/NOTIFY cache
   proxy/                   routing + model rewrite + transforms + SSE streaming
-  middleware/              auth (API key -> identity), workload mTLS auth, rate limit, logging, metrics, request ID
+  middleware/              customer auth (denied until HOR-513), workload mTLS auth, rate limit, logging, metrics, request ID
   ratelimit/               Redis sliding window (RPM/TPM counters)
   server/                  HTTP server + routes (/v1, /readyz, /admin/v1/snapshot); workload mTLS listener
   spiffe/                  SPIFFE workload-identity parse + mTLS server TLS config (+ testca)

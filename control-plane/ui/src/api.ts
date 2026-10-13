@@ -15,35 +15,44 @@ export class APIError extends Error {
   constructor(
     public status: number,
     message: string,
+    public code = "",
   ) {
     super(message);
   }
 }
 
+// Every work call rides the same-origin browser session cookie. Unsafe methods
+// also carry the session-bound CSRF proof.
 async function request<T>(
-  token: string,
   path: string,
   init: RequestInit = {},
+  csrf?: string,
 ): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: {
-      Authorization: `Bearer ${token}`,
       ...(init.body && !(init.body instanceof Blob)
         ? { "Content-Type": "application/json" }
         : {}),
+      ...(csrf ? { "X-CSRF-Token": csrf } : {}),
       ...init.headers,
     },
   });
   if (!response.ok) {
     let message = response.statusText;
+    let code = "";
     try {
-      message =
-        ((await response.json()) as { error?: string }).error || message;
+      const payload = (await response.json()) as {
+        error?: string;
+        code?: string;
+      };
+      message = payload.error || message;
+      code = payload.code || code;
     } catch {
       /* empty response */
     }
-    throw new APIError(response.status, message);
+    throw new APIError(response.status, message, code);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -60,7 +69,6 @@ const periodParams = (period: Period) =>
   });
 
 export async function loadDashboard(
-  token: string,
   period: Period,
   search = "",
 ): Promise<{ summary: DashboardSummary; items: WorkItem[] }> {
@@ -69,8 +77,8 @@ export async function loadDashboard(
   itemParams.set("limit", "200");
   if (search.trim()) itemParams.set("search", search.trim());
   const [summary, items] = await Promise.all([
-    request<DashboardSummary>(token, `/v1/work-dashboard?${summaryParams}`),
-    request<WorkItem[]>(token, `/v1/work-items?${itemParams}`),
+    request<DashboardSummary>(`/v1/work-dashboard?${summaryParams}`),
+    request<WorkItem[]>(`/v1/work-items?${itemParams}`),
   ]);
   return { summary, items };
 }
@@ -84,10 +92,7 @@ async function optional<T>(promise: Promise<T>): Promise<T | null> {
   }
 }
 
-export async function loadDetail(
-  token: string,
-  item: WorkItem,
-): Promise<DetailData> {
+export async function loadDetail(item: WorkItem): Promise<DetailData> {
   const id = encodeURIComponent(item.id);
   const [
     fresh,
@@ -98,18 +103,17 @@ export async function loadDetail(
     consequences,
     artifacts,
   ] = await Promise.all([
-    request<WorkItem>(token, `/v1/work-items/${id}`),
-    request<Attempt[]>(token, `/v1/work-items/${id}/attempts`),
-    request<TimelineEvent[]>(token, `/v1/work-items/${id}/timeline?limit=1000`),
-    optional(request<Blocker>(token, `/v1/work-items/${id}/blocker`)),
-    request<Feedback[]>(token, `/v1/work-items/${id}/feedback`),
-    request<Consequence[]>(token, `/v1/work-items/${id}/consequences`),
-    request<WorkArtifact[]>(token, `/v1/work-items/${id}/artifacts`),
+    request<WorkItem>(`/v1/work-items/${id}`),
+    request<Attempt[]>(`/v1/work-items/${id}/attempts`),
+    request<TimelineEvent[]>(`/v1/work-items/${id}/timeline?limit=1000`),
+    optional(request<Blocker>(`/v1/work-items/${id}/blocker`)),
+    request<Feedback[]>(`/v1/work-items/${id}/feedback`),
+    request<Consequence[]>(`/v1/work-items/${id}/consequences`),
+    request<WorkArtifact[]>(`/v1/work-items/${id}/artifacts`),
   ]);
   const nodeGroups = await Promise.all(
     attempts.map((attempt) =>
       request<NodeExecution[]>(
-        token,
         `/v1/work-attempts/${encodeURIComponent(attempt.id)}/nodes`,
       ),
     ),
@@ -127,7 +131,7 @@ export async function loadDetail(
 }
 
 export async function respondToBlocker(
-  token: string,
+  csrf: string,
   blocker: Blocker,
   outcome: string,
   response: Record<string, unknown>,
@@ -135,7 +139,6 @@ export async function respondToBlocker(
   confirmedInvocationIds: string[] = [],
 ): Promise<void> {
   await request(
-    token,
     `/v1/work-blockers/${encodeURIComponent(blocker.id)}/responses`,
     {
       method: "POST",
@@ -149,28 +152,25 @@ export async function respondToBlocker(
             : undefined,
       }),
     },
+    csrf,
   );
 }
 
-export async function stopWaiting(
-  token: string,
-  item: WorkItem,
-): Promise<void> {
+export async function stopWaiting(csrf: string, item: WorkItem): Promise<void> {
   await request(
-    token,
     `/v1/work-items/${encodeURIComponent(item.id)}/wait/stop`,
     { method: "POST" },
+    csrf,
   );
 }
 
 export function saveFeedback(
-  token: string,
+  csrf: string,
   item: WorkItem,
   category: string,
   explanation: string,
 ): Promise<Feedback> {
   return request(
-    token,
     `/v1/work-items/${encodeURIComponent(item.id)}/feedback`,
     {
       method: "POST",
@@ -180,18 +180,18 @@ export function saveFeedback(
         explanation: explanation || undefined,
       }),
     },
+    csrf,
   );
 }
 
 export function createRevision(
-  token: string,
+  csrf: string,
   item: WorkItem,
   feedbackId: string,
   guidance: string,
   consequences: Consequence[],
 ): Promise<WorkItem> {
   return request(
-    token,
     `/v1/work-items/${encodeURIComponent(item.id)}/revisions`,
     {
       method: "POST",
@@ -201,41 +201,36 @@ export function createRevision(
         confirmedInvocationIds: consequences.map((c) => c.invocationId),
       }),
     },
+    csrf,
   );
 }
 
 export async function uploadArtifact(
-  token: string,
+  csrf: string,
   file: File,
 ): Promise<{ artifactId: string }> {
-  const response = await fetch("/v1/artifacts", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": file.type || "application/octet-stream",
-      "X-Artifact-Source": file.name,
+  const artifact = await request<{ artifactId?: unknown }>(
+    "/v1/artifacts",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": file.type || "application/octet-stream",
+        "X-Artifact-Source": file.name,
+      },
+      body: file,
     },
-    body: file,
-  });
-  if (!response.ok)
-    throw new APIError(
-      response.status,
-      (await response.text()) || response.statusText,
-    );
-  const artifact = (await response.json()) as { artifactId?: unknown };
+    csrf,
+  );
   if (typeof artifact.artifactId !== "string" || !artifact.artifactId.trim()) {
     throw new APIError(502, "Artifact upload response was incomplete.");
   }
   return { artifactId: artifact.artifactId };
 }
 
-export async function downloadArtifact(
-  token: string,
-  artifact: WorkArtifact,
-): Promise<void> {
+export async function downloadArtifact(artifact: WorkArtifact): Promise<void> {
   const response = await fetch(
     `/v1/artifacts/${encodeURIComponent(artifact.artifactId)}`,
-    { headers: { Authorization: `Bearer ${token}` } },
+    { credentials: "same-origin" },
   );
   if (!response.ok) throw new APIError(response.status, response.statusText);
   const blob = await response.blob();
@@ -250,22 +245,27 @@ export async function downloadArtifact(
   URL.revokeObjectURL(url);
 }
 
-// EventSource cannot carry the work bearer key. This fetch-based SSE reader
-// preserves the existing resumable contract without putting credentials in a
-// URL or browser storage.
-export function subscribe(token: string, onEvent: () => void): () => void {
+// This fetch-based SSE reader rides the session cookie and resumes with
+// Last-Event-ID, keeping credentials out of URLs and browser storage. A lost
+// session stops the reader and is reported instead of retried.
+export function subscribe(
+  onEvent: () => void,
+  onSessionLost: () => void,
+): () => void {
   const controller = new AbortController();
   let cursor = "";
   const run = async () => {
     while (!controller.signal.aborted) {
       try {
         const response = await fetch("/v1/work-events", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            ...(cursor ? { "Last-Event-ID": cursor } : {}),
-          },
+          credentials: "same-origin",
+          headers: cursor ? { "Last-Event-ID": cursor } : {},
           signal: controller.signal,
         });
+        if (response.status === 401) {
+          onSessionLost();
+          return;
+        }
         if (!response.ok || !response.body)
           throw new APIError(response.status, response.statusText);
         const reader = response.body.getReader();

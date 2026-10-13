@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/database"
 )
@@ -47,6 +49,9 @@ func newPostgres(t *testing.T, roles []string) (*pgxpool.Pool, string) {
 		postgres.WithDatabase("controlplane"),
 		postgres.WithUsername("cp"),
 		postgres.WithPassword("cp"),
+		// ConnectionString needs the published port before waitForPool can
+		// check SQL readiness; container start alone can race Docker's binding.
+		testcontainers.WithWaitStrategy(wait.ForListeningPort("5432/tcp").WithStartupTimeout(30*time.Second)),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pgC.Terminate(ctx) })

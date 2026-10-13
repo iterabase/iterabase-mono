@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import {
+  APIError,
   createRevision,
   downloadArtifact,
   loadDashboard,
@@ -41,7 +42,13 @@ import type {
 } from "./types";
 import AccountShell from "./auth/AccountShell";
 import PublicAuth from "./auth/PublicAuth";
-import { AuthProfile, probeSession } from "./auth/authApi";
+import {
+  AuthAPIError,
+  AuthProfile,
+  authApi,
+  probeSession,
+} from "./auth/authApi";
+import { authCopy } from "./auth/copy";
 import "./styles.css";
 
 const states: WorkState[] = ["todo", "in_progress", "blocked", "done"];
@@ -168,80 +175,15 @@ function CloseIcon() {
   );
 }
 
-interface ConnectionProps {
-  locale: Locale;
-  setLocale: (locale: Locale) => void;
-  onConnect: (token: string) => Promise<void>;
-  loading: boolean;
-  error: string;
-}
-function Connection({
-  locale,
-  setLocale,
-  onConnect,
-  loading,
-  error,
-}: ConnectionProps) {
-  const c = t(locale);
-  const [value, setValue] = useState("");
-  return (
-    <main className="connection-shell">
-      <div className="language-switch" aria-label="Language">
-        <button
-          className={locale === "en" ? "active" : ""}
-          onClick={() => setLocale("en")}
-        >
-          EN
-        </button>
-        <button
-          className={locale === "pt" ? "active" : ""}
-          onClick={() => setLocale("pt")}
-        >
-          PT
-        </button>
-      </div>
-      <form
-        className="connection-card"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void onConnect(value.trim());
-        }}
-      >
-        <div className="brand-mark">
-          <Mark />
-        </div>
-        <span className="eyebrow">Iterabase</span>
-        <h1>{c.connectTitle}</h1>
-        <p>{c.connectBody}</p>
-        <label htmlFor="api-key">{c.apiKey}</label>
-        <input
-          id="api-key"
-          type="password"
-          autoComplete="off"
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-          required
-        />
-        {error && (
-          <div className="form-error" role="alert">
-            {error}
-          </div>
-        )}
-        <button className="button primary" disabled={loading || !value.trim()}>
-          {loading ? c.connecting : c.connect}
-        </button>
-      </form>
-    </main>
-  );
-}
-
 interface HeaderProps {
   locale: Locale;
   setLocale: (locale: Locale) => void;
   search: string;
   setSearch: (value: string) => void;
   items: WorkItem[];
-  disconnect: () => void;
+  profileName: string;
+  openAccount: () => void;
+  signOut: () => void;
 }
 function Header({
   locale,
@@ -249,7 +191,9 @@ function Header({
   search,
   setSearch,
   items,
-  disconnect,
+  profileName,
+  openAccount,
+  signOut,
 }: HeaderProps) {
   const c = t(locale);
   const active = items.filter((item) => item.state === "in_progress").length;
@@ -293,10 +237,18 @@ function Header({
         </button>
       </div>
       <button
+        className="icon-button"
+        title={c.account}
+        aria-label={c.account}
+        onClick={openAccount}
+      >
+        {initials(profileName)}
+      </button>
+      <button
         className="icon-button sign-out"
-        title={c.disconnect}
-        aria-label={c.disconnect}
-        onClick={disconnect}
+        title={c.signOut}
+        aria-label={c.signOut}
+        onClick={signOut}
       >
         ↪
       </button>
@@ -524,8 +476,17 @@ function Board({
   );
 }
 
+// WorkSession is what the board needs from the browser session: the CSRF
+// proof for unsafe calls and a way to report that the session is gone.
+interface WorkSession {
+  withCSRF: <T>(action: (csrf: string) => Promise<T>) => Promise<T>;
+  // lost returns the app to sign-in and reports true for a gone session.
+  lost: (error: unknown) => boolean;
+}
+
 function useDashboardData(
-  token: string | null,
+  session: WorkSession,
+  expire: () => void,
   period: Period,
   search: string,
 ) {
@@ -538,53 +499,47 @@ function useDashboardData(
   const timer = useRef<number | undefined>(undefined);
   const refresh = useCallback(
     async (quiet = false) => {
-      if (!token) return;
       if (!quiet) setLoading(true);
       try {
-        setData(await loadDashboard(token, period, search));
+        setData(await loadDashboard(period, search));
         setError("");
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Error");
+        if (!session.lost(err))
+          setError(err instanceof Error ? err.message : "Error");
         throw err;
       } finally {
         setLoading(false);
       }
     },
-    [token, period.from.getTime(), period.to.getTime(), search],
+    [session, period.from.getTime(), period.to.getTime(), search],
   );
   useEffect(() => {
-    if (!token) {
-      setData(null);
-      return;
-    }
     const id = window.setTimeout(() => {
       void refresh().catch(() => undefined);
     }, 180);
     return () => clearTimeout(id);
-  }, [refresh, token]);
+  }, [refresh]);
   useEffect(
     () =>
-      token
-        ? subscribe(token, () => {
-            clearTimeout(timer.current);
-            timer.current = window.setTimeout(() => {
-              void refresh(true).catch(() => undefined);
-            }, 200);
-          })
-        : undefined,
-    [token, refresh],
+      subscribe(() => {
+        clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => {
+          void refresh(true).catch(() => undefined);
+        }, 200);
+      }, expire),
+    [refresh, expire],
   );
   return { data, error, loading, refresh };
 }
 
 function DetailPanel({
-  token,
+  session,
   item,
   locale,
   close,
   changed,
 }: {
-  token: string;
+  session: WorkSession;
   item: WorkItem;
   locale: Locale;
   close: () => void;
@@ -604,12 +559,13 @@ function DetailPanel({
   const [busy, setBusy] = useState(false);
   const refresh = useCallback(async () => {
     try {
-      setDetail(await loadDetail(token, item));
+      setDetail(await loadDetail(item));
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error");
+      if (!session.lost(err))
+        setError(err instanceof Error ? err.message : "Error");
     }
-  }, [token, item.id]);
+  }, [session, item.id]);
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -642,13 +598,16 @@ function DetailPanel({
     if (!detail) return;
     setBusy(true);
     try {
-      await saveFeedback(token, detail.item, category, explanation);
+      await session.withCSRF((csrf) =>
+        saveFeedback(csrf, detail.item, category, explanation),
+      );
       setNotice(c.feedbackSaved);
       setFeedbackOpen(false);
       await refresh();
       changed();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error");
+      if (!session.lost(err))
+        setError(err instanceof Error ? err.message : "Error");
     } finally {
       setBusy(false);
     }
@@ -663,18 +622,18 @@ function DetailPanel({
           !entry.revisedAttemptId,
       );
       if (!feedback)
-        feedback = await saveFeedback(
-          token,
-          detail.item,
-          category,
-          explanation,
+        feedback = await session.withCSRF((csrf) =>
+          saveFeedback(csrf, detail.item, category, explanation),
         );
-      await createRevision(
-        token,
-        detail.item,
-        feedback.id,
-        guidance.trim(),
-        detail.consequences,
+      const feedbackId = feedback.id;
+      await session.withCSRF((csrf) =>
+        createRevision(
+          csrf,
+          detail.item,
+          feedbackId,
+          guidance.trim(),
+          detail.consequences,
+        ),
       );
       setNotice(c.revisionStarted);
       setRetryOpen(false);
@@ -682,7 +641,8 @@ function DetailPanel({
       await refresh();
       changed();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error");
+      if (!session.lost(err))
+        setError(err instanceof Error ? err.message : "Error");
     } finally {
       setBusy(false);
     }
@@ -776,7 +736,9 @@ function DetailPanel({
                     onClick={async () => {
                       setBusy(true);
                       try {
-                        await stopWaiting(token, detail.item);
+                        await session.withCSRF((csrf) =>
+                          stopWaiting(csrf, detail.item),
+                        );
                         setNotice(c.waitingStopped);
                         await refresh();
                         changed();
@@ -803,7 +765,7 @@ function DetailPanel({
               )}
               {detail.blocker && (
                 <BlockerForm
-                  token={token}
+                  session={session}
                   blocker={detail.blocker}
                   locale={locale}
                   onDone={async () => {
@@ -830,7 +792,7 @@ function DetailPanel({
               {resultArtifacts.length > 0 && (
                 <Section title={c.result}>
                   <ArtifactList
-                    token={token}
+                    session={session}
                     artifacts={resultArtifacts}
                     locale={locale}
                   />
@@ -1337,11 +1299,11 @@ function ValueModelExplanation({
 }
 
 function ArtifactList({
-  token,
+  session,
   artifacts,
   locale,
 }: {
-  token: string;
+  session: WorkSession;
   artifacts: WorkArtifact[];
   locale: Locale;
 }) {
@@ -1351,7 +1313,7 @@ function ArtifactList({
       {artifacts.map((artifact) => (
         <button
           key={`${artifact.artifactId}-${artifact.role}`}
-          onClick={() => void downloadArtifact(token, artifact)}
+          onClick={() => void downloadArtifact(artifact).catch(session.lost)}
         >
           <span>▤</span>
           <div>
@@ -1501,12 +1463,12 @@ function schemaFieldError(field: JSONSchema, locale: Locale): string {
   return c.invalidObject;
 }
 function BlockerForm({
-  token,
+  session,
   blocker,
   locale,
   onDone,
 }: {
-  token: string;
+  session: WorkSession;
   blocker: Blocker;
   locale: Locale;
   onDone: () => Promise<void>;
@@ -1558,23 +1520,21 @@ function BlockerForm({
     try {
       const refs: Array<{ artifactId: string; metadata?: unknown }> = [];
       if (file) {
-        const artifact = await uploadArtifact(token, file);
+        const artifact = await session.withCSRF((csrf) =>
+          uploadArtifact(csrf, file),
+        );
         refs.push({
           artifactId: artifact.artifactId,
           metadata: { name: file.name },
         });
       }
-      await respondToBlocker(
-        token,
-        blocker,
-        outcome,
-        response,
-        refs,
-        confirmed,
+      await session.withCSRF((csrf) =>
+        respondToBlocker(csrf, blocker, outcome, response, refs, confirmed),
       );
       await onDone();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error");
+      if (!session.lost(err))
+        setError(err instanceof Error ? err.message : "Error");
     } finally {
       setBusy(false);
     }
@@ -1755,8 +1715,9 @@ export default function App() {
     | { kind: "authenticated"; profile: AuthProfile; csrfToken: string }
     | { kind: "unavailable" }
   >({ kind: "probing" });
+  const [surface, setSurface] = useState<"work" | "account">("work");
 
-  useEffect(() => {
+  const probe = useCallback(() => {
     let cancelled = false;
     void probeSession().then((result) => {
       if (cancelled) return;
@@ -1779,6 +1740,11 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+  useEffect(probe, [probe]);
+  const onSessionLost = useCallback(
+    (message?: string) => setAuthState({ kind: "anonymous", message }),
+    [],
+  );
 
   if (authState.kind === "probing") {
     return (
@@ -1793,31 +1759,68 @@ export default function App() {
     return (
       <PublicAuth
         initialMessage={authState.message}
-        onAuthenticated={(profile, csrfToken) =>
-          setAuthState({ kind: "authenticated", profile, csrfToken })
-        }
+        onAuthenticated={(profile, csrfToken) => {
+          setSurface("work");
+          setAuthState({ kind: "authenticated", profile, csrfToken });
+        }}
       />
     );
   }
-  if (authState.kind === "authenticated") {
+  if (authState.kind === "unavailable") {
+    const copy = authCopy("en");
+    return (
+      <main className="auth-page">
+        <section className="auth-card">
+          <h1>{copy.unavailableTitle}</h1>
+          <p>{copy.unavailableBody}</p>
+          <button
+            type="button"
+            className="button primary"
+            onClick={() => {
+              setAuthState({ kind: "probing" });
+              probe();
+            }}
+          >
+            {copy.retry}
+          </button>
+        </section>
+      </main>
+    );
+  }
+  if (surface === "account") {
     return (
       <AccountShell
         initialProfile={authState.profile}
         initialCSRF={authState.csrfToken}
-        onSessionLost={(message) =>
-          setAuthState({ kind: "anonymous", message })
-        }
+        onSessionLost={onSessionLost}
+        onOpenWork={() => setSurface("work")}
       />
     );
   }
-  return <LegacyDashboard />;
+  return (
+    <WorkDashboard
+      profile={authState.profile}
+      initialCSRF={authState.csrfToken}
+      onSessionLost={onSessionLost}
+      onOpenAccount={() => setSurface("account")}
+    />
+  );
 }
 
-function LegacyDashboard() {
-  const [locale, setLocale] = useState<Locale>("en");
-  const [token, setToken] = useState<string | null>(null);
-  const [connectError, setConnectError] = useState("");
-  const [connectLoading, setConnectLoading] = useState(false);
+function WorkDashboard({
+  profile,
+  initialCSRF,
+  onSessionLost,
+  onOpenAccount,
+}: {
+  profile: AuthProfile;
+  initialCSRF: string;
+  onSessionLost: (message?: string) => void;
+  onOpenAccount: () => void;
+}) {
+  const [locale, setLocale] = useState<Locale>(profile.locale);
+  // The CSRF proof lives in a ref so refreshing it does not reload the board.
+  const csrf = useRef(initialCSRF);
   const [preset, setPreset] = useState("week");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -1834,33 +1837,55 @@ function LegacyDashboard() {
         : presetPeriod(preset),
     [preset, customFrom, customTo],
   );
+  const expire = useCallback(
+    () => onSessionLost(authCopy(profile.locale).sessionExpired),
+    [onSessionLost, profile.locale],
+  );
+  const session = useMemo<WorkSession>(
+    () => ({
+      // withCSRF refreshes the session-bound proof once when it went stale
+      // (another surface or tab rotated it).
+      withCSRF: async (action) => {
+        try {
+          return await action(csrf.current);
+        } catch (err) {
+          if (!(err instanceof APIError && err.code === "csrf")) throw err;
+          const refreshed = await authApi.profile();
+          csrf.current = refreshed.csrfToken;
+          return action(refreshed.csrfToken);
+        }
+      },
+      lost: (err) => {
+        if (
+          (err instanceof APIError || err instanceof AuthAPIError) &&
+          err.status === 401
+        ) {
+          expire();
+          return true;
+        }
+        return false;
+      },
+    }),
+    [expire],
+  );
   const { data, error, loading, refresh } = useDashboardData(
-    token,
+    session,
+    expire,
     period,
     search,
   );
-  async function connect(value: string) {
-    setConnectError("");
-    setConnectLoading(true);
+  const [signOutError, setSignOutError] = useState(false);
+  async function signOut() {
+    setSignOutError(false);
     try {
-      await loadDashboard(value, period, search);
-      setToken(value);
+      await authApi.signOutCurrent(csrf.current);
     } catch {
-      setConnectError(t(locale).invalidKey);
-    } finally {
-      setConnectLoading(false);
+      // The server session may still be valid: stay signed in and say so.
+      setSignOutError(true);
+      return;
     }
+    onSessionLost();
   }
-  if (!token)
-    return (
-      <Connection
-        locale={locale}
-        setLocale={setLocale}
-        onConnect={connect}
-        loading={connectLoading}
-        error={connectError}
-      />
-    );
   const c = t(locale);
   const items = data?.items || [];
   return (
@@ -1871,10 +1896,9 @@ function LegacyDashboard() {
         search={search}
         setSearch={setSearch}
         items={items}
-        disconnect={() => {
-          setToken(null);
-          setSelected(null);
-        }}
+        profileName={profile.displayName || profile.email}
+        openAccount={onOpenAccount}
+        signOut={() => void signOut()}
       />
       <main className="dashboard-main">
         <ValueHero
@@ -1925,6 +1949,11 @@ function LegacyDashboard() {
             {c.refreshError}
           </div>
         )}
+        {signOutError && (
+          <div className="page-error" role="alert">
+            {authCopy(locale).signOutFailed}
+          </div>
+        )}
         {loading && !data ? (
           <div className="loading page-loading">{c.loading}</div>
         ) : (
@@ -1961,7 +1990,7 @@ function LegacyDashboard() {
           )}
         >
           <DetailPanel
-            token={token}
+            session={session}
             item={selected}
             locale={locale}
             close={() => setSelected(null)}

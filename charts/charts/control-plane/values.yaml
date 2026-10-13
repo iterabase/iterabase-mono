@@ -7,7 +7,7 @@ image:
 
 # One image, three Deployments selected via command (see control-plane Dockerfile).
 #   manager: ["/manager"]                — controller-runtime operator
-#   api:     ["/api","serve"]            — HTTP API (JWKS, work, artifacts)
+#   api:     ["/api","serve"]            — HTTP API (auth, People, work, artifacts)
 #   gateway: ["/gateway","serve"]        — mTLS workload/tool/artifact gRPC
 # migrate + bootstrap run as RBAC-less init containers on the api Deployment.
 manager:
@@ -168,31 +168,11 @@ ingress:
     target: "" # optional A-record target; if unset external-dns uses Ingress status.loadBalancer
     cloudflareProxied: "" # optional Cloudflare annotation: "true" or "false"
 
-# JWT issuance (api only; the manager never reads this key). The signing key is
-# an RSA private key, auto-generated into a Secret on first install (stable via
-# helm lookup) and mounted read-only into the api container.
-jwt:
-  keyId: control-plane-1
-  signingKeyPath: /etc/control-plane/jwt/private.pem
-  secret: "" # default: <release>-control-plane-jwt
-
-# Identity-resolution mode (enrolled | open). Enrolled = a linked
-# IdentityMapping is required; unlinked surface users are denied.
-identity:
-  mode: enrolled
-
-# Service accounts seeded by `bootstrap --service-account <name>` (scope=token).
-bootstrap:
-  serviceAccounts:
-    - agent-fleet
-
-# V2 browser authentication (HOR-453 / docs/architecture/v2-authentication-authority.md).
-# Disabled by default: pre-V2 installs keep the legacy API-key bootstrap and the
-# browser routes return the customer-safe unavailable state. When enabled, the
-# api/init containers fail closed without a valid HTTPS origin, verified-TLS
-# SMTP, and the first-Admin Secret.
+# V2 authentication (docs/architecture/v2-authentication-authority.md, HOR-582).
+# Sign-in is always on: every install requires a valid HTTPS origin,
+# verified-TLS SMTP, and the first-Admin email. Rendering fails closed without
+# them, and the api/init containers re-validate at startup.
 auth:
-  enabled: false
   # Exact public HTTPS origin of the same-origin browser surface (no path).
   publicOrigin: ""
   # May only tighten the approved bounds (12h / 720h / 15m).
@@ -209,18 +189,30 @@ auth:
     databaseFile: GeoLite2-City.mmdb
     databasePath: ""
   email:
-    host: ""
+    # smtp: the operator's own verified-TLS relay (self-hosted installs).
+    # ses: the Amazon SES SMTP interface in the hosted AWS account; the host is
+    # derived from ses.region and the per-environment SMTP credential is
+    # required (username + existingSecret).
+    provider: smtp
+    ses:
+      region: eu-west-1
+    host: "" # REQUIRED for smtp; derived for ses (email-smtp.<region>.amazonaws.com)
     port: 587
     mode: starttls # starttls | tls (verified TLS is required)
-    from: ""
+    from: "" # REQUIRED, e.g. "Iterabase <no-reply@mail.example.com>"
     username: ""
     # REQUIRED when username is set: the relay password is operator-owned and
     # the chart never generates it. The render fails closed without this Secret.
     existingSecret: ""
     passwordKey: smtp-password
-  # First Admin email/locale. The value is read from a Secret; the chart
-  # creates one from bootstrap.adminEmail unless existingSecret is supplied.
-  # Bootstrap never prints a credential: the Admin completes normal setup email.
+    # Optional Secret holding a PEM CA bundle for a relay whose certificate is
+    # issued by a private CA. Verification is never disabled.
+    caSecret: ""
+    caKey: ca.crt
+  # First Admin email/locale, named by the deployment overlay. The value is
+  # read from a Secret; the chart creates one from bootstrap.adminEmail unless
+  # existingSecret is supplied. On first boot the platform emails this Admin a
+  # one-time setup link; bootstrap never prints a credential.
   bootstrap:
     adminEmail: ""
     adminLocale: en

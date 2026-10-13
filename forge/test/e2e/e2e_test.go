@@ -51,7 +51,7 @@ type cpuFixtureState struct {
 	agentPoolPVCUID       string
 	initialWorkerPodUID   string
 	inotifyDropInIdentity string
-	workspaceAdminKey     string
+	workspaceSession      workspaceSession
 	workspaceWorkKey      string
 	runtimeImageDigests   map[string]importedRuntimeIdentity
 	diagnostics           forgeDiagnostics

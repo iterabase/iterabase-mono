@@ -53,7 +53,6 @@ func scanPerson(row pgx.Row) (Person, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Person{}, ErrNotFound
 	}
-	p.Role = NormalizeRole(p.Role)
 	return p, err
 }
 
@@ -109,7 +108,7 @@ func (s *Store) ChangePersonRole(ctx context.Context, actorID, targetID, role st
 	}
 	var cons PersonConsequences
 	err := s.mutatePerson(ctx, actorID, targetID, now, EventRoleChanged, func(tx pgx.Tx, target LocalUser) (map[string]any, error) {
-		current := NormalizeRole(target.Role)
+		current := target.Role
 		if current == role {
 			return nil, nil
 		}
@@ -174,7 +173,7 @@ func (s *Store) DisablePerson(ctx context.Context, actorID, targetID string, now
 		if target.Status == LocalUserDisabled {
 			return nil, nil
 		}
-		if NormalizeRole(target.Role) == RoleAdmin {
+		if target.Role == RoleAdmin {
 			if err := requireAnotherActiveAdminTx(ctx, tx, targetID); err != nil {
 				return nil, err
 			}
@@ -364,7 +363,7 @@ func suspendAllCredentialsTx(ctx context.Context, tx pgx.Tx, ownerID string) (in
 		UPDATE identity.api_keys
 		SET status = 'suspended', suspension_reason = 'owner_inactive'
 		WHERE owner_user_identity_id = $1
-		  AND credential_epoch = 'v2'
+		  AND key_type IS NOT NULL
 		  AND status IN ('active', 'retiring')`, ownerID)
 	if err != nil {
 		return 0, fmt.Errorf("suspend owned credentials: %w", err)
@@ -381,7 +380,7 @@ func suspendAdminOnlyCredentialsTx(ctx context.Context, tx pgx.Tx, ownerID strin
 		SET status = 'suspended', suspension_reason = 'owner_role_changed'
 		WHERE owner_user_identity_id = $1
 		  AND key_type = 'personal'
-		  AND credential_epoch = 'v2'
+		  AND key_type IS NOT NULL
 		  AND status IN ('active', 'retiring')
 		  AND actions && $2::text[]`, ownerID, AdminOnlyActions())
 	if err != nil {
@@ -399,7 +398,7 @@ func suspendOwnedAutomationTx(ctx context.Context, tx pgx.Tx, ownerID string) (i
 		SET status = 'suspended', suspension_reason = 'owner_role_changed'
 		WHERE owner_user_identity_id = $1
 		  AND key_type = 'automation'
-		  AND credential_epoch = 'v2'
+		  AND key_type IS NOT NULL
 		  AND status IN ('active', 'retiring')`, ownerID)
 	if err != nil {
 		return 0, fmt.Errorf("suspend owned automation: %w", err)

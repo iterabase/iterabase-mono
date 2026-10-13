@@ -296,6 +296,10 @@ func (b *workspaceTwoPartyBarrier) status() workspaceBarrierStatus {
 }
 
 func main() {
+	if os.Getenv("E2E_RUNTIME_MODE") == "smtp-sink" {
+		runSMTPSink()
+		return
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/stats", stats)

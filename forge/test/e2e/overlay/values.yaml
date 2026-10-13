@@ -21,3 +21,16 @@ ingress-nginx:
   controller:
     service:
       type: NodePort
+
+# Sign-in is always on (HOR-582): the deployment overlay names the public
+# origin, the verified-TLS mail relay, and the first Admin. Forge scenarios
+# prove substrate mechanics, not mail delivery, so the relay is unreachable and
+# the first-Admin setup intent simply stays pending in the outbox.
+control-plane:
+  auth:
+    publicOrigin: https://app.forge-e2e.iterabase.test
+    email:
+      host: smtp.forge-e2e.iterabase.test
+      from: Iterabase <no-reply@forge-e2e.iterabase.test>
+    bootstrap:
+      adminEmail: admin@forge-e2e.iterabase.test

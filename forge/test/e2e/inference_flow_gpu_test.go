@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +21,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 
 	"github.com/nunocgoncalves/iterabase-mono/forge/test/e2e/internal/remotecluster"
-	"github.com/nunocgoncalves/iterabase-mono/testkit/e2e/httpx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -103,47 +104,7 @@ spec:
 	c.Kubectl(t, "apply", "-f", catPath, "-n", namespace)
 	assertModelBackendServingUsesManagedPVCs(t, c, namespace, mbName)
 
-	// 5. capture the control-plane admin key (bootstrap init container) + apply
-	//    an IdentityMapping CR (the identity — CRD path).
-	apiPod := c.FirstPodName(t, namespace, apiSelector)
-	logs := c.PodLogs(t, namespace, apiPod, "bootstrap")
-	adminKey := mustFindKey(t, logs, "scope=admin")
-	state.diagnostics.redactor.Add(adminKey)
-	t.Logf("captured control-plane admin key (prefix=%s)", keyPrefix(adminKey))
-
-	imManifest := fmt.Sprintf(`apiVersion: platform.iterabase.com/v1alpha1
-kind: IdentityMapping
-metadata:
-  name: inference-user
-  namespace: %s
-spec:
-  identity:
-    kind: user
-    displayName: Inference GPU E2E User
-  bindings:
-    - provider: teams
-      type: user
-      externalID: aad:inference-gpu-user
-`, namespace)
-	imPath := filepath.Join(t.TempDir(), "identitymapping.yaml")
-	require.NoError(t, os.WriteFile(imPath, []byte(imManifest), 0o600))
-	c.ApplyAndWait(t, imPath, namespace,
-		"identitymapping.platform.iterabase.com/inference-user",
-		"jsonpath={.status.ready}=true", 60*time.Second)
-	identityID := strings.TrimSpace(c.Kubectl(t, "get", "-n", namespace,
-		"identitymapping.platform.iterabase.com", "inference-user",
-		"-o", "jsonpath={.status.identityID}"))
-	require.NotEmpty(t, identityID, "IdentityMapping has no status.identityID")
-
-	// 6. port-forward the control-plane API + issue a gateway-scoped API key.
-	apiBase, _ := c.PortForward(t, namespace, apiService, svcPort, 18080)
-	apiClient, err := httpx.Client(10 * time.Second)
-	require.NoError(t, err)
-	gatewayKey := createAPIKey(t, apiClient, apiBase+"/v1/api-keys", adminKey, identityID, "gateway")
-	state.diagnostics.redactor.Add(gatewayKey)
-	t.Logf("issued gateway-scoped API key (prefix=%s)", keyPrefix(gatewayKey))
-
-	// 7. get the gateway's admin key + port-forward the gateway. Port-forward
+	// 5. get the gateway's admin key + port-forward the gateway. Port-forward
 	//    (not the fixture address / ingress) so the readiness poll + the completion
 	//    request depend only on the gateway pod being up — not on ingress-nginx
 	//    scheduling on the GPU node (which can lag or be tainted differently).
@@ -152,7 +113,7 @@ spec:
 	gwBase, _ := c.PortForward(t, namespace, "svc/"+release+"-gateway", svcPort, 18081)
 	gwClient := &http.Client{Timeout: 300 * time.Second} // long timeout for inference
 
-	// 8. wait for vLLM to be ready: the gateway snapshot marks the model
+	// 6. wait for vLLM to be ready: the gateway snapshot marks the model
 	//    available (the control-plane's ModelBackend reconciler sets healthy=true
 	//    once the vLLM Deployment is Available — model downloaded + serving).
 	entry, ok := waitForModelAvailable(t, c.Kubeconfig, namespace, mbName, gwClient, gwBase, gatewayAdminKey, alias, 25*time.Minute)
@@ -162,11 +123,22 @@ spec:
 	}
 	t.Logf("model available: alias=%s backend=%s", entry.ModelID, entry.BackendURL)
 
-	// One completion is dependent smoke proving usable infrastructure. Product
-	// request, transform, and response correctness remain control-plane-owned,
-	// and managed-claim growth, replacement, reapply and deletion are proven by
-	// cpu-workspace on the same LVM substrate (C5).
-	status, body := chatCompletionsStatus(t, gwClient, gwBase, gatewayKey, alias)
+	// Customer inference credentials arrive with HOR-513; until then the
+	// customer listener refuses every bearer before any backend call
+	// (DES-HOR-582-01). One completion straight to the managed backend is the
+	// dependent smoke proving usable GPU serving. Product request, transform,
+	// and response correctness remain control-plane-owned, and managed-claim
+	// growth, replacement, reapply and deletion are proven by cpu-workspace on
+	// the same LVM substrate (C5).
+	if status, _ := chatCompletionsStatus(t, gwClient, gwBase, "cp-retired-legacy-key", alias); status != http.StatusUnauthorized {
+		t.Fatalf("customer listener answered %d to a bearer before V2 enforcement, want 401", status)
+	}
+	backend, err := url.Parse(entry.BackendURL)
+	require.NoError(t, err)
+	backendPort, err := strconv.Atoi(backend.Port())
+	require.NoError(t, err, "backend URL %q has no port", entry.BackendURL)
+	backendBase, _ := c.PortForward(t, namespace, "svc/"+strings.Split(backend.Hostname(), ".")[0], backendPort, 18082)
+	status, body := chatCompletionsStatus(t, gwClient, backendBase, "", modelAuthority.ModelID)
 	if status != http.StatusOK {
 		dumpVLLMDiagnostics(t, c.Kubeconfig, namespace, mbName)
 		t.Fatalf("chat completions: status %d, want 200 (real completion)\n%s", status, body)

@@ -450,6 +450,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PREVIEW_LLM_API_KEY: ${{ secrets.PREVIEW_LLM_API_KEY }}
+          # HOR-582: sign-in is always on. Until a mail relay exists (HOR-603),
+          # the overlay-named Admin is seeded with this password; a pull
+          # request labelled preview-onboarding keeps the real emailed flow.
+          PREVIEW_ADMIN_PASSWORD: ${{ secrets.PREVIEW_ADMIN_PASSWORD }}
+          ADMIN_MODE: ${{ contains(github.event.pull_request.labels.*.name, 'preview-onboarding') && 'onboarding' || 'seeded' }}
           IMAGES: ${{ needs.images.outputs.images }}
         run: |
           python3 .github/scripts/preview.py --name "$PREVIEW" --run-number '${{ github.run_number }}' \
@@ -457,7 +462,8 @@ jobs:
             --address '${{ steps.host.outputs.address }}' --host-key '${{ steps.host.outputs.host_key }}' \
             --data-device '${{ steps.host.outputs.data_device }}' --created '${{ steps.host.outputs.created }}' \
             --ssh-key "$RUNNER_TEMP/preview_ed25519" \
-            --llm-base-url '${{ vars.PREVIEW_LLM_BASE_URL }}' --model-id '${{ vars.PREVIEW_LLM_MODEL }}'
+            --llm-base-url '${{ vars.PREVIEW_LLM_BASE_URL }}' --model-id '${{ vars.PREVIEW_LLM_MODEL }}' \
+            --admin-email '${{ vars.PREVIEW_ADMIN_EMAIL || 'admin@preview.iterabase.test' }}' --admin-mode "$ADMIN_MODE"
       - name: Summary
         run: |
           {
@@ -465,6 +471,7 @@ jobs:
             echo
             echo "- Dashboard and API (tailnet only): ${{ steps.deploy.outputs.url }}"
             echo "- OpenAI-compatible inference (tailnet only): ${{ steps.deploy.outputs.inference_url }}"
+            echo "- Sign in as \`${{ steps.deploy.outputs.admin_email }}\` (${{ steps.deploy.outputs.admin_mode }}: seeded uses the PREVIEW_ADMIN_PASSWORD secret; onboarding waits for the emailed setup link)"
             echo "- chart \`${{ steps.deploy.outputs.chart_version }}\`, host \`${{ steps.host.outputs.instance_id }}\` (created: ${{ steps.host.outputs.created }}), deadline \`${{ steps.host.outputs.deadline }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 

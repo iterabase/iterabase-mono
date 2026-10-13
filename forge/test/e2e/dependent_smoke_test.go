@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -21,54 +20,6 @@ type catalogEntry struct {
 	ModelID    string `json:"model_id"`
 	Available  bool   `json:"available"`
 	BackendURL string `json:"backend_url"`
-}
-
-var keyRe = regexp.MustCompile(`API key \(([^)]+)\): (\S+)`)
-
-func mustFindKey(t *testing.T, logs, scope string) string {
-	t.Helper()
-	for _, match := range keyRe.FindAllStringSubmatch(logs, -1) {
-		if match[1] == scope {
-			return match[2]
-		}
-	}
-	redacted := keyRe.ReplaceAllString(logs, "API key ($1): <redacted>")
-	t.Fatalf("bootstrap key %q not found in logs:\n%s", scope, redacted)
-	return ""
-}
-
-func keyPrefix(key string) string {
-	if len(key) <= 8 {
-		return key
-	}
-	return key[:8]
-}
-
-func createAPIKey(t *testing.T, client *http.Client, url, adminKey, identityID, scope string) string {
-	t.Helper()
-	body := fmt.Sprintf(`{"identityID":%q,"name":"e2e-%s","scope":%q}`, identityID, scope, scope)
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+adminKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("post %s: %v", url, err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("create api key: status %d\n%s", resp.StatusCode, respBody)
-	}
-	var result struct {
-		FullKey string `json:"fullKey"`
-	}
-	if err := json.Unmarshal(respBody, &result); err != nil || result.FullKey == "" {
-		t.Fatalf("api-key response missing fullKey: %s", respBody)
-	}
-	return result.FullKey
 }
 
 func getSecretKey(t *testing.T, cluster *remotecluster.Cluster, namespace, name, key string) string {
@@ -113,7 +64,9 @@ func chatCompletionsStatus(t *testing.T, client *http.Client, baseURL, key, mode
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {

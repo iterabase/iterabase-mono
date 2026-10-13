@@ -72,26 +72,30 @@ func TestSelectBootstrapEvidencePodRejectsStaleOrIncompleteCandidates(t *testing
 	}
 }
 
-func TestParsePodBootstrapKeysReportsSafeMetadataOnly(t *testing.T) {
+func TestBootstrapOutputPrintsNoCredential(t *testing.T) {
 	pod := successfulBootstrapEvidencePod("api-new", "uid-new")
-	secret := "cp-admin-must-not-leak"
-	output := fmt.Sprintf("Admin API key (scope=admin): %s\n", secret)
-	_, err := parsePodBootstrapKeys(pod, output)
-	if err == nil {
-		t.Fatal("incomplete bootstrap output unexpectedly accepted")
+	if err := bootstrapOutputError(pod, "Bootstrap created for admin@example.com. First-time setup instructions are queued when needed; no credential is printed and no browser session is created.\n"); err != nil {
+		t.Fatalf("clean bootstrap output rejected: %v", err)
 	}
-	message := err.Error()
-	if strings.Contains(message, secret) || strings.Contains(message, output) {
-		t.Fatalf("bootstrap error leaked credential output: %s", message)
-	}
-	for _, want := range []string{
-		`pod="api-new"`, `uid="uid-new"`, `owner="api-rs"`, "ready=true",
-		"bootstrap=terminated(exit=0,reason=Completed)", fmt.Sprintf("output_bytes=%d", len(output)),
-		"parsed_scopes=[admin]",
+	for _, leaked := range []string{
+		"Admin API key (scope=admin): cp-ABCDEFGHIJKLMNOPQRSTUVWXYZ234567\n",
+		"Bootstrap created. https://app.example.com/auth/setup?token=AbCdEfGh12345678\n",
 	} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("bootstrap error %q does not contain %q", message, want)
+		err := bootstrapOutputError(pod, leaked)
+		if err == nil {
+			t.Fatalf("bootstrap output with a credential was accepted: %q", leaked)
 		}
+		if strings.Contains(err.Error(), "cp-ABCDEF") || strings.Contains(err.Error(), "AbCdEfGh") {
+			t.Fatalf("bootstrap error leaked credential output: %s", err)
+		}
+		for _, want := range []string{`pod="api-new"`, `uid="uid-new"`, fmt.Sprintf("output_bytes=%d", len(leaked))} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("bootstrap error %q does not contain %q", err, want)
+			}
+		}
+	}
+	if err := bootstrapOutputError(pod, ""); err == nil {
+		t.Fatal("empty bootstrap output was accepted as evidence")
 	}
 }
 

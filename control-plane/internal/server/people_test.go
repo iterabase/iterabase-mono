@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,73 +12,54 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 )
 
-// cutoverAuthority flips the installation to the V2 authority epoch with the
-// operator evidence the preflight requires.
-func (h *authAPIHarness) cutoverAuthority(t *testing.T) {
-	t.Helper()
-	ctx := context.Background()
-	fingerprint, err := h.store.AuthoritySourceFingerprint(ctx)
-	require.NoError(t, err)
-	_, err = h.store.CutoverAuthority(ctx, identity.CutoverOptions{
-		Operator:            "ops@example.com",
-		Release:             "test-release",
-		BackupEvidence:      "rehearsal-2026-09-24",
-		RehearsalEvidence:   "rehearsal-2026-09-24",
-		ExpectedFingerprint: fingerprint,
-		Manifest:            identity.CutoverManifest{DefaultRPM: 60, DefaultTPM: 60000, DefaultExpiryDays: 30},
-		Now:                 h.now,
-	})
-	require.NoError(t, err)
-}
-
-// TestPeopleAdministrationRequiresTheV2Epoch proves the People surface fails
-// closed before the epoch and is reachable after it, through current server
-// authority only.
-func TestPeopleAdministrationRequiresTheV2Epoch(t *testing.T) {
-	h := newAuthAPIHarness(t)
-	admin := h.provisionAdmin("admin@example.com", "admin-long-password")
-
-	before := h.do(http.MethodGet, "/v1/people", nil, admin.headers())
-	assert.Equal(t, http.StatusServiceUnavailable, before.status)
-	assert.Equal(t, "authority_migration_pending", before.body["code"])
-
-	h.cutoverAuthority(t)
-
-	after := h.do(http.MethodGet, "/v1/people", nil, admin.headers())
-	require.Equal(t, http.StatusOK, after.status, "body: %v", after.body)
-	people, ok := after.body["people"].([]any)
-	require.True(t, ok, "people array is required")
-	require.Len(t, people, 1)
-	first, _ := people[0].(map[string]any)
-	assert.Equal(t, "admin@example.com", first["email"])
-	assert.Equal(t, "admin", first["role"])
-	assert.Equal(t, "active", first["status"])
-}
-
-// TestPeopleIsAdminCookieOnly proves Operator sessions and bearer credentials
-// cannot read or mutate People, even with a valid cookie present.
-func TestPeopleIsAdminCookieOnly(t *testing.T) {
+// TestPeopleReadIsAdminOnlyAndMutationsAreCookieOnly proves the directory is
+// the Admin-only `people.read` action (Admin session or personal Admin
+// credential), that Operators cannot read it through any credential, and that
+// a bearer credential can never mutate People, even beside a valid cookie.
+func TestPeopleReadIsAdminOnlyAndMutationsAreCookieOnly(t *testing.T) {
 	h := newAuthAPIHarness(t)
 	admin := h.provisionAdmin("admin@example.com", "admin-long-password")
 	operator := h.activeUser("operator@example.com", "operator", "operator-long-password")
 	operatorSession := h.signIn("operator@example.com", "operator-long-password", operator)
-	h.cutoverAuthority(t)
 
 	response := h.do(http.MethodGet, "/v1/people", nil, operatorSession.headers())
 	assert.Equal(t, http.StatusForbidden, response.status, "an Operator must not read People")
 
-	// A bearer key alongside the Admin cookie is still refused.
-	_, key, err := h.store.CreateAPIKey(context.Background(), admin.user.ID, "machine", identity.ScopeAdmin, nil)
-	require.NoError(t, err)
+	// An Operator cannot obtain a People-reading credential at all.
+	_, _, err := h.store.CreateCredentialVersion(context.Background(), identity.CreateCredentialParams{
+		Kind: identity.CredentialKindPersonal, OwnerIdentity: operator.ID, ActorIdentity: operator.ID,
+		Name: "escalate", Actions: []string{identity.ActionPeopleRead}, RateRPM: 1, RateTPM: 1,
+		ExpiresAt: h.now.Add(time.Hour), Now: h.now,
+	})
+	assert.Error(t, err)
+
+	// A personal Admin credential holding people.read reads the directory.
+	key := h.personalKey(admin.user.ID, identity.ActionPeopleRead)
+	bearer := map[string]string{"Authorization": "Bearer " + key}
+	response = h.do(http.MethodGet, "/v1/people", nil, bearer)
+	assert.Equal(t, http.StatusOK, response.status)
+
+	// An invalid bearer never falls back to the valid Admin cookie.
 	headers := admin.headers()
-	headers["Authorization"] = "Bearer " + key.Prefix
+	headers["Authorization"] = "Bearer cp-not-a-real-key"
 	response = h.do(http.MethodGet, "/v1/people", nil, headers)
 	assert.Equal(t, http.StatusUnauthorized, response.status)
-	assert.Equal(t, "bearer_not_accepted", response.body["code"])
+	assert.Equal(t, "invalid_credential", response.body["code"])
 
-	// A bearer-only caller is refused before any People data is produced.
-	response = h.do(http.MethodGet, "/v1/people", nil, map[string]string{"Authorization": "Bearer " + key.Prefix})
-	assert.Equal(t, http.StatusUnauthorized, response.status)
+	// Mutations refuse bearer even beside a valid, recently authenticated cookie.
+	h.reauthenticate(admin, "admin-long-password")
+	unsafe := admin.unsafeHeaders()
+	unsafe["Authorization"] = "Bearer " + key
+	for _, path := range []string{
+		"/v1/people/" + operator.ID + "/role",
+		"/v1/people/" + operator.ID + "/disable",
+		"/v1/people/" + operator.ID + "/enable",
+		"/v1/people/" + operator.ID + "/sessions/revoke",
+	} {
+		response = h.do(http.MethodPost, path, map[string]any{"role": "admin"}, unsafe)
+		assert.Equal(t, http.StatusUnauthorized, response.status, path)
+		assert.Equal(t, "bearer_not_accepted", response.body["code"], path)
+	}
 }
 
 // TestPeopleMutationRequiresCSRFAndRecentAuth proves the security mutations are
@@ -86,7 +68,6 @@ func TestPeopleMutationRequiresCSRFAndRecentAuth(t *testing.T) {
 	h := newAuthAPIHarness(t)
 	admin := h.provisionAdmin("admin@example.com", "admin-long-password")
 	target := h.activeUser("person@example.com", "operator", "person-long-password")
-	h.cutoverAuthority(t)
 
 	// A safe-method read needs no recent proof.
 	require.Equal(t, http.StatusOK, h.do(http.MethodGet, "/v1/people", nil, admin.headers()).status)
@@ -138,7 +119,6 @@ func TestPeopleMutationRequiresCSRFAndRecentAuth(t *testing.T) {
 func TestPeopleNeverLeavesZeroActiveAdmins(t *testing.T) {
 	h := newAuthAPIHarness(t)
 	admin := h.provisionAdmin("admin@example.com", "admin-long-password")
-	h.cutoverAuthority(t)
 	h.reauthenticate(admin, "admin-long-password")
 
 	demote := h.do(http.MethodPost, "/v1/people/"+admin.user.ID+"/role", map[string]any{"role": "operator"}, admin.unsafeHeaders())
@@ -169,7 +149,6 @@ func TestPeopleRoleChangeRevokesTargetSessions(t *testing.T) {
 	admin := h.provisionAdmin("admin@example.com", "admin-long-password")
 	target := h.activeUser("person@example.com", "operator", "person-long-password")
 	targetSession := h.signIn("person@example.com", "person-long-password", target)
-	h.cutoverAuthority(t)
 	h.reauthenticate(admin, "admin-long-password")
 
 	require.Equal(t, http.StatusOK, h.do(http.MethodGet, "/v1/profile", nil, targetSession.headers()).status)
@@ -189,7 +168,6 @@ func TestEnableReportsNoResumedCredentials(t *testing.T) {
 	h := newAuthAPIHarness(t)
 	admin := h.provisionAdmin("admin@example.com", "admin-long-password")
 	target := h.activeUser("person@example.com", "operator", "person-long-password")
-	h.cutoverAuthority(t)
 	h.reauthenticate(admin, "admin-long-password")
 
 	require.Equal(t, http.StatusOK, h.do(http.MethodPost, "/v1/people/"+target.ID+"/disable", nil, admin.unsafeHeaders()).status)

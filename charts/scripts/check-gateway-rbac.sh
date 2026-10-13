@@ -9,7 +9,7 @@ set -euo pipefail
 release=gateway-rbac
 namespace=portable-system
 
-rendered=$(helm template "$release" charts/iterabase-platform --namespace "$namespace")
+rendered=$(helm template "$release" charts/iterabase-platform --namespace "$namespace" -f values-auth.yaml)
 gateway() {
   yq eval "select(.kind == \"$1\" and .metadata.labels.\"app.kubernetes.io/name\" == \"inference-gateway\")" - <<<"$rendered"
 }

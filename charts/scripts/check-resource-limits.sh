@@ -26,17 +26,19 @@ render() {
   helm template "$@" >"$tmp/$name.yaml"
 }
 
-render default opo1 "$umbrella" --namespace portable-system
-render kind opo1 "$umbrella" --namespace portable-system -f values-kind.yaml
+# Auth is always on (HOR-582): include the non-secret render prerequisites
+# without changing the resource profiles or relaxing any resource assertion.
+render default opo1 "$umbrella" --namespace portable-system -f values-auth.yaml
+render kind opo1 "$umbrella" --namespace portable-system -f values-auth.yaml -f values-kind.yaml
 render observability-tls opo1 "$umbrella" --namespace portable-system \
-  -f values-observability.yaml -f values-tls.yaml
+  -f values-auth.yaml -f values-observability.yaml -f values-tls.yaml
 render internal-observability opo1 "$umbrella" --namespace portable-system \
-  -f values-observability.yaml -f values-tls.yaml -f values-internal-observability.yaml
+  -f values-auth.yaml -f values-observability.yaml -f values-tls.yaml -f values-internal-observability.yaml
 render private-control-plane opo1 "$umbrella" --namespace portable-system \
-  -f values-tls.yaml -f values-private-control-plane.yaml
+  -f values-auth.yaml -f values-tls.yaml -f values-private-control-plane.yaml
 # Every optional edge/substrate dependency a production overlay may enable.
 render edge opo1 "$umbrella" --namespace portable-system \
-  -f values-observability.yaml -f values-tls.yaml \
+  -f values-auth.yaml -f values-observability.yaml -f values-tls.yaml \
   --set metallb.enabled=true --set metallb-config.enabled=true \
   --set 'metallb-config.addresses={192.0.2.10/32}' \
   --set external-dns.enabled=true --set 'external-dns.domainFilters={example.com.}'
@@ -64,9 +66,9 @@ for name, (call, fixture) in fixtures.items():
     path.write_text(source.replace(call, fixture))
 PY_FIXTURE
 render upgrade-recovery opo1 "$upgrade" --namespace portable-system \
-  -f values-observability.yaml -f values-tls.yaml -f values-internal-observability.yaml
-render control-plane control-plane charts/control-plane
-render control-plane-full control-plane charts/control-plane \
+  -f values-auth.yaml -f values-observability.yaml -f values-tls.yaml -f values-internal-observability.yaml
+render control-plane control-plane charts/control-plane -f values-control-plane-auth.yaml
+render control-plane-full control-plane charts/control-plane -f values-control-plane-auth.yaml \
   --set gateway.enabled=true --set dispatch.enabled=true --set toolRunner.enabled=true \
   --set artifact.enabled=true --set metrics.enabled=true --set postgresql.metrics.enabled=true
 render cert-manager opo1-cert-manager charts/cert-manager-substrate --namespace portable-system \

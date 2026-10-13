@@ -12,24 +12,18 @@ import (
 
 // People administration (architecture 9.3): verified pending access requests,
 // the current account directory, role change, disable/re-enable, and session
-// revocation. Every route is cookie-session only, re-reads current server
-// authority, and mutates only with a current Admin plus CSRF and recent
-// password proof. Bearer authentication is refused even when a valid cookie is
-// also presented (requireBrowser).
+// revocation. Directory reads are the Admin-only `people.read` action (a
+// current Admin session or a personal Admin credential); every mutation is
+// cookie-session only and requires a current Admin plus CSRF and recent
+// password proof. Bearer authentication is refused on mutations even when a
+// valid cookie is also presented.
 func (h *Handler) registerPeopleRoutes(r chi.Router) {
-	r.Group(func(r chi.Router) {
-		r.Use(h.requireBrowser, h.requireAuthorityV2, h.requireAdmin)
-		r.Get("/v1/people", h.listPeople)
-		r.Get("/v1/people/{id}", h.getPerson)
-
-		r.Group(func(r chi.Router) {
-			r.Use(h.requireCSRF, h.requireRecentAuth)
-			r.Post("/v1/people/{id}/role", h.changePersonRole)
-			r.Post("/v1/people/{id}/disable", h.disablePerson)
-			r.Post("/v1/people/{id}/enable", h.enablePerson)
-			r.Post("/v1/people/{id}/sessions/revoke", h.revokePersonSessions)
-		})
-	})
+	h.route(r, http.MethodGet, "/v1/people", action(identity.ActionPeopleRead), h.listPeople)
+	h.route(r, http.MethodGet, "/v1/people/{id}", action(identity.ActionPeopleRead), h.getPerson)
+	h.route(r, http.MethodPost, "/v1/people/{id}/role", recentAdminSession(), h.changePersonRole)
+	h.route(r, http.MethodPost, "/v1/people/{id}/disable", recentAdminSession(), h.disablePerson)
+	h.route(r, http.MethodPost, "/v1/people/{id}/enable", recentAdminSession(), h.enablePerson)
+	h.route(r, http.MethodPost, "/v1/people/{id}/sessions/revoke", recentAdminSession(), h.revokePersonSessions)
 }
 
 type personResponse struct {

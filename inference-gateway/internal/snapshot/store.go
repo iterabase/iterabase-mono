@@ -14,8 +14,6 @@ import (
 type Store interface {
 	// ListCatalog returns the effective_catalog rows (the gateway's routing table).
 	ListCatalog(ctx context.Context) ([]CatalogEntry, error)
-	// AllAPIKeys returns active (non-revoked, non-expired) API keys.
-	AllAPIKeys(ctx context.Context) ([]APIKey, error)
 	// AllCapabilities returns every effective_capabilities row.
 	AllCapabilities(ctx context.Context) ([]Capability, error)
 	// AllRateLimits returns every effective_rate_limits row.
@@ -69,25 +67,6 @@ func (s *PGStore) ListCatalog(ctx context.Context) ([]CatalogEntry, error) {
 		_ = json.Unmarshal(tf, &e.Transforms)
 		_ = json.Unmarshal(rl, &e.RateLimits)
 		out = append(out, e)
-	}
-	return out, rows.Err()
-}
-
-func (s *PGStore) AllAPIKeys(ctx context.Context) ([]APIKey, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT key_hash, identity_id FROM identity.active_api_keys`)
-	if err != nil {
-		return nil, fmt.Errorf("query active_api_keys: %w", err)
-	}
-	defer rows.Close()
-
-	var out []APIKey
-	for rows.Next() {
-		var k APIKey
-		if err := rows.Scan(&k.KeyHash, &k.IdentityID); err != nil {
-			return nil, err
-		}
-		out = append(out, k)
 	}
 	return out, rows.Err()
 }

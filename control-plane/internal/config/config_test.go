@@ -22,9 +22,8 @@ func TestLoad_EnvOnly(t *testing.T) {
 	assert.Equal(t, "json", cfg.Logging.Format)
 	assert.Equal(t, 25, cfg.Database.MaxOpenConns)
 	assert.Equal(t, 10, cfg.Database.MaxIdleConns)
-	// Defaults for new blocks.
-	assert.Equal(t, "15m", cfg.JWT.TTL)
-	assert.Equal(t, "enrolled", cfg.Identity.Mode)
+	assert.Equal(t, "X-Forwarded-For", cfg.Auth.ForwardedHeader)
+	assert.Equal(t, "en", cfg.Auth.Bootstrap.AdminLocale)
 }
 
 func TestLoad_YAMLFile(t *testing.T) {
@@ -37,14 +36,16 @@ database:
 logging:
   level: debug
   format: text
-jwt:
-  signing_key_path: "/etc/jwt/key.pem"
-  key_id: "k1"
-  issuer: "cp"
-  audience: "inference-gateway"
-  ttl: "5m"
-identity:
-  mode: open
+auth:
+  public_origin: "https://app.example.com"
+  email:
+    host: "email-smtp.eu-west-1.amazonaws.com"
+    port: 587
+    mode: starttls
+    from: "Iterabase <no-reply@example.com>"
+    ca_file: "/etc/iterabase/smtp-ca/ca.crt"
+  bootstrap:
+    admin_email: "admin@example.com"
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "control-plane.yaml")
@@ -59,10 +60,11 @@ identity:
 	assert.Equal(t, 50, cfg.Database.MaxOpenConns)
 	assert.Equal(t, "debug", cfg.Logging.Level)
 	assert.Equal(t, "text", cfg.Logging.Format)
-	assert.Equal(t, "/etc/jwt/key.pem", cfg.JWT.SigningKeyPath)
-	assert.Equal(t, "k1", cfg.JWT.KeyID)
-	assert.Equal(t, "5m", cfg.JWT.TTL)
-	assert.Equal(t, "open", cfg.Identity.Mode)
+	assert.Equal(t, "https://app.example.com", cfg.Auth.PublicOrigin)
+	assert.Equal(t, "email-smtp.eu-west-1.amazonaws.com", cfg.Auth.Email.Host)
+	assert.Equal(t, 587, cfg.Auth.Email.Port)
+	assert.Equal(t, "/etc/iterabase/smtp-ca/ca.crt", cfg.Auth.Email.CAFile)
+	assert.Equal(t, "admin@example.com", cfg.Auth.Bootstrap.AdminEmail)
 }
 
 func TestLoad_EnvOverridesYAML(t *testing.T) {
@@ -89,51 +91,8 @@ func TestLoad_RequiresDatabaseURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "database.url")
 }
 
-func TestLoad_RejectsInvalidIdentityMode(t *testing.T) {
-	t.Setenv("DATABASE_URL", "postgres://localhost:5432/cp")
-	t.Setenv("IDENTITY_MODE", "permissive")
-
-	_, err := config.Load("")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "identity.mode")
-}
-
-func TestLoad_RejectsInvalidJWTTTL(t *testing.T) {
-	t.Setenv("DATABASE_URL", "postgres://localhost:5432/cp")
-
-	content := `
-database:
-  url: "postgres://localhost:5432/cp"
-jwt:
-  ttl: "not-a-duration"
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "control-plane.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-
-	_, err := config.Load(path)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "jwt.ttl")
-}
-
-func TestLoad_NormalizesEmptyMode(t *testing.T) {
-	content := `
-database:
-  url: "postgres://localhost:5432/cp"
-identity:
-  mode: ""
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "control-plane.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-
-	cfg, err := config.Load(path)
-	require.NoError(t, err)
-	assert.Equal(t, "enrolled", cfg.Identity.Mode)
-}
-
-// TestLoad_DoesNotRequireServeFields confirms migrate/bootstrap can load config
-// without api.addr or jwt.signing_key_path (serve-specific requirements are
+// TestLoad_DoesNotRequireServeFields confirms migrate can load config without
+// the always-on authentication prerequisites (serve-specific requirements are
 // enforced separately by ValidateServe).
 func TestLoad_DoesNotRequireServeFields(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/cp")
@@ -143,10 +102,21 @@ func TestLoad_DoesNotRequireServeFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ":8080", cfg.API.Addr) // default
 
-	// Serve validation should require jwt.signing_key_path (empty here).
+	// Serve validation requires the browser-authentication prerequisites.
 	err = config.ValidateServe(cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "jwt.signing_key_path")
+	assert.Contains(t, err.Error(), "auth.public_origin")
+}
+
+// setAuthEnv supplies the always-on browser-authentication prerequisites.
+func setAuthEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("AUTH_PUBLIC_ORIGIN", "https://app.example.com")
+	t.Setenv("AUTH_SMTP_HOST", "smtp.example.com")
+	t.Setenv("AUTH_SMTP_PORT", "587")
+	t.Setenv("AUTH_SMTP_MODE", "starttls")
+	t.Setenv("AUTH_SMTP_FROM", "auth@example.com")
+	t.Setenv("AUTH_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
 }
 
 func TestLoad_MetricsAddressOverride(t *testing.T) {
@@ -159,7 +129,7 @@ func TestLoad_MetricsAddressOverride(t *testing.T) {
 
 func TestValidateServe_OK(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/cp")
-	t.Setenv("JWT_SIGNING_KEY_PATH", "/etc/jwt/key.pem")
+	setAuthEnv(t)
 
 	cfg, err := config.Load("")
 	require.NoError(t, err)
@@ -183,7 +153,7 @@ func TestLoad_TLSEnvOverrides(t *testing.T) {
 // (HTTPS) or both unset (HTTP); exactly one is a misconfig.
 func TestValidateServe_TLSBothOrNeither(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/cp")
-	t.Setenv("JWT_SIGNING_KEY_PATH", "/etc/jwt/key.pem")
+	setAuthEnv(t)
 	t.Setenv("API_ADDR", ":8080")
 
 	t.Run("both set -> HTTPS ok", func(t *testing.T) {

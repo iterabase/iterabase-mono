@@ -3,14 +3,8 @@ import type { Locale, LocalizedText, PauseReason, WorkState } from "./types";
 const copy = {
   en: {
     dashboard: "Dashboard",
-    connectTitle: "Connect to the Dashboard",
-    connectBody:
-      "Enter an authorized work key to open this private deployment.",
-    apiKey: "Work API key",
-    connect: "Connect",
-    connecting: "Connecting…",
-    disconnect: "Disconnect",
-    invalidKey: "The key could not open the Dashboard.",
+    account: "Account",
+    signOut: "Sign out",
     search: "Search customer, document, source…",
     date: "Period",
     today: "Today",
@@ -122,14 +116,8 @@ const copy = {
   },
   pt: {
     dashboard: "Painel",
-    connectTitle: "Ligar ao Painel",
-    connectBody:
-      "Introduza uma chave de trabalho autorizada para abrir esta instalação privada.",
-    apiKey: "Chave da API de trabalho",
-    connect: "Ligar",
-    connecting: "A ligar…",
-    disconnect: "Desligar",
-    invalidKey: "A chave não conseguiu abrir o Painel.",
+    account: "Conta",
+    signOut: "Terminar sessão",
     search: "Procurar cliente, documento, origem…",
     date: "Período",
     today: "Hoje",

@@ -70,6 +70,7 @@ export interface AuthCopy {
   passwordTooCommon: string;
   unavailableTitle: string;
   unavailableBody: string;
+  signOutFailed: string;
   throttled: string;
   retry: string;
   loading: string;
@@ -218,11 +219,12 @@ const en: AuthCopy = {
   unavailableTitle: "Sign-in is temporarily unavailable",
   unavailableBody:
     "Browser authentication is not available in this deployment right now.",
+  signOutFailed: "Could not sign out. You are still signed in; try again.",
   throttled: "Too many attempts. Try again shortly.",
   retry: "Try again",
   loading: "Loading…",
   signedInAs: "Signed in as",
-  navWork: "Account",
+  navWork: "Work",
   navProfile: "Profile",
   navSessions: "Sessions",
   navRequests: "Access requests",
@@ -377,11 +379,13 @@ const pt: AuthCopy = {
   unavailableTitle: "Início de sessão temporariamente indisponível",
   unavailableBody:
     "A autenticação do browser não está disponível nesta instalação neste momento.",
+  signOutFailed:
+    "Não foi possível terminar a sessão. Continua com sessão iniciada; tente novamente.",
   throttled: "Demasiadas tentativas. Tente novamente mais tarde.",
   retry: "Tentar novamente",
   loading: "A carregar…",
   signedInAs: "Sessão iniciada como",
-  navWork: "Conta",
+  navWork: "Trabalho",
   navProfile: "Perfil",
   navSessions: "Sessões",
   navRequests: "Pedidos de acesso",

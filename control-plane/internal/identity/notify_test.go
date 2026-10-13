@@ -43,8 +43,8 @@ func TestAPIKeysChangedNotify(t *testing.T) {
 		INSERT INTO identity.identities (key, kind, source, display_name)
 		VALUES ('default/notify', 'user', 'external', 'Notify') RETURNING id`).Scan(&id))
 	_, err = pool.Exec(ctx, `
-		INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, scope)
-		VALUES ($1, 'hash-1', 'cp-x', 'k1', 'gateway')`, id)
+		INSERT INTO identity.api_keys (identity_id, key_hash, prefix, name, status, revoked_at)
+		VALUES ($1, 'hash-1', 'cp-x', 'k1', 'revoked', now())`, id)
 	require.NoError(t, err)
 	assert.Contains(t, waitNotify(), "hash-1")
 

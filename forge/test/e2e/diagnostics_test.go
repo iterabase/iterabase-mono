@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -92,12 +93,12 @@ func (diagnostics *forgeDiagnostics) recordRemoteLog(t *testing.T, name, output 
 	}
 }
 
-// registerBootstrapSecrets returns whether full pod-log collection is safe.
-// If a bootstrap pod exists, every current and retained previous bootstrap log
-// must expose the expected admin and token credentials in the reviewed format.
+// verifyBootstrapPrintedNoCredential returns whether full pod-log collection is
+// safe. V2 bootstrap never prints a credential (HOR-582), so every current and
+// retained previous bootstrap log must contain no credential-shaped literal.
 // Inspection reads complete logs, which is deliberately broader than the shared
 // collector's retained tail, before generic current/previous logs are persisted.
-func (diagnostics *forgeDiagnostics) registerBootstrapSecrets(t *testing.T, ip, keyPath string) bool {
+func (diagnostics *forgeDiagnostics) verifyBootstrapPrintedNoCredential(t *testing.T, ip, keyPath string) bool {
 	t.Helper()
 	if ip == "" {
 		return false
@@ -118,21 +119,17 @@ func (diagnostics *forgeDiagnostics) registerBootstrapSecrets(t *testing.T, ip, 
 		t.Logf("skip shared pod-log diagnostics because bootstrap pod status cannot be inspected: %v", err)
 		return false
 	}
-	secrets := make([]string, 0, len(requests)*2)
 	for _, request := range requests {
 		output, outputErr := sshOutput(client, bootstrapCredentialLogCommand(request))
 		if outputErr != nil {
-			t.Logf("skip shared pod-log diagnostics because %s bootstrap credentials cannot be inspected: %v", request.source(), outputErr)
+			t.Logf("skip shared pod-log diagnostics because %s bootstrap output cannot be inspected: %v", request.source(), outputErr)
 			return false
 		}
-		literals, literalErr := bootstrapSecretLiterals(output)
-		if literalErr != nil {
-			t.Logf("skip shared pod-log diagnostics because %s bootstrap credential evidence is incomplete: %v", request.source(), literalErr)
+		if credentialErr := bootstrapPrintedCredential(output); credentialErr != nil {
+			t.Logf("skip shared pod-log diagnostics because %s: %v", request.source(), credentialErr)
 			return false
 		}
-		secrets = append(secrets, literals...)
 	}
-	diagnostics.redactor.Add(secrets...)
 	return true
 }
 
@@ -193,27 +190,18 @@ func bootstrapCredentialLogCommand(request bootstrapLogRequest) string {
 	return fmt.Sprintf("sudo k3s kubectl logs -n iterabase-system %q -c bootstrap%s --tail=-1", request.pod, previous)
 }
 
-func bootstrapSecretLiterals(output string) ([]string, error) {
-	matches := keyRe.FindAllStringSubmatch(output, -1)
-	found := make(map[string]bool)
-	secrets := make([]string, 0, len(matches))
-	for _, match := range matches {
-		if len(match) <= 2 {
-			continue
-		}
-		found[match[1]] = true
-		secrets = append(secrets, match[2])
+// bootstrapCredentialPattern matches anything that would be a usable
+// credential in bootstrap output: an API key, a scoped-key line, or a one-time
+// link token.
+var bootstrapCredentialPattern = regexp.MustCompile(`cp-[A-Z2-7]{8,}|scope=|token=[A-Za-z0-9_\-]{8,}`)
+
+// bootstrapPrintedCredential rejects bootstrap output carrying a credential.
+// The error never includes the output.
+func bootstrapPrintedCredential(output string) error {
+	if bootstrapCredentialPattern.MatchString(output) {
+		return fmt.Errorf("bootstrap output carries a credential-shaped literal (output_bytes=%d)", len(output))
 	}
-	missing := make([]string, 0, 2)
-	for _, scope := range []string{"scope=admin", "scope=token"} {
-		if !found[scope] {
-			missing = append(missing, scope)
-		}
-	}
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("missing expected bootstrap credential scopes %s", strings.Join(missing, ", "))
-	}
-	return secrets, nil
+	return nil
 }
 
 func (diagnostics *forgeDiagnostics) collectSharedCluster(t *testing.T, kubeconfig string) {
@@ -278,7 +266,7 @@ lvs --noheadings --separator "|" -o lv_name,lv_uuid,lv_attr,vg_name --select "vg
 func collectCPUDiagnostics(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	state.diagnostics.recordDomain(t)
-	safeClusterLogs := state.diagnostics.registerBootstrapSecrets(t, state.ip, state.privKeyPath)
+	safeClusterLogs := state.diagnostics.verifyBootstrapPrintedNoCredential(t, state.ip, state.privKeyPath)
 	state.diagnostics.collectSSH(t, state.ip, state.privKeyPath, map[string]string{
 		"fixture-state":  "cloud-init status --long 2>&1; systemctl --no-pager --full status k3s 2>&1 || true",
 		"forge-state":    fmt.Sprintf("sudo ls -la /var/lib/forge/overlay/%s 2>&1 || true; sudo k3s kubectl get gitrepositories,kustomizations -A -o wide 2>&1 || true", state.runID),
@@ -296,7 +284,7 @@ func collectGPUDiagnostics(t *testing.T, state *gpuFixtureState) {
 	if state.host == nil {
 		return
 	}
-	safeClusterLogs := state.diagnostics.registerBootstrapSecrets(t, state.host.IP, state.privKeyPath)
+	safeClusterLogs := state.diagnostics.verifyBootstrapPrintedNoCredential(t, state.host.IP, state.privKeyPath)
 	state.diagnostics.collectSSH(t, state.host.IP, state.privKeyPath, map[string]string{
 		"fixture-state": "cloud-init status --long 2>&1; systemctl --no-pager --full status k3s 2>&1 || true",
 		"gpu-policy":    "sudo k3s kubectl get clusterpolicy -o yaml 2>&1 || true; sudo k3s kubectl get nodes -o wide --show-labels 2>&1 || true",
@@ -343,24 +331,23 @@ func TestForgeDiagnosticsRecordsFailureDomain(t *testing.T) {
 	}
 }
 
-func TestBootstrapSecretLiteralsRequireExpectedCredentialShapes(t *testing.T) {
+func TestBootstrapPrintedCredentialRejectsCredentialShapes(t *testing.T) {
 	t.Parallel()
-	valid := "Admin API key (scope=admin): admin-secret\n" +
-		"Service account API key (scope=token): token-secret\n"
-	secrets, err := bootstrapSecretLiterals(valid)
-	if err != nil {
-		t.Fatal(err)
+	clean := "Bootstrap created for admin@example.com. First-time setup instructions are queued when needed; no credential is printed and no browser session is created.\n"
+	if err := bootstrapPrintedCredential(clean); err != nil {
+		t.Fatalf("clean bootstrap output rejected: %v", err)
 	}
-	if strings.Join(secrets, ",") != "admin-secret,token-secret" {
-		t.Fatalf("bootstrap secrets = %v", secrets)
-	}
-
-	changed := "Admin bootstrap credential (scope=admin) => changed-admin-secret\n" +
-		"Service account API key (scope=token): token-secret\n"
-	if secrets, err = bootstrapSecretLiterals(changed); err == nil || secrets != nil {
-		t.Fatalf("changed bootstrap credential format accepted: secrets=%v err=%v", secrets, err)
-	} else if strings.Contains(err.Error(), "changed-admin-secret") {
-		t.Fatalf("bootstrap parse error leaked credential: %v", err)
+	for _, leaked := range []string{
+		"Admin API key (scope=admin): cp-ABCDEFGHIJKLMNOPQRSTUVWXYZ234567\n",
+		"open https://app.example.com/auth/setup?token=AbCdEfGh12345678\n",
+	} {
+		err := bootstrapPrintedCredential(leaked)
+		if err == nil {
+			t.Fatalf("bootstrap output with a credential accepted: %q", leaked)
+		}
+		if strings.Contains(err.Error(), "ABCDEFGH") || strings.Contains(err.Error(), "AbCdEfGh") {
+			t.Fatalf("bootstrap inspection error leaked credential: %v", err)
+		}
 	}
 }
 
@@ -378,16 +365,10 @@ func TestBootstrapCredentialInspectionCoversCurrentAndPreviousCollectorLogs(t *t
 	if len(requests) != 2 || requests[0].previous || !requests[1].previous {
 		t.Fatalf("bootstrap log requests = %+v, want current and previous", requests)
 	}
-
 	outputs := []string{
-		"Admin API key (scope=admin): current-admin-secret\n" +
-			"Service account API key (scope=token): current-token-secret\n" +
-			strings.Repeat("later current log line\n", shareddiagnostics.PodLogTailLines+50),
-		"Admin API key (scope=admin): previous-admin-secret\n" +
-			"Service account API key (scope=token): previous-token-secret\n" +
-			strings.Repeat("later previous log line\n", shareddiagnostics.PodLogTailLines+50),
+		"Bootstrap noop for admin@example.com.\n" + strings.Repeat("later current log line\n", shareddiagnostics.PodLogTailLines+50),
+		strings.Repeat("later previous log line\n", shareddiagnostics.PodLogTailLines+50) + "Admin API key (scope=admin): cp-PREVIOUSADMINSECRET234567\n",
 	}
-	var secrets []string
 	for index, request := range requests {
 		command := bootstrapCredentialLogCommand(request)
 		if !strings.Contains(command, "--tail=-1") {
@@ -396,27 +377,13 @@ func TestBootstrapCredentialInspectionCoversCurrentAndPreviousCollectorLogs(t *t
 		if request.previous != strings.Contains(command, "--previous") {
 			t.Fatalf("bootstrap previous-log command mismatch: request=%+v command=%s", request, command)
 		}
-		literals, literalErr := bootstrapSecretLiterals(outputs[index])
-		if literalErr != nil {
-			t.Fatal(literalErr)
+		err := bootstrapPrintedCredential(outputs[index])
+		if request.previous && err == nil {
+			t.Fatal("a credential beyond the retained tail of a previous log was not detected")
 		}
-		secrets = append(secrets, literals...)
-	}
-	if strings.Join(secrets, ",") != "current-admin-secret,current-token-secret,previous-admin-secret,previous-token-secret" {
-		t.Fatalf("current/previous bootstrap secrets were not all registered: %v", secrets)
-	}
-}
-
-func TestBootstrapCredentialInspectionRejectsChangedPreviousFormat(t *testing.T) {
-	t.Parallel()
-	previous := "Admin bootstrap credential (scope=admin) => previous-admin-secret\n" +
-		"Service account API key (scope=token): previous-token-secret\n"
-	secrets, err := bootstrapSecretLiterals(previous)
-	if err == nil || secrets != nil {
-		t.Fatalf("changed previous bootstrap credential format accepted: secrets=%v err=%v", secrets, err)
-	}
-	if strings.Contains(err.Error(), "previous-admin-secret") {
-		t.Fatalf("bootstrap parse error leaked previous credential: %v", err)
+		if !request.previous && err != nil {
+			t.Fatalf("clean current log rejected: %v", err)
+		}
 	}
 }
 

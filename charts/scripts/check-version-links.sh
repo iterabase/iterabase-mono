@@ -21,7 +21,7 @@ check_link() {
 check_rendered_tags() {
   local chart=$1 version=$2 render
   shift 2
-  render=$(helm template version-check "$root/charts/charts/$chart" "$@")
+  render=$(helm template version-check "$root/charts/charts/$chart" -f "$root/charts/values-control-plane-auth.yaml" "$@")
   while IFS= read -r image; do
     if [[ "${image##*:}" != "$version" ]]; then
       echo "charts/charts/$chart renders $image, not tag $version" >&2
