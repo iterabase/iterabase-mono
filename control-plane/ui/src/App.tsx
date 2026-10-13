@@ -1812,6 +1812,13 @@ export default function App() {
         initialCSRF={authState.csrfToken}
         onSessionLost={onSessionLost}
         onOpenWork={() => setSurface("work")}
+        onProfileChange={(profile) =>
+          setAuthState((current) =>
+            current.kind === "authenticated"
+              ? { ...current, profile }
+              : current,
+          )
+        }
       />
     );
   }
