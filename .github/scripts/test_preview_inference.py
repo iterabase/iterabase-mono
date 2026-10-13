@@ -55,10 +55,21 @@ assert pathlib.Path(args[args.index('--key')+1]).read_text()=='PRIVATE-KEY-MUST-
 if 'X-Iterabase-Fencing-Generation: 2' in headers or (root/'revoked').exists():
  out.write_text(json.dumps({'error':{'code':'pool_not_authorized' if (root/'revoked').exists() else 'turn_not_authorized'}}))
  print('403 2',end=''); sys.exit(0)
-if mode=='capabilities-pending' and not (root/'capabilities-refreshed').exists():
- (root/'capabilities-refreshed').touch()
- out.write_text(json.dumps({'error':{'code':'model_not_allowed'}}))
- print('403 2',end=''); sys.exit(0)
+# Fail once, then allow success: a retry must never make the smoke pass.
+fail_once={
+ 'timeout-once':(28,'000 0',None),
+ 'tls-once':(60,'000 0',None),
+ 'connection-once':(7,'000 0',None),
+ 'not-found-once':(0,'404 2','model_not_found'),
+ 'unavailable-once':(0,'503 2','scope_unavailable'),
+ 'backend-unavailable-once':(0,'503 2','model_unavailable'),
+ 'capabilities-pending':(0,'403 2','model_not_allowed'),
+}
+if mode in fail_once and not (root/'failure-injected').exists():
+ (root/'failure-injected').touch()
+ exit_code,status,error=fail_once[mode]
+ if error is not None: out.write_text(json.dumps({'error':{'code':error}}))
+ print(status,end=''); sys.exit(exit_code)
 if mode=='workload-denied':
  out.write_text(json.dumps({'error':{'code':'invalid_workload_identity'}}))
  print('403 2',end=''); sys.exit(0)
@@ -128,18 +139,24 @@ class PreviewInferenceTests(unittest.TestCase):
     def test_positive_and_both_authorization_negatives(self) -> None:
         result, calls, _ = self.run_smoke("success")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        for stage in ("customer bearer -> 401", "fenced generation -> 403 2", "workload text attempt 1 -> 200 2",
+        for stage in ("customer bearer -> 401", "fenced generation -> 403 2", "workload text -> 200 2",
                       "workload vision -> 200 2", "workload vision-stream -> 200 2", "removed assignment -> 403 2"):
             self.assertIn(stage, result.stdout)
         self.assertIn("inference smoke passed", result.stdout)
         self.assertFalse(any("logs" in call or "bootstrap" in call for call in calls))
 
-    def test_workload_capability_snapshot_propagation(self) -> None:
-        result, _, sql = self.run_smoke("capabilities-pending")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("workload text attempt 1 -> 403 2", result.stdout)
-        self.assertIn("workload text attempt 2 -> 200 2", result.stdout)
-        self.assertIn("NOTIFY permissions_changed", sql)
+    def test_completion_errors_are_not_retried(self) -> None:
+        for mode in ("timeout-once", "tls-once", "connection-once", "not-found-once", "unavailable-once",
+                     "backend-unavailable-once", "capabilities-pending"):
+            with self.subTest(mode=mode):
+                result, calls, sql = self.run_smoke(mode)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("inference smoke passed", result.stdout)
+                posts = [call for call in calls if call[0] == "curl" and "--data-binary" in call
+                         and "X-Iterabase-Fencing-Generation: 1" in call]
+                self.assertEqual(len(posts), 1, "a later successful completion must not mask the first failure")
+                self.assertFalse(any(call[0] == "sleep" for call in calls), "completion assertions never poll")
+                self.assertIn("NOTIFY permissions_changed", sql)
 
     def test_fail_closed_and_always_cleanup(self) -> None:
         for mode in ("bearer-accepted", "workload-denied", "upstream-auth-failure", "empty-answer", "http1", "stream-error",
@@ -149,7 +166,7 @@ class PreviewInferenceTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertNotIn("inference smoke passed", result.stdout)
                 if mode == "workload-denied":
-                    self.assertNotIn("workload text attempt 2", result.stdout, "live-scope denials are never retried")
+                    self.assertNotIn("workload vision ->", result.stdout, "live-scope denial fails before vision")
 
 
 if __name__ == "__main__":

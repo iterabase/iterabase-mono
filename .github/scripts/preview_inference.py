@@ -143,21 +143,9 @@ post() {{
 result=$(post text 2); echo "inference smoke: fenced generation -> $result"
 [ "$result" = '403 2' ]
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["error"]["code"] == "turn_not_authorized"' "$work/text.out"
-# Wait for catalog and the new workload identity's capability snapshot. Only
-# model_not_allowed can be eventual here: identity/turn/fencing denials fail
-# immediately, and all customer authority remains outside this cache.
-deadline=$((SECONDS + 600)); attempt=0
-while :; do
-  attempt=$((attempt + 1)); result=$(post text 1) || result='000 0'
-  echo "inference smoke: workload text attempt $attempt -> $result"
-  case "$result" in
-    '403 2')
-      if ! python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["error"]["code"] == "model_not_allowed"' "$work/text.out"; then break; fi
-      [ "$SECONDS" -lt "$deadline" ]; sleep 10 ;;
-    '404 2'|'503 2'|'000 0') [ "$SECONDS" -lt "$deadline" ]; sleep 10 ;;
-    *) break ;;
-  esac
-done
+# Completion assertions run once, never as readiness probes. Any transport
+# error or unexpected response (including model_not_allowed) fails the smoke.
+result=$(post text 1); echo "inference smoke: workload text -> $result"
 [ "$result" = '200 2' ]
 answered() {{ python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); m=r["choices"][0]["message"]
 assert r["usage"]["completion_tokens"] > 0 and any(m.get(k) for k in ("content", "reasoning_content", "reasoning"))' "$work/$1.out"; }}
