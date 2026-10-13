@@ -102,6 +102,7 @@ release-check:
 	python3 .github/scripts/test_remote_content.py
 	python3 .github/scripts/test_cache_contract.py
 	python3 .github/scripts/test_preview_packages.py
+	python3 .github/scripts/test_preview_inference.py
 	python3 .github/scripts/test_tailscale_services.py
 	python3 .github/scripts/test_workflow_permissions.py
 	python3 .github/scripts/test_release_publish.py

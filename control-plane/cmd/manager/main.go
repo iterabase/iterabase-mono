@@ -36,7 +36,6 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gateway"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/logging"
-	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/permissions"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/version"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
 	// +kubebuilder:scaffold:imports
@@ -202,7 +201,7 @@ func run() int {
 	// +kubebuilder:scaffold:builder
 
 	// Connect to Postgres (DATABASE_URL). The manager materializes CRs into the
-	// identity store; the api reads it (HOR-242 Q1/Q8). The manager reads only
+	// catalogue, workflow, and tool stores; the api reads them. The manager reads only
 	// DATABASE_URL from the environment; it does not load YAML config.
 	dbCfg, err := config.DatabaseFromEnv()
 	if err != nil {
@@ -224,26 +223,6 @@ func run() int {
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "control_plane_database_pool_connections_in_use", Help: "Acquired manager pgx pool connections.", ConstLabels: componentLabels}, func() float64 { return float64(pool.Stat().AcquiredConns()) }),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "control_plane_database_pool_max_connections", Help: "Configured maximum manager pgx pool connections.", ConstLabels: componentLabels}, func() float64 { return float64(pool.Stat().MaxConns()) }),
 	)
-
-	store := identity.NewStore(pool)
-
-	if err = (&controller.IdentityMappingReconciler{
-		Client: mgr.GetClient(),
-		Scheme: scheme,
-		Store:  store,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to set up IdentityMapping reconciler")
-		return 1
-	}
-
-	if err = (&controller.PermissionPolicyReconciler{
-		Client: mgr.GetClient(),
-		Scheme: scheme,
-		Store:  permissions.NewStore(pool),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to set up PermissionPolicy reconciler")
-		return 1
-	}
 
 	if err = (&controller.ModelBackendReconciler{
 		Client: mgr.GetClient(),

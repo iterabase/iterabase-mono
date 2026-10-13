@@ -78,7 +78,7 @@ lint: build-deps
 	@for c in $(CHARTS); do echo ":: helm lint $$c"; helm lint $(CHARTS_DIR)/$$c || exit 1; done
 
 template: build-deps
-	helm template $(UMBRELLA) $(CHARTS_DIR)/$(UMBRELLA) > $(RENDER)
+	helm template $(UMBRELLA) $(CHARTS_DIR)/$(UMBRELLA) -f values-auth.yaml > $(RENDER)
 	@echo "rendered $(RENDER)"
 
 kubeconform: template
@@ -89,7 +89,7 @@ kubeconform: template
 # The umbrella keeps control-plane disabled by default, so validate the
 # control-plane chart standalone (renders with its own enabled=true default).
 template-controlplane: build-deps
-	helm template $(CONTROLPLANE) $(CHARTS_DIR)/$(CONTROLPLANE) > $(RENDER_CP)
+	helm template $(CONTROLPLANE) $(CHARTS_DIR)/$(CONTROLPLANE) -f values-control-plane-auth.yaml > $(RENDER_CP)
 	@echo "rendered $(RENDER_CP)"
 
 kubeconform-controlplane: template-controlplane
@@ -103,7 +103,7 @@ kubeconform-controlplane: template-controlplane
 # (plaintext) `make check` doesn't exercise. cert-manager Certificate/
 # ClusterIssuer CRs are ignored (no bundled schema), like the CRDs above.
 template-tls: build-deps
-	helm template $(UMBRELLA) $(CHARTS_DIR)/$(UMBRELLA) -f values-tls.yaml > $(RENDER_TLS)
+	helm template $(UMBRELLA) $(CHARTS_DIR)/$(UMBRELLA) -f values-auth.yaml -f values-tls.yaml > $(RENDER_TLS)
 	@echo "rendered $(RENDER_TLS)"
 
 kubeconform-tls: template-tls
@@ -179,7 +179,7 @@ check-tls: kubeconform-tls kubeconform-observability-tls check-internal-observab
 # CRDs (ServiceMonitor / PodMonitor / PrometheusRule) have no bundled schema, so
 # ignore missing schemas like the platform CRDs above.
 template-observability: build-deps
-	helm template $(UMBRELLA) $(CHARTS_DIR)/$(UMBRELLA) -f values-observability.yaml > $(RENDER_OBS)
+	helm template $(UMBRELLA) $(CHARTS_DIR)/$(UMBRELLA) -f values-auth.yaml -f values-observability.yaml > $(RENDER_OBS)
 	@echo "rendered $(RENDER_OBS)"
 
 kubeconform-observability: template-observability
@@ -190,7 +190,7 @@ check-observability: kubeconform-observability
 # Combined static path for the TLS-on observability wiring that neither preset
 # exercises alone.
 template-observability-tls: build-deps
-	helm template $(TLS_TEST_RELEASE) $(CHARTS_DIR)/$(UMBRELLA) --namespace $(TLS_TEST_NAMESPACE) -f values-observability.yaml -f values-tls.yaml > $(RENDER_OBS_TLS)
+	helm template $(TLS_TEST_RELEASE) $(CHARTS_DIR)/$(UMBRELLA) --namespace $(TLS_TEST_NAMESPACE) -f values-auth.yaml -f values-observability.yaml -f values-tls.yaml > $(RENDER_OBS_TLS)
 	@echo "rendered $(RENDER_OBS_TLS)"
 
 kubeconform-observability-tls: template-observability-tls
@@ -204,7 +204,7 @@ check-observability-tls: template-observability-tls
 # non-auto-assigned MetalLB pool. The same render proves non-proxied DNS,
 # edge-certificate, backend-TLS, and direct API contracts.
 template-internal-observability: build-deps
-	helm template $(TLS_TEST_RELEASE) $(CHARTS_DIR)/$(UMBRELLA) --namespace $(TLS_TEST_NAMESPACE) -f values-observability.yaml -f values-tls.yaml -f values-internal-observability.yaml > $(RENDER_INTERNAL_OBS)
+	helm template $(TLS_TEST_RELEASE) $(CHARTS_DIR)/$(UMBRELLA) --namespace $(TLS_TEST_NAMESPACE) -f values-auth.yaml -f values-observability.yaml -f values-tls.yaml -f values-internal-observability.yaml > $(RENDER_INTERNAL_OBS)
 	@echo "rendered $(RENDER_INTERNAL_OBS)"
 
 kubeconform-internal-observability: template-internal-observability
@@ -217,7 +217,7 @@ check-internal-observability: kubeconform-internal-observability
 # proves distinct edge/backend certificate Secrets, verified internal-CA HTTPS,
 # non-proxied private DNS, and isolation from the public inference controller.
 template-private-control-plane: build-deps
-	helm template $(TLS_TEST_RELEASE) $(CHARTS_DIR)/$(UMBRELLA) --namespace $(TLS_TEST_NAMESPACE) -f values-tls.yaml -f values-private-control-plane.yaml > $(RENDER_PRIVATE_CP)
+	helm template $(TLS_TEST_RELEASE) $(CHARTS_DIR)/$(UMBRELLA) --namespace $(TLS_TEST_NAMESPACE) -f values-auth.yaml -f values-tls.yaml -f values-private-control-plane.yaml > $(RENDER_PRIVATE_CP)
 	@echo "rendered $(RENDER_PRIVATE_CP)"
 
 kubeconform-private-control-plane: template-private-control-plane

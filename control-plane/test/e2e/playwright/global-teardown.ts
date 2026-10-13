@@ -77,7 +77,7 @@ export default function globalTeardown(): void {
   const root = requiredEnv("ITERABASE_BROWSER_ARTIFACT_ROOT");
   const raw = join(root, "raw");
   const safe = join(root, "safe-opaque");
-  const variants = secretVariants(requiredEnv("ITERABASE_BROWSER_WORK_KEY"));
+  const variants = secretVariants(requiredEnv("ITERABASE_BROWSER_PASSWORD"));
 
   rmSync(safe, { recursive: true, force: true });
   for (const path of walkFiles(raw)) {

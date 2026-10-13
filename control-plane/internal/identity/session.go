@@ -197,7 +197,6 @@ func (s *Store) ResolveBrowserSessionWithNetwork(ctx context.Context, raw string
 	}
 
 	session = s.coalesceSessionActivity(ctx, session, now, network)
-	session.Role = NormalizeRole(session.Role)
 	return session, nil
 }
 
@@ -448,7 +447,6 @@ func (s *Store) ListActiveSessions(ctx context.Context, identityID, currentID st
 		if err != nil {
 			return nil, err
 		}
-		session.Role = NormalizeRole(session.Role)
 		out = append(out, session)
 	}
 	return out, rows.Err()
@@ -466,15 +464,6 @@ func (s *Store) PurgeSessionNetworkEvidence(ctx context.Context, before time.Tim
 		return 0, fmt.Errorf("purge session network evidence: %w", err)
 	}
 	return tag.RowsAffected(), nil
-}
-
-// NormalizeRole maps the legacy pre-epoch `user` spelling to `operator` for
-// every V2 authorization decision; HOR-454 completes the data migration.
-func NormalizeRole(role string) string {
-	if role == "user" {
-		return "operator"
-	}
-	return role
 }
 
 // scanBrowserSession scans one browserSessionColumns row.

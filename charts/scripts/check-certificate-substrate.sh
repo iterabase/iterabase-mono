@@ -21,7 +21,7 @@ substrate_render=$(helm template release-cert-manager "$substrate" -n iterabase-
 substrate_tls_render=$(helm template release-cert-manager "$substrate" -n iterabase-system \
   --set global.internalTLS.enabled=true \
   --set global.internalTLS.platformRelease=release)
-platform_render=$(helm template release "$platform" -n iterabase-system)
+platform_render=$(helm template release "$platform" -n iterabase-system -f values-auth.yaml)
 
 grep -q '^kind: CustomResourceDefinition$' <<<"$substrate_render"
 grep -q 'app.kubernetes.io/name: cert-manager' <<<"$substrate_render"
@@ -173,7 +173,7 @@ render_pair() {
   helm template release-cert-manager "$substrate" -n iterabase-system \
     --set global.internalTLS.enabled=true \
     --set global.internalTLS.platformRelease=release "$@" > "$workdir/substrate-$suffix.yaml"
-  helm template release "$platform" -n iterabase-system \
+  helm template release "$platform" -n iterabase-system -f values-auth.yaml \
     --set global.internalTLS.enabled=true "$@" > "$workdir/platform-$suffix.yaml"
 }
 

@@ -251,7 +251,8 @@ func (s *Store) ListPendingAccessRequests(ctx context.Context) ([]AccessRequest,
 }
 
 // ApproveAccessRequest atomically creates the canonical human as setup_pending
-// with the reviewed role and queues first-time setup mail. No session is
+// with the reviewed role, or re-approves a migrated passwordless setup_pending
+// human under its existing identity, and queues first-time setup mail. No session is
 // created and no credential is printed.
 func (s *Store) ApproveAccessRequest(ctx context.Context, requestID, reviewerID, role string, now time.Time) (LocalUser, error) {
 	if role != "operator" && role != "admin" {
@@ -274,25 +275,9 @@ func (s *Store) ApproveAccessRequest(ctx context.Context, requestID, reviewerID,
 		return LocalUser{}, ErrRequestStateChanged
 	}
 
-	if err := ensureNoLocalUserTx(ctx, tx, request.EmailNormalized); err != nil {
+	identityID, reapproved, err := approvedAccountTx(ctx, tx, request, reviewerID, role, now)
+	if err != nil {
 		return LocalUser{}, err
-	}
-
-	var identityID string
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO identity.identities (key, kind, source, display_name)
-		VALUES ($1, 'user', 'local', $2)
-		ON CONFLICT (key) DO UPDATE
-			SET deleted_at = NULL, updated_at = now()
-		RETURNING id`, request.EmailNormalized, request.Email).Scan(&identityID); err != nil {
-		return LocalUser{}, fmt.Errorf("create identity: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO identity.local_users (
-			identity_id, email, email_normalized, display_name, locale, role, status, approved_access_request_id)
-		VALUES ($1, $2, $3, $4, $5, $6, 'setup_pending', $7)`,
-		identityID, request.Email, request.EmailNormalized, request.Email, request.Locale, role, request.ID); err != nil {
-		return LocalUser{}, fmt.Errorf("create local user: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE identity.access_requests
@@ -321,7 +306,7 @@ func (s *Store) ApproveAccessRequest(ctx context.Context, requestID, reviewerID,
 		SubjectIdentityID:      identityID,
 		AccessRequestID:        request.ID,
 		CredentialKind:         CredentialBrowser,
-		Detail:                 map[string]any{"role": role},
+		Detail:                 map[string]any{"role": role, "existingAccount": reapproved},
 		CreatedAt:              now,
 	}); err != nil {
 		return LocalUser{}, err
@@ -336,17 +321,75 @@ func (s *Store) ApproveAccessRequest(ctx context.Context, requestID, reviewerID,
 	return user, nil
 }
 
-func ensureNoLocalUserTx(ctx context.Context, tx pgx.Tx, normalized string) error {
-	var existing string
+// approvedAccountTx creates the approved human as setup_pending, or re-approves
+// a migrated passwordless setup_pending human under its existing identity, and
+// reports which happened.
+func approvedAccountTx(ctx context.Context, tx pgx.Tx, request AccessRequest, reviewerID, role string, now time.Time) (string, bool, error) {
+	identityID, err := approvableExistingUserTx(ctx, tx, request.EmailNormalized)
+	if err != nil {
+		return "", false, err
+	}
+	reapproved := identityID != ""
+	if reapproved {
+		// A migrated human (DES-HOR-582-03) keeps its canonical identity and
+		// history; the reviewed role and a fresh setup link replace any
+		// outstanding one.
+		if _, err := tx.Exec(ctx, `
+			UPDATE identity.local_users
+			SET role = $2, locale = $3, approved_access_request_id = $4,
+			    role_changed_at = $5, role_changed_by = $6,
+			    account_changed_at = $5, account_changed_by = $6, updated_at = $5
+			WHERE identity_id = $1`,
+			identityID, role, request.Locale, request.ID, now.UTC(), reviewerID); err != nil {
+			return "", false, fmt.Errorf("re-approve local user: %w", err)
+		}
+		if err := InvalidateAuthLinksTx(ctx, tx, AuthLinkSetupPassword, "", identityID, now, "superseded"); err != nil {
+			return "", false, err
+		}
+	} else {
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO identity.identities (key, kind, source, display_name)
+			VALUES ($1, 'user', 'local', $2)
+			ON CONFLICT (key) DO UPDATE
+				SET deleted_at = NULL, updated_at = now()
+			RETURNING id`, request.EmailNormalized, request.Email).Scan(&identityID); err != nil {
+			return "", false, fmt.Errorf("create identity: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO identity.local_users (
+				identity_id, email, email_normalized, display_name, locale, role, status, approved_access_request_id)
+			VALUES ($1, $2, $3, $4, $5, $6, 'setup_pending', $7)`,
+			identityID, request.Email, request.EmailNormalized, request.Email, request.Locale, role, request.ID); err != nil {
+			return "", false, fmt.Errorf("create local user: %w", err)
+		}
+	}
+	return identityID, reapproved, nil
+}
+
+// approvableExistingUserTx returns the identity of an existing account that an
+// approval may take over, or "" when no account exists. Only a passwordless
+// `setup_pending` account (a human migrated into V2 who never completed setup)
+// is approvable; any other existing account blocks approval.
+func approvableExistingUserTx(ctx context.Context, tx pgx.Tx, normalized string) (string, error) {
+	var (
+		existing    string
+		status      string
+		hasPassword bool
+	)
 	err := tx.QueryRow(ctx, `
-		SELECT identity_id FROM identity.local_users WHERE email_normalized = $1`, normalized).Scan(&existing)
-	if err == nil {
-		return ErrAccountExists
+		SELECT identity_id, status, password_hash IS NOT NULL
+		FROM identity.local_users WHERE email_normalized = $1
+		FOR UPDATE`, normalized).Scan(&existing, &status, &hasPassword)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("check existing account: %w", err)
+	if err != nil {
+		return "", fmt.Errorf("check existing account: %w", err)
 	}
-	return nil
+	if status != LocalUserSetupPending || hasPassword {
+		return "", ErrAccountExists
+	}
+	return existing, nil
 }
 
 // DeclineAccessRequest terminates a verified request without creating a person.

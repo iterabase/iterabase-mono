@@ -41,7 +41,7 @@ func setupTestDB(t *testing.T) (*pgxpool.Pool, string) {
 }
 
 // seedFixture inserts a healthy backend, an available model alias (reasoning
-// off), an identity + API key, and a rate-limit policy. Returns aliceID.
+// off), a workload identity, and a rate-limit policy. Returns aliceID.
 func seedFixture(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	ctx := context.Background()
@@ -55,13 +55,10 @@ func seedFixture(t *testing.T, pool *pgxpool.Pool) string {
 	require.NoError(t, err)
 	var aliceID string
 	require.NoError(t, pool.QueryRow(ctx, `
-		INSERT INTO identity.identities (key, kind) VALUES ('default/alice', 'user') RETURNING id`).Scan(&aliceID))
-	_, err = pool.Exec(ctx, `
-		INSERT INTO identity.api_keys (identity_id, key_hash, scope) VALUES ($1, 'h1', 'gateway')`, aliceID)
-	require.NoError(t, err)
+		INSERT INTO identity.identities (key, kind) VALUES ('default/alice', 'workflow') RETURNING id`).Scan(&aliceID))
 	_, err = pool.Exec(ctx, `
 		INSERT INTO permissions.policies (subject_kind, subject_key, rate_limits)
-		VALUES ('user', 'default/alice', '{"rpm":60,"tpm":100000}'::jsonb)`)
+		VALUES ('workflow', 'default/alice', '{"rpm":60,"tpm":100000}'::jsonb)`)
 	require.NoError(t, err)
 	return aliceID
 }
@@ -104,13 +101,6 @@ func TestPGStore(t *testing.T) {
 	}
 	assert.Equal(t, "external", hosted.BackendKind)
 	assert.Equal(t, "hosted-llm", hosted.BackendAuthRef)
-
-	// API keys.
-	keys, err := store.AllAPIKeys(ctx)
-	require.NoError(t, err)
-	require.Len(t, keys, 1)
-	assert.Equal(t, "h1", keys[0].KeyHash)
-	assert.Equal(t, aliceID, keys[0].IdentityID)
 
 	// Capabilities (broad-default wildcard).
 	caps, err := store.AllCapabilities(ctx)

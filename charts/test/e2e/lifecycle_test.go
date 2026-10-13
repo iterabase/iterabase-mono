@@ -145,7 +145,7 @@ func captureLifecycleSnapshot(t *testing.T, state *chartState) lifecycleSnapshot
 	snapshot := lifecycleSnapshot{Secrets: map[string]string{}, PVCs: map[string]string{}, Pods: map[string]string{}}
 	for _, name := range []string{
 		testRelease + "-postgresql", testRelease + "-minio", testRelease + "-minio-artifacts",
-		testRelease + "-control-plane-jwt", testRelease + "-gateway-admin",
+		testRelease + "-gateway-admin",
 	} {
 		snapshot.Secrets[name] = secretDigest(t, state, name)
 	}

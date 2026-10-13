@@ -1,7 +1,7 @@
 # Product base CRD INSTANCES — upstream product config (clients never edit).
 #
-# Empty in this scaffold. Broad-default permissions are engine-built-in (HOR-243),
-# so no PermissionPolicy instance is needed in v1. Model/ModelBackend/IdentityMapping
+# Empty in this scaffold. Customer authority is the control plane's V2 browser
+# session and credential model (HOR-582), never a CRD. Model/ModelBackend
 # instances are deployment/client-specific and live in crds/client/.
 #
 # CRD *definitions* ship with the control-plane Helm chart — this overlay carries

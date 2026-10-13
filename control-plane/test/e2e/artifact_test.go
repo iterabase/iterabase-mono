@@ -24,8 +24,7 @@ var artifactBytes = []byte("case_id,result\n478,accepted\n")
 
 func setupArtifactJourneyStage(t *testing.T, state *deployedState) {
 	t.Helper()
-	state.captureBootstrapKeys(t)
-	state.createWorkIdentity(t, "artifact-journey@local")
+	state.ensurePrincipals(t)
 	state.applyWorkFixture(t)
 }
 
@@ -38,6 +37,7 @@ func uploadPublishAndLinkArtifactStage(t *testing.T, state *deployedState) {
 		"X-Artifact-SHA256": digest,
 		"X-Artifact-Source": "hor-478-synthetic",
 	}
+	// The Admin reporting/deletion credential does not hold artifacts.upload.
 	status, body := state.request(t, http.MethodPost, "/v1/artifacts", state.adminKey, artifactBytes, headers)
 	requireStatus(t, status, http.StatusForbidden, body)
 	status, body = state.request(t, http.MethodPost, "/v1/artifacts", state.workKey, artifactBytes, headers)

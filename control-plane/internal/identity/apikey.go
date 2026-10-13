@@ -9,19 +9,6 @@ import (
 	"strings"
 )
 
-// API key scopes. A key's scope determines what it can authenticate:
-//   - admin   - control-plane API management (bootstrap admin)
-//   - token   - service accounts calling POST /v1/token (agent-fleet, Path 2)
-//   - gateway - end users calling the gateway directly (Path 1); validated by
-//     the gateway from its control-plane-synced snapshot, not here.
-//   - work    - customer Dashboard/adapters calling durable work REST/SSE APIs.
-const (
-	ScopeAdmin   = "admin"
-	ScopeToken   = "token"
-	ScopeGateway = "gateway"
-	ScopeWork    = "work"
-)
-
 const (
 	apiKeyPrefix     = "cp-" // long-lived API keys are cp-prefixed (mirrors inference-gateway's ml- prefix)
 	randomPartBytes  = 20    // 160 bits of entropy -> 32 base32 chars
@@ -66,13 +53,4 @@ func ParseBearer(authHeader string) (string, bool) {
 		return "", false
 	}
 	return token, true
-}
-
-// ValidScope reports whether s is a recognized API key scope.
-func ValidScope(s string) bool {
-	switch s {
-	case ScopeAdmin, ScopeToken, ScopeGateway, ScopeWork:
-		return true
-	}
-	return false
 }

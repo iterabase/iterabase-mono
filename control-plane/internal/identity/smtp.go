@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"mime"
 	"net"
 	"net/smtp"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +35,30 @@ type SMTPConfig struct {
 	Username string
 	Password string
 	Timeout  time.Duration
+	// RootCAs, when set, replaces the system roots for verifying a private
+	// relay's certificate (LoadSMTPRootCAs). Verification is never disabled.
+	RootCAs *x509.CertPool
+}
+
+// LoadSMTPRootCAs returns the system roots plus a PEM bundle, for an SMTP relay
+// whose certificate is issued by a private CA. An empty path returns nil (the
+// system roots alone).
+func LoadSMTPRootCAs(path string) (*x509.CertPool, error) {
+	if path == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(path) //nolint:gosec // operator-configured CA bundle path
+	if err != nil {
+		return nil, fmt.Errorf("read smtp ca file: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, errors.New("smtp ca file contains no PEM certificates")
+	}
+	return pool, nil
 }
 
 // ValidateSMTPConfig rejects an unusable or cleartext configuration.
@@ -109,7 +135,7 @@ func (s *SMTPSender) Send(ctx context.Context, message AuthEmailMessage) AuthEma
 	var err error
 	dialer := &net.Dialer{Timeout: timeout}
 	if s.cfg.Mode == SMTPModeTLS {
-		conn, err = tls.DialWithDialer(dialer, "tcp", address, tlsConfig(s.cfg.Host))
+		conn, err = tls.DialWithDialer(dialer, "tcp", address, tlsConfig(s.cfg.Host, s.cfg.RootCAs))
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", address)
 	}
@@ -126,7 +152,7 @@ func (s *SMTPSender) Send(ctx context.Context, message AuthEmailMessage) AuthEma
 	defer func() { _ = client.Close() }()
 
 	if s.cfg.Mode == SMTPModeStartTLS {
-		if err := client.StartTLS(tlsConfig(s.cfg.Host)); err != nil {
+		if err := client.StartTLS(tlsConfig(s.cfg.Host, s.cfg.RootCAs)); err != nil {
 			return AuthEmailSendResult{Outcome: SendOutcomeRetryable, ErrorClass: "starttls"}
 		}
 	}
@@ -158,9 +184,10 @@ func (s *SMTPSender) Send(ctx context.Context, message AuthEmailMessage) AuthEma
 	return AuthEmailSendResult{Outcome: SendOutcomeAccepted}
 }
 
-func tlsConfig(host string) *tls.Config {
+func tlsConfig(host string, roots *x509.CertPool) *tls.Config {
 	return &tls.Config{ //nolint:gosec // ServerName set from configured host; verification stays enabled
 		ServerName: host,
+		RootCAs:    roots,
 		MinVersion: tls.VersionTLS12,
 	}
 }

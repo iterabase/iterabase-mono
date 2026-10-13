@@ -90,7 +90,7 @@ func wlSeed(t *testing.T, ctx context.Context, pool *pgxpool.Pool, vllmURL, turn
 		VALUES ('default/pool-1', 'pool-1', $1) RETURNING id::text`, wlSpiffePrefix).Scan(&poolID))
 	// A real identity row so api_keys FK + the snapshot capability view resolve.
 	require.NoError(t, pool.QueryRow(ctx, `
-		INSERT INTO identity.identities (key, kind) VALUES ('default/scope-user', 'user') RETURNING id::text`).Scan(&scopeID))
+		INSERT INTO identity.identities (key, kind) VALUES ('workflow:default/scope', 'workflow') RETURNING id::text`).Scan(&scopeID))
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO runtime.workflow_runs (kind, scope_identity_id, session_id, session_dir)
 		VALUES ('chat', $1::uuid, 'sess-1', '/tmp/sess') RETURNING id::text`, scopeID).Scan(&runID))
@@ -405,9 +405,11 @@ func TestWorkloadMTLS_MissingTurnContext_Denied(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
 
-// Regression: the existing API-key path still works on a plaintext listener
-// while the workload path is wired (ARCH-010: separate policy paths coexist).
-func TestWorkloadMTLS_APIKeyPathRegression(t *testing.T) {
+// Regression: the customer listener stays a separate policy path from the
+// workload listener (ARCH-010). With legacy keys retired (HOR-582) a customer
+// bearer is denied before any backend call, even for an identity the workload
+// path would serve.
+func TestWorkloadMTLS_CustomerListenerDeniesBearer(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -417,19 +419,15 @@ func TestWorkloadMTLS_APIKeyPathRegression(t *testing.T) {
 	defer pgC.Terminate(ctx) //nolint:errcheck
 	workloadFixture(t, ctx, pool)
 
+	var backendCalls atomic.Int32
 	vllm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"Qwen/Qwen3-27B","choices":[{"message":{"content":"hi"}}],"usage":{"total_tokens":5}}`))
 	}))
 	t.Cleanup(vllm.Close)
 
-	_, _, scopeID := wlSeed(t, ctx, pool, vllm.URL, "running")
-	// Seed an API key for the scope identity so the API-key path resolves the
-	// same effective identity as the workload path.
-	_, err := pool.Exec(ctx, `
-		INSERT INTO identity.api_keys (identity_id, key_hash, scope) VALUES ($1, $2, 'gateway')`,
-		scopeID, middleware.HashKey("test-key"))
-	require.NoError(t, err)
+	wlSeed(t, ctx, pool, vllm.URL, "running")
 
 	logger := slog.Default()
 	store := snapshot.NewPGStore(pool)
@@ -449,7 +447,8 @@ func TestWorkloadMTLS_APIKeyPathRegression(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Zero(t, backendCalls.Load())
 }
 
 // The workload listener must be HTTP/2-only (ARCH-006): an mTLS client that

@@ -119,6 +119,30 @@ export const authApi = {
     }),
   signOut: (csrf: string) =>
     request<void>("/v1/auth/sign-out", { method: "POST" }, csrf),
+  /**
+   * Terminates this browser session. A stale CSRF proof (another tab or
+   * surface rotated it) is refreshed once and retried; a session that is
+   * already gone counts as signed out. Any other failure is thrown so the
+   * caller never presents a still-valid session as signed out.
+   */
+  signOutCurrent: async (csrf: string): Promise<void> => {
+    try {
+      await authApi.signOut(csrf);
+    } catch (err) {
+      if (!(err instanceof AuthAPIError)) throw err;
+      if (err.status === 401) return;
+      if (err.code !== "csrf") throw err;
+      let refreshed: { csrfToken: string };
+      try {
+        refreshed = await authApi.profile();
+      } catch (refreshErr) {
+        if (refreshErr instanceof AuthAPIError && refreshErr.status === 401)
+          return;
+        throw refreshErr;
+      }
+      await authApi.signOut(refreshed.csrfToken);
+    }
+  },
   forgot: (email: string) =>
     request<{ status: string }>("/v1/auth/password/forgot", {
       method: "POST",
@@ -178,9 +202,9 @@ export type ProbeResult =
   | { kind: "unavailable" };
 
 /**
- * Probe the browser-session bootstrap endpoint. It always answers 200 for the
- * disabled/anonymous states, so the app renders the right entry surface without
- * failed network responses.
+ * Probe the browser-session bootstrap endpoint. Sign-in is always on: it
+ * answers 200 for both the anonymous and signed-in states, and 503 only when
+ * browser auth is unavailable.
  */
 export async function probeSession(): Promise<ProbeResult> {
   try {
@@ -190,12 +214,10 @@ export async function probeSession(): Promise<ProbeResult> {
     });
     if (!response.ok) return { kind: "unavailable" };
     const payload = (await response.json()) as {
-      enabled: boolean;
       authenticated?: boolean;
       profile?: AuthProfile;
       csrfToken?: string;
     };
-    if (!payload.enabled) return { kind: "unavailable" };
     if (payload.authenticated && payload.profile && payload.csrfToken) {
       return {
         kind: "authenticated",

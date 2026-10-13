@@ -61,6 +61,16 @@ const summary = {
   },
   trend: [{ date: "2026-08-05", amount: "10", currency: "EUR" }],
 };
+const adminProfile = {
+  id: "identity-1",
+  email: "ada@example.com",
+  displayName: "Ada Lovelace",
+  role: "admin",
+  locale: "en",
+  updatedAt: "2026-09-23T10:00:00Z",
+};
+const operatorProfile = { ...adminProfile, role: "operator" };
+let sessionProfile: typeof adminProfile = adminProfile;
 function json(data: unknown, status = 200) {
   return Promise.resolve(
     new Response(JSON.stringify(data), {
@@ -74,10 +84,16 @@ function fetchMock(
   init?: RequestInit,
 ): Promise<Response> {
   const url = String(input);
-  // The V2 browser-session probe reports the disabled surface, so the legacy
-  // API-key dashboard remains the auth-unavailable path under test.
+  if (url === "/v1/auth/session")
+    return json({
+      authenticated: true,
+      profile: sessionProfile,
+      csrfToken: "csrf-1",
+    });
   if (url === "/v1/profile")
-    return json({ error: "unavailable", code: "auth_unavailable" }, 503);
+    return json({ profile: sessionProfile, csrfToken: "csrf-2" });
+  if (url === "/v1/auth/sign-out")
+    return Promise.resolve(new Response(null, { status: 204 }));
   if (url.startsWith("/v1/work-events"))
     return new Promise((_resolve, reject) =>
       init?.signal?.addEventListener("abort", () =>
@@ -207,19 +223,35 @@ function fetchMock(
 async function connect() {
   const user = userEvent.setup();
   render(<App />);
-  await user.type(await screen.findByLabelText("Work API key"), "work_secret");
-  await user.click(screen.getByRole("button", { name: "Connect" }));
   await screen.findByText("Quotation request — ACME");
   return user;
 }
 
+function headersOf(init?: RequestInit): Record<string, string> {
+  return (init?.headers || {}) as Record<string, string>;
+}
+function workCalls() {
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter(
+      ([url]) =>
+        !String(url).startsWith("/v1/auth/") && String(url) !== "/v1/profile",
+    );
+}
+function unsafeWorkCall(fragment: string) {
+  return workCalls().find(
+    ([url, init]) => String(url).includes(fragment) && init?.method === "POST",
+  );
+}
+
 describe("Platform v1 Dashboard", () => {
   beforeEach(() => {
+    sessionProfile = adminProfile;
     vi.stubGlobal("fetch", vi.fn(fetchMock));
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it("keeps the key in memory, renders the single-workflow board, and excludes deferred navigation", async () => {
+  it("loads the board through the browser session cookie without any bearer credential", async () => {
     await connect();
     expect(
       screen.getByText("Estimated business value created"),
@@ -227,42 +259,230 @@ describe("Platform v1 Dashboard", () => {
     expect(screen.getByRole("heading", { name: "To do" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Done" })).toBeInTheDocument();
     expect(screen.queryByText("Workflows")).not.toBeInTheDocument();
-    expect(document.cookie).not.toContain("work_secret");
-    const calls = vi.mocked(fetch).mock.calls;
-    expect(
-      calls.some(
-        ([, init]) =>
-          (init?.headers as Record<string, string>)?.Authorization ===
-          "Bearer work_secret",
-      ),
-    ).toBe(true);
+    expect(screen.queryByLabelText(/API key/i)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        workCalls().some(([url]) => String(url) === "/v1/work-events"),
+      ).toBe(true),
+    );
+    const calls = workCalls();
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [, init] of calls) {
+      expect(init?.credentials).toBe("same-origin");
+      expect(headersOf(init)).not.toHaveProperty("Authorization");
+    }
   });
 
-  it("recovers from an invalid key when the operator retries with a valid key", async () => {
+  it("never offers an API-key entry: an anonymous visitor gets the sign-in surface", async () => {
+    vi.mocked(fetch).mockImplementation((input, init) =>
+      String(input) === "/v1/auth/session"
+        ? json({ authenticated: false })
+        : fetchMock(input, init),
+    );
+    render(<App />);
+    expect(
+      await screen.findByRole("button", { name: "Sign in" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Work email")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/API key/i)).not.toBeInTheDocument();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) => String(url).startsWith("/v1/work-")),
+    ).toBe(false);
+  });
+
+  it("shows the unavailable surface when browser sign-in is not configured", async () => {
+    vi.mocked(fetch).mockImplementation((input, init) =>
+      String(input) === "/v1/auth/session"
+        ? json({ error: "unavailable", code: "auth_unavailable" }, 503)
+        : fetchMock(input, init),
+    );
+    render(<App />);
+    expect(
+      await screen.findByRole("heading", {
+        name: "Sign-in is temporarily unavailable",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText(/API key/i)).not.toBeInTheDocument();
+  });
+
+  it("returns to sign-in when a work call reports the session expired", async () => {
+    vi.mocked(fetch).mockImplementation((input, init) =>
+      String(input).startsWith("/v1/work-dashboard")
+        ? json(
+            {
+              error: "Your session expired. Sign in again to continue.",
+              code: "session_expired",
+            },
+            401,
+          )
+        : fetchMock(input, init),
+    );
+    render(<App />);
+    expect(
+      await screen.findByRole("button", { name: "Sign in" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Your session expired. Sign in again to continue."),
+    ).toBeInTheDocument();
+  });
+
+  it("returns to sign-in when the live event stream reports the session expired", async () => {
+    vi.mocked(fetch).mockImplementation((input, init) =>
+      String(input) === "/v1/work-events"
+        ? json({ error: "expired", code: "session_expired" }, 401)
+        : fetchMock(input, init),
+    );
+    render(<App />);
+    expect(
+      await screen.findByRole("button", { name: "Sign in" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders an Operator board whose value fields were clipped by the server", async () => {
+    sessionProfile = operatorProfile;
+    const clipped = {
+      ...item,
+      valueConfigured: false,
+      valueModel: undefined,
+      estimatedValue: undefined,
+      valueCurrency: undefined,
+      valueDisputed: false,
+    };
     vi.mocked(fetch).mockImplementation((input, init) => {
-      const authorization = (init?.headers as Record<string, string>)
-        ?.Authorization;
-      if (
-        String(input).startsWith("/v1/work-dashboard") &&
-        authorization === "Bearer invalid"
-      )
-        return json({ error: "unauthorized" }, 401);
+      const url = String(input);
+      if (url.startsWith("/v1/work-dashboard"))
+        return json({
+          ...summary,
+          value: {
+            configured: false,
+            estimated: false,
+            totals: [],
+            models: [],
+          },
+          trend: [],
+        });
+      if (url.startsWith("/v1/work-items?")) return json([clipped]);
+      if (url === "/v1/work-items/item-1") return json(clipped);
       return fetchMock(input, init);
     });
-    const user = userEvent.setup();
-    render(<App />);
-    const key = await screen.findByLabelText("Work API key");
-    await user.type(key, "invalid");
-    await user.click(screen.getByRole("button", { name: "Connect" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The key could not open the Dashboard.",
+    const user = await connect();
+    expect(screen.getByText("Value model not configured")).toBeInTheDocument();
+    expect(
+      screen.getByText("No value recorded for this period"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/€/)).not.toBeInTheDocument();
+    await user.click(screen.getByText("Quotation request — ACME"));
+    expect(
+      await screen.findByRole("heading", { name: "Quotation processed" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/€/)).not.toBeInTheDocument();
+  });
+
+  it("refreshes a stale CSRF proof once and retries the unsafe call", async () => {
+    let feedbackPosts = 0;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input).endsWith("/feedback") && init?.method === "POST") {
+        feedbackPosts += 1;
+        if (headersOf(init)["X-CSRF-Token"] === "csrf-1")
+          return json({ error: "stale", code: "csrf" }, 403);
+      }
+      return fetchMock(input, init);
+    });
+    const user = await connect();
+    await user.click(screen.getByText("Quotation request — ACME"));
+    await screen.findByRole("heading", { name: "Quotation processed" });
+    await user.click(
+      screen.getByRole("button", { name: /Result needs improvement/ }),
     );
-    await user.clear(key);
-    await user.type(key, "work_secret");
-    await user.click(screen.getByRole("button", { name: "Connect" }));
+    await user.click(screen.getByRole("button", { name: "Save feedback" }));
+    await waitFor(() =>
+      expect(screen.getByText(/without starting new work/)).toBeInTheDocument(),
+    );
+    expect(feedbackPosts).toBe(2);
+    const posts = workCalls().filter(
+      ([url, init]) =>
+        String(url).endsWith("/feedback") && init?.method === "POST",
+    );
+    expect(posts.map(([, init]) => headersOf(init)["X-CSRF-Token"])).toEqual([
+      "csrf-1",
+      "csrf-2",
+    ]);
+  });
+
+  it("moves between the board and account security, and signs out with the CSRF proof", async () => {
+    const user = await connect();
+    await user.click(screen.getByRole("button", { name: "Account" }));
+    expect(
+      await screen.findByRole("heading", { name: "Profile" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Work" }));
     expect(
       await screen.findByText("Quotation request — ACME"),
     ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(
+      await screen.findByRole("button", { name: "Sign in" }),
+    ).toBeInTheDocument();
+    const signOut = vi
+      .mocked(fetch)
+      .mock.calls.find(([url]) => String(url) === "/v1/auth/sign-out");
+    expect(headersOf(signOut?.[1])["X-CSRF-Token"]).toBe("csrf-1");
+  });
+
+  function signOutCalls() {
+    return vi
+      .mocked(fetch)
+      .mock.calls.filter(([url]) => String(url) === "/v1/auth/sign-out")
+      .map(([, init]) => headersOf(init)["X-CSRF-Token"]);
+  }
+  function staleSignOutProof(input: RequestInfo | URL, init?: RequestInit) {
+    if (
+      String(input) === "/v1/auth/sign-out" &&
+      headersOf(init)["X-CSRF-Token"] === "csrf-1"
+    )
+      return json({ error: "stale", code: "csrf" }, 403);
+    return fetchMock(input, init);
+  }
+
+  it("refreshes a stale CSRF proof before signing out from the board", async () => {
+    vi.mocked(fetch).mockImplementation(staleSignOutProof);
+    const user = await connect();
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(
+      await screen.findByRole("button", { name: "Sign in" }),
+    ).toBeInTheDocument();
+    expect(signOutCalls()).toEqual(["csrf-1", "csrf-2"]);
+  });
+
+  it("refreshes a stale CSRF proof before signing out from Account", async () => {
+    vi.mocked(fetch).mockImplementation(staleSignOutProof);
+    const user = await connect();
+    await user.click(screen.getByRole("button", { name: "Account" }));
+    await screen.findByRole("heading", { name: "Profile" });
+    await user.click(
+      screen.getAllByRole("button", { name: "Sign out this device" })[0],
+    );
+    expect(
+      await screen.findByRole("button", { name: "Sign in" }),
+    ).toBeInTheDocument();
+    expect(signOutCalls()).toEqual(["csrf-1", "csrf-2"]);
+  });
+
+  it("stays signed in and says so when sign-out fails", async () => {
+    vi.mocked(fetch).mockImplementation((input, init) =>
+      String(input) === "/v1/auth/sign-out"
+        ? json({ error: "unavailable", code: "auth_unavailable" }, 503)
+        : fetchMock(input, init),
+    );
+    const user = await connect();
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(
+      await screen.findByText(/Could not sign out\. You are still signed in/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+    expect(screen.getByText("Quotation request — ACME")).toBeInTheDocument();
   });
 
   it("keeps active business steps visible and failed work outside the four columns when value is unconfigured", async () => {
@@ -394,21 +614,18 @@ describe("Platform v1 Dashboard", () => {
         .mock.calls.some(
           ([url, init]) =>
             String(url) === "/v1/work-items/item-1/wait/stop" &&
-            init?.method === "POST",
+            init?.method === "POST" &&
+            headersOf(init)["X-CSRF-Token"] === "csrf-1",
         ),
     ).toBe(true);
   });
 
-  it("presents Portuguese customer labels", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await screen.findByLabelText("Work API key");
-    await user.click(screen.getByRole("button", { name: "PT" }));
+  it("opens the board in the signed-in person's language", async () => {
+    sessionProfile = { ...adminProfile, locale: "pt" };
+    await connect();
+    expect(screen.getByText("Painel")).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "Ligar ao Painel" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Chave da API de trabalho"),
+      screen.getByRole("heading", { name: "Concluído" }),
     ).toBeInTheDocument();
   });
 
@@ -467,6 +684,7 @@ describe("Platform v1 Dashboard", () => {
           String(url).endsWith("/feedback") && init?.method === "POST",
       );
     expect(post).toBeTruthy();
+    expect(headersOf(post?.[1])["X-CSRF-Token"]).toBe("csrf-1");
     expect(
       vi
         .mocked(fetch)
@@ -576,6 +794,8 @@ describe("Platform v1 Dashboard", () => {
           String(url).endsWith("/revisions") && init?.method === "POST",
       );
     expect(revision?.[1]?.body).toContain("invocation-1");
+    expect(headersOf(revision?.[1])["X-CSRF-Token"]).toBe("csrf-1");
+    expect(headersOf(revision?.[1])).not.toHaveProperty("Authorization");
   });
 
   it("uploads and attaches a file when resolving an artifact blocker", async () => {
@@ -657,6 +877,11 @@ describe("Platform v1 Dashboard", () => {
         String(url).includes("/work-blockers/blocker-1/responses"),
       );
     expect(response?.[1]?.body).toContain("artifact-1");
+    expect(headersOf(response?.[1])["X-CSRF-Token"]).toBe("csrf-1");
+    const upload = unsafeWorkCall("/v1/artifacts");
+    expect(upload?.[1]?.credentials).toBe("same-origin");
+    expect(headersOf(upload?.[1])["X-CSRF-Token"]).toBe("csrf-1");
+    expect(headersOf(upload?.[1])["Content-Type"]).toBe("application/pdf");
   });
 
   it("renders a done item whose result node exposes fields/artifacts but no outcomes", async () => {

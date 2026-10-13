@@ -1275,61 +1275,6 @@ a:hover {
 .formula strong {
   font: 500 13px/1.5 var(--mono);
 }
-.connection-shell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  padding: 24px;
-  background: var(--g25);
-  background-image:
-    linear-gradient(rgba(14, 26, 43, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(14, 26, 43, 0.05) 1px, transparent 1px);
-  background-size: 28px 28px;
-}
-.connection-shell > .language-switch {
-  position: fixed;
-  top: 18px;
-  right: 18px;
-}
-.connection-card {
-  display: flex;
-  width: 420px;
-  max-width: 100%;
-  flex-direction: column;
-  gap: 12px;
-  padding: 30px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 18px 50px -24px rgba(8, 11, 17, 0.35);
-}
-.connection-card .brand-mark {
-  margin-bottom: 7px;
-}
-.connection-card h1 {
-  margin: 0;
-  font-size: 23px;
-}
-.connection-card p {
-  margin: 0 0 8px;
-  color: var(--g500);
-  font-size: 14px;
-  line-height: 1.5;
-}
-.connection-card label {
-  font-size: 12px;
-  font-weight: 600;
-}
-.connection-card input {
-  height: 42px;
-  padding: 0 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-}
-.connection-card .button {
-  margin-top: 4px;
-}
 @keyframes panel {
   from {
     transform: translateX(28px);

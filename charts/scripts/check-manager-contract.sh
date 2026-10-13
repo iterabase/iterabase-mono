@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-rendered=$(helm template manager-contract charts/control-plane)
+rendered=$(helm template manager-contract charts/control-plane -f values-control-plane-auth.yaml)
 
 for crd in agentpools.platform.iterabase.com modelbackends.platform.iterabase.com workflows.platform.iterabase.com; do
   if ! grep -q "^  name: ${crd}$" <<<"$rendered"; then
@@ -19,8 +19,8 @@ grep -q '^                      - iterabase-lvm-xfs$' <<<"$(grep -A55 '^        
 }
 echo "OK: AgentPool, ModelBackend managed storage, and Workflow CRDs render"
 
-rbac=$(helm template manager-contract charts/control-plane --show-only templates/rbac.yaml)
-for resource in configmaps persistentvolumeclaims persistentvolumes pods services secrets storageclasses lvmnodes lvmvolumes deployments networkpolicies agentpools identitymappings modelbackends models permissionpolicies workflows; do
+rbac=$(helm template manager-contract charts/control-plane -f values-control-plane-auth.yaml --show-only templates/rbac.yaml)
+for resource in configmaps persistentvolumeclaims persistentvolumes pods services secrets storageclasses lvmnodes lvmvolumes deployments networkpolicies agentpools modelbackends models workflows; do
   if ! grep -q "^  - ${resource}$" <<<"$rbac"; then
     echo "ERROR: manager ClusterRole is missing ${resource}" >&2
     exit 1
@@ -32,4 +32,10 @@ for subresource in agentpools/finalizers workflows/finalizers agentpools/status 
     exit 1
   fi
 done
-echo "OK: manager ClusterRole renders all controller-required resources"
+for retired in identitymappings permissionpolicies egressroutes; do
+  if grep -q "${retired}" <<<"$rendered"; then
+    echo "ERROR: retired legacy authority resource ${retired} still renders (HOR-582)" >&2
+    exit 1
+  fi
+done
+echo "OK: manager ClusterRole renders all controller-required resources and no retired CRD"

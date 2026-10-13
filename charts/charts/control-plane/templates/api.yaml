@@ -91,12 +91,6 @@ spec:
           {{- end }}
           args:
             - bootstrap
-            {{- if not .Values.auth.enabled }}
-            {{- range .Values.bootstrap.serviceAccounts }}
-            - --service-account
-            - {{ . | quote }}
-            {{- end }}
-            {{- end }}
           env:
             - name: PGPASSWORD
               valueFrom:
@@ -106,7 +100,7 @@ spec:
             - name: DATABASE_URL
               value: {{ include "control-plane.databaseURL" . | quote }}
             {{- include "control-plane.authEnv" . | nindent 12 }}
-          {{- if or (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) .Values.auth.geoip.existingClaim }}
+          {{- if or (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) .Values.auth.geoip.existingClaim .Values.auth.email.caSecret }}
           volumeMounts:
             {{- if (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) }}
             - name: internal-ca
@@ -116,6 +110,11 @@ spec:
             {{- if .Values.auth.geoip.existingClaim }}
             - name: auth-geoip
               mountPath: {{ include "control-plane.authGeoIPMountPath" . }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.auth.email.caSecret }}
+            - name: auth-smtp-ca
+              mountPath: {{ include "control-plane.authSMTPCAMountPath" . }}
               readOnly: true
             {{- end }}
           {{- end }}
@@ -146,12 +145,6 @@ spec:
             - name: METRICS_ADDR
               value: {{ printf ":%v" .Values.metrics.port | quote }}
             {{- end }}
-            - name: JWT_SIGNING_KEY_PATH
-              value: {{ .Values.jwt.signingKeyPath | quote }}
-            - name: JWT_KEY_ID
-              value: {{ .Values.jwt.keyId | quote }}
-            - name: IDENTITY_MODE
-              value: {{ .Values.identity.mode | quote }}
             {{- include "control-plane.artifactEnv" . | nindent 12 }}
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | default "info" | quote }}
@@ -166,10 +159,8 @@ spec:
             - name: TLS_KEY_FILE
               value: /etc/control-plane/tls/tls.key
             {{- end }}
+          {{- if or (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) .Values.auth.geoip.existingClaim .Values.auth.email.caSecret }}
           volumeMounts:
-            - name: jwt
-              mountPath: /etc/control-plane/jwt
-              readOnly: true
             {{- if (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) }}
             - name: tls
               mountPath: /etc/control-plane/tls
@@ -183,6 +174,12 @@ spec:
               mountPath: {{ include "control-plane.authGeoIPMountPath" . }}
               readOnly: true
             {{- end }}
+            {{- if .Values.auth.email.caSecret }}
+            - name: auth-smtp-ca
+              mountPath: {{ include "control-plane.authSMTPCAMountPath" . }}
+              readOnly: true
+            {{- end }}
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -210,13 +207,8 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+      {{- if or (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) .Values.auth.geoip.existingClaim .Values.auth.email.caSecret }}
       volumes:
-        - name: jwt
-          secret:
-            secretName: {{ include "control-plane.jwtSecretName" . }}
-            items:
-              - key: private.pem
-                path: private.pem
         {{- if (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) }}
         - name: tls
           secret:
@@ -237,4 +229,13 @@ spec:
             claimName: {{ .Values.auth.geoip.existingClaim | quote }}
             readOnly: true
         {{- end }}
+        {{- if .Values.auth.email.caSecret }}
+        - name: auth-smtp-ca
+          secret:
+            secretName: {{ .Values.auth.email.caSecret | quote }}
+            items:
+              - key: {{ .Values.auth.email.caKey | default "ca.crt" }}
+                path: {{ .Values.auth.email.caKey | default "ca.crt" }}
+        {{- end }}
+      {{- end }}
 {{- end }}

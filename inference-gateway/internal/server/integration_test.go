@@ -22,7 +22,6 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/metrics"
-	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/middleware"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/proxy"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/ratelimit"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/snapshot"
@@ -67,7 +66,7 @@ func TestServer_EndToEnd(t *testing.T) {
 	}))
 	t.Cleanup(vllm.Close)
 
-	// --- Seed: healthy backend + available alias (rewrite on) + identity + API key + rate-limit policy ---
+	// --- Seed: healthy backend + available alias (rewrite on) ---
 	_, err = pool.Exec(ctx, `
 		INSERT INTO catalog.backends (key, name, namespace, kind, model, service_url, deployed, healthy)
 		VALUES ('default/qwen', 'qwen', 'default', 'vLLM', 'Qwen/Qwen3-27B', $1, true, true)`, vllm.URL)
@@ -75,17 +74,6 @@ func TestServer_EndToEnd(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		INSERT INTO catalog.models (key, namespace, model_id, backend_ref, transforms, available)
 		VALUES ('default/qwen3-27b', 'default', 'qwen3-27b', 'qwen', '{"rewrite_model_name":true}'::jsonb, true)`)
-	require.NoError(t, err)
-	var aliceID string
-	require.NoError(t, pool.QueryRow(ctx, `
-		INSERT INTO identity.identities (key, kind) VALUES ('default/alice', 'user') RETURNING id`).Scan(&aliceID))
-	_, err = pool.Exec(ctx, `
-		INSERT INTO identity.api_keys (identity_id, key_hash, scope) VALUES ($1, $2, 'gateway')`,
-		aliceID, middleware.HashKey("test-key"))
-	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `
-		INSERT INTO permissions.policies (subject_kind, subject_key, rate_limits)
-		VALUES ('user', 'default/alice', '{"rpm":60,"tpm":100000}'::jsonb)`)
 	require.NoError(t, err)
 
 	// --- Redis ---
@@ -119,19 +107,17 @@ func TestServer_EndToEnd(t *testing.T) {
 	srv := httptest.NewServer(newRouter(logger, m, deps))
 	t.Cleanup(srv.Close)
 
-	// --- POST /v1/chat/completions with the API key ---
+	// --- POST /v1/chat/completions on the customer listener ---
+	// Legacy keys retired with HOR-582; V2 customer credentials arrive with
+	// HOR-513. Every customer bearer is denied before any backend call.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 		bytes.NewReader([]byte(`{"model":"qwen3-27b","messages":[{"role":"user","content":"hi"}]}`)))
-	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Authorization", "Bearer cp-legacy-key")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	respBody, _ := io.ReadAll(resp.Body)
-	var r map[string]any
-	require.NoError(t, json.Unmarshal(respBody, &r))
-	assert.Equal(t, "qwen3-27b", r["model"], "response model is the alias")
-	assert.Equal(t, "Qwen/Qwen3-27B", backendGotModel, "backend received the rewritten HF id")
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Empty(t, backendGotModel, "a denied customer request never reaches the backend")
 
 	// --- /readyz (fresh -> 200) ---
 	rr, err := http.Get(srv.URL + "/readyz")

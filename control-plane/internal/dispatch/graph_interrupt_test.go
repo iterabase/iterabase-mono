@@ -91,10 +91,13 @@ func completeGraphTurn(t *testing.T, w *fakeWorker, turnID, outcome, output stri
 // holds no worker (pool metrics show it idle) and the attempt continues when
 // the event arrives.
 func TestDispatch_GraphWorkerLossRerunsReadOnlyStepAndWaitHoldsNoWorker(t *testing.T) {
-	env := newDispatchEnv(t)
-	ctx := context.Background()
+	// Configure startup-only metrics before the reconciler can read them.
+	env := newDispatchEnvWithReconciler(t, false)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	metrics := cpmetrics.New("dispatch", "test", "test")
 	env.svc.SetMetrics(metrics)
+	env.svc.StartReconciler(ctx)
 	item := seedGraphWaitItem(t, env)
 	work := workstore.NewStore(env.pgpool)
 

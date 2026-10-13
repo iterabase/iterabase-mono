@@ -9,9 +9,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Cache is the gateway's in-memory snapshot of control-plane state (catalog,
-// API keys, capabilities, rate limits), refreshed from the Store on start, on
-// LISTEN/NOTIFY (catalog_changed, api_keys_changed, permissions_changed), and on
+// Cache is the gateway's in-memory snapshot of control-plane routing and
+// workload state (catalog, workload capabilities, rate limits), refreshed from
+// the Store on start, on LISTEN/NOTIFY (catalog_changed, permissions_changed),
+// and on
 // a periodic poll (fallback). The request path reads from memory (no PG/Redis
 // round-trip); Redis remains for the rate-limit windows. This honors HOR-243's
 // "consumers own their cache + freshness via LISTEN/NOTIFY" contract.
@@ -24,7 +25,6 @@ type Cache struct {
 
 	mu          sync.RWMutex
 	catalog     map[string]CatalogEntry
-	apiKeys     map[string]string
 	caps        map[string][]Capability
 	rl          map[string]IdentityRateLimits
 	lastRefresh time.Time
@@ -83,13 +83,9 @@ func (c *Cache) Stop() {
 	c.wg.Wait()
 }
 
-// refresh reloads all four views from the Store and atomically swaps the maps.
+// refresh reloads the catalog, capability, and rate-limit views from the Store and atomically swaps the maps.
 func (c *Cache) refresh(ctx context.Context) error {
 	entries, err := c.store.ListCatalog(ctx)
-	if err != nil {
-		return err
-	}
-	keys, err := c.store.AllAPIKeys(ctx)
 	if err != nil {
 		return err
 	}
@@ -106,10 +102,6 @@ func (c *Cache) refresh(ctx context.Context) error {
 	for _, e := range entries {
 		cat[e.ModelID] = e
 	}
-	kh := make(map[string]string, len(keys))
-	for _, k := range keys {
-		kh[k.KeyHash] = k.IdentityID
-	}
 	capMap := make(map[string][]Capability)
 	for _, cp := range caps {
 		capMap[cp.IdentityID] = append(capMap[cp.IdentityID], cp)
@@ -120,7 +112,7 @@ func (c *Cache) refresh(ctx context.Context) error {
 	}
 
 	c.mu.Lock()
-	c.catalog, c.apiKeys, c.caps, c.rl = cat, kh, capMap, rlMap
+	c.catalog, c.caps, c.rl = cat, capMap, rlMap
 	c.lastRefresh = time.Now()
 	c.mu.Unlock()
 	for _, fn := range c.onRefresh {
@@ -128,7 +120,7 @@ func (c *Cache) refresh(ctx context.Context) error {
 	}
 
 	c.logger.Debug("snapshot refreshed",
-		"catalog", len(cat), "api_keys", len(kh), "identities_caps", len(capMap), "rate_limits", len(rlMap))
+		"catalog", len(cat), "identities_caps", len(capMap), "rate_limits", len(rlMap))
 	return nil
 }
 
@@ -160,7 +152,7 @@ func (c *Cache) listenLoop() {
 // Returns false if the cache is stopping (ctx cancelled); true to reconnect.
 func (c *Cache) serveConn(conn *pgx.Conn, backoff time.Duration) bool {
 	defer func() { _ = conn.Close(c.ctx) }()
-	channels := []string{"catalog_changed", "api_keys_changed", "permissions_changed"}
+	channels := []string{"catalog_changed", "permissions_changed"}
 	for _, ch := range channels {
 		if _, err := conn.Exec(c.ctx, "LISTEN "+ch); err != nil {
 			c.logger.Error("snapshot listen: LISTEN failed", "channel", ch, "error", err)
@@ -223,7 +215,6 @@ func (c *Cache) sleep(d time.Duration) bool {
 type Reader interface {
 	CatalogEntry(modelID string) (CatalogEntry, bool)
 	ListCatalog() []CatalogEntry
-	IdentityByAPIKey(keyHash string) (string, bool)
 	Capabilities(identityID string) []Capability
 	RateLimits(identityID string) (IdentityRateLimits, bool)
 	Fresh(maxStaleness time.Duration) bool
@@ -272,14 +263,6 @@ func (c *Cache) ListCatalog() []CatalogEntry {
 		out = append(out, e)
 	}
 	return out
-}
-
-// IdentityByAPIKey resolves an API key hash to its identity_id.
-func (c *Cache) IdentityByAPIKey(keyHash string) (string, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	id, ok := c.apiKeys[keyHash]
-	return id, ok
 }
 
 // Capabilities returns the capability rows granted to an identity (nil = none/denied).

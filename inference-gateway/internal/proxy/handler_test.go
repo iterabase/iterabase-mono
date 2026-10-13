@@ -34,7 +34,6 @@ func (f *fakeReader) ListCatalog() []snapshot.CatalogEntry {
 	}
 	return out
 }
-func (f *fakeReader) IdentityByAPIKey(string) (string, bool)       { return "identity-1", true }
 func (f *fakeReader) Capabilities(id string) []snapshot.Capability { return f.caps[id] }
 func (f *fakeReader) RateLimits(string) (snapshot.IdentityRateLimits, bool) {
 	return snapshot.IdentityRateLimits{}, false

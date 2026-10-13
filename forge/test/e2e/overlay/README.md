@@ -30,7 +30,7 @@ iterabase-overlay/
         └── kustomization.yaml   # resources: [../base] + client files; patches: overrides
 ```
 
-**CRD instances, not definitions.** The CRD *definitions* (the schemas for `Model`, `ModelBackend`, `PermissionPolicy`, `IdentityMapping`) ship with the control-plane Helm chart. This overlay carries **instances** (resources of those kinds). `forge apply` installs the chart first, then `kubectl apply -k crds/client/`, so the kinds exist before instances are applied.
+**CRD instances, not definitions.** The CRD *definitions* (the schemas for `Model`, `ModelBackend`, `AgentPool`, `Workflow`) ship with the control-plane Helm chart. This overlay carries **instances** (resources of those kinds). `forge apply` installs the chart first, then `kubectl apply -k crds/client/`, so the kinds exist before instances are applied.
 
 **Kustomize base/overlay mirrors the git fork model.** `crds/base/` is the upstream product instances (inherited via the fork); `crds/client/` composes `../base` and adds client instances + patches. This is Flux-native: HOR-292 points a Flux `Kustomization` at `crds/client/` for continuous reconciliation, with zero restructure.
 

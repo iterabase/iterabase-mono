@@ -10,7 +10,7 @@ release=gateway-tls
 namespace=portable-system
 ca_path=/etc/iterabase/internal-ca/ca.crt
 
-rendered=$(helm template "$release" charts/iterabase-platform --namespace "$namespace" -f values-tls.yaml)
+rendered=$(helm template "$release" charts/iterabase-platform --namespace "$namespace" -f values-auth.yaml -f values-tls.yaml)
 deployment=$(yq eval 'select(.kind == "Deployment" and .metadata.labels."app.kubernetes.io/name" == "inference-gateway")' - <<<"$rendered")
 if [[ -z "$deployment" ]]; then
   echo "ERROR: internal-TLS render has no inference-gateway Deployment" >&2

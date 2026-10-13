@@ -86,29 +86,23 @@ func TestServe_TLS(t *testing.T) {
 }
 
 // baseServeConfig builds a serve-ready config against a fresh migrated Postgres
-// on an OS-assigned free port, with a temp JWT signing key (ValidateServe +
-// identity.NewIssuer both require it).
+// on an OS-assigned free port, with the always-on browser-authentication
+// prerequisites ValidateServe requires.
 func baseServeConfig(t *testing.T) *config.Config {
 	t.Helper()
 	_, connStr := testutil.NewPostgres(t)
 	minio := testutil.NewMinIO(t)
-	return &config.Config{
+	cfg := &config.Config{
 		API: config.APIConfig{Addr: freePortAddr(t)},
 		Database: config.DatabaseConfig{
 			URL:          connStr,
 			MaxOpenConns: 5,
 			MaxIdleConns: 2,
 		},
-		JWT: config.JWTConfig{
-			SigningKeyPath: writeJWTKey(t),
-			KeyID:          "test-kid",
-			Issuer:         "control-plane",
-			Audience:       "inference-gateway",
-			TTL:            "15m",
-		},
-		Identity: config.IdentityConfig{Mode: "enrolled"},
 		Artifact: config.ArtifactConfig{Enabled: true, Endpoint: minio.Endpoint, AccessKey: minio.AccessKey, SecretKey: minio.SecretKey, Bucket: minio.Bucket, MaxSizeBytes: 1 << 20, PendingTTL: "1h", SweepInterval: "1m"},
 	}
+	applyAuthConfig(cfg)
+	return cfg
 }
 
 // runServeAsync starts runServe in a goroutine, failing the test if it errors
@@ -174,18 +168,6 @@ func portOf(addr string) string {
 		return addr
 	}
 	return port
-}
-
-// writeJWTKey generates an RSA private key to a temp file and returns its path.
-func writeJWTKey(t *testing.T) string {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-	der := x509.MarshalPKCS1PrivateKey(key)
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der})
-	path := t.TempDir() + "/jwt.pem"
-	require.NoError(t, os.WriteFile(path, pemBytes, 0o600))
-	return path
 }
 
 // writeSelfSignedCert generates a self-signed cert (SAN: localhost,

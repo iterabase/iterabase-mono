@@ -6,8 +6,7 @@ import (
 	"strings"
 )
 
-// Exactly two customer roles exist (DES-HOR-451-03). `user` is the legacy
-// pre-epoch spelling normalized by NormalizeRole.
+// Exactly two customer roles exist (DES-HOR-451-03).
 const (
 	RoleAdmin    = "admin"
 	RoleOperator = "operator"
@@ -28,12 +27,6 @@ const (
 	CredentialStatusSuspended = "suspended"
 	CredentialStatusExpired   = "expired"
 	CredentialStatusRevoked   = "revoked"
-)
-
-// V2 authority epochs (architecture 7.11).
-const (
-	AuthorityEpochLegacy = "legacy"
-	AuthorityEpochV2     = "v2"
 )
 
 // The complete customer action catalogue (architecture 9.1). There is no
@@ -129,20 +122,6 @@ func CatalogueActions(kind string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// subsetOfActions reports whether every action is a member of allowed.
-func subsetOfActions(actions, allowed []string) bool {
-	permitted := make(map[string]struct{}, len(allowed))
-	for _, action := range allowed {
-		permitted[action] = struct{}{}
-	}
-	for _, action := range actions {
-		if _, ok := permitted[action]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // ValidateActions enforces the fixed catalogue, the credential-kind boundary,

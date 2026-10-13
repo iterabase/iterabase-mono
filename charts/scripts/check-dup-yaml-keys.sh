@@ -44,7 +44,7 @@ PY
 render_and_check() {
   local name="$1"; shift
   local render tmp
-  render=$(helm template "$name" "$chart" "$@")
+  render=$(helm template "$name" "$chart" -f values-auth.yaml "$@")
   tmp=$(mktemp)
   printf '%s\n' "$render" > "$tmp"
   printf '== %s: %s resources\n' "$name" "$(grep -c '^kind:' <<<"$render")"

@@ -302,7 +302,7 @@ func (s *Store) SetupContext(ctx context.Context, raw string, now time.Time) (Se
 	case status != LocalUserSetupPending:
 		return SetupContext{}, ErrAccountNotEligible
 	}
-	return SetupContext{Email: email, Role: NormalizeRole(role)}, nil
+	return SetupContext{Email: email, Role: role}, nil
 }
 
 func localUserInTx(ctx context.Context, tx pgx.Tx, identityID string) (LocalUser, error) {

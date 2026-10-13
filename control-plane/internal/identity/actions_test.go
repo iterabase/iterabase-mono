@@ -89,8 +89,7 @@ func TestActionCatalogueMatchesDatabaseChecks(t *testing.T) {
 	h := newAuthorityHarness(t)
 	ctx := context.Background()
 	admin := h.localUser(t, "admin@example.com", RoleAdmin)
-	serviceActor, err := h.store.UpsertServiceAccount(ctx, "actor@example.com", "Actor")
-	require.NoError(t, err)
+	serviceActor := h.serviceActor(t, "actor@example.com")
 
 	for _, action := range append(CatalogueActions(CredentialKindPersonal), CatalogueActions(CredentialKindAutomation)...) {
 		assert.True(t, KnownAction(action), "catalogue action %q must be known", action)
@@ -102,8 +101,8 @@ func TestActionCatalogueMatchesDatabaseChecks(t *testing.T) {
 			INSERT INTO identity.api_keys
 				(identity_id, key_hash, prefix, name, key_type, owner_user_identity_id,
 				 actor_identity_id, actions, rate_rpm, rate_tpm, expires_at,
-				 credential_family_id, credential_epoch)
-			VALUES ($1, $2, $3, 'parity', $4, $5, $6, $7, 60, 60000, $8, gen_random_uuid(), 'v2')`,
+				 credential_family_id)
+			VALUES ($1, $2, $3, 'parity', $4, $5, $6, $7, 60, 60000, $8, gen_random_uuid())`,
 			actor, "hash-"+kind+"-"+actions[0], "cp-"+kind+actions[0], kind, owner, actor, actions, expiry)
 		return err
 	}

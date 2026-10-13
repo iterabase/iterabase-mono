@@ -2,14 +2,10 @@ package middleware
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
-
-	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/snapshot"
 )
 
 // identityIDKey is the context key for the authenticated identity id.
@@ -26,30 +22,20 @@ func IdentityIDFromContext(ctx context.Context) string {
 	return id
 }
 
-// HashKey returns the sha256 hex of an API key token (the form stored in
-// identity.api_keys.key_hash).
-func HashKey(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
-}
-
-// Auth validates a Bearer API key against the control-plane identity snapshot
-// (key_hash -> identity_id) and injects the identity_id into the request
-// context. 401 on missing/invalid/revoked keys.
-func Auth(cache snapshot.Reader, logger *slog.Logger) func(http.Handler) http.Handler {
+// Auth guards the customer listener. Legacy scoped API keys retired with the
+// V2-only control-plane authority (HOR-582, DES-HOR-582-01), and live V2
+// credential enforcement is delivered by HOR-513. Until then every customer
+// request is denied before any backend call: there is no snapshot-cached key
+// lookup and no fallback identity. The workload mTLS listener is unaffected.
+func Auth(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token := extractBearerToken(r)
-			if token == "" {
+			if extractBearerToken(r) == "" {
 				writeAuthError(w, http.StatusUnauthorized, "missing or invalid Authorization header", "invalid_api_key")
 				return
 			}
-			identityID, ok := cache.IdentityByAPIKey(HashKey(token))
-			if !ok {
-				writeAuthError(w, http.StatusUnauthorized, "invalid API key", "invalid_api_key")
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(WithIdentityID(r.Context(), identityID)))
+			logger.Debug("customer bearer credential refused: V2 customer inference is not enabled")
+			writeAuthError(w, http.StatusUnauthorized, "invalid API key", "invalid_api_key")
 		})
 	}
 }

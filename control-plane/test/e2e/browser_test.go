@@ -38,8 +38,11 @@ const (
 // deployedBrowserProxy gives Chromium one stable loopback origin while Go keeps
 // ownership of the verified service port-forward. Its dynamic upstream lets the
 // browser prove SSE recovery across an intentional Go-controlled network break.
+// Like the production edge, it presents the configured public origin to the
+// API in place of its own loopback origin.
 type deployedBrowserProxy struct {
-	server *httptest.Server
+	server     *httptest.Server
+	edgeOrigin string
 
 	mu        sync.RWMutex
 	target    *url.URL
@@ -48,7 +51,7 @@ type deployedBrowserProxy struct {
 
 func newDeployedBrowserProxy(t *testing.T, upstream string, transport http.RoundTripper) *deployedBrowserProxy {
 	t.Helper()
-	proxy := &deployedBrowserProxy{}
+	proxy := &deployedBrowserProxy{edgeOrigin: authPublicOrigin}
 	proxy.setTarget(upstream, transport)
 	reverse := &httputil.ReverseProxy{
 		Director:      func(*http.Request) {},
@@ -91,6 +94,9 @@ func (proxy *deployedBrowserProxy) RoundTrip(request *http.Request) (*http.Respo
 		return nil, fmt.Errorf("verified deployed API forward is unavailable")
 	}
 	forwarded := request.Clone(request.Context())
+	if origin := forwarded.Header.Get("Origin"); origin != "" && origin == proxy.server.URL {
+		forwarded.Header.Set("Origin", proxy.edgeOrigin)
+	}
 	forwarded.URL.Scheme = target.Scheme
 	forwarded.URL.Host = target.Host
 	forwarded.Host = target.Host
@@ -167,8 +173,7 @@ func (coordinator *browserCoordinator) Close()      { coordinator.server.Close()
 
 func setupBrowserFixturesStage(t *testing.T, state *deployedState) {
 	t.Helper()
-	state.captureBootstrapKeys(t)
-	state.createWorkIdentity(t, "browser-journeys@local")
+	state.ensurePrincipals(t)
 	state.applyWorkFixture(t)
 	state.applyBrowserArtifactWorkflow(t)
 
@@ -176,7 +181,7 @@ func setupBrowserFixturesStage(t *testing.T, state *deployedState) {
 	done := state.startBrowserWorkItem(t, "e2e/manual-review", browserDoneTitle, "hor-483-browser-done", []any{map[string]any{
 		"artifactId": artifactID, "role": "source", "metadata": map[string]any{"name": browserArtifactName},
 	}})
-	status, body := state.requestJSON(t, http.MethodPost, "/v1/work-blockers/"+done.Blocker.ID+"/responses", state.workKey,
+	status, body := state.sessionJSON(t, state.operator, http.MethodPost, "/v1/work-blockers/"+done.Blocker.ID+"/responses",
 		map[string]any{"outcome": "accepted", "response": map[string]any{"approved": true}})
 	requireStatus(t, status, http.StatusOK, body)
 	updated := state.databaseQuery(t, fmt.Sprintf(`WITH updated AS (
@@ -301,7 +306,8 @@ func runPlaywrightJourneysStage(t *testing.T, state *deployedState) {
 			Args:      []string{"--project=chromium"},
 			Env: map[string]string{
 				"ITERABASE_BROWSER_ENDPOINT":        state.browserProxy.URL(),
-				"ITERABASE_BROWSER_WORK_KEY":        state.workKey,
+				"ITERABASE_BROWSER_EMAIL":           state.operator.email,
+				"ITERABASE_BROWSER_PASSWORD":        state.operator.password,
 				"ITERABASE_BROWSER_COORDINATOR":     coordinator.URL(),
 				"ITERABASE_BROWSER_ARTIFACT_ROOT":   artifactRoot,
 				"ITERABASE_BROWSER_DONE_TITLE":      browserDoneTitle,
@@ -374,8 +380,7 @@ func collectBrowserEvidence(state *deployedState, artifactRoot string) error {
 		}
 	}
 
-	secrets := []string{state.adminKey, state.tokenKey, state.workKey}
-	state.redactor.Add(browserEvidenceCredentialVariants(secrets...)...)
+	state.redactor.Add(browserEvidenceCredentialVariants(state.browserSecrets()...)...)
 	stagingRoot, err := os.MkdirTemp(state.outputDir, "browser-sanitized-text-")
 	if err != nil {
 		return fmt.Errorf("create sanitized browser evidence staging directory: %w", err)
@@ -390,7 +395,7 @@ func collectBrowserEvidence(state *deployedState, artifactRoot string) error {
 			Name: entry.Name, Source: filepath.Join(stagingRoot, filepath.Clean(entry.Name)), Kind: artifacts.Text,
 		})
 	}
-	if err := validateBrowserEvidence(stagedTextEntries, secrets...); err != nil {
+	if err := validateBrowserEvidence(stagedTextEntries, state.browserSecrets()...); err != nil {
 		return fmt.Errorf("validate sanitized browser text evidence: %w", err)
 	}
 
@@ -407,7 +412,7 @@ func collectBrowserEvidence(state *deployedState, artifactRoot string) error {
 	opaqueEntries := []artifacts.Entry{{
 		Name: "failure-evidence", Source: filepath.Join(artifactRoot, "safe-opaque"), Kind: artifacts.SafeSyntheticOpaque,
 	}}
-	if err := validateBrowserEvidence(opaqueEntries, secrets...); err != nil {
+	if err := validateBrowserEvidence(opaqueEntries, state.browserSecrets()...); err != nil {
 		return fmt.Errorf("validate sanitized opaque browser evidence: %w", err)
 	}
 	if err := artifacts.Collect(opaqueEntries, destination, state.redactor); err != nil {

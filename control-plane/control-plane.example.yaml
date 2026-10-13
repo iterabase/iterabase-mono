@@ -1,6 +1,6 @@
 # control-plane example configuration. Copy to control-plane.yaml and edit.
 # Environment variables (DATABASE_URL, API_ADDR, METRICS_ADDR, LOG_LEVEL, LOG_FORMAT,
-# JWT_SIGNING_KEY_PATH, JWT_KEY_ID, IDENTITY_MODE, TLS_CERT_FILE, TLS_KEY_FILE)
+# AUTH_*, TLS_CERT_FILE, TLS_KEY_FILE)
 # override these values and are the preferred way to inject secrets in
 # Kubernetes.
 #
@@ -82,31 +82,12 @@ logging:
   level: info                  # debug | info | warn | error
   format: json                 # json | text
 
-# JWT issuance (cmd/api serve). The signing key is an RSA private key PEM,
-# mounted from a Kubernetes Secret (forge-provisioned). The manager does not
-# read this key; only the api issues JWTs and serves JWKS.
-jwt:
-  signing_key_path: "${JWT_SIGNING_KEY_PATH}"   # e.g. /etc/control-plane/jwt/private.pem
-  key_id: "control-plane-1"                      # kid published in JWKS + JWT header
-  issuer: "control-plane"                        # iss claim
-  audience: "inference-gateway"                  # aud claim (validated by the gateway)
-  ttl: "15m"                                     # token lifetime
-
-# Identity-resolution mode.
-#   enrolled - linked IdentityMapping required; unlinked surface users are
-#              denied (S8 default). Fine-grained narrowing is HOR-243.
-#   open     - auto-provision any workspace member with all capabilities
-#              (deferred, HOR-313; the token endpoint returns 501).
-identity:
-  mode: enrolled
-
-# V2 browser authentication (HOR-453; docs/architecture/v2-authentication-authority.md).
-# Disabled by default. When enabled, the api/bootstrap containers fail closed
-# without a valid exact public HTTPS origin, verified-TLS SMTP, and the
-# first-Admin Secret. Session bounds below may only tighten the approved
-# 12h idle / 720h absolute / 15m recent-password maximums.
+# V2 authentication (HOR-453/582; docs/architecture/v2-authentication-authority.md).
+# Sign-in is always on: the api/bootstrap containers fail closed without a
+# valid exact public HTTPS origin, verified-TLS SMTP, and the first-Admin email.
+# Session bounds below may only tighten the approved 12h idle / 720h absolute /
+# 15m recent-password maximums.
 auth:
-  enabled: false
   public_origin: "${AUTH_PUBLIC_ORIGIN}"   # e.g. https://app.example.com (no path)
   session:
     idle_ttl: ""            # <= 12h; empty uses the approved maximum
@@ -122,6 +103,7 @@ auth:
     from: "${AUTH_SMTP_FROM}"
     username: "${AUTH_SMTP_USERNAME}"
     password: "${AUTH_SMTP_PASSWORD}"
+    ca_file: ""             # optional PEM bundle for a private relay CA; never disables verification
   bootstrap:
     admin_email: "${AUTH_BOOTSTRAP_ADMIN_EMAIL}"
     admin_locale: "en"      # en | pt

@@ -64,7 +64,7 @@ spec:
           - --leader-elect
           - --health-probe-bind-address=:8081
         env:
-        # The manager materializes IdentityMapping CRs into Postgres (HOR-242).
+        # The manager materializes CRs into Postgres.
         # forge provisions this Secret.
         - name: DATABASE_URL
           valueFrom:

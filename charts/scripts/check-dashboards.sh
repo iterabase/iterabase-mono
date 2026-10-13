@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ./scripts/render-iterabase-dashboards.py --check
-rendered=$(helm template dashboard-contract charts/iterabase-platform -f values-observability.yaml)
+rendered=$(helm template dashboard-contract charts/iterabase-platform -f values-auth.yaml -f values-observability.yaml)
 labels=$(grep -c 'grafana_dashboard: "1"' <<<"$rendered")
 folders=$(grep -c 'grafana_folder:' <<<"$rendered")
 iterabase=$(grep -c 'grafana_folder: Iterabase' <<<"$rendered")

@@ -80,11 +80,8 @@ rules:
   - platform.iterabase.com
   resources:
   - agentpools
-  - egressroutes
-  - identitymappings
   - modelbackends
   - models
-  - permissionpolicies
   - workflows
   verbs:
   - create
@@ -98,11 +95,8 @@ rules:
   - platform.iterabase.com
   resources:
   - agentpools/finalizers
-  - egressroutes/finalizers
-  - identitymappings/finalizers
   - modelbackends/finalizers
   - models/finalizers
-  - permissionpolicies/finalizers
   - workflows/finalizers
   verbs:
   - update
@@ -110,11 +104,8 @@ rules:
   - platform.iterabase.com
   resources:
   - agentpools/status
-  - egressroutes/status
-  - identitymappings/status
   - modelbackends/status
   - models/status
-  - permissionpolicies/status
   - workflows/status
   verbs:
   - get

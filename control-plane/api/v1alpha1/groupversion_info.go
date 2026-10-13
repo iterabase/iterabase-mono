@@ -26,8 +26,6 @@ var (
 
 // addKnownTypes registers the control-plane CRD types with the scheme.
 func addKnownTypes(scheme *runtime.Scheme) error {
-	scheme.AddKnownTypes(GroupVersion, &IdentityMapping{}, &IdentityMappingList{})
-	scheme.AddKnownTypes(GroupVersion, &PermissionPolicy{}, &PermissionPolicyList{})
 	scheme.AddKnownTypes(GroupVersion, &ModelBackend{}, &ModelBackendList{})
 	scheme.AddKnownTypes(GroupVersion, &Model{}, &ModelList{})
 	scheme.AddKnownTypes(GroupVersion, &AgentPool{}, &AgentPoolList{})

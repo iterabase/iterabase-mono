@@ -10,7 +10,6 @@ import (
 
 // fakeReader is a snapshot.Reader fake for middleware unit tests.
 type fakeReader struct {
-	apiKeys    map[string]string
 	caps       map[string][]snapshot.Capability
 	rateLimits map[string]snapshot.IdentityRateLimits
 }
@@ -19,7 +18,6 @@ func (f *fakeReader) CatalogEntry(string) (snapshot.CatalogEntry, bool) {
 	return snapshot.CatalogEntry{}, false
 }
 func (f *fakeReader) ListCatalog() []snapshot.CatalogEntry         { return nil }
-func (f *fakeReader) IdentityByAPIKey(h string) (string, bool)     { id, ok := f.apiKeys[h]; return id, ok }
 func (f *fakeReader) Capabilities(id string) []snapshot.Capability { return f.caps[id] }
 func (f *fakeReader) RateLimits(id string) (snapshot.IdentityRateLimits, bool) {
 	rl, ok := f.rateLimits[id]

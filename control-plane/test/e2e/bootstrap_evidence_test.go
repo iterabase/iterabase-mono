@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -81,26 +82,26 @@ func (state *deployedState) readBootstrapEvidencePods(ctx context.Context) ([]bo
 	return list.Items, nil
 }
 
-func (state *deployedState) readBootstrapKeys(ctx context.Context, excludedUIDs map[string]struct{}) (map[string]string, bootstrapEvidencePod, error) {
+// assertBootstrapPrintedNoCredential reads the exact bootstrap init container
+// of the newest successful API pod and proves the first-boot bootstrap queued
+// setup email without printing an API key, token, or password
+// (DES-HOR-451-11, DES-HOR-582-03).
+func (state *deployedState) assertBootstrapPrintedNoCredential(ctx context.Context, excludedUIDs map[string]struct{}) (bootstrapEvidencePod, error) {
 	pods, err := state.readBootstrapEvidencePods(ctx)
 	if err != nil {
-		return nil, bootstrapEvidencePod{}, err
+		return bootstrapEvidencePod{}, err
 	}
 	pod, err := selectBootstrapEvidencePod(pods, excludedUIDs)
 	if err != nil {
-		return nil, bootstrapEvidencePod{}, err
+		return bootstrapEvidencePod{}, err
 	}
 	command := exec.CommandContext(ctx, "kubectl", "--kubeconfig", state.cluster.Kubeconfig,
 		"logs", "-n", controlPlaneNamespace, pod.Metadata.Name, "-c", "bootstrap")
 	output, err := command.Output()
 	if err != nil {
-		return nil, pod, fmt.Errorf("read bootstrap logs from %s: %w", pod.safeSummary(), err)
+		return pod, fmt.Errorf("read bootstrap logs from %s: %w", pod.safeSummary(), err)
 	}
-	keys, err := parsePodBootstrapKeys(pod, string(output))
-	if err != nil {
-		return nil, pod, err
-	}
-	return keys, pod, nil
+	return pod, bootstrapOutputError(pod, string(output))
 }
 
 func selectBootstrapEvidencePod(pods []bootstrapEvidencePod, excludedUIDs map[string]struct{}) (bootstrapEvidencePod, error) {
@@ -150,18 +151,20 @@ func bootstrapEvidencePodUIDs(pods []bootstrapEvidencePod) map[string]struct{} {
 	return uids
 }
 
-func parsePodBootstrapKeys(pod bootstrapEvidencePod, output string) (map[string]string, error) {
-	keys, err := parseRequiredBootstrapKeys(output)
-	if err == nil {
-		return keys, nil
+// bootstrapPrintedCredentialPattern matches anything that would be a usable
+// credential in bootstrap output: an API key or a one-time link token.
+var bootstrapPrintedCredentialPattern = regexp.MustCompile(`cp-[A-Z2-7]{8,}|token=[A-Za-z0-9_\-]{8,}|scope=`)
+
+// bootstrapOutputError accepts only a bootstrap run that reported its state and
+// printed no credential. Errors carry safe pod metadata, never the output.
+func bootstrapOutputError(pod bootstrapEvidencePod, output string) error {
+	if bootstrapPrintedCredentialPattern.MatchString(output) {
+		return fmt.Errorf("bootstrap printed a credential for %s output_bytes=%d", pod.safeSummary(), len(output))
 	}
-	scopes := make([]string, 0, len(keys))
-	for scope := range keys {
-		scopes = append(scopes, scope)
+	if !strings.Contains(output, "Bootstrap created") && !strings.Contains(output, "Bootstrap noop") {
+		return fmt.Errorf("bootstrap evidence incomplete for %s output_bytes=%d", pod.safeSummary(), len(output))
 	}
-	sort.Strings(scopes)
-	return nil, fmt.Errorf("bootstrap evidence incomplete for %s output_bytes=%d parsed_scopes=%v: %w",
-		pod.safeSummary(), len(output), scopes, err)
+	return nil
 }
 
 func (pod bootstrapEvidencePod) ready() bool {

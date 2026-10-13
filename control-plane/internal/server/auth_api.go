@@ -52,7 +52,7 @@ func authError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func (h *Handler) authReady(w http.ResponseWriter) bool {
-	if h.authCfg == nil || !h.authCfg.Enabled || h.store == nil {
+	if h.authCfg == nil || h.store == nil {
 		authError(w, http.StatusServiceUnavailable, "auth_unavailable",
 			"Browser authentication is temporarily unavailable.")
 		return false
@@ -61,60 +61,40 @@ func (h *Handler) authReady(w http.ResponseWriter) bool {
 }
 
 // registerAuthRoutes mounts the public browser journey and the cookie-session
-// customer APIs. Every route here rejects bearer authentication by design.
+// security APIs. Every route here rejects bearer authentication by design.
 func (h *Handler) registerAuthRoutes(r chi.Router) {
-	r.Group(func(r chi.Router) {
-		r.Use(h.requireOrigin)
-		r.Post("/v1/auth/request-access", h.requestAccess)
-		r.Post("/v1/auth/verify", h.verifyAccessRequest)
-		r.Post("/v1/auth/request-status", h.accessRequestStatus)
-		r.Post("/v1/auth/setup", h.completeSetup)
-		r.Post("/v1/auth/setup/resend", h.resendSetup)
-		r.Post("/v1/auth/setup/context", h.setupContext)
-		r.Post("/v1/auth/sign-in", h.signIn)
-		r.Post("/v1/auth/password/forgot", h.forgotPassword)
-		r.Post("/v1/auth/password/reset", h.resetPassword)
-		r.Get("/v1/auth/session", h.authSession)
+	h.route(r, http.MethodPost, "/v1/auth/request-access", public(), h.requestAccess)
+	h.route(r, http.MethodPost, "/v1/auth/verify", public(), h.verifyAccessRequest)
+	h.route(r, http.MethodPost, "/v1/auth/request-status", public(), h.accessRequestStatus)
+	h.route(r, http.MethodPost, "/v1/auth/setup", public(), h.completeSetup)
+	h.route(r, http.MethodPost, "/v1/auth/setup/resend", public(), h.resendSetup)
+	h.route(r, http.MethodPost, "/v1/auth/setup/context", public(), h.setupContext)
+	h.route(r, http.MethodPost, "/v1/auth/sign-in", public(), h.signIn)
+	h.route(r, http.MethodPost, "/v1/auth/password/forgot", public(), h.forgotPassword)
+	h.route(r, http.MethodPost, "/v1/auth/password/reset", public(), h.resetPassword)
+	h.route(r, http.MethodGet, "/v1/auth/session", public(), h.authSession)
 
-		r.Group(func(r chi.Router) {
-			r.Use(h.requireBrowser)
-			r.Get("/v1/profile", h.getProfile)
-			r.Get("/v1/sessions", h.listSessions)
+	h.route(r, http.MethodGet, "/v1/profile", session(), h.getProfile)
+	h.route(r, http.MethodGet, "/v1/sessions", session(), h.listSessions)
+	h.route(r, http.MethodPatch, "/v1/profile", session(), h.updateProfile)
+	h.route(r, http.MethodPost, "/v1/auth/sign-out", session(), h.signOut)
+	h.route(r, http.MethodPost, "/v1/auth/reauthenticate", session(), h.reauthenticate)
+	h.route(r, http.MethodDelete, "/v1/sessions/{id}", session(), h.revokeSession)
+	h.route(r, http.MethodPost, "/v1/sessions/revoke-others", session(), h.revokeOtherSessions)
 
-			r.Group(func(r chi.Router) {
-				r.Use(h.requireCSRF)
-				r.Patch("/v1/profile", h.updateProfile)
-				r.Post("/v1/auth/sign-out", h.signOut)
-				r.Post("/v1/auth/reauthenticate", h.reauthenticate)
-				r.Delete("/v1/sessions/{id}", h.revokeSession)
-				r.Post("/v1/sessions/revoke-others", h.revokeOtherSessions)
-			})
-
-			r.Group(func(r chi.Router) {
-				r.Use(h.requireAdmin)
-				r.Get("/v1/access-requests", h.listAccessRequests)
-				r.Group(func(r chi.Router) {
-					r.Use(h.requireCSRF, h.requireRecentAuth)
-					r.Post("/v1/access-requests/{id}/approve", h.approveAccessRequest)
-					r.Post("/v1/access-requests/{id}/decline", h.declineAccessRequest)
-				})
-			})
-		})
-	})
+	h.route(r, http.MethodGet, "/v1/access-requests", action(identity.ActionPeopleRead), h.listAccessRequests)
+	h.route(r, http.MethodPost, "/v1/access-requests/{id}/approve", recentAdminSession(), h.approveAccessRequest)
+	h.route(r, http.MethodPost, "/v1/access-requests/{id}/decline", recentAdminSession(), h.declineAccessRequest)
 }
 
 // requireOrigin enforces the exact configured origin on unsafe browser
 // requests. Safe methods and non-browser clients are unaffected.
 func (h *Handler) requireOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// A disabled surface reports its customer-safe unavailable state from
-		// the handler instead of a misleading origin denial.
-		if h.authCfg == nil || !h.authCfg.Enabled {
-			next.ServeHTTP(w, r)
+		if !h.authReady(w) {
 			return
 		}
-		switch r.Method {
-		case http.MethodGet, http.MethodHead, http.MethodOptions:
+		if safeMethod(r.Method) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -152,8 +132,7 @@ func (h *Handler) requireBrowser(next http.Handler) http.Handler {
 // requireCSRF enforces the session-bound CSRF proof on unsafe methods.
 func (h *Handler) requireCSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet, http.MethodHead, http.MethodOptions:
+		if safeMethod(r.Method) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -226,17 +205,12 @@ func sessionRefusalEvent(err error, now time.Time) (identity.SecurityEvent, bool
 // --- public journey ---
 
 // authSession is the always-200 browser-session bootstrap probe. It lets the
-// same-origin app learn whether browser authentication is enabled and whether
-// the caller already holds a live session without producing failed network
-// responses for the disabled/anonymous states.
+// same-origin app learn whether the caller already holds a live session without
+// producing a failed network response for the anonymous state.
 func (h *Handler) authSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if h.authCfg == nil || !h.authCfg.Enabled || h.store == nil {
-		writeJSON(w, http.StatusOK, authSessionResponse{Enabled: false})
-		return
-	}
 	token, err := h.authCfg.sessionCookie(r)
 	if err != nil {
 		if errors.Is(err, ErrBearerNotAccepted) {
@@ -244,7 +218,7 @@ func (h *Handler) authSession(w http.ResponseWriter, r *http.Request) {
 				"This area requires a browser session; API keys are not accepted here.")
 			return
 		}
-		writeJSON(w, http.StatusOK, authSessionResponse{Enabled: true})
+		writeJSON(w, http.StatusOK, authSessionResponse{})
 		return
 	}
 	session, err := h.store.ResolveBrowserSessionWithNetwork(r.Context(), token, h.authCfg.now(), h.sessionNetwork(r))
@@ -252,23 +226,23 @@ func (h *Handler) authSession(w http.ResponseWriter, r *http.Request) {
 		// An expired or ineligible browser session is the anonymous state for
 		// the bootstrap probe; the refusal is still audited.
 		h.auditSessionRefusal(r, err)
-		writeJSON(w, http.StatusOK, authSessionResponse{Enabled: true})
+		writeJSON(w, http.StatusOK, authSessionResponse{})
 		return
 	}
 	user, err := h.store.GetLocalUser(r.Context(), session.IdentityID)
 	if err != nil {
-		writeJSON(w, http.StatusOK, authSessionResponse{Enabled: true})
+		writeJSON(w, http.StatusOK, authSessionResponse{})
 		return
 	}
 	csrfRaw, err := h.store.RotateSessionCSRF(r.Context(), session.ID)
 	if err != nil {
-		writeJSON(w, http.StatusOK, authSessionResponse{Enabled: true})
+		writeJSON(w, http.StatusOK, authSessionResponse{})
 		return
 	}
 	profile := profileFor(user)
 	profile.RecentPasswordAt = session.RecentPasswordAt
 	writeJSON(w, http.StatusOK, authSessionResponse{
-		Enabled: true, Authenticated: true, Profile: &profile, CSRFToken: csrfRaw,
+		Authenticated: true, Profile: &profile, CSRFToken: csrfRaw,
 	})
 }
 
@@ -523,7 +497,7 @@ func (h *Handler) finishSignIn(r *http.Request, w http.ResponseWriter, user iden
 		Outcome:           identity.OutcomeSuccess,
 		SubjectIdentityID: user.ID,
 		CredentialKind:    identity.CredentialBrowser,
-		Detail:            map[string]any{"role": identity.NormalizeRole(user.Role)},
+		Detail:            map[string]any{"role": user.Role},
 		CreatedAt:         now,
 	})
 	raw, session, err := h.store.CreateBrowserSession(r.Context(), identity.CreateBrowserSessionParams{
@@ -872,7 +846,7 @@ func (h *Handler) approveAccessRequest(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		authError(w, http.StatusInternalServerError, "unavailable", "This is temporarily unavailable. Try again shortly.")
 	default:
-		authWrite(w, http.StatusOK, map[string]string{"state": "setup_pending", "role": identity.NormalizeRole(user.Role)})
+		authWrite(w, http.StatusOK, map[string]string{"state": "setup_pending", "role": user.Role})
 	}
 }
 
@@ -899,8 +873,7 @@ type signInResponse struct {
 }
 
 type authSessionResponse struct {
-	Enabled       bool             `json:"enabled"`
-	Authenticated bool             `json:"authenticated,omitempty"`
+	Authenticated bool             `json:"authenticated"`
 	Profile       *profileResponse `json:"profile,omitempty"`
 	CSRFToken     string           `json:"csrfToken,omitempty"`
 }
@@ -939,7 +912,7 @@ func profileFor(user identity.LocalUser) profileResponse {
 		ID:          user.ID,
 		Email:       user.Email,
 		DisplayName: user.DisplayName,
-		Role:        identity.NormalizeRole(user.Role),
+		Role:        user.Role,
 		Locale:      user.Locale,
 		UpdatedAt:   user.UpdatedAt,
 	}

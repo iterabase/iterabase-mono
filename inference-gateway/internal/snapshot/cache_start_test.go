@@ -26,7 +26,6 @@ func (s *fakeStore) ListCatalog(ctx context.Context) ([]CatalogEntry, error) {
 	}
 	return s.catalog, nil
 }
-func (s *fakeStore) AllAPIKeys(ctx context.Context) ([]APIKey, error)                { return nil, nil }
 func (s *fakeStore) AllCapabilities(ctx context.Context) ([]Capability, error)       { return nil, nil }
 func (s *fakeStore) AllRateLimits(ctx context.Context) ([]IdentityRateLimits, error) { return nil, nil }
 

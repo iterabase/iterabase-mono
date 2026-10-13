@@ -9,6 +9,7 @@ assert_service_selector() {
   local rendered actual
 
   rendered=$(helm template selector-check "charts/$chart" \
+    -f values-control-plane-auth.yaml \
     --set metrics.enabled=true \
     "$@" \
     --show-only "templates/$template")
@@ -45,6 +46,7 @@ assert_workload_component() {
   local rendered actual
 
   rendered=$(helm template selector-check "charts/$chart" \
+    -f values-control-plane-auth.yaml \
     --set metrics.enabled=true \
     --show-only "templates/$template")
   actual=$(yq eval 'select(.kind == "Deployment" or .kind == "StatefulSet") | .spec.template.metadata.labels."app.kubernetes.io/component"' - <<<"$rendered")

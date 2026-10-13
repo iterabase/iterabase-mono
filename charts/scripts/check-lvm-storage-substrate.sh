@@ -122,7 +122,7 @@ grep -Fq 'expression: "false"' <<<"$render"
 grep -Fq 'policyName: iterabase-lvmsnapshot-create-deny' <<<"$render"
 
 for values in "" "-f values-observability.yaml"; do
-  platform_render=$(helm template release "$platform" $values)
+  platform_render=$(helm template release "$platform" -f values-auth.yaml $values)
   explicit_classes=$(awk '$1 == "storageClassName:" && NF > 1 {gsub(/"/, "", $2); print $2}' <<<"$platform_render" | sort -u)
   [[ "$explicit_classes" == iterabase-lvm-xfs ]] || {
     echo "error: every rendered platform data claim must explicitly use iterabase-lvm-xfs: $explicit_classes" >&2
@@ -130,7 +130,7 @@ for values in "" "-f values-observability.yaml"; do
   }
 done
 
-if helm template release "$platform" -f values-observability.yaml --set observability.kube-prometheus-stack.grafana.persistence.storageClassName=alternate >/dev/null 2>&1; then
+if helm template release "$platform" -f values-auth.yaml -f values-observability.yaml --set observability.kube-prometheus-stack.grafana.persistence.storageClassName=alternate >/dev/null 2>&1; then
   echo "error: observability accepted an alternate StorageClass" >&2
   exit 1
 fi

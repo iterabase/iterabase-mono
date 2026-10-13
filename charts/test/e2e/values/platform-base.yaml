@@ -7,6 +7,20 @@ external-dns:
 minio:
   enabled: false
 control-plane:
+  # Sign-in is always on (HOR-582). Chart scenarios prove install and upgrade
+  # semantics, not mail delivery: the unreachable relay only leaves the
+  # first-Admin setup intent pending in the transactional outbox.
+  auth:
+    # Read only by the published N-1 (pre-HOR-582) chart, whose auth.enabled
+    # path renders the configuration the constant head images require. The
+    # head chart has no auth-disabled mode and ignores this key.
+    enabled: true
+    publicOrigin: https://app.example.com
+    email:
+      host: smtp.example.com
+      from: Iterabase <no-reply@example.com>
+    bootstrap:
+      adminEmail: admin@example.com
   artifact:
     enabled: false
   dispatch:

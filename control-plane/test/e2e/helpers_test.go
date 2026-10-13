@@ -5,24 +5,6 @@ import (
 	"testing"
 )
 
-func TestParseBootstrapKeys(t *testing.T) {
-	output := `Bootstrap complete.
-Admin (admin@local) API key (scope=admin): cp-admin-secret
-Service account "agent-fleet" API key (scope=token): cp-token-secret
-`
-	keys := parseBootstrapKeys(output)
-	if keys["admin"] != "cp-admin-secret" || keys["token"] != "cp-token-secret" {
-		t.Fatalf("parsed keys=%v", keys)
-	}
-}
-
-func TestParseRequiredBootstrapKeysRejectsIncompleteOutput(t *testing.T) {
-	_, err := parseRequiredBootstrapKeys(`Admin API key (scope=admin): cp-admin-secret`)
-	if err == nil || !strings.Contains(err.Error(), "required admin and token credentials") {
-		t.Fatalf("error=%v", err)
-	}
-}
-
 func TestCleanDatabaseQueryOutputDropsKubectlStreamWarning(t *testing.T) {
 	output := "E0816 13:00:19.754266   42934 websocket.go:296] Unknown stream id 1, discarding message\n10005\n"
 	if cleaned := cleanDatabaseQueryOutput(output); cleaned != "10005" {

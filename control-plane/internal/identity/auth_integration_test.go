@@ -244,8 +244,11 @@ func TestAccessRequestApprovalGuards(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, pending, 1)
 
-	// An existing canonical account blocks approval instead of duplicating it.
-	_, err = h.store.UpsertLocalUser(ctx, "dup@example.com", "dup@example.com", "operator")
+	// An existing signed-up account blocks approval instead of duplicating it.
+	existing, err := h.store.UpsertLocalUser(ctx, "dup@example.com", "dup@example.com", "operator")
+	require.NoError(t, err)
+	_, err = h.store.pool.Exec(ctx, `
+		UPDATE identity.local_users SET status = 'active', password_hash = 'x' WHERE identity_id = $1`, existing.ID)
 	require.NoError(t, err)
 	_, err = h.store.ApproveAccessRequest(ctx, pending[0].ID, reviewer.ID, "admin", h.now)
 	assert.ErrorIs(t, err, ErrAccountExists)
@@ -256,6 +259,50 @@ func TestAccessRequestApprovalGuards(t *testing.T) {
 	assert.ErrorIs(t, err, ErrRequestStateChanged)
 	_, err = h.store.ApproveAccessRequest(ctx, "00000000-0000-0000-0000-000000000000", reviewer.ID, "admin", h.now)
 	assert.ErrorIs(t, err, ErrAccessRequestNotFound)
+}
+
+// TestAccessRequestReapprovesMigratedHuman proves a human migrated into V2
+// without a password (DES-HOR-582-03) joins through the access-request flow
+// under the same canonical identity, so history stays attributed to them.
+func TestAccessRequestReapprovesMigratedHuman(t *testing.T) {
+	h := newAuthHarness(t)
+	ctx := context.Background()
+	reviewer := h.createAdmin(t, "reviewer@example.com")
+	migrated, err := h.store.UpsertLocalUser(ctx, "colleague@example.com", "colleague@example.com", "operator")
+	require.NoError(t, err)
+	require.Equal(t, LocalUserSetupPending, migrated.Status)
+	staleSetup := mustSetupToken(t, h.store, migrated.ID, h.now)
+
+	_, err = h.store.CreateOrResendAccessRequest(ctx, "Colleague@Example.com", "colleague@example.com", "pt", h.now)
+	require.NoError(t, err)
+	h.deliver(t)
+	_, err = h.store.VerifyAccessRequest(ctx, h.sender.lastToken(), h.now)
+	require.NoError(t, err)
+	pending, err := h.store.ListPendingAccessRequests(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+
+	approved, err := h.store.ApproveAccessRequest(ctx, pending[0].ID, reviewer.ID, "admin", h.now)
+	require.NoError(t, err)
+	assert.Equal(t, migrated.ID, approved.ID, "the canonical identity is preserved")
+	assert.Equal(t, "admin", approved.Role)
+	assert.Equal(t, "pt", approved.Locale)
+	assert.Equal(t, LocalUserSetupPending, approved.Status)
+
+	// The approval supersedes any older setup link and sends a fresh one.
+	_, err = h.store.CompleteSetup(ctx, staleSetup, "Colleague", "en", "stale-long-password", h.now)
+	assert.Error(t, err)
+	h.deliver(t)
+	activated, err := h.store.CompleteSetup(ctx, h.sender.lastToken(), "Colleague", "pt", "colleague-long-password", h.now)
+	require.NoError(t, err)
+	assert.Equal(t, migrated.ID, activated.ID)
+	assert.Equal(t, LocalUserActive, activated.Status)
+
+	var reapproved bool
+	require.NoError(t, h.store.pool.QueryRow(ctx, `
+		SELECT (detail->>'existingAccount')::boolean FROM identity.security_events
+		WHERE event = 'access_request_approved' AND subject_identity_id = $1`, migrated.ID).Scan(&reapproved))
+	assert.True(t, reapproved, "the re-approval is audited as such")
 }
 
 func TestPasswordResetSemantics(t *testing.T) {
@@ -283,8 +330,7 @@ func TestPasswordResetSemantics(t *testing.T) {
 		Labels: ClientLabels{Browser: BrowserChrome, OS: OSMacOS, Device: DeviceDesktop},
 	})
 	require.NoError(t, err)
-	keyFull, _, err := h.store.CreateAPIKey(ctx, active.ID, "automation", ScopeWork, nil)
-	require.NoError(t, err)
+	keyFull := personalCredential(t, h.store, active.ID, h.now)
 
 	queued, err = h.store.RequestPasswordReset(ctx, "ada@example.com", h.now)
 	require.NoError(t, err)
@@ -316,7 +362,7 @@ func TestPasswordResetSemantics(t *testing.T) {
 	sessions, err = h.store.ListActiveSessions(ctx, active.ID, "", h.now)
 	require.NoError(t, err)
 	assert.Empty(t, sessions)
-	_, _, err = h.store.ValidateAPIKey(ctx, keyFull)
+	_, _, _, err = h.store.ResolveCredential(ctx, keyFull, h.now)
 	assert.NoError(t, err, "password reset must not implicitly revoke API keys")
 
 	// The reset link is one-time.
@@ -627,9 +673,8 @@ func TestBootstrapAndRecovery(t *testing.T) {
 
 	// With no active Admin the recovery converts the named human, clears the
 	// password, revokes sessions and keys, and queues normal setup mail.
+	ownedKey := personalCredential(t, h.store, activeAdmin.ID, h.now)
 	_, err = h.store.pool.Exec(ctx, `UPDATE identity.local_users SET status = 'disabled'`)
-	require.NoError(t, err)
-	_, _, err = h.store.CreateAPIKey(ctx, activeAdmin.ID, "legacy", ScopeWork, nil)
 	require.NoError(t, err)
 	_, _, err = h.store.CreateBrowserSession(ctx, CreateBrowserSessionParams{
 		IdentityID: activeAdmin.ID, CSRFHash: "h", IdleTTL: time.Hour, AbsoluteTTL: 24 * time.Hour, Now: h.now,
@@ -646,6 +691,10 @@ func TestBootstrapAndRecovery(t *testing.T) {
 	sessions, err := h.store.ListActiveSessions(ctx, activeAdmin.ID, "", h.now)
 	require.NoError(t, err)
 	assert.Empty(t, sessions)
+	var keyStatus string
+	require.NoError(t, h.store.pool.QueryRow(ctx, `
+		SELECT status FROM identity.api_keys WHERE key_hash = $1`, HashAPIKey(ownedKey)).Scan(&keyStatus))
+	assert.Equal(t, CredentialStatusRevoked, keyStatus, "recovery revokes the human's credentials")
 
 	// The recovery queued exactly one setup intent and delivery produces a link.
 	h.deliver(t)
@@ -925,4 +974,18 @@ func TestSessionAuditLinkageAndRevokeOthersCount(t *testing.T) {
 		WHERE event = 'session_revoked' ORDER BY created_at DESC LIMIT 1`).Scan(&eventSession, &others))
 	assert.Equal(t, session.ID, eventSession)
 	assert.Equal(t, "2", others)
+}
+
+// personalCredential issues a V2 personal work credential for an active owner.
+// Expiry is anchored to the wall clock because the live projection evaluates it
+// against the database clock.
+func personalCredential(t *testing.T, store *Store, ownerID string, now time.Time) string {
+	t.Helper()
+	full, _, err := store.CreateCredentialVersion(context.Background(), CreateCredentialParams{
+		Kind: CredentialKindPersonal, OwnerIdentity: ownerID, ActorIdentity: ownerID,
+		Name: "work", Actions: []string{ActionWorkRead},
+		RateRPM: 60, RateTPM: 60000, ExpiresAt: time.Now().UTC().Add(24 * time.Hour), Now: now,
+	})
+	require.NoError(t, err)
+	return full
 }

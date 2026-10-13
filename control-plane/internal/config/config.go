@@ -2,7 +2,7 @@
 // environment-variable overrides. Mirrors the inference-gateway pattern.
 //
 // Only the api binary loads YAML config (it owns the database, HTTP address,
-// JWT signing key, and identity mode). The manager binary is flag-driven
+// and browser-authentication configuration). The manager binary is flag-driven
 // (controller-runtime norm) and reads only DATABASE_URL from the environment;
 // both share internal/logging.
 package config
@@ -27,8 +27,6 @@ type Config struct {
 	Metrics  MetricsConfig  `yaml:"metrics"`
 	Database DatabaseConfig `yaml:"database"`
 	Logging  LoggingConfig  `yaml:"logging"`
-	JWT      JWTConfig      `yaml:"jwt"`
-	Identity IdentityConfig `yaml:"identity"`
 	Artifact ArtifactConfig `yaml:"artifact"`
 	Auth     AuthConfig     `yaml:"auth"`
 }
@@ -111,21 +109,6 @@ type LoggingConfig struct {
 	Format string `yaml:"format"`
 }
 
-// JWTConfig configures RS256 JWT issuance + JWKS publishing (cmd/api only).
-// The signing key is an RSA private key PEM, mounted from a Kubernetes Secret.
-type JWTConfig struct {
-	SigningKeyPath string `yaml:"signing_key_path"`
-	KeyID          string `yaml:"key_id"`
-	Issuer         string `yaml:"issuer"`
-	Audience       string `yaml:"audience"`
-	TTL            string `yaml:"ttl"` // Go duration string, e.g. "15m"
-}
-
-// IdentityConfig configures the identity-resolution mode.
-type IdentityConfig struct {
-	Mode string `yaml:"mode"` // enrolled (default) | open (deferred, HOR-313)
-}
-
 // ArtifactConfig configures the shared Postgres + MinIO artifact domain used
 // by cmd/api and cmd/gateway. The dedicated access key is bucket-scoped and is
 // never mounted into supervisors, runners, or sandbox children.
@@ -143,12 +126,10 @@ type ArtifactConfig struct {
 }
 
 // AuthConfig configures the V2 browser-authentication journey
-// (docs/architecture/v2-authentication-authority.md). When enabled, a valid
-// public HTTPS origin, verified-TLS SMTP, and the bootstrap Admin email are
-// required and the API fails closed without them. When disabled, every
-// browser-authentication route returns the customer-safe unavailable state.
+// (docs/architecture/v2-authentication-authority.md). Sign-in is always on: a
+// valid public HTTPS origin, verified-TLS SMTP, and the first-Admin email are
+// required and the API fails closed without them.
 type AuthConfig struct {
-	Enabled         bool                `yaml:"enabled"`
 	PublicOrigin    string              `yaml:"public_origin"`
 	Session         AuthSessionConfig   `yaml:"session"`
 	TrustedProxies  []string            `yaml:"trusted_proxies"`
@@ -176,9 +157,13 @@ type AuthEmailConfig struct {
 	From     string `yaml:"from"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	// CAFile optionally names a PEM bundle trusted for the SMTP server
+	// certificate in addition to the system roots (a private relay). It never
+	// disables verification.
+	CAFile string `yaml:"ca_file"`
 }
 
-// AuthBootstrapConfig names the fresh-install Admin. It carries no secret: the
+// AuthBootstrapConfig names the first Admin, set by the deployment overlay. It carries no secret: the
 // first Admin completes normal email setup and no credential is ever printed.
 type AuthBootstrapConfig struct {
 	AdminEmail  string `yaml:"admin_email"`
@@ -190,8 +175,8 @@ type AuthBootstrapConfig struct {
 // If path is empty, only defaults and env vars are used.
 //
 // Validation enforces only fields common to every subcommand (database.url +
-// field formats). Serve-specific requirements (api.addr, jwt.signing_key_path)
-// are checked by the caller (runServe), so migrate/bootstrap need only the DB.
+// field formats). Serve-specific requirements (api.addr, auth.*) are checked by
+// the caller (runServe), so migrate/bootstrap need only the DB.
 func Load(path string) (*Config, error) {
 	cfg := defaults()
 
@@ -236,8 +221,6 @@ func defaults() *Config {
 		Dispatch: DispatchConfig{Addr: ":8091", TrustDomain: "iterabase.local"},
 		Database: DatabaseConfig{MaxOpenConns: 25, MaxIdleConns: 10},
 		Logging:  LoggingConfig{Level: "info", Format: "json"},
-		JWT:      JWTConfig{TTL: "15m"},
-		Identity: IdentityConfig{Mode: "enrolled"},
 		Artifact: ArtifactConfig{Bucket: "iterabase-artifacts", MaxSizeBytes: 1 << 30, PendingTTL: "1h", SweepInterval: "1m"},
 		Auth:     AuthConfig{ForwardedHeader: "X-Forwarded-For", Bootstrap: AuthBootstrapConfig{AdminLocale: "en"}},
 	}
@@ -268,15 +251,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("LOG_FORMAT"); v != "" {
 		cfg.Logging.Format = v
-	}
-	if v := os.Getenv("JWT_SIGNING_KEY_PATH"); v != "" {
-		cfg.JWT.SigningKeyPath = v
-	}
-	if v := os.Getenv("JWT_KEY_ID"); v != "" {
-		cfg.JWT.KeyID = v
-	}
-	if v := os.Getenv("IDENTITY_MODE"); v != "" {
-		cfg.Identity.Mode = v
 	}
 	if v := os.Getenv("GATEWAY_ADDR"); v != "" {
 		cfg.Gateway.Addr = v
@@ -353,11 +327,6 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Artifact.MaxSizeBytes = parsed
 		}
 	}
-	if v := os.Getenv("AUTH_ENABLED"); v != "" {
-		if parsed, err := strconv.ParseBool(v); err == nil {
-			cfg.Auth.Enabled = parsed
-		}
-	}
 	if v := os.Getenv("AUTH_PUBLIC_ORIGIN"); v != "" {
 		cfg.Auth.PublicOrigin = v
 	}
@@ -399,6 +368,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("AUTH_SMTP_PASSWORD"); v != "" {
 		cfg.Auth.Email.Password = v
 	}
+	if v := os.Getenv("AUTH_SMTP_CA_FILE"); v != "" {
+		cfg.Auth.Email.CAFile = v
+	}
 	if v := os.Getenv("AUTH_BOOTSTRAP_ADMIN_EMAIL"); v != "" {
 		cfg.Auth.Bootstrap.AdminEmail = v
 	}
@@ -412,22 +384,6 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("database.url (or DATABASE_URL) is required")
 	}
 
-	switch cfg.Identity.Mode {
-	case "", "enrolled", "open":
-		// "" is normalized to enrolled below; open is accepted but not yet
-		// wired (HOR-313); the token endpoint returns 501 for open.
-	default:
-		return fmt.Errorf("identity.mode must be enrolled or open, got %q", cfg.Identity.Mode)
-	}
-	if cfg.Identity.Mode == "" {
-		cfg.Identity.Mode = "enrolled"
-	}
-
-	if cfg.JWT.TTL != "" {
-		if _, err := time.ParseDuration(cfg.JWT.TTL); err != nil {
-			return fmt.Errorf("jwt.ttl is not a valid duration: %w", err)
-		}
-	}
 	for name, value := range map[string]string{
 		"artifact.default_retention": cfg.Artifact.DefaultRetention,
 		"artifact.pending_ttl":       cfg.Artifact.PendingTTL,
@@ -452,9 +408,6 @@ func ValidateServe(cfg *Config) error {
 	if cfg.API.Addr == "" {
 		return fmt.Errorf("api.addr (or API_ADDR) is required for serve")
 	}
-	if cfg.JWT.SigningKeyPath == "" {
-		return fmt.Errorf("jwt.signing_key_path (or JWT_SIGNING_KEY_PATH) is required for serve")
-	}
 	// TLS is opt-in: HTTPS when both cert+key are set, plain HTTP when neither.
 	// Exactly one set is a misconfig — fail loud rather than guess.
 	if (cfg.API.TLSCertFile == "") != (cfg.API.TLSKeyFile == "") {
@@ -468,7 +421,7 @@ func ValidateServe(cfg *Config) error {
 // closed rather than guessing.
 func AuthPublicOrigin(cfg *Config) (string, error) {
 	if strings.TrimSpace(cfg.Auth.PublicOrigin) == "" {
-		return "", fmt.Errorf("auth.public_origin (or AUTH_PUBLIC_ORIGIN) is required when auth.enabled is true")
+		return "", fmt.Errorf("auth.public_origin (or AUTH_PUBLIC_ORIGIN) is required")
 	}
 	parsed, err := url.Parse(cfg.Auth.PublicOrigin)
 	if err != nil {
@@ -545,13 +498,9 @@ func AuthTrustedProxyNets(cfg *Config) ([]*net.IPNet, error) {
 	return out, nil
 }
 
-// ValidateAuthServe validates the enabled browser-authentication prerequisites.
-// A disabled surface imposes no requirements and returns the customer-safe
-// unavailable state.
+// ValidateAuthServe validates the browser-authentication prerequisites. They
+// are always required: there is no unauthenticated customer mode.
 func ValidateAuthServe(cfg *Config) error {
-	if !cfg.Auth.Enabled {
-		return nil
-	}
 	if _, err := AuthPublicOrigin(cfg); err != nil {
 		return err
 	}
@@ -565,7 +514,7 @@ func ValidateAuthServe(cfg *Config) error {
 		return err
 	}
 	if cfg.Auth.Bootstrap.AdminEmail == "" {
-		return fmt.Errorf("auth.bootstrap.admin_email is required when auth.enabled is true")
+		return fmt.Errorf("auth.bootstrap.admin_email is required")
 	}
 	if cfg.Auth.Bootstrap.AdminLocale != "en" && cfg.Auth.Bootstrap.AdminLocale != "pt" {
 		return fmt.Errorf("auth.bootstrap.admin_locale must be en or pt")
@@ -575,7 +524,7 @@ func ValidateAuthServe(cfg *Config) error {
 
 func validateAuthEmail(email AuthEmailConfig) error {
 	if email.Host == "" || email.From == "" {
-		return fmt.Errorf("auth.email.host and auth.email.from are required when auth.enabled is true")
+		return fmt.Errorf("auth.email.host and auth.email.from are required")
 	}
 	if email.Port <= 0 || email.Port > 65535 {
 		return fmt.Errorf("auth.email.port must be 1-65535")

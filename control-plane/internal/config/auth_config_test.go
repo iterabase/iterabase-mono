@@ -12,7 +12,6 @@ import (
 
 func authBaseConfig() *config.Config {
 	cfg := &config.Config{}
-	cfg.Auth.Enabled = true
 	cfg.Auth.PublicOrigin = "https://app.example.com"
 	cfg.Auth.Bootstrap.AdminEmail = "admin@example.com"
 	cfg.Auth.Bootstrap.AdminLocale = "en"
@@ -23,12 +22,12 @@ func authBaseConfig() *config.Config {
 	return cfg
 }
 
-func TestValidateAuthServeDisabledRequiresNothing(t *testing.T) {
+func TestValidateAuthServeIsAlwaysRequired(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{}
-	require.NoError(t, config.ValidateAuthServe(cfg))
+	require.Error(t, config.ValidateAuthServe(cfg), "there is no unauthenticated customer mode")
 	origin, err := config.AuthPublicOrigin(cfg)
-	assert.Error(t, err, "an enabled origin is still required to build the handler")
+	assert.Error(t, err)
 	assert.Empty(t, origin)
 }
 
@@ -116,12 +115,9 @@ func TestValidateServeIncludesAuthValidation(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{}
 	cfg.API.Addr = ":8080"
-	cfg.JWT.SigningKeyPath = "/tmp/key.pem"
-	cfg.Auth.Enabled = true
-	assert.Error(t, config.ValidateServe(cfg), "enabled auth without prerequisites must fail serve validation")
+	assert.Error(t, config.ValidateServe(cfg), "auth without prerequisites must fail serve validation")
 
 	cfg = authBaseConfig()
 	cfg.API.Addr = ":8080"
-	cfg.JWT.SigningKeyPath = "/tmp/key.pem"
 	assert.NoError(t, config.ValidateServe(cfg))
 }

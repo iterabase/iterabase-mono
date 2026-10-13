@@ -728,8 +728,8 @@ func permittedCapabilities(caps []v1alpha1.RequestedCapability) []gateway.Capabi
 
 // workflowScopeIdentityKey is the natural key of the kind=workflow scope
 // identity runs execute under. It is a collision-free, workflow-owned key:
-// the "workflow:" prefix reserves a keyspace distinct from IdentityMapping's
-// "<ns>/<name>" format, so a Workflow CR cannot overwrite or soft-delete an
+// the "workflow:" prefix reserves a keyspace distinct from the historical
+// IdentityMapping "<ns>/<name>" keys, so a Workflow CR cannot overwrite or soft-delete an
 // unrelated identity (REQ-010 durable workflow-identity boundary). The CR key
 // "<ns>/<name>" is stable across version updates of the same Workflow, so all
 // versions of one workflow share one execution identity.
