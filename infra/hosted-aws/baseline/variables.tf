@@ -74,12 +74,6 @@ variable "alert_email" {
   type        = string
 }
 
-variable "activate_cost_allocation_tags" {
-  description = "Activate the cost allocation tags. AWS rejects activation until billing has seen the tag keys, so set true on a later apply (runbook step)."
-  type        = bool
-  default     = false
-}
-
 variable "cloudflare_account_id" {
   description = "Cloudflare account that owns the hosted zone."
   type        = string
