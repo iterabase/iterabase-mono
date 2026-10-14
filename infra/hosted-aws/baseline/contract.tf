@@ -27,6 +27,7 @@ locals {
     "hosted-domain"                 = var.hosted_domain
     "lb-controller-policy-arn"      = aws_iam_policy.lb_controller.arn
     "origin-pull-ca-cert"           = tls_self_signed_cert.origin_pull_ca.cert_pem
+    "mail-user-boundary-arn"        = aws_iam_policy.mail_user_boundary.arn
   }
 }
 
