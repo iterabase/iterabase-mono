@@ -33,30 +33,31 @@ spec:
       port: {{ .Values.toolRunner.metrics.runnerPort }}
       targetPort: run-metrics
 {{- end }}
-{{- if .Values.toolRunner.flux.enabled }}
+{{- if .Values.toolRunner.overlayTools.enabled }}
 ---
-# The materializer polls one exact GitRepository by name in one exact Flux
-# namespace. Keep both constraints in a namespaced Role: resourceNames alone
-# would authorize a same-named source in every namespace through a ClusterRole.
+# The materializer reads Forge's overlay-tools pointer ConfigMap and the
+# digest-named immutable archive ConfigMap it names (DES-HOR-593-05). Archive
+# names vary by digest, so the grant is get-only on ConfigMaps in the one
+# dedicated overlay namespace that holds nothing else. A namespaced Role keeps
+# it out of every other namespace; no list/watch is needed.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ $name }}
-  namespace: {{ .Values.toolRunner.flux.namespace | quote }}
+  namespace: {{ .Values.toolRunner.overlayTools.namespace | quote }}
   labels:
     {{- include "control-plane.labels" . | nindent 4 }}
     app.kubernetes.io/component: tool-materializer
 rules:
-  - apiGroups: ["source.toolkit.fluxcd.io"]
-    resources: ["gitrepositories"]
-    resourceNames: [{{ .Values.toolRunner.flux.sourceName | quote }}]
+  - apiGroups: [""]
+    resources: ["configmaps"]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ $name }}
-  namespace: {{ .Values.toolRunner.flux.namespace | quote }}
+  namespace: {{ .Values.toolRunner.overlayTools.namespace | quote }}
   labels:
     {{- include "control-plane.labels" . | nindent 4 }}
     app.kubernetes.io/component: tool-materializer
@@ -133,13 +134,12 @@ spec:
           args: ["materialize"]
           env:
             # The product tool layer ships in this image (/app/tools/product).
-            # Flux supplies only the optional overlay client layer.
-            - {name: FLUX_ENABLED, value: {{ .Values.toolRunner.flux.enabled | quote }}}
-            {{- if .Values.toolRunner.flux.enabled }}
-            - {name: FLUX_SOURCE_NAMESPACE, value: {{ .Values.toolRunner.flux.namespace | quote }}}
-            - {name: FLUX_SOURCE_NAME, value: {{ .Values.toolRunner.flux.sourceName | quote }}}
-            - {name: FLUX_POLL_MS, value: {{ .Values.toolRunner.flux.pollMs | quote }}}
-            - {name: FLUX_MAX_ARCHIVE_BYTES, value: {{ .Values.toolRunner.flux.maxArchiveBytes | quote }}}
+            # Forge-written overlay ConfigMaps supply only the optional client layer.
+            - {name: OVERLAY_TOOLS_ENABLED, value: {{ .Values.toolRunner.overlayTools.enabled | quote }}}
+            {{- if .Values.toolRunner.overlayTools.enabled }}
+            - {name: OVERLAY_TOOLS_NAMESPACE, value: {{ .Values.toolRunner.overlayTools.namespace | quote }}}
+            - {name: OVERLAY_TOOLS_POLL_MS, value: {{ .Values.toolRunner.overlayTools.pollMs | quote }}}
+            - {name: OVERLAY_TOOLS_MAX_ARCHIVE_BYTES, value: {{ .Values.toolRunner.overlayTools.maxArchiveBytes | int | quote }}}
             {{- end }}
             - {name: TOOL_RUNNER_MAX_GENERATIONS, value: {{ .Values.toolRunner.maxGenerations | quote }}}
             - {name: TOOL_RUNNER_MAX_LOADED_BYTES, value: {{ .Values.toolRunner.maxLoadedBytes | quote }}}
@@ -151,7 +151,7 @@ spec:
           volumeMounts:
             - {name: artifacts, mountPath: /artifacts}
             - {name: control, mountPath: /control}
-            {{- if .Values.toolRunner.flux.enabled }}
+            {{- if .Values.toolRunner.overlayTools.enabled }}
             - {name: kube-api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
             {{- end }}
           readinessProbe:
@@ -223,7 +223,7 @@ spec:
             secretName: {{ include "control-plane.gatewayCASecretName" . }}
             items:
               - {key: ca.crt, path: ca.crt}
-        {{- if .Values.toolRunner.flux.enabled }}
+        {{- if .Values.toolRunner.overlayTools.enabled }}
         - name: kube-api
           projected:
             sources:

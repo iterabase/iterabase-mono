@@ -50,11 +50,11 @@ Check gateway and runner readiness, mTLS certificate/CA validity, Service DNS, a
 
 ## IterabaseToolGenerationUnavailable
 
-Inspect Flux `GitRepository` artifact status, materializer logs, archive bounds, manifest validation, and digest checks. Keep the last valid generation serving when present; never bypass digest or namespace validation.
+Inspect the `overlay-tools` pointer and the `overlay-tools-<sha256>` archive ConfigMaps in the overlay namespace (default `iterabase-overlay`), materializer logs, archive bounds, manifest validation, and digest checks. Keep the last valid generation serving when present; never bypass digest or namespace validation.
 
 ## IterabaseToolMaterializationFailures
 
-Compare the failing Flux revision/digest with the last successful generation. Validate the artifact archive and all product/client manifests using the runner authoring command before promoting a corrected immutable revision.
+Compare the failing overlay pointer revision/digest with the last successful generation. Validate the artifact archive and all product/client manifests using the runner authoring command before re-running `forge apply` with a corrected overlay revision.
 
 ## IterabaseDispatchWithoutWorkers
 

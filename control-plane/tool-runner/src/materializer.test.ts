@@ -4,18 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as tar from "tar";
-import { GenerationMaterializer, composeSource, layerDigest, validateArchive, type FluxArtifact, type MaterializerConfig } from "./materializer.js";
+import { GenerationMaterializer, composeSource, layerDigest, overlayArchiveKey, validateArchive, type MaterializerConfig, type OverlayArchive } from "./materializer.js";
 
 const roots: string[] = [];
-const originalFetch = globalThis.fetch;
 afterEach(async () => {
-  globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
 async function root(): Promise<string> {
-  const value = await mkdtemp(join(tmpdir(), "flux-artifact-"));
+  const value = await mkdtemp(join(tmpdir(), "overlay-archive-"));
   roots.push(value);
   return value;
 }
@@ -28,31 +26,62 @@ async function productLayer(directory: string, version: string): Promise<string>
   return product;
 }
 
-async function config(directory: string, options: { flux?: boolean; productVersion?: string } = {}): Promise<MaterializerConfig> {
+async function config(directory: string, options: { overlay?: boolean; productVersion?: string; maxArchiveBytes?: number } = {}): Promise<MaterializerConfig> {
   const version = options.productVersion ?? "1.0.0";
   const cfg: MaterializerConfig = {
     productRoot: await productLayer(directory, version), productVersion: version,
-    flux: options.flux === false ? undefined : { namespace: "flux-system", sourceName: "overlay" },
+    overlay: options.overlay === false ? undefined : { namespace: "iterabase-overlay", pointerName: "overlay-tools" },
     artifactsRoot: join(directory, "artifacts"), controlRoot: join(directory, "control"),
-    pollMs: 10, maxArchiveBytes: 1024 * 1024, maxExtractedBytes: 1024 * 1024, maxGenerations: 8,
+    pollMs: 10, maxArchiveBytes: options.maxArchiveBytes ?? 1024 * 1024, maxExtractedBytes: 1024 * 1024, maxGenerations: 8,
   };
   await mkdir(join(cfg.artifactsRoot, "generations"), { recursive: true });
   await mkdir(cfg.controlRoot, { recursive: true });
   return cfg;
 }
 
-function materializer(cfg: MaterializerConfig, artifact: FluxArtifact | null): GenerationMaterializer {
-  const kubeConfig = {
-    makeApiClient: () => ({ getNamespacedCustomObject: async () => ({ status: artifact ? { artifact } : {} }) }),
+// ConfigMap is the subset of a V1ConfigMap the materializer reads.
+interface ConfigMap { immutable?: boolean; data?: Record<string, string>; binaryData?: Record<string, string> }
+
+// cluster is a fake iterabase-overlay namespace: ConfigMaps by name, with
+// every read recorded so tests can assert the exact names and namespace.
+function cluster(objects: Record<string, ConfigMap> = {}): { objects: Record<string, ConfigMap>; reads: { name: string; namespace: string }[]; kubeConfig: never } {
+  const reads: { name: string; namespace: string }[] = [];
+  const api = {
+    readNamespacedConfigMap: async (request: { name: string; namespace: string }) => {
+      reads.push(request);
+      const object = objects[request.name];
+      if (!object) throw Object.assign(new Error("HTTP-Code: 404 Message: Unknown API Status Code!"), { code: 404 });
+      return structuredClone(object);
+    },
   };
-  return new GenerationMaterializer(cfg, kubeConfig as never);
+  return { objects, reads, kubeConfig: { makeApiClient: () => api } as never };
+}
+
+function materializer(cfg: MaterializerConfig, objects: Record<string, ConfigMap>): GenerationMaterializer {
+  return new GenerationMaterializer(cfg, cluster(objects).kubeConfig);
 }
 
 async function published(cfg: MaterializerConfig): Promise<{ revision: string; artifactDigest: string; directory: string }> {
   return JSON.parse(await readFile(join(cfg.controlRoot, "current.json"), "utf8"));
 }
 
-async function archiveFixture(directory: string, version: string, layer: "client" | "product" = "client"): Promise<{ archive: string; bytes: Buffer; artifact: FluxArtifact }> {
+interface Fixture { archive: string; bytes: Buffer; overlay: OverlayArchive; objects: Record<string, ConfigMap> }
+
+// overlayObjects is exactly what Forge writes: an immutable digest-named
+// archive ConfigMap and the overlay-tools pointer naming it.
+function overlayObjects(bytes: Buffer, revision: string): { overlay: OverlayArchive; objects: Record<string, ConfigMap> } {
+  const hex = createHash("sha256").update(bytes).digest("hex");
+  const overlay: OverlayArchive = { revision, digest: `sha256:${hex}`, archive: `overlay-tools-${hex}` };
+  return {
+    overlay,
+    objects: {
+      "overlay-tools": { data: { digest: overlay.digest, archive: overlay.archive, revision } },
+      [overlay.archive]: { immutable: true, binaryData: { [overlayArchiveKey]: bytes.toString("base64") } },
+    },
+  };
+}
+
+async function archiveFixture(directory: string, version: string, layer: "client" | "product" = "client"): Promise<Fixture> {
   const source = join(directory, `source-${layer}-${version}`);
   const tool = join(source, "tools", layer, "echo");
   await mkdir(tool, { recursive: true });
@@ -61,21 +90,10 @@ async function archiveFixture(directory: string, version: string, layer: "client
   const archive = join(directory, `artifact-${layer}-${version}.tgz`);
   await tar.c({ gzip: true, cwd: source, file: archive }, ["tools"]);
   const bytes = await readFile(archive);
-  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  return {
-    archive, bytes,
-    artifact: { revision: `master@sha1:${version}`, digest, url: `http://source-controller.flux-system.svc./gitrepository/overlay/${digest}.tar.gz` },
-  };
+  return { archive, bytes, ...overlayObjects(bytes, `overlay@${version}`) };
 }
 
-function serve(bytes: Buffer): void {
-  globalThis.fetch = vi.fn(async () => new Response(new Uint8Array(bytes), {
-    status: 200,
-    headers: { "content-length": String(bytes.byteLength) },
-  })) as typeof fetch;
-}
-
-describe("Flux archive validation", () => {
+describe("overlay archive validation", () => {
   it("counts only regular client tool files", async () => {
     const directory = await root();
     await mkdir(join(directory, "tools", "client", "echo"), { recursive: true });
@@ -106,13 +124,13 @@ describe("Flux archive validation", () => {
 
 describe("generation identity", () => {
   it("names a generation by both the product layer and the client artifact", () => {
-    const client: FluxArtifact = { revision: "master@sha1:a", digest: `sha256:${"a".repeat(64)}`, url: "http://source-controller.flux-system.svc./a.tgz" };
+    const client: OverlayArchive = { revision: "overlay@a", digest: `sha256:${"a".repeat(64)}`, archive: `overlay-tools-${"a".repeat(64)}` };
     const productOnly = composeSource(`sha256:${"1".repeat(64)}`, "1.0.0", null);
     const composed = composeSource(`sha256:${"1".repeat(64)}`, "1.0.0", client);
     const upgraded = composeSource(`sha256:${"2".repeat(64)}`, "1.1.0", client);
     expect(new Set([productOnly.digest, composed.digest, upgraded.digest]).size).toBe(3);
     expect(productOnly.revision).toBe("product@1.0.0");
-    expect(composed.revision).toBe("product@1.0.0+client@master@sha1:a");
+    expect(composed.revision).toBe("product@1.0.0+client@overlay@a");
     expect(composeSource(`sha256:${"1".repeat(64)}`, "1.0.0", client)).toEqual(composed);
   });
 
@@ -130,11 +148,11 @@ describe("generation identity", () => {
 });
 
 describe("generation materialization", () => {
-  it("publishes a product-only generation without any Flux source", async () => {
+  it("publishes a product-only generation without any overlay source or Kubernetes client", async () => {
     const directory = await root();
-    const cfg = await config(directory, { flux: false });
-    const instance = new GenerationMaterializer(cfg);
-    globalThis.fetch = vi.fn() as typeof fetch;
+    const cfg = await config(directory, { overlay: false });
+    const fake = cluster();
+    const instance = new GenerationMaterializer(cfg, fake.kubeConfig);
 
     const source = await instance.currentSource();
     expect(source?.client).toBeNull();
@@ -145,49 +163,83 @@ describe("generation materialization", () => {
     expect(current.artifactDigest).toBe(source!.digest);
     expect(await readFile(join(current.directory, "tools", "product", "diagnostic", "index.mjs"), "utf8")).toContain("1.0.0");
     await expect(readdir(join(current.directory, "tools", "client"))).rejects.toThrow();
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(fake.reads).toEqual([]);
   });
 
-  it("waits for a configured Flux source instead of silently dropping the client layer", async () => {
+  it("waits for a missing pointer instead of silently dropping the client layer", async () => {
     const directory = await root();
     const cfg = await config(directory);
-    await expect(materializer(cfg, null).currentSource()).resolves.toBeNull();
+    await expect(materializer(cfg, {}).currentSource()).resolves.toBeNull();
   });
 
-  it("composes the image product layer with the exact verified Flux client artifact", async () => {
+  it("treats a pointer whose archive does not exist yet as not ready and keeps the last generation", async () => {
+    const directory = await root();
+    const first = await archiveFixture(directory, "v1");
+    const second = await archiveFixture(directory, "v2");
+    const cfg = await config(directory);
+    const instance = materializer(cfg, first.objects);
+    await instance.materialize((await instance.currentSource())!);
+    const before = await readFile(join(cfg.controlRoot, "current.json"), "utf8");
+
+    const pending = materializer(cfg, { "overlay-tools": second.objects["overlay-tools"]! });
+    const source = (await pending.currentSource())!;
+    await expect(pending.materialize(source)).resolves.toBeNull();
+    expect(await readFile(join(cfg.controlRoot, "current.json"), "utf8")).toBe(before);
+    expect((await readdir(cfg.artifactsRoot)).filter((name) => name.startsWith(".artifact-") || name.startsWith(".staging-"))).toEqual([]);
+  });
+
+  it("composes the image product layer with the exact verified overlay archive", async () => {
     const directory = await root();
     const fixture = await archiveFixture(directory, "v1");
     const cfg = await config(directory);
-    const instance = materializer(cfg, fixture.artifact);
-    serve(fixture.bytes);
+    const fake = cluster(fixture.objects);
+    const instance = new GenerationMaterializer(cfg, fake.kubeConfig);
 
     const source = await instance.currentSource();
-    expect(source?.client).toEqual(fixture.artifact);
+    expect(source?.client).toEqual(fixture.overlay);
     await instance.materialize(source!);
 
     const current = await published(cfg);
-    expect(current.revision).toBe(`product@1.0.0+client@${fixture.artifact.revision}`);
+    expect(current.revision).toBe(`product@1.0.0+client@${fixture.overlay.revision}`);
     expect(current.artifactDigest).toBe(source!.digest);
     expect(await readFile(join(current.directory, "tools", "client", "echo", "index.mjs"), "utf8")).toContain("v1");
     expect(await readFile(join(current.directory, "tools", "product", "diagnostic", "index.mjs"), "utf8")).toContain("1.0.0");
     expect((await readdir(cfg.artifactsRoot)).filter((name) => name.startsWith(".artifact-") || name.startsWith(".staging-"))).toEqual([]);
-    expect(globalThis.fetch).toHaveBeenCalledWith(fixture.artifact.url, { redirect: "error" });
+    expect(fake.reads).toEqual([
+      { name: "overlay-tools", namespace: "iterabase-overlay" },
+      { name: fixture.overlay.archive, namespace: "iterabase-overlay" },
+    ]);
+  });
+
+  it("publishes a composed generation for an overlay archive with no client tools", async () => {
+    const directory = await root();
+    const empty = join(directory, "empty");
+    await mkdir(join(empty, "tools", "client"), { recursive: true });
+    const archive = join(directory, "empty.tgz");
+    await tar.c({ gzip: true, cwd: empty, file: archive }, ["tools"]);
+    const { overlay, objects } = overlayObjects(await readFile(archive), "overlay@empty");
+    const cfg = await config(directory);
+    const instance = materializer(cfg, objects);
+
+    const source = (await instance.currentSource())!;
+    expect(source.client).toEqual(overlay);
+    expect(source.digest).not.toBe(composeSource(source.productDigest, "1.0.0", null).digest);
+    await instance.materialize(source);
+    expect((await published(cfg)).artifactDigest).toBe(source.digest);
   });
 
   it("publishes one new generation when the platform release changes the product layer", async () => {
     const directory = await root();
     const fixture = await archiveFixture(directory, "v1");
     const before = await config(directory);
-    serve(fixture.bytes);
-    const first = await materializer(before, fixture.artifact).currentSource();
-    await materializer(before, fixture.artifact).materialize(first!);
+    const first = await materializer(before, fixture.objects).currentSource();
+    await materializer(before, fixture.objects).materialize(first!);
 
-    // An upgraded pod sees the same overlay artifact with the new image layer.
+    // An upgraded pod sees the same overlay archive with the new image layer.
     const after = { ...before, productRoot: await productLayer(directory, "1.1.0"), productVersion: "1.1.0" };
-    serve(fixture.bytes);
-    const upgraded = await materializer(after, fixture.artifact).currentSource();
+    const upgraded = await materializer(after, fixture.objects).currentSource();
     expect(upgraded!.digest).not.toBe(first!.digest);
-    await materializer(after, fixture.artifact).materialize(upgraded!);
+    await materializer(after, fixture.objects).materialize(upgraded!);
 
     const current = await published(after);
     expect(current.artifactDigest).toBe(upgraded!.digest);
@@ -200,35 +252,98 @@ describe("generation materialization", () => {
     const good = await archiveFixture(directory, "v1");
     const bad = await archiveFixture(directory, "v2", "product");
     const cfg = await config(directory);
-    serve(good.bytes);
-    const instance = materializer(cfg, good.artifact);
+    const instance = materializer(cfg, good.objects);
     await instance.materialize((await instance.currentSource())!);
     const before = await readFile(join(cfg.controlRoot, "current.json"), "utf8");
 
-    serve(bad.bytes);
-    const rejected = materializer(cfg, bad.artifact);
+    const rejected = materializer(cfg, bad.objects);
     await expect(rejected.materialize((await rejected.currentSource())!)).rejects.toThrow("overlay tools/product is not allowed");
     expect(await readFile(join(cfg.controlRoot, "current.json"), "utf8")).toBe(before);
   });
 
-  it("preserves the last published generation when the next artifact fails digest verification", async () => {
+  it("preserves the last published generation when the next archive fails digest verification", async () => {
     const directory = await root();
     const first = await archiveFixture(directory, "v1");
     const second = await archiveFixture(directory, "v2");
     const cfg = await config(directory);
-    const instance = materializer(cfg, first.artifact);
-    serve(first.bytes);
+    const instance = materializer(cfg, first.objects);
     await instance.materialize((await instance.currentSource())!);
     const before = await readFile(join(cfg.controlRoot, "current.json"), "utf8");
 
-    serve(first.bytes);
-    const next = materializer(cfg, second.artifact);
+    // The pointer names v2's digest and archive, but the archive holds v1 bytes.
+    const tampered = { ...second.objects, [second.overlay.archive]: first.objects[first.overlay.archive]! };
+    const next = materializer(cfg, tampered);
     const source = (await next.currentSource())!;
-    await expect(next.materialize(source)).rejects.toThrow("Flux artifact digest mismatch");
+    await expect(next.materialize(source)).rejects.toThrow("overlay archive digest mismatch");
 
     expect(await readFile(join(cfg.controlRoot, "current.json"), "utf8")).toBe(before);
     const current = JSON.parse(before) as { directory: string };
     expect(await readFile(join(current.directory, "tools", "client", "echo", "index.mjs"), "utf8")).toContain("v1");
     await expect(readFile(join(cfg.artifactsRoot, "generations", source.digest.slice(7), "tools", "client", "echo", "index.mjs"))).rejects.toThrow();
+  });
+});
+
+describe("overlay pointer and archive verification", () => {
+  async function rejects(mutate: (fixture: Fixture) => Record<string, ConfigMap>, message: string, stage: "pointer" | "archive", options: { maxArchiveBytes?: number } = {}): Promise<void> {
+    const directory = await root();
+    const fixture = await archiveFixture(directory, "v1");
+    const cfg = await config(directory, options);
+    const instance = materializer(cfg, mutate(fixture));
+    if (stage === "pointer") {
+      await expect(instance.currentSource()).rejects.toThrow(message);
+      return;
+    }
+    await expect(instance.materialize((await instance.currentSource())!)).rejects.toThrow(message);
+    await expect(readFile(join(cfg.controlRoot, "current.json"))).rejects.toThrow();
+    expect(await readdir(join(cfg.artifactsRoot, "generations"))).toEqual([]);
+    expect((await readdir(cfg.artifactsRoot)).filter((name) => name.startsWith(".artifact-") || name.startsWith(".staging-"))).toEqual([]);
+  }
+  const pointer = (fixture: Fixture, data: Record<string, string>) => ({ ...fixture.objects, "overlay-tools": { data } });
+
+  it("rejects a malformed pointer digest", async () => {
+    await rejects((f) => pointer(f, { digest: f.overlay.digest.toUpperCase(), archive: f.overlay.archive, revision: "r" }), "unsupported digest", "pointer");
+    await rejects((f) => pointer(f, { digest: f.overlay.digest.slice("sha256:".length), archive: f.overlay.archive, revision: "r" }), "unsupported digest", "pointer");
+    await rejects((f) => pointer(f, { archive: f.overlay.archive, revision: "r" }), "unsupported digest", "pointer");
+  });
+
+  it("rejects a pointer naming an archive other than the digest-named ConfigMap", async () => {
+    await rejects((f) => pointer(f, { digest: f.overlay.digest, archive: `overlay-tools-${"0".repeat(64)}`, revision: "r" }), "names archive", "pointer");
+    await rejects((f) => pointer(f, { digest: f.overlay.digest, archive: "kube-root-ca.crt", revision: "r" }), "names archive", "pointer");
+  });
+
+  it("rejects a pointer without a revision", async () => {
+    await rejects((f) => pointer(f, { digest: f.overlay.digest, archive: f.overlay.archive }), "has no revision", "pointer");
+  });
+
+  it("rejects a mutable archive ConfigMap", async () => {
+    await rejects((f) => ({ ...f.objects, [f.overlay.archive]: { ...f.objects[f.overlay.archive], immutable: false } }), "is not immutable", "archive");
+    await rejects((f) => ({ ...f.objects, [f.overlay.archive]: { binaryData: f.objects[f.overlay.archive]!.binaryData } }), "is not immutable", "archive");
+  });
+
+  it("rejects an archive ConfigMap without the tools.tar.gz key", async () => {
+    await rejects((f) => ({ ...f.objects, [f.overlay.archive]: { immutable: true, binaryData: { "other.tgz": "AA==" } } }), "has no binaryData tools.tar.gz", "archive");
+  });
+
+  it("rejects an oversized archive before decoding it", async () => {
+    const decode = vi.spyOn(Buffer, "from");
+    await rejects((f) => f.objects, "overlay archive exceeds 16 bytes", "archive", { maxArchiveBytes: 16 });
+    expect(decode.mock.calls.filter(([, encoding]) => encoding === "base64")).toEqual([]);
+  });
+
+  it("rejects path-traversal archive entries", async () => {
+    const directory = await root();
+    const source = join(directory, "traversal");
+    await mkdir(join(source, "tools", "client"), { recursive: true });
+    await writeFile(join(directory, "escape.mjs"), "export const escaped = true;");
+    const archive = join(directory, "traversal.tgz");
+    // tar strips ".." by default; preservePaths writes the hostile entry name.
+    await tar.c({ gzip: true, cwd: source, file: archive, preservePaths: true }, ["tools", "tools/client/../../../escape.mjs"]);
+    const { objects } = overlayObjects(await readFile(archive), "overlay@hostile");
+    const cfg = await config(directory);
+    const instance = materializer(cfg, objects);
+    await expect(instance.materialize((await instance.currentSource())!)).rejects.toThrow("unsafe archive path");
+    await expect(readFile(join(cfg.controlRoot, "current.json"))).rejects.toThrow();
+    await expect(readFile(join(directory, "escape.mjs"), "utf8")).resolves.toBe("export const escaped = true;");
+    expect(await readdir(join(cfg.artifactsRoot, "generations"))).toEqual([]);
   });
 });

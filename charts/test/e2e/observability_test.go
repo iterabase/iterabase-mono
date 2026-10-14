@@ -20,10 +20,12 @@ import (
 )
 
 const (
-	observabilityToolSourceName      = "observability-e2e"
-	observabilityToolServerNamespace = "flux-system"
-	observabilityHarnessStorageClass = "iterabase-agentpool-lvm-xfs"
-	gpuOperatorFixtureNamespace      = "gpu-operator"
+	observabilityOverlayNamespace     = "iterabase-overlay"
+	observabilityOverlayPointer       = "overlay-tools"
+	observabilityOverlayArchivePrefix = "overlay-tools-"
+	observabilityOverlayArchiveKey    = "tools.tar.gz"
+	observabilityHarnessStorageClass  = "iterabase-agentpool-lvm-xfs"
+	gpuOperatorFixtureNamespace       = "gpu-operator"
 )
 
 // observabilityPlatform is the platform values the observability scenario

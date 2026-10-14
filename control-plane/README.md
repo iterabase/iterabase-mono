@@ -213,20 +213,29 @@ attempt pins. Exact runner identities and allowed tool namespaces come from
 static gateway deployment configuration and are reconciled into
 `approved_runners`; runners cannot approve themselves.
 
-### Tool generations (HOR-397, HOR-651)
+### Tool generations (HOR-397, HOR-651, HOR-593)
 
 `tool-runner/` builds the separate generic Node 24
 `control-plane-tool-runner` image. The release-versioned product tool layer
 (`tool-runner/tools/product`) is baked into that image and released with the
 control-plane (DES-HOR-651-01). A materializer sidecar composes each generation
-from that product layer plus, optionally, the `tools/client` layer of one
-configured Flux `GitRepository`. It verifies the exact artifact digest, safely
-extracts only `tools/client`, rejects an overlay `tools/product`, and atomically
-publishes immutable generation directories named by both layer digests. The
+from that product layer plus, optionally, the overlay's `tools/client` layer,
+which `forge apply` writes as Kubernetes ConfigMaps in the dedicated
+`iterabase-overlay` namespace (DES-HOR-593-05): an immutable
+`overlay-tools-<sha256>` ConfigMap holding the gzip tar in `binaryData`
+`tools.tar.gz`, and an `overlay-tools` pointer whose `digest`, `archive`, and
+`revision` keys name it. The materializer reads the pointer, requires the
+digest-named immutable archive, bounds it before decoding, recomputes its exact
+SHA-256 against the pointer, safely extracts only `tools/client`, rejects an
+overlay `tools/product`, and atomically publishes immutable generation
+directories named by both layer digests. With the overlay source enabled, a
+missing pointer or archive means "not ready": the last valid generation keeps
+serving and the overlay is never silently skipped. The
 runner mounts those files read-only, validates the complete manifest/bundle set,
 and registers over outbound mTLS. It receives no Kubernetes or Git credential;
-the materializer receives no runner private key, and with
-`toolRunner.flux.enabled=false` no Kubernetes credential either. Both
+the materializer receives no runner private key, only `get` on ConfigMaps in
+the overlay namespace, and with `toolRunner.overlayTools.enabled=false` no
+Kubernetes credential at all. Both
 processes expose unauthenticated, metrics-only `/metrics` listeners for the
 chart's opt-in Prometheus `ServiceMonitor`; no invocation API is exposed. See
 [`tool-runner/tools/README.md`](tool-runner/tools/README.md) for the

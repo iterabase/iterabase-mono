@@ -102,8 +102,9 @@ type deployedState struct {
 	runtimeImage      deployedImage
 	toolDigests       map[string]string
 	toolV2            []toolFixture
-	fluxRevision      string
-	fluxDigest        string
+	clientTools       map[string]toolFixture
+	overlayRevision   string
+	overlayDigest     string
 	admin             webSession
 	operator          webSession
 	usedLinks         map[string]bool

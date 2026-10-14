@@ -88,7 +88,7 @@ dispatch:
       memory: 512Mi
 
 toolRunner:
-  enabled: false # umbrella enables; requires gateway (+ Flux GitRepository when flux.enabled)
+  enabled: false # umbrella enables; requires gateway (+ Forge overlay ConfigMaps when overlayTools.enabled)
   image:
     repository: ghcr.io/iterabase/control-plane-tool-runner
     tag: "" # default: the chart appVersion, which equals control-plane/VERSION
@@ -98,15 +98,18 @@ toolRunner:
   # No wildcard/empty approval is accepted. Client overlays add namespaces here.
   allowedToolNamespaces: [platform]
   # Product tools ship in the runner image with each platform release
-  # (DES-HOR-651-01). Flux supplies only the overlay's customer tools/client
-  # layer; an overlay tools/product is rejected. Disable for a product-only
-  # install with no overlay GitRepository (no Flux RBAC is rendered).
-  flux:
+  # (DES-HOR-651-01). The overlay's customer tools/client layer arrives as
+  # Forge-written ConfigMaps in a dedicated namespace (DES-HOR-593-05): the
+  # `overlay-tools` pointer names the immutable `overlay-tools-<sha256>`
+  # archive, which the materializer digest-verifies. An overlay tools/product
+  # is rejected. While enabled, a missing pointer or archive means "not ready";
+  # the overlay is never silently skipped. Disable for a product-only install
+  # (no overlay RBAC or Kubernetes API credential is rendered).
+  overlayTools:
     enabled: true
-    namespace: flux-system
-    sourceName: overlay
+    namespace: iterabase-overlay # Forge creates it before Helm runs
     pollMs: 5000
-    maxArchiveBytes: 536870912
+    maxArchiveBytes: 1048576 # Forge also caps the archive at the 1 MiB ConfigMap limit
   concurrency: 8
   maxGenerations: 8
   maxLoadedBytes: 536870912

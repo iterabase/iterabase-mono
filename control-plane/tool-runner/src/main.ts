@@ -61,9 +61,10 @@ async function materialize(): Promise<void> {
   await startMetricsServer(metrics.registry, tcpPort("MATERIALIZER_METRICS_PORT", 9091), abort.signal);
   const instance = new GenerationMaterializer({
     productRoot: productRoot(), productVersion: env("TOOL_RUNNER_BUILD_VERSION", "dev"),
-    flux: boolean("FLUX_ENABLED", true) ? { namespace: env("FLUX_SOURCE_NAMESPACE", "flux-system"), sourceName: env("FLUX_SOURCE_NAME", "overlay") } : undefined,
+    // Forge writes the pointer under this fixed name (DES-HOR-593-05).
+    overlay: boolean("OVERLAY_TOOLS_ENABLED", true) ? { namespace: env("OVERLAY_TOOLS_NAMESPACE", "iterabase-overlay"), pointerName: "overlay-tools" } : undefined,
     artifactsRoot: env("ARTIFACTS_ROOT", "/artifacts"), controlRoot: env("CONTROL_ROOT", "/control"),
-    pollMs: positiveInt("FLUX_POLL_MS", 5000), maxArchiveBytes: positiveInt("FLUX_MAX_ARCHIVE_BYTES", 512 * 1024 * 1024),
+    pollMs: positiveInt("OVERLAY_TOOLS_POLL_MS", 5000), maxArchiveBytes: positiveInt("OVERLAY_TOOLS_MAX_ARCHIVE_BYTES", 1024 * 1024),
     maxExtractedBytes: positiveInt("TOOL_RUNNER_MAX_LOADED_BYTES", 512 * 1024 * 1024), maxGenerations: positiveInt("TOOL_RUNNER_MAX_GENERATIONS", 8),
   }, undefined, metrics);
   await writeFile(`${env("CONTROL_ROOT", "/control")}/materializer-ready`, "starting");

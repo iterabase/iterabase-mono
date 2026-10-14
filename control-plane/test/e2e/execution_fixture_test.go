@@ -1,86 +1,60 @@
 package e2e_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-const fluxInstallManifest = "https://github.com/fluxcd/flux2/releases/download/v2.4.0/install.yaml"
+// The overlay tools contract Forge writes (DES-HOR-593-05): a dedicated
+// namespace, an immutable digest-named archive ConfigMap, and a pointer.
+const (
+	overlayToolsNamespace     = "iterabase-overlay"
+	overlayToolsPointer       = "overlay-tools"
+	overlayToolsArchivePrefix = "overlay-tools-"
+	overlayToolsArchiveKey    = "tools.tar.gz"
+)
 
 type toolFixture struct {
-	name         string
-	version      string
-	digest       string
-	bundle       []byte
-	manifest     []byte
-	bundlePath   string
-	manifestPath string
+	name     string
+	version  string
+	digest   string
+	bundle   []byte
+	manifest []byte
 }
 
 func installExecutionFixtureStage(t *testing.T, state *deployedState) {
 	t.Helper()
 	installRuntimeBackend(t, state)
-	// The platform installs product-only first (HOR-651): no Flux, no overlay
-	// source, no client tools. enableClientToolLayerStage adds them later.
+	// The platform installs product-only first (HOR-651): no overlay
+	// namespace, no overlay source, no client tools. enableClientToolLayerStage adds them later.
 	state.toolDigests = map[string]string{productDiagnosticTool: productToolDigest(t, "diagnostic")}
 	state.toolV2 = writeToolGeneration(t, "2.0.0", true)
 }
 
 // enableClientToolLayerStage turns the product-only install into the
-// customer shape: Flux serves the overlay's tools/client layer and a platform
-// upgrade enables the runner's client source.
+// customer shape: the overlay's tools/client layer is written as Forge writes
+// it and a platform upgrade enables the runner's overlay source.
 func enableClientToolLayerStage(t *testing.T, state *deployedState) {
 	t.Helper()
-	state.kubectl(t, 3*time.Minute, "apply", "-f", fluxInstallManifest)
-	state.kubectl(t, 4*time.Minute, "wait", "-n", "flux-system", "--for=condition=Available",
-		"deployment/source-controller", "deployment/kustomize-controller", "--timeout=180s")
-	// Written here: the seed files live in this stage's t.TempDir().
 	v1 := writeToolGeneration(t, "1.0.0", false)
-	installToolGitServer(t, state, v1)
-	state.applyYAML(t, "tool-source.yaml", `apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
-metadata:
-  name: overlay
-  namespace: flux-system
-spec:
-  interval: 2s
-  url: ssh://git@tool-git.default.svc/git/repo
-  ref: {branch: master}
-  secretRef: {name: overlay-git-auth}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-tool-materializer
-  namespace: flux-system
-spec:
-  podSelector:
-    matchLabels: {app: source-controller}
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels: {kubernetes.io/metadata.name: iterabase-system}
-          podSelector:
-            matchLabels: {app.kubernetes.io/component: tool-runner}
-      ports: [{protocol: TCP, port: 9090}]
-`)
-	state.kubectl(t, 4*time.Minute, "wait", "-n", "flux-system", "--for=condition=Ready", "gitrepository/overlay", "--timeout=180s")
-	state.fluxRevision = state.kubectl(t, 30*time.Second, "get", "gitrepository", "overlay", "-n", "flux-system", "-o", "jsonpath={.status.artifact.revision}")
-	state.fluxDigest = state.kubectl(t, 30*time.Second, "get", "gitrepository", "overlay", "-n", "flux-system", "-o", "jsonpath={.status.artifact.digest}")
-	if state.fluxRevision == "" || !canonicalDigest(state.fluxDigest) {
-		t.Fatalf("Flux did not publish an exact tool artifact: revision=%q digest=%q", state.fluxRevision, state.fluxDigest)
-	}
+	publishToolGeneration(t, state, "e2e-overlay-v1", v1)
 	state.writeJSON(t, "execution-fixture-identity.json", map[string]any{
-		"source_sha": os.Getenv("ITERABASE_E2E_SOURCE_SHA"), "flux_revision": state.fluxRevision, "flux_digest": state.fluxDigest,
+		"source_sha": os.Getenv("ITERABASE_E2E_SOURCE_SHA"), "overlay_revision": state.overlayRevision, "overlay_digest": state.overlayDigest,
 		"images": []any{imageEvidence(state.harnessImage), imageEvidence(state.toolRunnerImage), imageEvidence(state.inferenceImage), imageEvidence(state.runtimeImage)},
 	})
 
@@ -153,7 +127,7 @@ func installExecutionPlatformStage(t *testing.T, state *deployedState) {
 
 // executionPlatformValues renders the execution install. clientTools=false is
 // the fresh product-only install: the tool runner serves only the product
-// layer from its image and the chart renders no Flux client.
+// layer from its image and the chart renders no overlay source or credential.
 func executionPlatformValues(state *deployedState, clientTools bool) map[string]any {
 	// CI supplies every image as an exact archive imported before install.
 	pullPolicy := "Never"
@@ -180,7 +154,7 @@ func executionPlatformValues(state *deployedState, clientTools bool) map[string]
 				"enabled":               true,
 				"image":                 map[string]any{"repository": state.toolRunnerImage.repository, "tag": state.toolRunnerImage.tag, "pullPolicy": pullPolicy},
 				"allowedToolNamespaces": []string{"platform"},
-				"flux":                  map[string]any{"enabled": clientTools, "namespace": "flux-system", "sourceName": "overlay", "pollMs": 1000},
+				"overlayTools":          map[string]any{"enabled": clientTools, "namespace": overlayToolsNamespace, "pollMs": 1000},
 			},
 			"artifact": map[string]any{"enabled": true},
 			"ingress":  map[string]any{"enabled": false},
@@ -309,13 +283,8 @@ export async function invoke(context,args){
 	if v2 {
 		definitions = definitions[:1]
 	}
-	root := t.TempDir()
 	out := make([]toolFixture, 0, len(definitions))
 	for _, definition := range definitions {
-		dir := filepath.Join(root, "tools", "client", strings.TrimPrefix(definition.name, "platform."))
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("create tool fixture: %v", err)
-		}
 		projection := map[string]any{
 			"apiVersion": "iterabase.io/tool/v1", "name": definition.name, "version": version,
 			"description": "Deterministic deployed E2E fixture", "bundle": "index.mjs",
@@ -339,18 +308,9 @@ export async function invoke(context,args){
 		}
 		manifest["digest"] = digest
 		manifestJSON, _ := json.Marshal(manifest)
-		bundlePath := filepath.Join(dir, "index.mjs")
-		manifestPath := filepath.Join(dir, "manifest.json")
-		if err := os.WriteFile(bundlePath, []byte(definition.bundle), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(manifestPath, append(manifestJSON, '\n'), 0o644); err != nil {
-			t.Fatal(err)
-		}
 		out = append(out, toolFixture{
 			name: definition.name, version: version, digest: digest,
-			bundle: []byte(definition.bundle), manifest: append([]byte(nil), manifestJSON...),
-			bundlePath: bundlePath, manifestPath: manifestPath,
+			bundle: []byte(definition.bundle), manifest: append(manifestJSON, '\n'),
 		})
 	}
 	return out
@@ -376,139 +336,143 @@ func productToolDigest(t *testing.T, short string) string {
 	return manifest.Digest
 }
 
-func installToolGitServer(t *testing.T, state *deployedState, tools []toolFixture) {
+// publishToolGeneration does what `forge apply` does for an overlay's
+// tools/client tree: it updates the cumulative client layer, packs it into one
+// deterministic gzip tar, writes the immutable digest-named archive ConfigMap,
+// then moves the pointer to it. The archive precedes the pointer, so the
+// materializer never observes a pointer to a missing archive.
+func publishToolGeneration(t *testing.T, state *deployedState, revision string, tools []toolFixture) {
 	t.Helper()
-	clientPublic, clientPrivate := sshKeyPair(t)
-	hostPublic, hostPrivate := sshKeyPair(t)
-	keys := t.TempDir()
-	clientPrivatePath := filepath.Join(keys, "identity")
-	knownHostsPath := filepath.Join(keys, "known_hosts")
-	hostPrivatePath := filepath.Join(keys, "ssh_host_ed25519_key")
-	clientPublicPath := filepath.Join(keys, "authorized_keys")
-	mustWriteMode(t, clientPrivatePath, clientPrivate, 0o600)
-	mustWriteMode(t, knownHostsPath, []byte("tool-git.default.svc "+strings.TrimSpace(string(hostPublic))+"\n"), 0o644)
-	mustWriteMode(t, hostPrivatePath, hostPrivate, 0o600)
-	mustWriteMode(t, clientPublicPath, clientPublic, 0o644)
-
-	args := []string{"create", "configmap", "tool-repo-seed"}
-	for _, tool := range tools {
-		short := strings.TrimPrefix(tool.name, "platform.")
-		args = append(args, "--from-file="+short+"-index.mjs="+tool.bundlePath, "--from-file="+short+"-manifest.json="+tool.manifestPath)
-	}
-	state.kubectl(t, 30*time.Second, args...)
-	state.kubectl(t, 30*time.Second, "create", "configmap", "tool-git-authorized", "--from-file=authorized_keys="+clientPublicPath)
-	state.kubectl(t, 30*time.Second, "create", "secret", "generic", "tool-git-host", "--from-file=ssh_host_ed25519_key="+hostPrivatePath)
-	state.kubectl(t, 30*time.Second, "create", "secret", "generic", "overlay-git-auth", "-n", "flux-system",
-		"--from-file=identity="+clientPrivatePath, "--from-file=known_hosts="+knownHostsPath)
-	state.applyYAML(t, "tool-git.yaml", fmt.Sprintf(`apiVersion: apps/v1
-kind: Deployment
-metadata: {name: tool-git, namespace: default}
-spec:
-  replicas: 1
-  selector: {matchLabels: {app: tool-git}}
-  template:
-    metadata: {labels: {app: tool-git}}
-    spec:
-      containers:
-        - name: git
-          image: %s
-          imagePullPolicy: Never
-          securityContext: {runAsUser: 0, runAsGroup: 0}
-          command: ["/bin/sh", "-ceu"]
-          args:
-            - |
-              mkdir -p /git/repo/tools/client
-              for manifest in /seed/*-manifest.json; do
-                short=$(basename "$manifest" -manifest.json)
-                mkdir -p "/git/repo/tools/client/$short"
-                cp "$manifest" "/git/repo/tools/client/$short/manifest.json"
-                cp "/seed/$short-index.mjs" "/git/repo/tools/client/$short/index.mjs"
-              done
-              cd /git/repo
-              git init -b master
-              git config user.name test
-              git config user.email test@example.com
-              git add . && git commit -m v1
-              adduser -D -h /home/git -s /usr/bin/git-shell git
-              passwd -d git
-              chown -R git:git /git/repo
-              mkdir -p /run/sshd
-              exec /usr/sbin/sshd -D -e -o HostKey=/host/ssh_host_ed25519_key -o AuthorizedKeysFile=/auth/authorized_keys -o PasswordAuthentication=no -o PermitRootLogin=no -o StrictModes=no -o AllowUsers=git
-          ports: [{containerPort: 22}]
-          volumeMounts:
-            - {name: seed, mountPath: /seed, readOnly: true}
-            - {name: repo, mountPath: /git}
-            - {name: host, mountPath: /host, readOnly: true}
-            - {name: auth, mountPath: /auth, readOnly: true}
-      volumes:
-        - {name: seed, configMap: {name: tool-repo-seed}}
-        - {name: repo, emptyDir: {}}
-        - {name: host, secret: {secretName: tool-git-host, defaultMode: 256}}
-        - {name: auth, configMap: {name: tool-git-authorized, defaultMode: 292}}
----
-apiVersion: v1
-kind: Service
-metadata: {name: tool-git, namespace: default}
-spec:
-  selector: {app: tool-git}
-  ports: [{port: 22, targetPort: 22}]
-`, state.runtimeImage.reference()))
-	state.kubectl(t, 3*time.Minute, "rollout", "status", "deployment/tool-git", "-n", "default", "--timeout=120s")
-}
-
-func publishToolGeneration(t *testing.T, state *deployedState, tools []toolFixture) {
-	t.Helper()
-	pod := state.kubectl(t, 30*time.Second, "get", "pods", "-n", "default", "-l", "app=tool-git", "-o", "jsonpath={.items[0].metadata.name}")
-	if pod == "" {
-		t.Fatal("tool Git server pod is unavailable")
+	if state.clientTools == nil {
+		state.clientTools = map[string]toolFixture{}
 	}
 	for _, tool := range tools {
-		short := strings.TrimPrefix(tool.name, "platform.")
-		dir := filepath.Join(t.TempDir(), short)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("create generation staging directory: %v", err)
+		state.clientTools[strings.TrimPrefix(tool.name, "platform.")] = tool
+	}
+	archive, digest, err := overlayToolsArchive(state.clientTools)
+	if err != nil {
+		t.Fatalf("build overlay tools archive: %v", err)
+	}
+	name := overlayToolsArchivePrefix + strings.TrimPrefix(digest, "sha256:")
+	labels := map[string]string{"app.kubernetes.io/managed-by": "forge", "iterabase.com/owner": "overlay"}
+	objects := []map[string]any{
+		{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": overlayToolsNamespace}},
+		{
+			"apiVersion": "v1", "kind": "ConfigMap", "immutable": true,
+			"metadata":   map[string]any{"name": name, "namespace": overlayToolsNamespace, "labels": labels},
+			"binaryData": map[string]string{overlayToolsArchiveKey: base64.StdEncoding.EncodeToString(archive)},
+		},
+	}
+	pointer := map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": overlayToolsPointer, "namespace": overlayToolsNamespace, "labels": labels},
+		"data":     map[string]string{"digest": digest, "archive": name, "revision": revision},
+	}
+	for index, object := range append(objects, pointer) {
+		raw, err := json.Marshal(object)
+		if err != nil {
+			t.Fatalf("marshal overlay object: %v", err)
 		}
-		bundlePath := filepath.Join(dir, "index.mjs")
-		manifestPath := filepath.Join(dir, "manifest.json")
-		mustWriteMode(t, bundlePath, tool.bundle, 0o644)
-		mustWriteMode(t, manifestPath, append(append([]byte(nil), tool.manifest...), '\n'), 0o644)
-		destination := "default/" + pod + ":/git/repo/tools/client/" + short + "/"
-		state.kubectl(t, time.Minute, "cp", bundlePath, destination+"index.mjs")
-		state.kubectl(t, time.Minute, "cp", manifestPath, destination+"manifest.json")
+		path := state.writeManifest(t, fmt.Sprintf("overlay-tools-%s-%d.json", revision, index), string(raw))
+		state.kubectl(t, time.Minute, "apply", "--server-side", "--field-manager=forge-e2e", "-f", path)
 	}
-	state.kubectl(t, time.Minute, "exec", "-n", "default", pod, "--", "/bin/sh", "-ceu",
-		"git config --global --add safe.directory /git/repo; cd /git/repo; git add .; git commit -m v2; chown -R git:git /git/repo")
-	state.kubectl(t, 30*time.Second, "annotate", "gitrepository/overlay", "-n", "flux-system",
-		fmt.Sprintf("reconcile.fluxcd.io/requestedAt=%d", time.Now().UnixNano()), "--overwrite")
+	got := state.kubectl(t, 30*time.Second, "get", "configmap", overlayToolsPointer, "-n", overlayToolsNamespace, "-o", "jsonpath={.data.digest}")
+	if got != digest || !canonicalDigest(got) {
+		t.Fatalf("overlay pointer digest=%q want=%q", got, digest)
+	}
+	state.overlayRevision, state.overlayDigest = revision, digest
 }
 
-func sshKeyPair(t *testing.T) ([]byte, []byte) {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "id_ed25519")
-	output, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "e2e", "-f", path).CombinedOutput()
-	if err != nil {
-		t.Fatalf("generate SSH key: %v\n%s", err, output)
+// overlayToolsArchive packs tools/client/<tool>/{index.mjs,manifest.json} in
+// sorted order with fixed metadata, so equal layers yield equal digests.
+func overlayToolsArchive(tools map[string]toolFixture) ([]byte, string, error) {
+	var output bytes.Buffer
+	compressor := gzip.NewWriter(&output)
+	compressor.ModTime = time.Unix(0, 0)
+	archive := tar.NewWriter(compressor)
+	for _, short := range slices.Sorted(maps.Keys(tools)) {
+		for _, file := range []struct {
+			name string
+			data []byte
+		}{{"index.mjs", tools[short].bundle}, {"manifest.json", tools[short].manifest}} {
+			header := &tar.Header{Name: "tools/client/" + short + "/" + file.name, Mode: 0o444, Size: int64(len(file.data)), ModTime: time.Unix(0, 0), Typeflag: tar.TypeReg}
+			if err := archive.WriteHeader(header); err != nil {
+				return nil, "", err
+			}
+			if _, err := archive.Write(file.data); err != nil {
+				return nil, "", err
+			}
+		}
 	}
-	public, err := os.ReadFile(path + ".pub")
-	if err != nil {
-		t.Fatalf("read SSH public key: %v", err)
+	if err := archive.Close(); err != nil {
+		return nil, "", err
 	}
-	private, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read SSH private key: %v", err)
+	if err := compressor.Close(); err != nil {
+		return nil, "", err
 	}
-	return public, private
-}
-
-func mustWriteMode(t *testing.T, path string, data []byte, mode os.FileMode) {
-	t.Helper()
-	if err := os.WriteFile(path, data, mode); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	sum := sha256.Sum256(output.Bytes())
+	return output.Bytes(), "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func (state *deployedState) applyYAML(t *testing.T, name, content string) {
 	t.Helper()
 	path := state.writeManifest(t, name, content)
 	state.kubectl(t, 2*time.Minute, "apply", "-f", path)
+}
+
+// overlayArchiveEntries lists the entry names of a base64 overlay archive.
+func overlayArchiveEntries(encoded string) ([]string, error) {
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	entries := tar.NewReader(reader)
+	for {
+		header, err := entries.Next()
+		if errors.Is(err, io.EOF) {
+			return names, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if header.Typeflag != tar.TypeReg {
+			return nil, fmt.Errorf("archive entry %s is not a regular file", header.Name)
+		}
+		names = append(names, header.Name)
+	}
+}
+
+func TestOverlayToolsArchiveFollowsForgeLayout(t *testing.T) {
+	tools := map[string]toolFixture{}
+	for _, tool := range writeToolGeneration(t, "1.0.0", false) {
+		tools[strings.TrimPrefix(tool.name, "platform.")] = tool
+	}
+	archive, digest, err := overlayToolsArchive(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, againDigest, err := overlayToolsArchive(maps.Clone(tools))
+	if err != nil || againDigest != digest || !bytes.Equal(again, archive) || !canonicalDigest(digest) {
+		t.Fatalf("archive is not deterministic: %s vs %s (%v)", digest, againDigest, err)
+	}
+	if len(archive) >= 1<<20 {
+		t.Fatalf("archive is %d bytes; Forge caps it below the 1 MiB ConfigMap limit", len(archive))
+	}
+	names, err := overlayArchiveEntries(base64.StdEncoding.EncodeToString(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if !strings.HasPrefix(name, "tools/client/") {
+			t.Fatalf("archive entry %s is outside tools/client", name)
+		}
+	}
+	if len(names) != 2*len(tools) || !slices.IsSorted(names) {
+		t.Fatalf("archive entries=%v", names)
+	}
 }

@@ -5,12 +5,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -19,107 +19,54 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// installObservabilityToolSourceStage writes exactly what Forge writes for an
+// overlay's tools/client layer (DES-HOR-593-05): the dedicated overlay
+// namespace, the immutable digest-named archive ConfigMap, and the
+// overlay-tools pointer naming it.
 func installObservabilityToolSourceStage(t *testing.T, state *chartState) {
 	t.Helper()
 	archive, digest, err := buildObservabilityToolArchive()
 	if err != nil {
 		t.Fatalf("build observability tool archive: %v", err)
 	}
-	archivePath := filepath.Join(t.TempDir(), "artifact.tgz")
-	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
-		t.Fatalf("write observability tool archive: %v", err)
+	state.kubectl(t, 2*time.Minute, "apply", "-f", state.writeManifest(t, "observability-tool-source.yaml", observabilityOverlayManifest(archive, digest)))
+	if got := state.kubectl(t, 30*time.Second, "get", "configmap/"+observabilityOverlayPointer, "-n", observabilityOverlayNamespace,
+		"-o", "jsonpath={.data.digest}"); got != digest {
+		t.Fatalf("observability overlay pointer digest=%q want=%q", got, digest)
 	}
+}
 
-	state.kubectl(t, 2*time.Minute, "apply", "-f", state.writeManifest(t, "observability-tool-source-api.yaml", `apiVersion: v1
+// observabilityOverlayManifest renders the overlay namespace, archive, and
+// pointer ConfigMaps for one exact archive.
+func observabilityOverlayManifest(archive []byte, digest string) string {
+	name := observabilityOverlayArchivePrefix + strings.TrimPrefix(digest, "sha256:")
+	labels := "\n    app.kubernetes.io/managed-by: forge\n    iterabase.com/owner: overlay"
+	return fmt.Sprintf(`apiVersion: v1
 kind: Namespace
 metadata:
-  name: flux-system
----
-apiVersion: apiextensions.k8s.io/v1
-kind: CustomResourceDefinition
-metadata:
-  name: gitrepositories.source.toolkit.fluxcd.io
-spec:
-  group: source.toolkit.fluxcd.io
-  scope: Namespaced
-  names:
-    plural: gitrepositories
-    singular: gitrepository
-    kind: GitRepository
-    listKind: GitRepositoryList
-  versions:
-    - name: v1
-      served: true
-      storage: true
-      subresources: {status: {}}
-      schema:
-        openAPIV3Schema:
-          type: object
-          x-kubernetes-preserve-unknown-fields: true
-`))
-	state.kubectl(t, 2*time.Minute, "wait", "--for=condition=Established", "crd/gitrepositories.source.toolkit.fluxcd.io", "--timeout=90s")
-	state.kubectl(t, 30*time.Second, "create", "configmap", "observability-tool-artifact", "-n", observabilityToolServerNamespace,
-		"--from-file=artifact.tgz="+archivePath)
-	state.kubectl(t, 2*time.Minute, "apply", "-f", state.writeManifest(t, "observability-tool-source-server.yaml", `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: observability-tool-source
-  namespace: flux-system
-spec:
-  replicas: 1
-  selector:
-    matchLabels: {app: observability-tool-source}
-  template:
-    metadata:
-      labels: {app: observability-tool-source}
-    spec:
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        seccompProfile: {type: RuntimeDefault}
-      containers:
-        - name: server
-          image: busybox:1.37.0@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
-          command: [httpd, -f, -p, "8080", -h, /www]
-          ports: [{name: http, containerPort: 8080}]
-          readinessProbe: {tcpSocket: {port: http}}
-          securityContext:
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities: {drop: [ALL]}
-          resources:
-            requests: {cpu: 5m, memory: 8Mi}
-            limits: {cpu: 100m, memory: 32Mi}
-          volumeMounts: [{name: artifact, mountPath: /www, readOnly: true}]
-      volumes:
-        - name: artifact
-          configMap: {name: observability-tool-artifact}
+  name: %[1]s
 ---
 apiVersion: v1
-kind: Service
+kind: ConfigMap
 metadata:
-  name: source-controller
-  namespace: flux-system
-spec:
-  selector: {app: observability-tool-source}
-  ports: [{name: http, port: 80, targetPort: http}]
-`))
-	state.kubectl(t, 3*time.Minute, "rollout", "status", "deployment/observability-tool-source", "-n", observabilityToolServerNamespace, "--timeout=2m")
-	state.kubectl(t, 30*time.Second, "apply", "-f", state.writeManifest(t, "observability-tool-source.yaml", fmt.Sprintf(`apiVersion: source.toolkit.fluxcd.io/v1
-kind: GitRepository
+  name: %[2]s
+  namespace: %[1]s
+  labels:%[3]s
+immutable: true
+binaryData:
+  %[4]s: %[5]s
+---
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: %s
-  namespace: %s
-spec: {}
-`, observabilityToolSourceName, testNamespace)))
-	status := fmt.Sprintf(`{"status":{"artifact":{"revision":"main@sha1:0000000000000000000000000000000000000000","digest":%q,"url":"http://source-controller.flux-system.svc/artifact.tgz"}}}`, digest)
-	state.kubectl(t, 30*time.Second, "patch", "gitrepository/"+observabilityToolSourceName, "-n", testNamespace,
-		"--subresource=status", "--type=merge", "-p", status)
-	if got := state.kubectl(t, 30*time.Second, "get", "gitrepository/"+observabilityToolSourceName, "-n", testNamespace,
-		"-o", "jsonpath={.status.artifact.digest}"); got != digest {
-		t.Fatalf("observability tool source digest=%q want=%q", got, digest)
-	}
+  name: %[6]s
+  namespace: %[1]s
+  labels:%[3]s
+data:
+  digest: %[7]q
+  archive: %[2]q
+  revision: "observability-e2e"
+`, observabilityOverlayNamespace, name, labels, observabilityOverlayArchiveKey, base64.StdEncoding.EncodeToString(archive), observabilityOverlayPointer, digest)
 }
 
 func buildObservabilityToolArchive() ([]byte, string, error) {
@@ -232,6 +179,59 @@ func TestUnitObservabilityToolFixturePublishesCanonicalArchive(t *testing.T) {
 	}
 }
 
+func TestUnitObservabilityOverlayManifestFollowsForgeContract(t *testing.T) {
+	archive, digest, err := buildObservabilityToolArchive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archive) >= 1<<20 {
+		t.Fatalf("archive is %d bytes; Forge caps it below the 1 MiB ConfigMap limit", len(archive))
+	}
+	type object struct {
+		Kind     string `yaml:"kind"`
+		Metadata struct {
+			Name      string            `yaml:"name"`
+			Namespace string            `yaml:"namespace"`
+			Labels    map[string]string `yaml:"labels"`
+		} `yaml:"metadata"`
+		Immutable  bool              `yaml:"immutable"`
+		Data       map[string]string `yaml:"data"`
+		BinaryData map[string]string `yaml:"binaryData"`
+	}
+	decoder := yaml.NewDecoder(strings.NewReader(observabilityOverlayManifest(archive, digest)))
+	objects := map[string]object{}
+	for {
+		var next object
+		if err := decoder.Decode(&next); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		objects[next.Kind+"/"+next.Metadata.Name] = next
+	}
+	if _, ok := objects["Namespace/"+observabilityOverlayNamespace]; !ok || len(objects) != 3 {
+		t.Fatalf("overlay objects=%v", objects)
+	}
+	pointer := objects["ConfigMap/"+observabilityOverlayPointer]
+	archiveName := pointer.Data["archive"]
+	stored := objects["ConfigMap/"+archiveName]
+	decoded, err := base64.StdEncoding.DecodeString(stored.BinaryData[observabilityOverlayArchiveKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := fmt.Sprintf("sha256:%x", sha256.Sum256(decoded))
+	if pointer.Data["digest"] != actual || archiveName != observabilityOverlayArchivePrefix+strings.TrimPrefix(actual, "sha256:") ||
+		!stored.Immutable || pointer.Data["revision"] == "" || !bytes.Equal(decoded, archive) {
+		t.Fatalf("pointer=%+v archive=%+v digest=%s", pointer, stored, actual)
+	}
+	for _, configMap := range []object{pointer, stored} {
+		if configMap.Metadata.Namespace != observabilityOverlayNamespace ||
+			configMap.Metadata.Labels["app.kubernetes.io/managed-by"] != "forge" || configMap.Metadata.Labels["iterabase.com/owner"] != "overlay" {
+			t.Fatalf("overlay ConfigMap metadata=%+v", configMap.Metadata)
+		}
+	}
+}
+
 func TestUnitObservabilityCandidateUsesMaterializableToolSource(t *testing.T) {
 	data, err := os.ReadFile(strings.TrimPrefix(observabilityToolRunnerValues, "test/e2e/"))
 	if err != nil {
@@ -240,11 +240,11 @@ func TestUnitObservabilityCandidateUsesMaterializableToolSource(t *testing.T) {
 	var values struct {
 		ControlPlane struct {
 			ToolRunner struct {
-				Enabled bool `yaml:"enabled"`
-				Flux    struct {
-					Namespace  string `yaml:"namespace"`
-					SourceName string `yaml:"sourceName"`
-				} `yaml:"flux"`
+				Enabled      bool `yaml:"enabled"`
+				OverlayTools struct {
+					Enabled   bool   `yaml:"enabled"`
+					Namespace string `yaml:"namespace"`
+				} `yaml:"overlayTools"`
 			} `yaml:"toolRunner"`
 		} `yaml:"control-plane"`
 	}
@@ -252,7 +252,7 @@ func TestUnitObservabilityCandidateUsesMaterializableToolSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolRunner := values.ControlPlane.ToolRunner
-	if !toolRunner.Enabled || toolRunner.Flux.Namespace != testNamespace || toolRunner.Flux.SourceName != observabilityToolSourceName {
+	if !toolRunner.Enabled || !toolRunner.OverlayTools.Enabled || toolRunner.OverlayTools.Namespace != observabilityOverlayNamespace {
 		t.Fatalf("candidate tool source=%+v", toolRunner)
 	}
 	declared := observabilityCandidateValues(observabilityPlatform, false, true)

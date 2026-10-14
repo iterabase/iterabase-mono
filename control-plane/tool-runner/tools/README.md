@@ -7,7 +7,7 @@ manifest `digest` binds the canonical manifest and the exact bundle bytes.
 | Layer | Source | Released by | Holds |
 | --- | --- | --- | --- |
 | `product` | `control-plane/tool-runner/tools/product/` in this repository | Every control-plane release, inside the `control-plane-tool-runner` image at `/app/tools/product` | Integration tools every customer uses: mailbox read/send, browser operations, customer-network file and SQL reads through runners, later Teams |
-| `client` | `tools/client/` in the customer's deployment overlay | The overlay's Flux `GitRepository` artifact | Customer-specific tools only, for example a customer's rate API |
+| `client` | `tools/client/` in the customer's deployment overlay | `forge apply`, as digest-named ConfigMaps in the `iterabase-overlay` namespace | Customer-specific tools only, for example a customer's rate API |
 
 Workflows, Skills, credential bindings and agent identities also live in the
 overlay. They are not tools and are not part of either layer.
@@ -17,7 +17,7 @@ overlay. They are not tools and are not part of either layer.
 - **Product tools are platform code.** They are reviewed, tested and released
   with the control-plane (DES-HOR-651-01). Never copy them into an overlay, and
   never load them from a mutable Git branch. The materializer rejects any
-  overlay artifact that contains `tools/product`.
+  overlay archive that contains `tools/product`.
 - **Client overrides product by logical name.** A client tool with the same
   name shadows the product tool, but it must use a new immutable version. Reusing
   the product version with different bytes rejects the whole generation.
@@ -45,8 +45,30 @@ returns its retryable `tool_unavailable` (ARCH-007, DES-HOR-651-02). Before an
 upgrade that bumps a product tool's version, drain the in-flight work that uses
 that tool.
 
-Without an overlay (`toolRunner.flux.enabled=false`) the runner serves a
-product-only generation, and the chart renders no Flux credentials.
+## Overlay client delivery
+
+`forge apply` packs the overlay's `tools/client/` tree into a gzip tar and
+writes two ConfigMaps into the dedicated `iterabase-overlay` namespace before
+Helm runs (DES-HOR-593-05):
+
+- `overlay-tools-<sha256>`: `immutable: true`, with the archive bytes in
+  `binaryData` key `tools.tar.gz`. The name is the SHA-256 of exactly those
+  bytes. Forge caps the archive at the 1 MiB ConfigMap limit.
+- `overlay-tools`: the pointer, with `data` keys `digest` (`sha256:<hex>`),
+  `archive` (the archive ConfigMap name) and `revision` (Forge's opaque overlay
+  revision, used only in logs and metrics).
+
+Forge always writes an archive, even when the overlay has no client tools. The
+materializer reads the pointer, requires the archive to be the immutable,
+digest-named ConfigMap, enforces its archive byte limit before decoding,
+recomputes the SHA-256, and only then validates and extracts `tools/client`.
+A missing pointer or archive means "not ready": the last valid generation keeps
+serving. Its only Kubernetes permission is `get` on ConfigMaps in that
+namespace.
+
+Without an overlay (`toolRunner.overlayTools.enabled=false`) the runner serves a
+product-only generation, and the chart renders no overlay RBAC or Kubernetes
+credential.
 
 ## Authoring a product tool
 

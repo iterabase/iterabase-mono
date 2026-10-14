@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, posix, resolve } from "node:path";
-import { Readable, Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
+import { basename, dirname, join, posix } from "node:path";
 import * as k8s from "@kubernetes/client-node";
 import * as tar from "tar";
 import type { MaterializerMetrics } from "./metrics.js";
@@ -14,8 +11,10 @@ export interface MaterializerConfig {
   // (DES-HOR-651-01). It is read-only and identical for every pod of a release.
   productRoot: string;
   productVersion: string;
-  // Optional overlay client layer. Absent means a product-only generation.
-  flux?: { namespace: string; sourceName: string };
+  // Optional overlay client layer, read from the Forge-written pointer and
+  // digest-named archive ConfigMaps (DES-HOR-593-05). Absent means a
+  // product-only generation and no Kubernetes client at all.
+  overlay?: { namespace: string; pointerName: string };
   artifactsRoot: string;
   controlRoot: string;
   pollMs: number;
@@ -24,22 +23,29 @@ export interface MaterializerConfig {
   maxGenerations: number;
 }
 
-export interface FluxArtifact { revision: string; digest: string; url: string }
+// OverlayArchive is the overlay client layer named by the pointer ConfigMap:
+// the exact sha256 of the archive bytes, the immutable archive ConfigMap that
+// must carry them, and Forge's opaque overlay revision (logs/metrics only).
+export interface OverlayArchive { revision: string; digest: string; archive: string }
 
 // GenerationSource is one composed generation: the image product layer plus
-// the exact Flux client artifact, if any. Its digest names the generation.
-export interface GenerationSource { revision: string; digest: string; productDigest: string; client: FluxArtifact | null }
+// the exact overlay client archive, if any. Its digest names the generation.
+export interface GenerationSource { revision: string; digest: string; productDigest: string; client: OverlayArchive | null }
+
+export const overlayArchiveKey = "tools.tar.gz";
+const archivePrefix = "overlay-tools-";
+const digestPattern = /^sha256:([a-f0-9]{64})$/;
 
 export class GenerationMaterializer {
-  private custom: k8s.CustomObjectsApi | null = null;
+  private core: k8s.CoreV1Api | null = null;
   private lastDigest = "";
   private productDigest = "";
 
   constructor(private readonly cfg: MaterializerConfig, kubeConfig?: k8s.KubeConfig, private readonly metrics?: MaterializerMetrics) {
-    if (!cfg.flux) return;
+    if (!cfg.overlay) return;
     const kc = kubeConfig ?? new k8s.KubeConfig();
     if (!kubeConfig) kc.loadFromCluster();
-    this.custom = kc.makeApiClient(k8s.CustomObjectsApi);
+    this.core = kc.makeApiClient(k8s.CoreV1Api);
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -51,8 +57,10 @@ export class GenerationMaterializer {
         const source = await this.currentSource();
         if (source && source.digest !== this.lastDigest) {
           const bytes = await this.materialize(source);
-          this.lastDigest = source.digest;
-          this.metrics?.success(source.revision, source.digest, bytes, (Date.now() - observedAt) / 1000);
+          if (bytes !== null) {
+            this.lastDigest = source.digest;
+            this.metrics?.success(source.revision, source.digest, bytes, (Date.now() - observedAt) / 1000);
+          }
         }
       } catch (error) {
         this.metrics?.failure((Date.now() - observedAt) / 1000);
@@ -62,34 +70,33 @@ export class GenerationMaterializer {
     }
   }
 
-  // currentSource returns null only while a configured Flux client source has
-  // no Ready artifact: a configured overlay is never silently skipped.
+  // currentSource returns null only while a configured overlay has no pointer
+  // ConfigMap yet: a configured overlay is never silently skipped.
   async currentSource(): Promise<GenerationSource | null> {
     if (!this.productDigest) this.productDigest = await layerDigest(this.cfg.productRoot);
-    const client = this.cfg.flux ? await this.currentArtifact() : null;
-    if (this.cfg.flux && !client) return null;
+    const client = this.cfg.overlay ? await this.currentOverlay() : null;
+    if (this.cfg.overlay && !client) return null;
     return composeSource(this.productDigest, this.cfg.productVersion, client);
   }
 
-  async currentArtifact(): Promise<FluxArtifact | null> {
-    if (!this.custom || !this.cfg.flux) return null;
-    const response = await this.custom.getNamespacedCustomObject({
-      group: "source.toolkit.fluxcd.io", version: "v1", namespace: this.cfg.flux.namespace,
-      plural: "gitrepositories", name: this.cfg.flux.sourceName,
-    });
-    const object = response as unknown as { status?: { artifact?: Partial<FluxArtifact> } };
-    const artifact = object.status?.artifact;
-    if (!artifact?.revision || !artifact.digest || !artifact.url) return null;
-    if (!/^sha256:[a-f0-9]{64}$/.test(artifact.digest)) throw new Error(`Flux artifact has unsupported digest ${artifact.digest}`);
-    const url = new URL(artifact.url);
-    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Flux artifact URL must be HTTP(S)");
-    // Prevent a compromised status object from turning the materializer into an
-    // arbitrary egress client. Flux's source-controller artifact host is fixed.
-    if (!/^source-controller\.flux-system\.svc(?:\.cluster\.local)?\.?$/.test(url.hostname)) throw new Error(`Flux artifact host ${url.hostname} is not source-controller`);
-    return artifact as FluxArtifact;
+  // currentOverlay reads and validates the pointer ConfigMap. The archive
+  // bytes are only read when a new generation must be materialized.
+  async currentOverlay(): Promise<OverlayArchive | null> {
+    if (!this.core || !this.cfg.overlay) return null;
+    const pointer = await this.readConfigMap(this.cfg.overlay.pointerName);
+    if (!pointer) return null;
+    const ref = `${this.cfg.overlay.namespace}/${this.cfg.overlay.pointerName}`;
+    const { digest, archive, revision } = pointer.data ?? {};
+    const match = digestPattern.exec(digest ?? "");
+    if (!match) throw new Error(`overlay pointer ${ref} has unsupported digest ${JSON.stringify(digest ?? null)}`);
+    if (archive !== `${archivePrefix}${match[1]}`) throw new Error(`overlay pointer ${ref} names archive ${JSON.stringify(archive ?? null)}, expected ${archivePrefix}${match[1]}`);
+    if (!revision) throw new Error(`overlay pointer ${ref} has no revision`);
+    return { revision, digest: digest!, archive };
   }
 
-  async materialize(source: GenerationSource): Promise<number> {
+  // materialize returns the published generation bytes, or null while the
+  // overlay archive named by the pointer does not exist yet (not ready).
+  async materialize(source: GenerationSource): Promise<number | null> {
     const generationName = source.digest.slice("sha256:".length);
     const finalDir = join(this.cfg.artifactsRoot, "generations", generationName);
     try {
@@ -106,7 +113,10 @@ export class GenerationMaterializer {
     try {
       let expanded = 0;
       if (source.client) {
-        await this.download(source.client, archive);
+        if (!(await this.fetchArchive(source.client, archive))) {
+          console.info(JSON.stringify({ event: "overlay_archive_not_ready", revision: source.client.revision, archive: source.client.archive }));
+          return null;
+        }
         expanded += await validateArchive(archive, this.cfg.maxExtractedBytes);
       }
       expanded += await directoryBytes(this.cfg.productRoot);
@@ -135,28 +145,33 @@ export class GenerationMaterializer {
     }
   }
 
-  private async download(artifact: FluxArtifact, destination: string): Promise<void> {
-    let response: Response;
+  // fetchArchive reads the immutable archive ConfigMap, bounds it before
+  // decoding, verifies its exact sha256 against the pointer digest, and writes
+  // it privately for validation and extraction. False means it is absent.
+  private async fetchArchive(client: OverlayArchive, destination: string): Promise<boolean> {
+    const ref = `${this.cfg.overlay?.namespace}/${client.archive}`;
+    const configMap = await this.readConfigMap(client.archive);
+    if (!configMap) return false;
+    if (configMap.immutable !== true) throw new Error(`overlay archive ${ref} is not immutable`);
+    const encoded = configMap.binaryData?.[overlayArchiveKey];
+    if (typeof encoded !== "string") throw new Error(`overlay archive ${ref} has no binaryData ${overlayArchiveKey}`);
+    if (base64DecodedLength(encoded) > this.cfg.maxArchiveBytes) throw new Error(`overlay archive exceeds ${this.cfg.maxArchiveBytes} bytes`);
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.byteLength > this.cfg.maxArchiveBytes) throw new Error(`overlay archive exceeds ${this.cfg.maxArchiveBytes} bytes`);
+    const actual = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    if (actual !== client.digest) throw new Error(`overlay archive digest mismatch: pointer ${client.digest}, archive ${actual}`);
+    await writeFile(destination, bytes, { mode: 0o600 });
+    return true;
+  }
+
+  private async readConfigMap(name: string): Promise<k8s.V1ConfigMap | null> {
+    if (!this.core || !this.cfg.overlay) throw new Error("overlay source is not configured");
     try {
-      response = await fetch(artifact.url, { redirect: "error" });
+      return await this.core.readNamespacedConfigMap({ name, namespace: this.cfg.overlay.namespace });
     } catch (error) {
-      const cause = (error as { cause?: { code?: string; message?: string } }).cause;
-      throw new Error(`download Flux artifact ${artifact.url}: ${cause?.code ?? "fetch_failed"}: ${cause?.message ?? (error instanceof Error ? error.message : String(error))}`);
+      if ((error as { code?: number }).code === 404) return null;
+      throw error;
     }
-    if (!response.ok || !response.body) throw new Error(`download Flux artifact: HTTP ${response.status}`);
-    const claimedLength = Number(response.headers.get("content-length") ?? "0");
-    if (claimedLength > this.cfg.maxArchiveBytes) throw new Error(`Flux archive exceeds ${this.cfg.maxArchiveBytes} bytes`);
-    let size = 0;
-    const maximum = this.cfg.maxArchiveBytes;
-    const hash = createHash("sha256");
-    const meter = new Transform({ transform(chunk: Buffer, _encoding, callback) {
-      size += chunk.length;
-      if (size > maximum) { callback(new Error(`Flux archive exceeds ${maximum} bytes`)); return; }
-      hash.update(chunk); callback(null, chunk);
-    } });
-    await pipeline(Readable.fromWeb(response.body as never), meter, createWriteStream(destination, { mode: 0o600 }));
-    const actual = `sha256:${hash.digest("hex")}`;
-    if (actual !== artifact.digest) throw new Error(`Flux artifact digest mismatch: status ${artifact.digest}, downloaded ${actual}`);
   }
 
   private async publishCurrent(source: GenerationSource, directory: string): Promise<void> {
@@ -219,9 +234,9 @@ function productPath(path: string): boolean {
 }
 
 // composeSource names a generation by both layers, so a platform upgrade (new
-// product digest) and an overlay change (new Flux digest) each publish exactly
-// one new immutable generation.
-export function composeSource(productDigest: string, productVersion: string, client: FluxArtifact | null): GenerationSource {
+// product digest) and an overlay change (new archive digest) each publish
+// exactly one new immutable generation.
+export function composeSource(productDigest: string, productVersion: string, client: OverlayArchive | null): GenerationSource {
   const hash = createHash("sha256");
   hash.update(`iterabase.io/tool-generation/v1\0product\0${productDigest}\0client\0${client?.digest ?? "none"}`);
   const revision = `product@${productVersion}` + (client ? `+client@${client.revision}` : "");
@@ -276,6 +291,12 @@ async function removeReadOnlyTree(root: string): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+}
+
+// base64DecodedLength bounds an archive before any bytes are decoded.
+function base64DecodedLength(encoded: string): number {
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  return Math.floor((encoded.length * 3) / 4) - padding;
 }
 
 async function generationDirs(root: string): Promise<string[]> {

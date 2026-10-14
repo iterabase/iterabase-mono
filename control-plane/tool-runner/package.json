@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Trusted Node 24 gateway tool runner and Flux artifact materializer (HOR-397)",
+  "description": "Trusted Node 24 gateway tool runner and overlay tool archive materializer (HOR-397)",
   "scripts": {
     "build": "tsc",
     "lint": "tsc --noEmit",
