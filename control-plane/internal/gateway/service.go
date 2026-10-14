@@ -591,13 +591,14 @@ func (s *Service) validateArtifactInputs(ctx context.Context, res CallerResoluti
 	}
 	for _, ref := range refs {
 		a, err := s.artifacts.Stat(ctx, ref.ArtifactId)
-		if err != nil || a.State != artifactstore.StateAvailable {
+		if err != nil || !a.Cleared() {
 			return artifactstore.ErrUnauthorized
 		}
 		canonical, err := a.Ref()
 		if err != nil || canonical.MIMEType != ref.MimeType || canonical.SizeBytes != ref.SizeBytes || canonical.Digest != ref.Digest {
 			return errors.New("artifact reference metadata mismatch")
 		}
+		// LinkedToAttempt re-checks clearance in SQL at the use boundary.
 		linked, err := s.artifacts.Store().LinkedToAttempt(ctx, ref.ArtifactId, scope.AttemptID, scope.NodeExecutionID)
 		if err != nil || !linked {
 			return artifactstore.ErrUnauthorized
@@ -609,6 +610,11 @@ func (s *Service) validateArtifactInputs(ctx context.Context, res CallerResoluti
 	return nil
 }
 
+// validateArtifactOutputs accepts the invocation's own outputs while they
+// are still being checked or once cleared (DES-HOR-461-02): a pending scan
+// never turns a completed write into outcome_unknown. Rejected outputs fail.
+//
+//nolint:gocyclo // Source, ref metadata, and producer admissibility are deliberately checked together.
 func (s *Service) validateArtifactOutputs(ctx context.Context, inv Invocation, refs []*v1.ArtifactRef) error {
 	if len(refs) == 0 {
 		return nil
@@ -618,15 +624,16 @@ func (s *Service) validateArtifactOutputs(ctx context.Context, inv Invocation, r
 	}
 	for _, ref := range refs {
 		a, err := s.artifacts.Stat(ctx, ref.ArtifactId)
-		if err != nil || a.State != artifactstore.StateAvailable || a.SourceType != artifactstore.SourceToolOutput || a.SourceRef == nil || *a.SourceRef != inv.ID {
+		if err != nil || a.SourceType != artifactstore.SourceTool || a.SourceRef == nil || *a.SourceRef != inv.ID {
 			return artifactstore.ErrUnauthorized
 		}
 		canonical, err := a.Ref()
-		if err != nil || canonical.MIMEType != ref.MimeType || canonical.SizeBytes != ref.SizeBytes || canonical.Digest != ref.Digest {
+		mimeMatches := err == nil && (canonical.MIMEType == ref.MimeType || (a.ClaimedMIME != nil && *a.ClaimedMIME == ref.MimeType))
+		if !mimeMatches || canonical.SizeBytes != ref.SizeBytes || canonical.Digest != ref.Digest {
 			return errors.New("artifact reference metadata mismatch")
 		}
-		linked, err := s.artifacts.Store().LinkedToAttempt(ctx, ref.ArtifactId, inv.AttemptID, "")
-		if err != nil || !linked {
+		admissible, err := s.artifacts.Store().OwnOutputAdmissible(ctx, ref.ArtifactId, inv.AttemptID)
+		if err != nil || !admissible {
 			return artifactstore.ErrUnauthorized
 		}
 	}

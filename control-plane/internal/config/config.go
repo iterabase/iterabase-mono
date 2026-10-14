@@ -109,20 +109,35 @@ type LoggingConfig struct {
 	Format string `yaml:"format"`
 }
 
-// ArtifactConfig configures the shared Postgres + MinIO artifact domain used
-// by cmd/api and cmd/gateway. The dedicated access key is bucket-scoped and is
-// never mounted into supervisors, runners, or sandbox children.
+// ArtifactConfig configures the shared Postgres + MinIO artifact domain
+// (docs/architecture/v2-artifact-processing.md, DES-HOR-460-02). Each
+// process receives only the zone credentials it needs: api and gateway hold
+// the quarantine write-only ingest key and the cleared read-only serve key;
+// only the coordinator holds the lifecycle key. None is ever mounted into
+// supervisors, runners, sandbox children, or processor pods.
 type ArtifactConfig struct {
-	Enabled          bool   `yaml:"enabled"`
-	Endpoint         string `yaml:"endpoint"`
-	AccessKey        string `yaml:"access_key"`
-	SecretKey        string `yaml:"secret_key"`
-	Bucket           string `yaml:"bucket"`
-	Secure           bool   `yaml:"secure"`
-	MaxSizeBytes     int64  `yaml:"max_size_bytes"`
-	DefaultRetention string `yaml:"default_retention"` // empty = indefinite
-	PendingTTL       string `yaml:"pending_ttl"`
-	SweepInterval    string `yaml:"sweep_interval"`
+	Enabled              bool   `yaml:"enabled"`
+	Endpoint             string `yaml:"endpoint"`
+	Bucket               string `yaml:"bucket"`
+	Secure               bool   `yaml:"secure"`
+	IngestAccessKey      string `yaml:"ingest_access_key"`
+	IngestSecretKey      string `yaml:"ingest_secret_key"`
+	ServeAccessKey       string `yaml:"serve_access_key"`
+	ServeSecretKey       string `yaml:"serve_secret_key"`
+	LifecycleAccessKey   string `yaml:"lifecycle_access_key"`
+	LifecycleSecretKey   string `yaml:"lifecycle_secret_key"`
+	DefaultRetention     string `yaml:"default_retention"` // empty = indefinite
+	QuarantineMaxBytes   int64  `yaml:"quarantine_max_bytes"`
+	MaxConcurrentUploads int    `yaml:"max_concurrent_uploads"`
+	// Coordinator settings (cmd/artifact-coordinator only).
+	ScannerURL         string `yaml:"scanner_url"`
+	ScannerSPIFFEID    string `yaml:"scanner_spiffe_id"`
+	ScannerCAFile      string `yaml:"scanner_ca_file"`
+	ClientCertFile     string `yaml:"client_cert_file"`
+	ClientKeyFile      string `yaml:"client_key_file"`
+	ScanConcurrency    int    `yaml:"scan_concurrency"`
+	SweepInterval      string `yaml:"sweep_interval"`
+	CoordinatorAddress string `yaml:"coordinator_address"` // health/readiness listener
 }
 
 // AuthConfig configures the V2 browser-authentication journey
@@ -221,7 +236,7 @@ func defaults() *Config {
 		Dispatch: DispatchConfig{Addr: ":8091", TrustDomain: "iterabase.local"},
 		Database: DatabaseConfig{MaxOpenConns: 25, MaxIdleConns: 10},
 		Logging:  LoggingConfig{Level: "info", Format: "json"},
-		Artifact: ArtifactConfig{Bucket: "iterabase-artifacts", MaxSizeBytes: 1 << 30, PendingTTL: "1h", SweepInterval: "1m"},
+		Artifact: ArtifactConfig{Bucket: "iterabase-artifacts", SweepInterval: "30s", ScanConcurrency: 1, CoordinatorAddress: ":8092"},
 		Auth:     AuthConfig{ForwardedHeader: "X-Forwarded-For", Bootstrap: AuthBootstrapConfig{AdminLocale: "en"}},
 	}
 }
@@ -296,35 +311,50 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Artifact.Enabled = parsed
 		}
 	}
-	if v := os.Getenv("ARTIFACT_ENDPOINT"); v != "" {
-		cfg.Artifact.Endpoint = v
-	}
-	if v := os.Getenv("ARTIFACT_ACCESS_KEY"); v != "" {
-		cfg.Artifact.AccessKey = v
-	}
-	if v := os.Getenv("ARTIFACT_SECRET_KEY"); v != "" {
-		cfg.Artifact.SecretKey = v
-	}
-	if v := os.Getenv("ARTIFACT_BUCKET"); v != "" {
-		cfg.Artifact.Bucket = v
-	}
-	if v := os.Getenv("ARTIFACT_DEFAULT_RETENTION"); v != "" {
-		cfg.Artifact.DefaultRetention = v
-	}
-	if v := os.Getenv("ARTIFACT_PENDING_TTL"); v != "" {
-		cfg.Artifact.PendingTTL = v
-	}
-	if v := os.Getenv("ARTIFACT_SWEEP_INTERVAL"); v != "" {
-		cfg.Artifact.SweepInterval = v
-	}
 	if v := os.Getenv("ARTIFACT_SECURE"); v != "" {
 		if parsed, err := strconv.ParseBool(v); err == nil {
 			cfg.Artifact.Secure = parsed
 		}
 	}
-	if v := os.Getenv("ARTIFACT_MAX_SIZE_BYTES"); v != "" {
-		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
-			cfg.Artifact.MaxSizeBytes = parsed
+	for env, dst := range map[string]*string{
+		"ARTIFACT_ENDPOINT":             &cfg.Artifact.Endpoint,
+		"ARTIFACT_BUCKET":               &cfg.Artifact.Bucket,
+		"ARTIFACT_INGEST_ACCESS_KEY":    &cfg.Artifact.IngestAccessKey,
+		"ARTIFACT_INGEST_SECRET_KEY":    &cfg.Artifact.IngestSecretKey,
+		"ARTIFACT_SERVE_ACCESS_KEY":     &cfg.Artifact.ServeAccessKey,
+		"ARTIFACT_SERVE_SECRET_KEY":     &cfg.Artifact.ServeSecretKey,
+		"ARTIFACT_LIFECYCLE_ACCESS_KEY": &cfg.Artifact.LifecycleAccessKey,
+		"ARTIFACT_LIFECYCLE_SECRET_KEY": &cfg.Artifact.LifecycleSecretKey,
+		"ARTIFACT_DEFAULT_RETENTION":    &cfg.Artifact.DefaultRetention,
+		"ARTIFACT_SCANNER_URL":          &cfg.Artifact.ScannerURL,
+		"ARTIFACT_SCANNER_SPIFFE_ID":    &cfg.Artifact.ScannerSPIFFEID,
+		"ARTIFACT_SCANNER_CA_FILE":      &cfg.Artifact.ScannerCAFile,
+		"ARTIFACT_CLIENT_CERT_FILE":     &cfg.Artifact.ClientCertFile,
+		"ARTIFACT_CLIENT_KEY_FILE":      &cfg.Artifact.ClientKeyFile,
+		"ARTIFACT_SWEEP_INTERVAL":       &cfg.Artifact.SweepInterval,
+		"ARTIFACT_COORDINATOR_ADDR":     &cfg.Artifact.CoordinatorAddress,
+	} {
+		if v := os.Getenv(env); v != "" {
+			*dst = v
+		}
+	}
+	for env, dst := range map[string]*int64{
+		"ARTIFACT_QUARANTINE_MAX_BYTES": &cfg.Artifact.QuarantineMaxBytes,
+	} {
+		if v := os.Getenv(env); v != "" {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+				*dst = parsed
+			}
+		}
+	}
+	for env, dst := range map[string]*int{
+		"ARTIFACT_MAX_CONCURRENT_UPLOADS": &cfg.Artifact.MaxConcurrentUploads,
+		"ARTIFACT_SCAN_CONCURRENCY":       &cfg.Artifact.ScanConcurrency,
+	} {
+		if v := os.Getenv(env); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil {
+				*dst = parsed
+			}
 		}
 	}
 	if v := os.Getenv("AUTH_PUBLIC_ORIGIN"); v != "" {
@@ -386,7 +416,6 @@ func validate(cfg *Config) error {
 
 	for name, value := range map[string]string{
 		"artifact.default_retention": cfg.Artifact.DefaultRetention,
-		"artifact.pending_ttl":       cfg.Artifact.PendingTTL,
 		"artifact.sweep_interval":    cfg.Artifact.SweepInterval,
 	} {
 		if value != "" {
@@ -395,8 +424,8 @@ func validate(cfg *Config) error {
 			}
 		}
 	}
-	if cfg.Artifact.MaxSizeBytes < 0 {
-		return fmt.Errorf("artifact.max_size_bytes cannot be negative")
+	if cfg.Artifact.QuarantineMaxBytes < 0 || cfg.Artifact.MaxConcurrentUploads < 0 {
+		return fmt.Errorf("artifact.quarantine_max_bytes and artifact.max_concurrent_uploads cannot be negative")
 	}
 
 	return nil
@@ -544,23 +573,57 @@ func validateAuthEmail(email AuthEmailConfig) error {
 // ValidateGatewayServe checks gateway-serve requirements (cmd/gateway). mTLS is
 // required: server cert + key + the client CA bundle that verifies workload
 // identities. KubeNamespace scopes Secret-read RBAC (ARCH-008).
-// ValidateArtifactServe checks the shared artifact backend. Both serving
-// processes fail closed when the dedicated bucket credential is absent.
+// ValidateArtifactServe checks the api/gateway artifact backend. Both
+// serving processes fail closed without both zone credentials, and refuse the
+// lifecycle credential so a serving defect can never read quarantine.
 func ValidateArtifactServe(cfg *Config) error {
 	a := cfg.Artifact
 	if !a.Enabled {
 		return nil
 	}
-	if a.Endpoint == "" || a.AccessKey == "" || a.SecretKey == "" || a.Bucket == "" {
-		return fmt.Errorf("artifact endpoint, access_key, secret_key, and bucket are required")
+	if a.Endpoint == "" || a.Bucket == "" {
+		return fmt.Errorf("artifact endpoint and bucket are required")
+	}
+	if a.IngestAccessKey == "" || a.IngestSecretKey == "" || a.ServeAccessKey == "" || a.ServeSecretKey == "" {
+		return fmt.Errorf("artifact ingest and serve credentials are required")
+	}
+	if a.LifecycleAccessKey != "" || a.LifecycleSecretKey != "" {
+		return fmt.Errorf("the artifact lifecycle credential is coordinator-only and must not be configured here")
+	}
+	return validateArtifactDurations(a)
+}
+
+// ValidateArtifactCoordinator checks the coordinator: lifecycle credential
+// plus the exact mTLS scanner identity.
+func ValidateArtifactCoordinator(cfg *Config) error {
+	a := cfg.Artifact
+	if a.Endpoint == "" || a.Bucket == "" || a.LifecycleAccessKey == "" || a.LifecycleSecretKey == "" {
+		return fmt.Errorf("artifact endpoint, bucket, and lifecycle credential are required")
+	}
+	if a.ScannerURL == "" || a.ScannerSPIFFEID == "" || a.ScannerCAFile == "" || a.ClientCertFile == "" || a.ClientKeyFile == "" {
+		return fmt.Errorf("artifact scanner_url, scanner_spiffe_id, scanner_ca_file, client_cert_file, and client_key_file are required")
+	}
+	if a.ScanConcurrency < 1 || a.ScanConcurrency > 8 {
+		return fmt.Errorf("artifact scan_concurrency must be between 1 and 8")
+	}
+	return validateArtifactDurations(a)
+}
+
+func validateArtifactDurations(a ArtifactConfig) error {
+	if a.DefaultRetention != "" {
+		if d, err := time.ParseDuration(a.DefaultRetention); err != nil || d <= 0 {
+			return fmt.Errorf("artifact default_retention must be a positive duration")
+		}
+	}
+	if d, err := time.ParseDuration(a.SweepInterval); err != nil || d <= 0 {
+		return fmt.Errorf("artifact sweep_interval must be a positive duration")
 	}
 	return nil
 }
 
 // ArtifactDurations parses the already-validated duration strings.
-func ArtifactDurations(cfg *Config) (defaultRetention, pendingTTL, sweepInterval time.Duration) {
+func ArtifactDurations(cfg *Config) (defaultRetention, sweepInterval time.Duration) {
 	defaultRetention, _ = time.ParseDuration(cfg.Artifact.DefaultRetention)
-	pendingTTL, _ = time.ParseDuration(cfg.Artifact.PendingTTL)
 	sweepInterval, _ = time.ParseDuration(cfg.Artifact.SweepInterval)
 	return
 }

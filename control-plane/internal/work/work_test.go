@@ -57,9 +57,9 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	artifactID := "11111111-1111-4111-8111-111111111111"
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO artifact.artifacts
-			(id,storage_key,source_type,created_by_identity_id,mime_type,size_bytes,digest,state,available_at)
-		VALUES ($1,$2,'user_upload',$3,'text/plain',4,$4,'available',now())
-		RETURNING id`, artifactID, "artifacts/11/"+artifactID, actorID,
+			(id,source_type,created_by_identity_id,canonical_mime,claimed_mime,display_name,size_bytes,digest,storage_state,security_state,cleared_at,registered_at)
+		VALUES ($1,'upload',$2,'text/plain','text/plain','quote.txt',4,$3,'stored','cleared',now(),now())
+		RETURNING id`, artifactID, actorID,
 		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").Scan(&artifactID))
 	sourceArtifacts := []workstore.ArtifactRef{{ArtifactID: artifactID, Role: "source"}}
 	sourcePresentation := workstore.SourcePresentation{Kind: "outlook", Title: "Quote request", Subtitle: "requests@acme.example", Evidence: []workstore.PresentationField{{Label: workstore.LocalizedText{EN: "Customer", PT: "Cliente"}, Value: "ACME"}}}
@@ -152,9 +152,9 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	unselectedArtifactID := "33333333-3333-4333-8333-333333333333"
 	_, err = pool.Exec(ctx, `
 		INSERT INTO artifact.artifacts
-			(id,storage_key,source_type,created_by_identity_id,mime_type,size_bytes,digest,state,available_at)
-		VALUES ($1,'artifacts/selected','sandbox_publish',$3,'text/plain',8,'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','available',now()),
-		       ($2,'artifacts/unselected','sandbox_publish',$3,'text/plain',10,'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc','available',now())`, selectedArtifactID, unselectedArtifactID, actorID)
+			(id,source_type,created_by_identity_id,canonical_mime,claimed_mime,display_name,size_bytes,digest,storage_state,security_state,cleared_at,registered_at)
+		VALUES ($1,'sandbox',$3,'text/plain','text/plain','selected.txt',8,'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','stored','cleared',now(),now()),
+		       ($2,'sandbox',$3,'text/plain','text/plain','unselected.txt',10,'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc','stored','cleared',now(),now())`, selectedArtifactID, unselectedArtifactID, actorID)
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO work.artifact_links (artifact_id,work_item_id,attempt_id,node_execution_id,role)
@@ -196,8 +196,8 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	responseArtifactID := "44444444-4444-4444-8444-444444444444"
 	_, err = pool.Exec(ctx, `
 		INSERT INTO artifact.artifacts
-			(id,storage_key,source_type,created_by_identity_id,mime_type,size_bytes,digest,state,available_at)
-		VALUES ($1,'artifacts/human-response','user_upload',$2,'text/csv',12,'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd','available',now())`, responseArtifactID, actorID)
+			(id,source_type,created_by_identity_id,canonical_mime,claimed_mime,display_name,size_bytes,digest,storage_state,security_state,cleared_at,registered_at)
+		VALUES ($1,'upload',$2,'text/csv','text/csv','destination.csv',12,'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd','stored','cleared',now(),now())`, responseArtifactID, actorID)
 	require.NoError(t, err)
 	_, err = restarted.RespondBlocker(ctx, workstore.BlockerResponseInput{BlockerID: human.ID, ActorIdentityID: actorID, Outcome: "information_provided", Response: json.RawMessage(`{"information":"See attached CSV"}`), ArtifactRefs: []workstore.ArtifactRef{{ArtifactID: responseArtifactID, Metadata: json.RawMessage(`{"name":"destination.csv"}`)}}})
 	require.NoError(t, err)

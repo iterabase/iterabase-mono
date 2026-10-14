@@ -109,7 +109,6 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		if err := artifacts.Ready(ctx); err != nil {
 			return fmt.Errorf("artifact service not ready: %w", err)
 		}
-		artifacts.StartSweeper(ctx)
 	}
 
 	m := cpmetrics.New("gateway", version.Version(), version.Commit())

@@ -330,6 +330,9 @@ message PutArtifactInit {
   string mime_type = 2;
   optional int64 expected_size_bytes = 3;
   string expected_digest = 4; // optional canonical sha256:<hex>
+  // Display filename. Its extension must agree with the detected type
+  // (HOR-461 admission); absent, the gateway derives one from mime_type.
+  optional string filename = 5;
 }
 
 message PutArtifactResponse {
@@ -360,7 +363,7 @@ message GetArtifactResponse {
 message ArtifactMetadata {
   ArtifactRef ref = 1;
   string source = 2;
-  string state = 3;
+  string state = 3; // customer projection, e.g. checking_security | ready | rejected
   int64 created_at_unix_ms = 4;
   optional int64 retention_until_unix_ms = 5; // absent = indefinite
   optional int64 deleted_at_unix_ms = 6;

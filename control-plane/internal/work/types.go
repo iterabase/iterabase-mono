@@ -297,7 +297,10 @@ type WorkArtifact struct {
 	MIMEType        string          `json:"mimeType"`
 	SizeBytes       *int64          `json:"sizeBytes,omitempty"`
 	Digest          *string         `json:"digest,omitempty"`
-	CreatedAt       time.Time       `json:"createdAt"`
+	// State is the artifact customer projection (checking_security, ready,
+	// rejected, ...). Only cleared states are downloadable.
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // TimelineEvent is a customer-safe, resumable business event.

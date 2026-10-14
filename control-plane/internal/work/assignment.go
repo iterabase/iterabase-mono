@@ -80,12 +80,12 @@ func (s *Store) GetAssignmentContext(ctx context.Context, nodeExecutionID string
 	out.ToolPins, _ = json.Marshal(pins)
 
 	artifactRows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT ar.id::text,ar.mime_type,ar.size_bytes,ar.digest
+		SELECT DISTINCT ar.id::text,ar.canonical_mime,ar.size_bytes,ar.digest
 		FROM work.artifact_links l
 		JOIN artifact.artifacts ar ON ar.id=l.artifact_id
 		WHERE l.node_execution_id=$1
 		  AND l.role IN ('source','input')
-		  AND ar.state='available'
+		  AND artifact.is_cleared(ar.id)
 		ORDER BY ar.id::text`, nodeExecutionID)
 	if err != nil {
 		return AssignmentContext{}, err

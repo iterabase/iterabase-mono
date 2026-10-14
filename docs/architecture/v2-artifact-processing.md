@@ -150,7 +150,7 @@ Approved by Nuno Gonçalves during HOR-461 implementation. The canonical records
 
 ### Implementation notes binding on HOR-462 and later work
 
-- **Epoch.** Migration `000032` drops the v1 `state`, `mime_type`, `available_at`, and `storage_key` columns. That is the epoch boundary: an older binary fails on its first artifact query instead of reading `available` as safe. Every legacy row became unscanned quarantine with security attempt 1 queued; none was grandfathered.
+- **Epoch.** Migration `000033` drops the v1 `state`, `mime_type`, `available_at`, and `storage_key` columns. That is the epoch boundary: an older binary fails on its first artifact query instead of reading `available` as safe. Every legacy row became unscanned quarantine with security attempt 1 queued; none was grandfathered.
 - **Security states.** One adapter call performs malware scan and type validation, so the `validating_type` state is folded into `scanning`; attempt evidence records engine, signature, and policy versions together.
 - **Clearance predicate.** `artifact.is_cleared(id)` (stored, cleared, registered, not withdrawn) is the database authority every consumer joins on immediately before use; `artifact.is_admissible_output(id)` is the narrower producer-citation predicate of `DES-HOR-461-02`.
 - **Zones.** Zones are prefixes in the one artifact bucket (`quarantine/`, `originals/`, `derived/`; legacy `artifacts/` is lifecycle-only). The chart-shipped MinIO policies grant ingest `PutObject` on `quarantine/*` only, serve `GetObject` on `originals/*` and `derived/*` only, and lifecycle read/write/delete on every zone. Quarantine writes are create-only (`If-None-Match: *`) so the ingest credential needs no read right.

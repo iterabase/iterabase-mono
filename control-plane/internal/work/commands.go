@@ -70,7 +70,7 @@ func (s *Store) RespondBlocker(ctx context.Context, in BlockerResponseInput) (Bl
 			return Blocker{}, fmt.Errorf("%w: artifactRefs[%d].metadata must be valid JSON", ErrInvalidInput, i)
 		}
 		var available bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM artifact.artifacts WHERE id=$1 AND state='available')`, ref.ArtifactID).Scan(&available); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT artifact.is_cleared($1)`, ref.ArtifactID).Scan(&available); err != nil {
 			return Blocker{}, err
 		}
 		if !available {
