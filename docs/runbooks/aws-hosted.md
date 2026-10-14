@@ -1,7 +1,8 @@
 # Hosted AWS account operations
 
 Authority: HOR-603 and its approved decisions `DES-HOR-603-01`..`09`, recorded on
-the HOR-603 ticket. The Terraform lives in [`infra/hosted-aws/`](../../infra/hosted-aws)
+the HOR-603 ticket, and HOR-601's `DES-HOR-601-01`..`05` for the hosted ingress
+(hosted zone, origin pulls and the load balancer controller policy). The Terraform lives in [`infra/hosted-aws/`](../../infra/hosted-aws)
 and its invariants in [`infra/AGENTS.md`](../../infra/AGENTS.md). The CI account
 is separate and documented in [`aws-ci.md`](aws-ci.md).
 
@@ -26,7 +27,8 @@ provider (HOR-593), which reads the baseline only through its SSM contract.
 | Image mirror | ECR pull-through cache prefix `ghcr` for `ghcr.io` (`DES-HOR-603-05`), 30 most recent images per repository. |
 | Security | Multi-region CloudTrail with log-file validation, AWS Config recording every supported resource, GuardDuty with severity ≥ 7 findings to the alert topic. |
 | Cost | `iterabase-hosted-monthly` gross cost budget (credits excluded), forecast alert at 80% and actual alert at 100% to the `iterabase-hosted-alerts` SNS topic. Resource tag keys `iterabase-hosted` and `iterabase-env` are unchanged; their Billing activation belongs to the Organization management account, not hosted Terraform (`DES-HOR-603-09`). |
-| DNS and mail | Cloudflare zone (`PIVOT-ARCH-003`), SES identity for the mail domain with Easy DKIM, `bounce.<mail-domain>` MAIL FROM (SPF) and DMARC. A scoped Cloudflare token (DNS Write + Zone Read on the zone only) for external-dns and cert-manager, published as a SecureString in the contract. |
+| DNS and mail | Two Cloudflare zones (`PIVOT-ARCH-003`, `DES-HOR-601-03`). The **mail zone** holds the SES identity for the mail domain with Easy DKIM, `bounce.<mail-domain>` MAIL FROM (SPF) and DMARC. The **hosted zone** (`iterabase.app`) holds every customer hostname; the scoped Cloudflare token (DNS Write + Zone Read on the hosted zone only) for external-dns and cert-manager is published as a SecureString in the contract. No customer cluster ever holds a credential for the mail/brand zone. |
+| Hosted edge | Hosted zone SSL mode Full (strict), Always Use HTTPS, minimum TLS 1.2, and zone-level authenticated origin pulls with an Iterabase-generated client certificate (`DES-HOR-601-04`); the CA is published in the contract and every public Ingress verifies it. Managed policy `iterabase-hosted-lb-controller` for the in-cluster AWS Load Balancer Controller, which only creates or changes ELB and security-group resources tagged with the node role's own `iterabase-env` (`DES-HOR-601-02`). |
 
 ## Recorded identities
 
@@ -43,7 +45,9 @@ Fill this in while executing and copy the completed table to the HOR-603 ticket.
 | Node boundary ARN | |
 | ECR pull-through prefix | |
 | SES identity / production access case ID | |
-| Cloudflare zone ID / cluster token name | |
+| Cloudflare mail zone ID / hosted zone ID and domain / cluster token name | |
+| Origin-pull client certificate ID and expiry | |
+| Load balancer controller policy ARN | |
 | Budget name / SNS subscription confirmed | |
 | Management account / caller / dated proof that both cost-allocation keys are Active | |
 
@@ -75,11 +79,14 @@ Fill this in while executing and copy the completed table to the HOR-603 ticket.
 
    The value never enters Terraform state; the baseline only reads the
    secret's ARN.
-6. **Cloudflare.** Make sure the hosted zone exists in the Cloudflare account
-   (add it and move the registrar's name servers if not). Create a founder
-   token for the apply with *Zone → DNS → Edit* on that zone and *Account →
-   Account API Tokens → Edit*; export it as `CLOUDFLARE_API_TOKEN` for the
-   apply only. Record the account ID and zone ID.
+6. **Cloudflare.** Make sure both zones exist in the Cloudflare account: the
+   mail zone (`iterabase.com`) and the dedicated hosted zone (`iterabase.app`,
+   registered for hosted environments only; `DES-HOR-601-03`). Add a missing
+   zone and move the registrar's name servers. Create a founder token for the
+   apply with *Zone → DNS → Edit* on both zones, *Zone → Zone Settings → Edit*
+   and *Zone → SSL and Certificates → Edit* on the hosted zone, and *Account →
+   Account API Tokens → Edit*; export it as `CLOUDFLARE_API_TOKEN` for the apply
+   only. Record the account ID and both zone IDs.
 
 ## Part 2 — Terraform (founder)
 
@@ -182,7 +189,10 @@ this ownership.
 `backup-kms-key-arn`, `forge-role-arn`, `support-role-arn`, `node-role-path`,
 `node-permissions-boundary-arn`, `session-log-bucket`, `session-log-group`,
 `audit-log-group`, `image-registry-prefix`, `mail-domain`, `mail-identity-arn`,
-`cloudflare-zone-id`, and `cloudflare-dns-token` (SecureString).
+`cloudflare-zone-id` (the **hosted** zone), `hosted-domain`,
+`lb-controller-policy-arn`, `origin-pull-ca-cert` (public PEM; the client key
+stays in baseline state), and `cloudflare-dns-token` (SecureString, hosted zone
+only).
 
 ## Part 3 — Validation
 
@@ -352,12 +362,12 @@ The pulled digest equals the GHCR digest.
 ```bash
 token=$(aws ssm get-parameter --name /iterabase/hosted/baseline/v1/cloudflare-dns-token --with-decryption --query Parameter.Value --output text)
 curl -sf -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-  "https://api.cloudflare.com/client/v4/zones/<zone-id>/dns_records" \
+  "https://api.cloudflare.com/client/v4/zones/<hosted-zone-id>/dns_records" \
   --data '{"type":"TXT","name":"hor-603-smoke","content":"\"ok\"","ttl":60}'
 ```
 
 Then delete the record with the same token, and record that a request against
-any other zone returns an authorization error.
+any other zone, including the mail zone, returns an authorization error.
 
 ### 6. SES outside the sandbox
 
@@ -411,6 +421,71 @@ aws resourcegroupstaggingapi get-resources --tag-filters Key=iterabase-env,Value
   --query 'ResourceTagMappingList[].ResourceARN'
 ```
 
+## Hosted ingress (HOR-601)
+
+### Baseline change
+
+After the HOR-601 PR merges, with the founder Cloudflare token from Part 1
+step 6 and `hosted_zone_id`/`hosted_domain` added to the private
+`terraform.tfvars`, plan from `master`. Expect only:
+
+- **Create** `aws_iam_policy.lb_controller`, the origin-pull CA and client
+  certificate (`tls_*`), `cloudflare_authenticated_origin_pulls_certificate.hosted`,
+  `cloudflare_authenticated_origin_pulls_settings.hosted`, the three hosted
+  `cloudflare_zone_setting` resources, and the contract keys `hosted-domain`,
+  `lb-controller-policy-arn` and `origin-pull-ca-cert`.
+- **Update** `cloudflare_account_token.cluster_dns` (its resource scope moves
+  from the mail zone to the hosted zone) and the `cloudflare-zone-id` contract
+  value. If the provider plans the token as a replacement instead, the
+  SecureString follows the new value; no customer environment consumes it yet.
+- No destroy of any other resource. Stop and investigate anything else.
+
+After the apply, record the policy ARN and certificate ID, and prove the token
+re-scope: the [Cloudflare token check](#5-cloudflare-token) succeeds against the
+hosted zone and fails against the mail zone. Enabling origin pulls on a zone
+with no hosted origins changes nothing for `iterabase.com`.
+
+### Interim environment acceptance (`DES-HOR-601-01`)
+
+Until HOR-593 provisions environments, HOR-601's live proof uses one
+hand-provisioned instance, with separate founder approval for every live step.
+Use an environment name such as `hor-601-edge` throughout.
+
+1. As the Forge role (as in [step 1](#1-forge-role-and-a-throwaway-environment)):
+   create the node role under `/iterabase/env/` with the node boundary, tag it
+   `iterabase-env=hor-601-edge`, attach `AmazonSSMManagedInstanceCore`-equivalent
+   access and the `lb-controller-policy-arn` policy, and launch one tagged
+   instance in a shared public subnet with IMDSv2 required and **hop limit 1**
+   (`DES-HOR-601-05`) and a tagged security group with no inbound rules.
+2. Over a Session Manager shell, install k3s with `--disable traefik
+   --disable servicelb --disable local-storage` and
+   `--kubelet-arg=provider-id=aws:///<az>/<instance-id>`; confirm
+   `kubectl get node -o jsonpath='{.items[0].spec.providerID}'` matches. A pod
+   without host networking must fail to reach `169.254.169.254`.
+3. Create the `cloudflare-api-token` Secret from the contract's
+   `cloudflare-dns-token`, install the cert-manager substrate, and install the
+   platform chart from the merged source with `charts/values-aws-hosted.yaml`
+   layered with the environment's values: `clusterName` and
+   `defaultTags.iterabase-env` = `hor-601-edge`, `vpcId` and
+   `global.originPull.caCert` from the contract, hosts under
+   `hor-601-edge.<hosted-domain>`, and `external-dns.domainFilters` the hosted
+   domain.
+4. Prove: the controller creates an internet-facing NLB tagged
+   `iterabase-env=hor-601-edge` whose security group admits only TCP 443;
+   external-dns publishes proxied records that resolve through Cloudflare to the
+   NLB; `curl https://<gateway-host>/` succeeds with a valid Let's Encrypt
+   certificate; `curl --resolve <host>:443:<nlb-ip> https://<host>/` straight to
+   the NLB fails the TLS client-certificate check.
+5. Prove isolation: with the node role's credentials, modifying a load
+   balancer or security group tagged for another environment is denied (use a
+   pre-created, separately tagged fixture or `aws iam simulate-principal-policy`
+   with that resource's tags and record which).
+6. Delete the `ingress-nginx` controller Service and confirm the controller
+   removes the NLB, target group and its security groups; then tear down the
+   instance as in [Teardown](#teardown-of-the-throwaway-environment) and record a
+   zero-result tag sweep for `iterabase-env=hor-601-edge`. Record the NLB's
+   hourly cost against the `lb_per_cust` model lever.
+
 ## Operations
 
 - **Changing the baseline:** a ticket-backed PR changes `infra/`; after merge
@@ -419,6 +494,11 @@ aws resourcegroupstaggingapi get-resources --tag-filters Key=iterabase-env,Value
 - **Granting or revoking access:** change `forge_operator_principal_arns` or
   `support_principal_arns` and apply, or remove the Identity Center
   assignment. Support access to every environment is revoked in one place.
+- **Origin-pull certificate rotation:** the client certificate renews on the
+  first baseline apply inside its last 90 days (3-year validity); the new one is
+  uploaded before the old one is removed. The CA is unchanged, so clusters need
+  no update. Rotating the CA itself is a separate, approved change that must
+  roll the new `origin-pull-ca-cert` to every environment first.
 - **Lockout recovery:** a wrong `admin_principal_arns` denies administrators on
   the state and backup buckets and the backup key. Sign in as the hosted
   account root (MFA) and correct the bucket and key policies, then re-apply.
