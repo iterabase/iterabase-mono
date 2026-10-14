@@ -182,7 +182,7 @@ func executionPlatformValues(state *deployedState, clientTools bool) map[string]
 				"allowedToolNamespaces": []string{"platform"},
 				"flux":                  map[string]any{"enabled": clientTools, "namespace": "flux-system", "sourceName": "overlay", "pollMs": 1000},
 			},
-			"artifact": map[string]any{"enabled": true},
+			"artifact": e2eArtifactValues(),
 			"ingress":  map[string]any{"enabled": false},
 			"auth":     authValues(),
 		},

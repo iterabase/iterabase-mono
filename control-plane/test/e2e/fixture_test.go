@@ -295,7 +295,7 @@ func installControlPlanePlatformStage(t *testing.T, state *deployedState) {
 				"defaultModel": map[string]any{"id": "deployed-e2e-unused", "api": "openai"},
 			},
 			"toolRunner": map[string]any{"enabled": false},
-			"artifact":   map[string]any{"enabled": true},
+			"artifact":   e2eArtifactValues(),
 			"ingress":    map[string]any{"enabled": false},
 			"auth":       authValues(),
 		},
