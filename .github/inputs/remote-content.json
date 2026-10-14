@@ -435,6 +435,36 @@
       "installed_sha256": "01bdd0c90f371968326162daaa427cdd14da2641ded094131afc44fb7a538b62"
     }
   ],
+  "operator_tools": [
+    {
+      "name": "session-manager-plugin",
+      "version": "1.2.835.0",
+      "platform": "darwin-arm64",
+      "sha256": "7287f20d41eef91643b72dcf28b5f135de49090dd297216a408dc18729e70272",
+      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/mac_arm64/sessionmanager-bundle.zip"
+    },
+    {
+      "name": "session-manager-plugin",
+      "version": "1.2.835.0",
+      "platform": "darwin-amd64",
+      "sha256": "03be79726bbf30ad2a26177d6531636ab6a42f574e0e3326dfb146585cedf260",
+      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/mac/sessionmanager-bundle.zip"
+    },
+    {
+      "name": "session-manager-plugin",
+      "version": "1.2.835.0",
+      "platform": "linux-amd64",
+      "sha256": "7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03",
+      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/ubuntu_64bit/session-manager-plugin.deb"
+    },
+    {
+      "name": "session-manager-plugin",
+      "version": "1.2.835.0",
+      "platform": "linux-arm64",
+      "sha256": "0add94c4c8b6ca63f26e44fd655d662b0f6455a268b5b9ebebee0f462214e928",
+      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/ubuntu_arm64/session-manager-plugin.deb"
+    }
+  ],
   "tools": [
     {
       "name": "helm",
@@ -491,34 +521,6 @@
       "platform": "linux-arm64",
       "sha256": "cc907ccf9e3c34523f0f32b69745265e0a6908ca85b92f41931d4537860eb83c",
       "url": "https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-arm64.tar.gz"
-    },
-    {
-      "name": "session-manager-plugin",
-      "version": "1.2.835.0",
-      "platform": "darwin-arm64",
-      "sha256": "7287f20d41eef91643b72dcf28b5f135de49090dd297216a408dc18729e70272",
-      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/mac_arm64/sessionmanager-bundle.zip"
-    },
-    {
-      "name": "session-manager-plugin",
-      "version": "1.2.835.0",
-      "platform": "darwin-amd64",
-      "sha256": "03be79726bbf30ad2a26177d6531636ab6a42f574e0e3326dfb146585cedf260",
-      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/mac/sessionmanager-bundle.zip"
-    },
-    {
-      "name": "session-manager-plugin",
-      "version": "1.2.835.0",
-      "platform": "linux-amd64",
-      "sha256": "7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03",
-      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/ubuntu_64bit/session-manager-plugin.deb"
-    },
-    {
-      "name": "session-manager-plugin",
-      "version": "1.2.835.0",
-      "platform": "linux-arm64",
-      "sha256": "0add94c4c8b6ca63f26e44fd655d662b0f6455a268b5b9ebebee0f462214e928",
-      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/ubuntu_arm64/session-manager-plugin.deb"
     }
   ],
   "playwright_archives": [

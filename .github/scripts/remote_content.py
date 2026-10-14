@@ -440,6 +440,9 @@ def validate_manifest(manifest: dict[str, Any], root: Path = ROOT) -> None:
     installers = require_records(manifest, "installers", ("name", "version", "url", "sha256"))
     forge_tools = require_records(manifest, "forge_tools", ("name", "version", "platform", "url", "sha256", "installed_sha256"))
     require_records(manifest, "tools", ("name", "version", "platform", "url", "sha256"))
+    # Binaries Forge itself downloads on the operator machine (for example the
+    # pinned session-manager-plugin, DES-HOR-593-01); CI never installs them.
+    require_records(manifest, "operator_tools", ("name", "version", "platform", "url", "sha256"))
     playwright_archives = require_records(
         manifest,
         "playwright_archives",
