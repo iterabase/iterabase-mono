@@ -566,6 +566,15 @@ key after loading the page; the key is retained only in JavaScript memory and
 is never put in a URL, cookie, local storage, or session storage. Walter access
 remains SSH port-forwarding/screen sharing per the Platform-v1 release boundary.
 
+The app document (`index.html`) answers `/` and every browser deep link that
+is not under `/v1/`, `/assets/`, `/healthz`, `/readyz`, `/metrics` or
+`/.well-known/` (DES-HOR-459-04); unknown `/v1/` paths keep a JSON 404 and
+unknown assets a 404. Each document response carries a fresh random CSP style
+nonce, published as `<meta property="csp-nonce" content="…">` and allowed by
+`style-src 'self' 'nonce-…'`; `script-src` stays `'self'`. A binary built
+without the app (only `ui/dist/placeholder.txt`) answers document requests
+with 503.
+
 `runtime.events` and gateway ledgers remain technical/operator records and are
 never returned by customer work APIs. `work.timeline_events` is append-only and
 contains only semantic business codes/parameters. HOR-399 owns artifact bytes

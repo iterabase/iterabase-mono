@@ -30,6 +30,9 @@ var reviewedRouteClasses = map[string]server.RouteClass{
 	"GET /assets/*": {Kind: server.RouteProbe},
 	"GET /healthz":  {Kind: server.RouteProbe},
 	"GET /readyz":   {Kind: server.RouteProbe},
+	// Every unmatched request: browser deep links get the app document,
+	// unknown API paths a JSON 404 (DES-HOR-459-04).
+	server.FallbackRouteKey: {Kind: server.RouteProbe},
 
 	"POST /v1/auth/request-access":  {Kind: server.RoutePublic},
 	"POST /v1/auth/verify":          {Kind: server.RoutePublic},
@@ -101,6 +104,8 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		served = append(served, server.RouteKey(method, route))
 		return nil
 	}))
+	// The unmatched-request fallback is not a walkable route but is classified.
+	served = append(served, server.FallbackRouteKey)
 	sort.Strings(served)
 	for _, key := range served {
 		_, ok := classes[key]
