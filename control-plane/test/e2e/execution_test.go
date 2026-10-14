@@ -565,9 +565,9 @@ func exerciseProductOnlyInstallStage(t *testing.T, state *deployedState) {
 	if !strings.Contains(env, "FLUX_ENABLED=false") || strings.Contains(env, "FLUX_SOURCE_NAME") {
 		t.Fatalf("product-only materializer env still configures a Flux client: %s", env)
 	}
-	active := state.databaseQuery(t, "SELECT string_agg(DISTINCT tool_name, ',') FROM toolgateway.runner_registrations WHERE active")
-	if active != productDiagnosticTool {
-		t.Fatalf("product-only generation registered %q, want only %q", active, productDiagnosticTool)
+	active := state.databaseQuery(t, "SELECT string_agg(DISTINCT tool_name, ',' ORDER BY tool_name) FROM toolgateway.runner_registrations WHERE active")
+	if want := strings.Join(productToolNames(t), ","); active != want {
+		t.Fatalf("product-only generation registered %q, want exactly the image product layer %q", active, want)
 	}
 	runProductDiagnostic(t, state, "Product-only fresh install")
 }
