@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1042,7 +1042,9 @@ describe("Platform v1 Dashboard", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("submits the selected outcome and correctly typed JSON-Schema fields", async () => {
+  it("keeps focus through a board refresh and submits correctly typed JSON-Schema fields", async () => {
+    let dashboardCalls = 0;
+    let completeRefresh: (() => Promise<void>) | undefined;
     const blocked = {
       ...item,
       id: "item-decision",
@@ -1118,6 +1120,12 @@ describe("Platform v1 Dashboard", () => {
     vi.mocked(fetch).mockImplementation((input, init) => {
       const url = String(input);
       if (url.startsWith("/v1/work-items?")) return json([blocked]);
+      // Hold the locale-triggered refresh until typing is in progress; the
+      // regression must not depend on where its 180 ms debounce happens to land.
+      if (url.startsWith("/v1/work-dashboard") && ++dashboardCalls === 2)
+        return new Promise<Response>((resolve) => {
+          completeRefresh = async () => resolve(await json(summary));
+        });
       if (url === "/v1/work-items/item-decision") return json(blocked);
       if (url.endsWith("/attempts")) return json([]);
       if (url.endsWith("/blocker")) return json(blocker);
@@ -1129,6 +1137,7 @@ describe("Platform v1 Dashboard", () => {
     await user.click(screen.getByRole("button", { name: "PT" }));
     await user.click(screen.getByText("Quotation request — ACME"));
     await screen.findByRole("heading", { name: "Escolha a entrega" });
+    expect(screen.getByRole("dialog")).toHaveFocus();
     const outcome = screen.getByLabelText("Decisão solicitada");
     expect(
       screen.getByRole("option", { name: "Autorizar" }),
@@ -1139,7 +1148,17 @@ describe("Platform v1 Dashboard", () => {
       screen.queryByText("legacy crm", { exact: false }),
     ).not.toBeInTheDocument();
     await user.selectOptions(outcome, "rejected");
-    await user.type(screen.getByLabelText("Montante proposto"), "12.5");
+    await waitFor(() => expect(completeRefresh).toBeDefined());
+    const amount = screen.getByLabelText("Montante proposto");
+    await user.type(amount, "12");
+    expect(amount).toHaveFocus();
+    await act(async () => {
+      await completeRefresh!();
+    });
+    expect(amount).toHaveFocus();
+    // Continue typing without clicking again: a refresh must not steal focus.
+    await user.keyboard(".5");
+    expect(amount).toHaveValue("12.5");
     await user.type(screen.getByLabelText("Número de itens"), "3");
     await user.click(screen.getByLabelText("Detalhes de negócio"));
     await user.paste('{"priority":"high"}');
@@ -1173,6 +1192,8 @@ describe("Platform v1 Dashboard", () => {
       items: ["quote"],
       route: "claims_queue",
     });
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("requires exact confirmation before resolving a consequence blocker and localizes it in Portuguese", async () => {
