@@ -80,8 +80,28 @@ variable "cloudflare_account_id" {
 }
 
 variable "cloudflare_zone_id" {
-  description = "Cloudflare zone for customer environment hostnames and the mail domain (PIVOT-ARCH-003)."
+  description = "Cloudflare zone of the mail domain (PIVOT-ARCH-003). Customer hostnames never live here (DES-HOR-601-03)."
   type        = string
+}
+
+variable "hosted_zone_id" {
+  description = "Cloudflare zone dedicated to hosted customer environment hostnames (DES-HOR-601-03). The in-cluster DNS token and authenticated origin pulls are scoped to it."
+  type        = string
+
+  validation {
+    condition     = var.hosted_zone_id != var.cloudflare_zone_id
+    error_message = "Hosted environments need their own zone, separate from the mail zone (DES-HOR-601-03)."
+  }
+}
+
+variable "hosted_domain" {
+  description = "Apex of the hosted zone; customer hostnames are <customer>.<hosted_domain> (DES-HOR-601-03)."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$", var.hosted_domain))
+    error_message = "hosted_domain must be a lowercase DNS name without a trailing dot."
+  }
 }
 
 variable "mail_domain" {

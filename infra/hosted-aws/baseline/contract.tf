@@ -23,7 +23,10 @@ locals {
     "image-registry-prefix"         = "${local.account_id}.dkr.ecr.${var.region}.amazonaws.com/${aws_ecr_pull_through_cache_rule.ghcr.ecr_repository_prefix}"
     "mail-domain"                   = var.mail_domain
     "mail-identity-arn"             = aws_sesv2_email_identity.mail.arn
-    "cloudflare-zone-id"            = var.cloudflare_zone_id
+    "cloudflare-zone-id"            = var.hosted_zone_id
+    "hosted-domain"                 = var.hosted_domain
+    "lb-controller-policy-arn"      = aws_iam_policy.lb_controller.arn
+    "origin-pull-ca-cert"           = tls_self_signed_cert.origin_pull_ca.cert_pem
   }
 }
 

@@ -47,32 +47,3 @@ resource "cloudflare_dns_record" "dmarc" {
   content = "\"v=DMARC1; p=quarantine; rua=mailto:${var.dmarc_report_email}; adkim=s; aspf=r\""
   ttl     = 3600
 }
-
-# Scoped token for in-cluster external-dns and cert-manager (DNS-01): DNS edit
-# and zone read on the hosted zone only. Published as a SecureString in the
-# baseline contract; HOR-593 installs it into each environment.
-data "cloudflare_account_api_token_permission_groups_list" "dns_write" {
-  account_id = var.cloudflare_account_id
-  name       = "DNS Write"
-}
-
-data "cloudflare_account_api_token_permission_groups_list" "zone_read" {
-  account_id = var.cloudflare_account_id
-  name       = "Zone Read"
-}
-
-resource "cloudflare_account_token" "cluster_dns" {
-  account_id = var.cloudflare_account_id
-  name       = "${local.name}-cluster-dns"
-
-  policies = [{
-    effect = "allow"
-    permission_groups = [
-      { id = data.cloudflare_account_api_token_permission_groups_list.dns_write.result[0].id },
-      { id = data.cloudflare_account_api_token_permission_groups_list.zone_read.result[0].id },
-    ]
-    resources = jsonencode({
-      "com.cloudflare.api.account.zone.${var.cloudflare_zone_id}" = "*"
-    })
-  }]
-}

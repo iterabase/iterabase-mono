@@ -32,6 +32,8 @@ variables {
   support_principal_arns        = ["arn:aws:iam::123456789012:role/example-admin"]
   cloudflare_account_id         = "00000000000000000000000000000000"
   cloudflare_zone_id            = "11111111111111111111111111111111"
+  hosted_zone_id                = "22222222222222222222222222222222"
+  hosted_domain                 = "hosted.example"
   alert_email                   = "ops@example.com"
   dmarc_report_email            = "dmarc@example.com"
   mail_domain                   = "email.example.com"
