@@ -177,7 +177,9 @@ export function createAppRouter(history?: RouterHistory) {
     routeTree,
     history,
     defaultPreload: false,
-    scrollRestoration: true,
+    // Scroll restoration persists positions in sessionStorage; the app keeps
+    // nothing in browser storage (HOR-582), so it stays off.
+    scrollRestoration: false,
   });
 }
 

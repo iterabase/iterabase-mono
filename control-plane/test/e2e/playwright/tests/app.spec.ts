@@ -287,7 +287,10 @@ test("clears decisions in Your turn, reaches All clear and records feedback thro
       await expect(
         card.getByRole("heading", { level: 1, name: "Review required" }),
       ).toBeVisible();
-      await card.getByLabel("Approved").check();
+      // The Design System checkbox hides the native input behind its label,
+      // which is what a person clicks.
+      await card.locator("label", { hasText: "Approved" }).click();
+      await expect(card.getByLabel("Approved")).toBeChecked();
       await card.getByRole("button", { name: /^Accepted/ }).click();
       cleared.add(approvalTitle);
     } else if (
