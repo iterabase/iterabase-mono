@@ -42,6 +42,10 @@ tests:
         values: '1x8'
       - series: 'up{namespace="default",job="control-plane",component="tool-runner"}'
         values: '1x8'
+      - series: 'up{namespace="default",job="control-plane",component="artifact-coordinator"}'
+        values: '1x8'
+      - series: 'up{namespace="default",job="control-plane",component="artifact-scanner"}'
+        values: '1x8'
       - series: 'up{namespace="default",job="inference-gateway",component="inference-gateway"}'
         values: '1x8'
       - series: 'up{namespace="default",job="postgresql",component="postgresql"}'
@@ -526,3 +530,165 @@ tests:
               description: "Sustained working set close to the memory limit; the next allocation spike will OOM-kill the container."
               first_action: "Identify the load driving memory growth and compare it with the reviewed budget in charts/docs/sizing.md."
               runbook_url: "https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabasecontainermemorynearlimit"
+
+  - name: critical artifact scanner unready fires only after every scanner is unready for 15m
+    interval: 1m
+    input_series:
+      - series: 'control_plane_artifact_scanner_ready{namespace="iterabase-system",job="control-plane",component="artifact-scanner",pod="scanner-a"}'
+        values: '0x25'
+      - series: 'control_plane_artifact_scanner_ready{namespace="iterabase-system",job="control-plane",component="artifact-scanner",pod="scanner-b"}'
+        values: '1x5 0x20'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: IterabaseArtifactScannerUnready
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: IterabaseArtifactScannerUnready
+        exp_alerts:
+          - exp_labels:
+              namespace: iterabase-system
+              severity: critical
+              component: artifact-scanner
+            exp_annotations:
+              summary: "No artifact scanner can issue a clean verdict"
+              description: "Every scanner reports a failed engine self-test or stale/missing signatures. Uploads stay quarantined and unavailable; nothing is cleared."
+              first_action: "Check scanner adapter readiness reason, clamd logs, the signature updater, and /signatures/state.json age; never bypass the scanner."
+              runbook_url: https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabaseartifactscannerunready
+
+  - name: warning signature aging fires above 20h and stays quiet below
+    interval: 1m
+    input_series:
+      - series: 'control_plane_artifact_signature_age_seconds{namespace="iterabase-system",component="artifact-scanner"}'
+        values: '71000+60x10 72060+60x15'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: IterabaseArtifactSignaturesAging
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: IterabaseArtifactSignaturesAging
+        exp_alerts:
+          - exp_labels:
+              namespace: iterabase-system
+              severity: warning
+              component: artifact-scanner
+            exp_annotations:
+              summary: "Artifact scanner signatures are older than 20 hours"
+              description: "The signature updater has not confirmed a bundle for 20 hours; scanning stops issuing clean verdicts at 24 hours."
+              first_action: "Inspect signature updater logs, update-source or mirror reachability, DNS/egress policy, and signature volume capacity."
+              runbook_url: https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabaseartifactsignaturesaging
+
+  - name: critical signatures stale fires immediately above 24h
+    interval: 1m
+    input_series:
+      - series: 'control_plane_artifact_signature_age_seconds{namespace="iterabase-system",component="artifact-scanner"}'
+        values: '86000+60x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: IterabaseArtifactSignaturesStale
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: IterabaseArtifactSignaturesStale
+        exp_alerts:
+          - exp_labels:
+              namespace: iterabase-system
+              severity: critical
+              component: artifact-scanner
+            exp_annotations:
+              summary: "Artifact scanner signatures exceed the 24-hour freshness bound"
+              description: "The scanner is unready and issues no clean verdict (DES-HOR-460-05). New uploads remain quarantined."
+              first_action: "Restore the signature source or mirror and let the updater publish and validate a fresh bundle; never copy an unverified bundle."
+              runbook_url: https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabaseartifactsignaturesstale
+
+  - name: warning security backlog fires when the oldest attempt exceeds 30m for 10m
+    interval: 1m
+    input_series:
+      - series: 'control_plane_artifact_security_queue_oldest_seconds{namespace="iterabase-system",component="artifact-coordinator"}'
+        values: '1200+60x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: IterabaseArtifactSecurityBacklog
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: IterabaseArtifactSecurityBacklog
+        exp_alerts:
+          - exp_labels:
+              namespace: iterabase-system
+              severity: warning
+              component: artifact-coordinator
+            exp_annotations:
+              summary: "The oldest artifact security attempt is older than 30 minutes"
+              description: "Uploaded artifacts are waiting for a security verdict longer than expected."
+              first_action: "Check coordinator readiness, scanner readiness and capacity, attempt outcomes, and database/object-store health."
+              runbook_url: https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabaseartifactsecuritybacklog
+
+  - name: warning quarantine near limit fires above 80% for 15m
+    interval: 1m
+    input_series:
+      - series: 'control_plane_artifact_quarantine_bytes{namespace="iterabase-system",component="artifact-coordinator"}'
+        values: '1000x5 1700x20'
+      - series: 'control_plane_artifact_quarantine_limit_bytes{namespace="iterabase-system",component="artifact-coordinator"}'
+        values: '2000x25'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: IterabaseArtifactQuarantineNearLimit
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: IterabaseArtifactQuarantineNearLimit
+        exp_alerts:
+          - exp_labels:
+              namespace: iterabase-system
+              severity: warning
+              component: artifact-coordinator
+            exp_annotations:
+              summary: "Artifact quarantine is above 80% of its configured limit"
+              description: "New uploads fail closed with processing_capacity_unavailable when the quarantine limit is reached."
+              first_action: "Find why clearance is not draining quarantine (scanner, signatures, backlog) before raising artifact.quarantineMaxBytes."
+              runbook_url: https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabaseartifactquarantinenearlimit
+
+  - name: warning deletion stuck fires once the oldest deletion exceeds an hour
+    interval: 1m
+    input_series:
+      - series: 'control_plane_artifact_deleting_oldest_seconds{namespace="iterabase-system",component="artifact-coordinator"}'
+        values: '3500+60x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: IterabaseArtifactDeletionStuck
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: IterabaseArtifactDeletionStuck
+        exp_alerts:
+          - exp_labels:
+              namespace: iterabase-system
+              severity: warning
+              component: artifact-coordinator
+            exp_annotations:
+              summary: "An artifact deletion has not finished purging for over an hour"
+              description: "Deleted artifact bytes remain in object storage past the expected purge window."
+              first_action: "Check coordinator logs for purge errors, the lifecycle credential, and MinIO availability; never delete objects by hand."
+              runbook_url: https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabaseartifactdeletionstuck
+
+  - name: warning transient security failures fires at ten transient or lease-lost attempts in 30m
+    interval: 1m
+    input_series:
+      - series: 'control_plane_artifact_security_attempts_total{namespace="iterabase-system",component="artifact-coordinator",outcome="transient"}'
+        values: '0+1x10'
+      - series: 'control_plane_artifact_security_attempts_total{namespace="iterabase-system",component="artifact-coordinator",outcome="lease_lost"}'
+        values: '0+1x10'
+      - series: 'control_plane_artifact_security_attempts_total{namespace="iterabase-system",component="artifact-coordinator",outcome="cleared"}'
+        values: '0+50x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: IterabaseArtifactTransientFailures
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: IterabaseArtifactTransientFailures
+        exp_alerts:
+          - exp_labels:
+              namespace: iterabase-system
+              severity: warning
+              component: artifact-coordinator
+            exp_annotations:
+              summary: "Artifact security attempts are repeatedly failing transiently"
+              description: "Ten or more security attempts ended transient or lost their lease in 30 minutes; affected artifacts stay quarantined and retry."
+              first_action: "Correlate scanner readiness, mTLS errors, timeouts/OOM, and coordinator restarts; transient failures are never treated as clean."
+              runbook_url: https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabaseartifacttransientfailures

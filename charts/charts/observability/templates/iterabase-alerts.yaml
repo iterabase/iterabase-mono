@@ -145,6 +145,72 @@ spec:
             first_action: "Inspect artifact digest, archive bounds, manifests, and materializer logs."
             runbook_url: {{ printf "%s#iterabasetoolmaterializationfailures" $runbook | quote }}
 
+    - name: iterabase-artifacts
+      rules:
+        - alert: IterabaseArtifactScannerUnready
+          expr: max by (namespace) (control_plane_artifact_scanner_ready) == 0
+          for: 15m
+          labels: {severity: critical, component: artifact-scanner}
+          annotations:
+            summary: "No artifact scanner can issue a clean verdict"
+            description: "Every scanner reports a failed engine self-test or stale/missing signatures. Uploads stay quarantined and unavailable; nothing is cleared."
+            first_action: "Check scanner adapter readiness reason, clamd logs, the signature updater, and /signatures/state.json age; never bypass the scanner."
+            runbook_url: {{ printf "%s#iterabaseartifactscannerunready" $runbook | quote }}
+        - alert: IterabaseArtifactSignaturesAging
+          expr: max by (namespace) (control_plane_artifact_signature_age_seconds) > 72000
+          for: 10m
+          labels: {severity: warning, component: artifact-scanner}
+          annotations:
+            summary: "Artifact scanner signatures are older than 20 hours"
+            description: "The signature updater has not confirmed a bundle for 20 hours; scanning stops issuing clean verdicts at 24 hours."
+            first_action: "Inspect signature updater logs, update-source or mirror reachability, DNS/egress policy, and signature volume capacity."
+            runbook_url: {{ printf "%s#iterabaseartifactsignaturesaging" $runbook | quote }}
+        - alert: IterabaseArtifactSignaturesStale
+          expr: max by (namespace) (control_plane_artifact_signature_age_seconds) > 86400
+          for: 0m
+          labels: {severity: critical, component: artifact-scanner}
+          annotations:
+            summary: "Artifact scanner signatures exceed the 24-hour freshness bound"
+            description: "The scanner is unready and issues no clean verdict (DES-HOR-460-05). New uploads remain quarantined."
+            first_action: "Restore the signature source or mirror and let the updater publish and validate a fresh bundle; never copy an unverified bundle."
+            runbook_url: {{ printf "%s#iterabaseartifactsignaturesstale" $runbook | quote }}
+        - alert: IterabaseArtifactSecurityBacklog
+          expr: max by (namespace) (control_plane_artifact_security_queue_oldest_seconds) > 1800
+          for: 10m
+          labels: {severity: warning, component: artifact-coordinator}
+          annotations:
+            summary: "The oldest artifact security attempt is older than 30 minutes"
+            description: "Uploaded artifacts are waiting for a security verdict longer than expected."
+            first_action: "Check coordinator readiness, scanner readiness and capacity, attempt outcomes, and database/object-store health."
+            runbook_url: {{ printf "%s#iterabaseartifactsecuritybacklog" $runbook | quote }}
+        - alert: IterabaseArtifactQuarantineNearLimit
+          expr: max by (namespace) (control_plane_artifact_quarantine_bytes) / on (namespace) max by (namespace) (control_plane_artifact_quarantine_limit_bytes > 0) > 0.8
+          for: 15m
+          labels: {severity: warning, component: artifact-coordinator}
+          annotations:
+            summary: "Artifact quarantine is above 80% of its configured limit"
+            description: "New uploads fail closed with processing_capacity_unavailable when the quarantine limit is reached."
+            first_action: "Find why clearance is not draining quarantine (scanner, signatures, backlog) before raising artifact.quarantineMaxBytes."
+            runbook_url: {{ printf "%s#iterabaseartifactquarantinenearlimit" $runbook | quote }}
+        - alert: IterabaseArtifactDeletionStuck
+          expr: max by (namespace) (control_plane_artifact_deleting_oldest_seconds) > 3600
+          for: 0m
+          labels: {severity: warning, component: artifact-coordinator}
+          annotations:
+            summary: "An artifact deletion has not finished purging for over an hour"
+            description: "Deleted artifact bytes remain in object storage past the expected purge window."
+            first_action: "Check coordinator logs for purge errors, the lifecycle credential, and MinIO availability; never delete objects by hand."
+            runbook_url: {{ printf "%s#iterabaseartifactdeletionstuck" $runbook | quote }}
+        - alert: IterabaseArtifactTransientFailures
+          expr: sum by (namespace) (increase(control_plane_artifact_security_attempts_total{outcome=~"transient|lease_lost"}[30m])) >= 10
+          for: 0m
+          labels: {severity: warning, component: artifact-coordinator}
+          annotations:
+            summary: "Artifact security attempts are repeatedly failing transiently"
+            description: "Ten or more security attempts ended transient or lost their lease in 30 minutes; affected artifacts stay quarantined and retry."
+            first_action: "Correlate scanner readiness, mTLS errors, timeouts/OOM, and coordinator restarts; transient failures are never treated as clean."
+            runbook_url: {{ printf "%s#iterabaseartifacttransientfailures" $runbook | quote }}
+
     - name: iterabase-storage
       rules:
         - alert: IterabaseWorkspaceCapacityWarning

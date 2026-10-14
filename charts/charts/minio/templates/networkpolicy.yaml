@@ -18,6 +18,9 @@ spec:
               app.kubernetes.io/name: minio
               app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: artifact-provisioner
+        # Only the zone-credential holders: API/gateway (ingest + serve) and the
+        # artifact coordinator (lifecycle). The scanner and signature updater
+        # hold no object-store credential and are never admitted.
         - podSelector:
             matchExpressions:
               - key: app.kubernetes.io/name
@@ -28,7 +31,7 @@ spec:
                 values: [{{ .Release.Name | quote }}]
               - key: app.kubernetes.io/component
                 operator: In
-                values: [api, gateway]
+                values: [api, gateway, artifact-coordinator]
         {{- if .Values.metrics.enabled }}
         - podSelector:
             matchLabels:

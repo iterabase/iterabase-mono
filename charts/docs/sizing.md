@@ -90,8 +90,9 @@ scheduler admits pods by requests, not by usage.
 
 All figures are requests. `toolRunner` (125m / 320Mi) is included even though
 the throwaway reference hosts ran without Flux. The AWS Load Balancer
-Controller is a placeholder until HOR-593 pins it. Artifact processing is
-reserved from the HOR-460 reference profile until HOR-461/HOR-462 measure it.
+Controller is a placeholder until HOR-593 pins it. Artifact scanning uses the
+concrete HOR-461 chart requests below; extraction remains a provisional
+HOR-460 reference reservation until HOR-462 lands and measures it.
 
 | Line | 4 vCPU / 16 GiB | 8 vCPU / 16 GiB |
 | --- | --- | --- |
@@ -99,8 +100,34 @@ reserved from the HOR-460 reference profile until HOR-461/HOR-462 measure it.
 | kube-system (CoreDNS, metrics-server) | 200m / 0.14 GiB | 200m / 0.14 GiB |
 | Platform charts incl. tool runner | 960m / 5.4 GiB | 960m / 5.4 GiB |
 | AWS Load Balancer Controller (hosted, placeholder) | 50m / 0.25 GiB | 50m / 0.25 GiB |
-| Artifact processing reservation (HOR-460 profile) | 500m / 3.5 GiB | 500m / 3.5 GiB |
-| **Left for agent workers and browsers** | **2040m / 4.5 GiB** | **6040m / 4.5 GiB** |
+| Artifact scanning (HOR-461 chart requests, table below) | 950m / 2.0 GiB | 950m / 2.0 GiB |
+| Artifact extraction reservation (provisional, HOR-460 extractor profile) | 1000m / 1.0 GiB | 1000m / 1.0 GiB |
+| **Left for agent workers and browsers** | **590m / 5.0 GiB** | **4590m / 5.0 GiB** |
+
+### Artifact scanning resources (HOR-461)
+
+Each pipeline container sets its own requests and memory limit (no CPU
+limit). Values live under `control-plane.artifact.processing` and start
+from the HOR-460 section 11 reference profile.
+
+| Workload / container | Request | Memory limit | Notes |
+| --- | --- | --- | --- |
+| `artifact-coordinator` | 250m / 256Mi | 512Mi | 1 scan in flight by default (`scanConcurrency`) |
+| `artifact-scanner` / `clamd` | 500m / 1536Mi | 3Gi | full official database loaded in memory; 512Mi `/tmp` scratch |
+| `artifact-scanner` / `adapter` | 100m / 128Mi | 768Mi | above the 256Mi section 11 starting point: a 50-megapixel image decode in the admission policy measured about 400 MB |
+| `artifact-signature-updater` / `freshclam` | 100m / 128Mi | 256Mi | validates with `sigtool --info` per database, not a full engine load; a full official download peaked at about 20 MiB RSS beside its staged files |
+| `wait-for-postgres` (coordinator init) | 10m / 16Mi | 64Mi | shared `initResources` |
+
+The signature volume is a 2Gi `iterabase-lvm-xfs` claim. The compressed
+official bundle is about 110 MiB, so it holds the current bundle, one
+rollback bundle, and a staged copy with headroom.
+
+Compared with the earlier provisional reservation (500m / 3.5 GiB for all
+artifact processing), the concrete scanning requests plus the provisional
+extraction reservation need more CPU and less memory. On the 4 vCPU
+baseline this leaves 590m for agent workers and browsers, so the stated
+concurrency below must be re-derived (HOR-461 follow-up for founder review)
+before it is quoted again.
 
 ## Stated concurrency
 
@@ -108,7 +135,7 @@ reserved from the HOR-460 reference profile until HOR-461/HOR-462 measure it.
 | --- | --- | --- |
 | Agent worker replicas (recommended sizing 250m / 256Mi) | 6 | 12 |
 | Concurrent browser runs (provisional, 500m / 1 GiB each) | 1 | 1 |
-| Concurrent extractions (provisional, within the artifact reservation) | 1 | 1 |
+| Concurrent extractions (provisional, within the extraction reservation) | 1 | 1 |
 | Workers alone, no browser/artifact workloads (measured) | 11 (no reservation) | 26 (reserved) |
 
 Agent worker concurrency is one active turn per worker. The 16 GiB tiers share
@@ -117,9 +144,11 @@ tier's extra CPU buys twice the agent workers (CPU-bound on the baseline),
 not more browser runs or concurrent extractions, which are memory-bound. More
 of those needs more memory (a 32 GiB tier), not more CPU.
 
-The browser and extraction figures are **provisional**. They come from this
-budget, not from measurement, because managed browsers (HOR-594) and artifact
-processing (HOR-461/HOR-462) had not landed. Those tickets must measure them
+The worker figures above predate the concrete HOR-461 scanning requests and
+must be re-derived from the updated budget. The browser and extraction
+figures are **provisional**. They come from this budget, not from
+measurement, because managed browsers (HOR-594) and extraction (HOR-462)
+had not landed. Those tickets must measure them
 on both instance types, replace the provisional values here, and feed the
 browser pool default and the AWS sheet of the financial model
 (DES-HOR-602-01).

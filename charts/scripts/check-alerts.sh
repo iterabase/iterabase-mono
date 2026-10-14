@@ -46,9 +46,12 @@ for contract in \
   'control_plane_dispatch_workspace_credit_gated) == 1' \
   'control_plane_harness_storage_checks_total{result="fail"}' \
   'lvm_vg_free_size_bytes{name="iterabase-data"} / lvm_vg_total_size_bytes{name="iterabase-data"}' \
-  'kube_persistentvolumeclaim_info{storageclass=~"iterabase-(agentpool-)?lvm-xfs"}'; do
+  'kube_persistentvolumeclaim_info{storageclass=~"iterabase-(agentpool-)?lvm-xfs"}' \
+  'max by (namespace) (control_plane_artifact_scanner_ready) == 0' \
+  'max by (namespace) (control_plane_artifact_signature_age_seconds) > 86400' \
+  'control_plane_artifact_security_attempts_total{outcome=~"transient|lease_lost"}'; do
   grep -Fq "$contract" <<<"$base" || {
-    echo "ERROR: missing dedicated workspace alert contract: $contract" >&2
+    echo "ERROR: missing workspace/artifact alert contract: $contract" >&2
     exit 1
   }
 done

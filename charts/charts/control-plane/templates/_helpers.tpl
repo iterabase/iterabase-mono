@@ -60,40 +60,104 @@ postgres://{{ .Values.postgresql.auth.username }}:$(PGPASSWORD)@{{ include "cont
 {{- default (printf "%s-minio:9000" .Release.Name) .Values.artifact.endpoint -}}
 {{- end -}}
 
-{{- define "control-plane.artifactSecretName" -}}
-{{- default (printf "%s-minio-artifacts" .Release.Name) .Values.artifact.credentialSecret -}}
+{{- /* Zone credential Secrets (DES-HOR-460-02). The defaults match the MinIO
+     subchart's generated <release>-minio-artifact-<zone> Secrets. */ -}}
+{{- define "control-plane.artifactIngestSecretName" -}}
+{{- default (printf "%s-minio-artifact-ingest" .Release.Name) .Values.artifact.credentialSecrets.ingest -}}
 {{- end -}}
 
-{{- define "control-plane.artifactEnv" -}}
-- name: ARTIFACT_ENABLED
-  value: {{ .Values.artifact.enabled | quote }}
-{{- if .Values.artifact.enabled }}
+{{- define "control-plane.artifactServeSecretName" -}}
+{{- default (printf "%s-minio-artifact-serve" .Release.Name) .Values.artifact.credentialSecrets.serve -}}
+{{- end -}}
+
+{{- define "control-plane.artifactLifecycleSecretName" -}}
+{{- default (printf "%s-minio-artifact-lifecycle" .Release.Name) .Values.artifact.credentialSecrets.lifecycle -}}
+{{- end -}}
+
+{{- /* "true" when the V2 artifact processing pipeline (coordinator, scanner,
+     signature updater) renders. */ -}}
+{{- define "control-plane.artifactProcessingEnabled" -}}
+{{- if and .Values.enabled .Values.artifact.enabled .Values.artifact.processing.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{- define "control-plane.artifactCoordinatorName" -}}
+{{- printf "%s-control-plane-artifact-coordinator" .Release.Name -}}
+{{- end -}}
+
+{{- define "control-plane.artifactScannerName" -}}
+{{- printf "%s-control-plane-artifact-scanner" .Release.Name -}}
+{{- end -}}
+
+{{- define "control-plane.artifactSignatureUpdaterName" -}}
+{{- printf "%s-control-plane-artifact-signature-updater" .Release.Name -}}
+{{- end -}}
+
+{{- define "control-plane.artifactSignaturesClaimName" -}}
+{{- printf "%s-control-plane-artifact-signatures" .Release.Name -}}
+{{- end -}}
+
+{{- define "control-plane.artifactScannerSPIFFEID" -}}
+{{- printf "spiffe://%s/control-plane/artifact-scanner" .Values.gateway.trustDomain -}}
+{{- end -}}
+
+{{- define "control-plane.artifactCoordinatorSPIFFEID" -}}
+{{- printf "spiffe://%s/control-plane/artifact-coordinator" .Values.gateway.trustDomain -}}
+{{- end -}}
+
+{{- define "control-plane.artifactCustomSignaturesConfigMap" -}}
+{{- if .Values.artifact.processing.signatures.customDatabasesConfigMap -}}
+{{- .Values.artifact.processing.signatures.customDatabasesConfigMap -}}
+{{- else if .Values.artifact.processing.signatures.customDatabases -}}
+{{- printf "%s-control-plane-artifact-custom-signatures" .Release.Name -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Shared object-store location for every artifact credential holder. */ -}}
+{{- define "control-plane.artifactStoreEnv" -}}
 - name: ARTIFACT_ENDPOINT
   value: {{ include "control-plane.artifactEndpoint" . | quote }}
-- name: ARTIFACT_ACCESS_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "control-plane.artifactSecretName" . }}
-      key: accessKey
-- name: ARTIFACT_SECRET_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "control-plane.artifactSecretName" . }}
-      key: secretKey
 - name: ARTIFACT_BUCKET
   value: {{ .Values.artifact.bucket | quote }}
 - name: ARTIFACT_SECURE
   value: {{ .Values.artifact.secure | quote }}
-- name: ARTIFACT_MAX_SIZE_BYTES
-  value: {{ printf "%d" (int64 .Values.artifact.maxSizeBytes) | quote }}
+- name: ARTIFACT_QUARANTINE_MAX_BYTES
+  value: {{ printf "%d" (int64 .Values.artifact.quarantineMaxBytes) | quote }}
 {{- with .Values.artifact.defaultRetention }}
 - name: ARTIFACT_DEFAULT_RETENTION
   value: {{ . | quote }}
 {{- end }}
-- name: ARTIFACT_PENDING_TTL
-  value: {{ .Values.artifact.pendingTTL | quote }}
-- name: ARTIFACT_SWEEP_INTERVAL
-  value: {{ .Values.artifact.sweepInterval | quote }}
+{{- end -}}
+
+{{- /* API and gateway: the ingest (quarantine write) and serve (cleared read)
+     credentials only. They never receive the lifecycle credential; the
+     control-plane config refuses to start if they do. */ -}}
+{{- define "control-plane.artifactEnv" -}}
+- name: ARTIFACT_ENABLED
+  value: {{ .Values.artifact.enabled | quote }}
+{{- if .Values.artifact.enabled }}
+{{- include "control-plane.artifactStoreEnv" . | nindent 0 }}
+- name: ARTIFACT_INGEST_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "control-plane.artifactIngestSecretName" . }}
+      key: accessKey
+- name: ARTIFACT_INGEST_SECRET_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "control-plane.artifactIngestSecretName" . }}
+      key: secretKey
+- name: ARTIFACT_SERVE_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "control-plane.artifactServeSecretName" . }}
+      key: accessKey
+- name: ARTIFACT_SERVE_SECRET_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "control-plane.artifactServeSecretName" . }}
+      key: secretKey
+- name: ARTIFACT_MAX_CONCURRENT_UPLOADS
+  value: {{ .Values.artifact.maxConcurrentUploads | quote }}
 {{- end }}
 {{- end -}}
 

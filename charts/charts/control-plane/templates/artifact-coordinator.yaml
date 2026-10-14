@@ -1,0 +1,221 @@
+{{- if include "control-plane.artifactProcessingEnabled" . }}
+{{- $name := include "control-plane.artifactCoordinatorName" . }}
+{{- $internalTLS := or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict))) }}
+{{- $c := .Values.artifact.processing.coordinator }}
+{{- if or (lt (int $c.scanConcurrency) 1) (gt (int $c.scanConcurrency) 8) }}{{ fail "artifact.processing.coordinator.scanConcurrency must be between 1 and 8" }}{{- end }}
+# Trusted artifact lifecycle worker (DES-HOR-460-07): the only holder of the
+# lifecycle object credential. It has no customer listener and no Kubernetes
+# authority; :8092 serves health and metrics only.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-coordinator
+automountServiceAccountToken: false
+---
+# Client identity presented to the scanner. The Secret's ca.crt (the shared
+# platform workload CA) verifies the scanner's serving identity.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-coordinator
+spec:
+  secretName: {{ $name }}-tls
+  duration: 24h
+  renewBefore: 8h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages: ["client auth"]
+  uris:
+    - {{ include "control-plane.artifactCoordinatorSPIFFEID" . | quote }}
+  issuerRef:
+    name: platform-spiffe-ca
+    kind: ClusterIssuer
+{{- if .Values.metrics.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-coordinator
+spec:
+  selector:
+    app.kubernetes.io/name: control-plane
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: artifact-coordinator
+  ports:
+    - name: http-metrics
+      port: 8092
+      targetPort: http
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-coordinator
+spec:
+  replicas: {{ $c.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: artifact-coordinator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: control-plane
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: artifact-coordinator
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - sh
+            - -c
+            - 'until pg_isready -h {{ include "control-plane.pgHost" . }} -p {{ .Values.postgresql.port }} -U {{ .Values.postgresql.auth.username }}; do echo waiting for postgres; sleep 2; done'
+          {{- with .Values.initResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $internalTLS }}
+          env:
+            - name: PGSSLMODE
+              value: verify-full
+            - name: PGSSLROOTCERT
+              value: {{ .Values.tls.caMountPath | quote }}
+          volumeMounts:
+            - name: internal-ca
+              mountPath: {{ dir .Values.tls.caMountPath }}
+              readOnly: true
+          {{- end }}
+      containers:
+        - name: coordinator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/artifact-coordinator"]
+          args: ["serve"]
+          env:
+            # Shared control-plane database credential (DES-HOR-461-04).
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "control-plane.pgSecret" . }}
+                  key: {{ .Values.postgresql.passwordKey }}
+            - name: DATABASE_URL
+              value: {{ include "control-plane.databaseURL" . | quote }}
+            - name: ARTIFACT_ENABLED
+              value: "true"
+            {{- include "control-plane.artifactStoreEnv" . | nindent 12 }}
+            - name: ARTIFACT_LIFECYCLE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "control-plane.artifactLifecycleSecretName" . }}
+                  key: accessKey
+            - name: ARTIFACT_LIFECYCLE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "control-plane.artifactLifecycleSecretName" . }}
+                  key: secretKey
+            - name: ARTIFACT_SCANNER_URL
+              value: {{ printf "https://%s.%s.svc:8443" (include "control-plane.artifactScannerName" .) .Release.Namespace | quote }}
+            - name: ARTIFACT_SCANNER_SPIFFE_ID
+              value: {{ include "control-plane.artifactScannerSPIFFEID" . | quote }}
+            - name: ARTIFACT_SCANNER_CA_FILE
+              value: /etc/control-plane/artifact-tls/ca.crt
+            - name: ARTIFACT_CLIENT_CERT_FILE
+              value: /etc/control-plane/artifact-tls/tls.crt
+            - name: ARTIFACT_CLIENT_KEY_FILE
+              value: /etc/control-plane/artifact-tls/tls.key
+            - name: ARTIFACT_SCAN_CONCURRENCY
+              value: {{ $c.scanConcurrency | quote }}
+            - name: ARTIFACT_SWEEP_INTERVAL
+              value: {{ $c.sweepInterval | quote }}
+            - name: ARTIFACT_COORDINATOR_ADDR
+              value: ":8092"
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | default "info" | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.logFormat | default "json" | quote }}
+          ports:
+            - name: http
+              containerPort: 8092
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          volumeMounts:
+            - name: artifact-tls
+              mountPath: /etc/control-plane/artifact-tls
+              readOnly: true
+            {{- if $internalTLS }}
+            - name: internal-ca
+              mountPath: {{ dir .Values.tls.caMountPath }}
+              readOnly: true
+            {{- end }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          {{- with $c.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        # Rotated every 24h; the coordinator re-reads the files per handshake.
+        - name: artifact-tls
+          secret:
+            secretName: {{ $name }}-tls
+            defaultMode: 0440
+        {{- if $internalTLS }}
+        - name: internal-ca
+          secret:
+            secretName: {{ required "control-plane.tls.caSecretName is required when tls.enabled" (include "control-plane.tlsCASecretName" .) | quote }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
+{{- end }}

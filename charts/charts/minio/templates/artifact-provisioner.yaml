@@ -6,22 +6,10 @@ metadata:
   labels:
     {{- include "minio.artifactLabels" . | nindent 4 }}
 data:
-  policy.json: |
-    {
-      "Version": "2012-10-17",
-      "Statement": [
-        {
-          "Effect": "Allow",
-          "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
-          "Resource": ["arn:aws:s3:::{{ .Values.artifactService.bucket }}"]
-        },
-        {
-          "Effect": "Allow",
-          "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-          "Resource": ["arn:aws:s3:::{{ .Values.artifactService.bucket }}/*"]
-        }
-      ]
-    }
+  {{- range $zone := list "ingest" "serve" "lifecycle" }}
+  artifact-{{ $zone }}.json: |
+    {{- include "minio.artifactPolicy" (dict "root" $ "zone" $zone) | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -49,14 +37,51 @@ spec:
         - name: provision
           image: '{{ .Values.artifactService.mcImage.repository }}:{{ .Values.artifactService.mcImage.tag }}@{{ required "artifactService.mcImage.digest is required" .Values.artifactService.mcImage.digest }}'
           imagePullPolicy: {{ .Values.artifactService.mcImage.pullPolicy }}
+          # Idempotent on every install, upgrade, and reapply. The MinIO image
+          # has no grep/sed/awk/jq, so parsing is POSIX parameter expansion.
+          #  1. One user and one exact policy per byte zone (DES-HOR-460-02).
+          #  2. Revoke the legacy broad HOR-399 credential: every user still
+          #     attached to the `artifact-service` policy is detached and
+          #     removed, then the policy itself is removed.
           command: ["/bin/sh", "-ec"]
           args:
             - |
               until mc alias set local http://{{ include "minio.name" . }}:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do sleep 2; done
               mc mb --ignore-existing "local/$ARTIFACT_BUCKET"
-              mc admin user add local "$ARTIFACT_ACCESS_KEY" "$ARTIFACT_SECRET_KEY"
-              mc admin policy create local artifact-service /policy/policy.json
-              mc admin policy attach local artifact-service --user "$ARTIFACT_ACCESS_KEY"
+              for zone in ingest serve lifecycle; do
+                case "$zone" in
+                  ingest) key=$ARTIFACT_INGEST_ACCESS_KEY; secret=$ARTIFACT_INGEST_SECRET_KEY ;;
+                  serve) key=$ARTIFACT_SERVE_ACCESS_KEY; secret=$ARTIFACT_SERVE_SECRET_KEY ;;
+                  lifecycle) key=$ARTIFACT_LIFECYCLE_ACCESS_KEY; secret=$ARTIFACT_LIFECYCLE_SECRET_KEY ;;
+                esac
+                mc admin user add local "$key" "$secret"
+                mc admin policy create local "artifact-$zone" "/policy/artifact-$zone.json"
+                mc admin policy attach local "artifact-$zone" --user "$key"
+              done
+              if mc admin policy info local artifact-service >/dev/null 2>&1; then
+                legacy=$(mc admin policy entities local --policy artifact-service --json)
+                case "$legacy" in
+                  *'"users":['*)
+                    users=${legacy#*'"users":['}
+                    users=${users%%]*}
+                    IFS=,
+                    for user in $users; do
+                      user=${user#\"}
+                      user=${user%\"}
+                      [ -n "$user" ] || continue
+                      mc admin policy detach local artifact-service --user "$user"
+                      case "$user" in
+                        "$ARTIFACT_INGEST_ACCESS_KEY"|"$ARTIFACT_SERVE_ACCESS_KEY"|"$ARTIFACT_LIFECYCLE_ACCESS_KEY") ;;
+                        *) mc admin user remove local "$user" ;;
+                      esac
+                    done
+                    unset IFS
+                    ;;
+                esac
+                mc admin policy remove local artifact-service
+                echo "revoked the legacy artifact-service credential and policy"
+              fi
+              echo "artifact zone credentials provisioned; no artifact-service policy remains"
           env:
             - name: MC_CONFIG_DIR
               value: /tmp/.mc
@@ -70,16 +95,19 @@ spec:
                 secretKeyRef:
                   name: {{ include "minio.secretName" . }}
                   key: rootPassword
-            - name: ARTIFACT_ACCESS_KEY
+            {{- range $zone := list "ingest" "serve" "lifecycle" }}
+            {{- $secret := include (printf "minio.artifact%sSecretName" (title $zone)) $ }}
+            - name: ARTIFACT_{{ upper $zone }}_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "minio.artifactSecretName" . }}
+                  name: {{ $secret }}
                   key: accessKey
-            - name: ARTIFACT_SECRET_KEY
+            - name: ARTIFACT_{{ upper $zone }}_SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "minio.artifactSecretName" . }}
+                  name: {{ $secret }}
                   key: secretKey
+            {{- end }}
             - name: ARTIFACT_BUCKET
               value: {{ .Values.artifactService.bucket | quote }}
           volumeMounts:

@@ -36,6 +36,34 @@ Use `10 — Control Plane` to identify normalized failing routes. Check API logs
 
 Check API/gateway route breakdown, MinIO readiness, bucket credentials, TLS, immutable metadata lifecycle, and object digest failures. Preserve metadata tombstones and never overwrite immutable bytes during recovery.
 
+## IterabaseArtifactScannerUnready
+
+No scanner adapter can issue a clean verdict, so new uploads stay quarantined (fail closed). Check `kubectl get pods -l app.kubernetes.io/component=artifact-scanner`, the adapter's `/readyz` reason in its logs (`signatures_unavailable`, `signatures_stale`, engine self-test), clamd logs (waiting for a bundle, database load, OOM), and the signature updater. Readiness needs a clamd that detects the EICAR self-test on a bundle no older than 24 hours. Never route around the scanner or mark artifacts clean by hand. See [`charts/docs/artifact-operations.md`](../../charts/docs/artifact-operations.md).
+
+## IterabaseArtifactSignaturesAging
+
+The updater has not confirmed the published bundle for 20 hours; clean verdicts stop at 24 hours. Inspect the `artifact-signature-updater` logs for FreshClam, `sigtool`, or publish errors; check update-source or `signatures.mirrorURL` reachability, DNS, the updater NetworkPolicy, upstream rate limiting (FreshClam cool-down), and the signature PVC's free space. A failed check never changes the published bundle or `state.json`.
+
+## IterabaseArtifactSignaturesStale
+
+Signatures exceed the DES-HOR-460-05 24-hour bound: the scanner is unready and pending artifacts wait. Restore the official source or the operator mirror, then let the updater publish and validate a fresh bundle (restarting the updater forces an immediate check). Do not copy a bundle onto the volume by hand; an unverified copy never establishes signature authority. For a known-bad signature release, follow the validated rollback in the artifact operations runbook.
+
+## IterabaseArtifactSecurityBacklog
+
+The oldest open security attempt is older than 30 minutes. Check coordinator readiness and logs, scanner readiness and capacity (`artifact.processing.coordinator.scanConcurrency`, scanner replicas), attempt outcomes (`control_plane_artifact_security_attempts_total`), and PostgreSQL/MinIO health. Attempts are leased and fenced; restarting the coordinator is safe and never re-clears an artifact.
+
+## IterabaseArtifactQuarantineNearLimit
+
+Committed quarantine bytes are above 80% of `artifact.quarantineMaxBytes`; at the limit, uploads fail closed with `processing_capacity_unavailable`. First find why clearance is not draining (scanner unready, stale signatures, security backlog). Raise the limit only after confirming MinIO volume headroom.
+
+## IterabaseArtifactDeletionStuck
+
+An artifact deletion has not purged its bytes for over an hour. Check coordinator logs for purge errors, the lifecycle credential Secret, the `artifact-lifecycle` MinIO policy, and MinIO availability. The coordinator retries the purge; never delete objects directly in MinIO, because the tombstone and zone evidence must stay consistent.
+
+## IterabaseArtifactTransientFailures
+
+Ten or more security attempts ended `transient` or `lease_lost` in 30 minutes. Correlate with scanner readiness flaps, mTLS/certificate errors (coordinator and scanner Certificates rotate every 24 hours), scanner timeouts or OOM kills, and coordinator restarts. Transient outcomes retry and are never treated as clean.
+
 ## IterabaseManagerReconciliationFailures
 
 Identify the controller label and affected CR status. Check manager logs, RBAC denials, Kubernetes events, invalid immutable definitions, and dependency readiness. Do not manually mutate operator-owned children unless the controller is paused and recovery is documented.
