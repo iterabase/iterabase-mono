@@ -20,6 +20,11 @@ const downloadBody = requiredEnv("ITERABASE_BROWSER_DOWNLOAD_BODY");
 
 const greeting = /^Good (morning|afternoon|evening), .+\.$/;
 
+// The browser session lives only in the HttpOnly cookie: page script can
+// read no cookie, and storage holds nothing but the router's scroll
+// positions (DES-HOR-459-05) - never a credential or work data.
+const scrollRestorationKey = /^tsr-scroll-restoration-v\d+_\d+$/;
+
 async function assertFreshBrowserState(page: Page): Promise<void> {
   await expect
     .poll(() =>
@@ -29,7 +34,9 @@ async function assertFreshBrowserState(page: Page): Promise<void> {
         session: Object.keys(sessionStorage),
       })),
     )
-    .toEqual({ cookie: "", local: [], session: [] });
+    .toEqual({ cookie: "", local: [], session: expect.any(Array) });
+  const session = await page.evaluate(() => Object.keys(sessionStorage));
+  for (const key of session) expect(key).toMatch(scrollRestorationKey);
 }
 
 // signIn reaches the app only through the browser session: the HttpOnly

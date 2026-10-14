@@ -28,7 +28,7 @@ interface Cleared {
 }
 
 export function YourTurn() {
-  const { t } = useTranslation("work");
+  const { t } = useTranslation("today");
   const navigate = useNavigate();
   const started = useRef(new Date());
   const [cleared, setCleared] = useState<Cleared[]>([]);
@@ -101,7 +101,7 @@ function Focus({
   progress?: string;
   children: React.ReactNode;
 }) {
-  const { t } = useTranslation("work");
+  const { t } = useTranslation("today");
   return (
     <div className="app">
       <header className="flex items-center gap-4 h-14 desk:h-[68px] px-4 desk:px-10 border-b border-line-faint">
@@ -138,7 +138,7 @@ function Decision({
   onCleared: (outcomeLabel: string) => void;
   onSkip: () => void;
 }) {
-  const { t } = useTranslation("work");
+  const { t } = useTranslation("today");
   const detail = useLiveQuery(() => loadDetail(item.id), [item.id], {
     live: false,
   });
@@ -206,7 +206,7 @@ function DecisionCard({
   onCleared: (outcomeLabel: string) => void;
   onSkip: () => void;
 }) {
-  const { t } = useTranslation("work");
+  const { t } = useTranslation("today");
   const locale = useLocale();
   const navigate = useNavigate();
   const blocker = data.blocker!;
@@ -316,7 +316,7 @@ function AllClear({
   startedAt: Date;
   skipped: number;
 }) {
-  const { t } = useTranslation("work");
+  const { t } = useTranslation("today");
   const locale = useLocale();
   const session = useSession();
   const waiting = useLiveQuery(() => listWorkItems({ state: "waiting" }), []);

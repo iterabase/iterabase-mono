@@ -51,12 +51,18 @@ function json(data: unknown, status = 200): Response {
 
 export function createMockApi(
   profile: AuthProfile = operator,
-  overrides: Partial<{ eventsStatus: number; workflowsStatus: number }> = {},
+  overrides: Partial<{
+    eventsStatus: number;
+    workflowsStatus: number;
+    /** Starts signed out; any sign-in succeeds (design preview of sign-in). */
+    anonymous: boolean;
+  }> = {},
 ): MockApi {
   const items = fx.items.map((item) => ({ ...item }));
   const calls: MockCall[] = [];
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   let cursor = 100;
+  let signedIn = !overrides.anonymous;
   const encoder = new TextEncoder();
 
   function emit(code: string, workItemId: string) {
@@ -109,6 +115,12 @@ export function createMockApi(
     const path = url.pathname;
     let match: RegExpMatchArray | null;
 
+    if (path === "/v1/auth/sign-in" && method === "POST") {
+      signedIn = true;
+      return json({ profile, csrfToken: "csrf-1" });
+    }
+    if (path === "/v1/auth/session" && !signedIn)
+      return json({ authenticated: false, locale: profile.locale });
     if (path === "/v1/auth/session")
       return json({
         authenticated: true,

@@ -1,14 +1,15 @@
+import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
-  Link,
-  Outlet,
-  useNavigate,
-  useRouterState,
-} from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+  createContext,
+  ReactNode,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Logomark, SearchIcon, TabIcon } from "../components/brand";
-import { TrustLine } from "../components/trust";
-import { Kbd } from "../components/ui/button";
+import { Logomark, SearchIcon } from "../components/brand";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,9 +26,11 @@ import { useLive, useLiveQuery } from "./live";
 import { SearchDialog } from "./Search";
 import { useSession } from "./session";
 
-// The app frame (HOR-459 Decisions → Navigation): a desktop top bar and phone
-// tabs, no sidebar. Sofia and Reports are added by HOR-452 / HOR-658
-// (DES-HOR-459-03). Your turn is a focus mode without the frame.
+// The app frame, ported from the "Delight, trusted" boards: a 68px desktop top
+// bar (logo, pill navigation, search, avatar menu) and, on phone, a 56px
+// header plus bottom tabs. No sidebar. Sofia and Reports are added by
+// HOR-452 / HOR-658 (DES-HOR-459-03). Your turn is a focus mode without the
+// frame. Screens own their padding, footers and phone header content.
 
 type Tab = "today" | "work" | "team";
 const tabs: Array<{ tab: Tab; to: "/" | "/work" | "/team" }> = [
@@ -60,11 +63,28 @@ function useTrialEnded(): boolean {
   );
 }
 
+/**
+ * Phone header content for the current screen. A screen renders
+ * <PhoneHeader> to replace the default logo-and-avatar header (a back link,
+ * a centred title, actions); on desktop the phone header is hidden.
+ */
+const PhoneHeaderTarget = createContext<HTMLElement | null>(null);
+
+export function PhoneHeader({ children }: { children: ReactNode }) {
+  const target = useContext(PhoneHeaderTarget);
+  return target ? createPortal(children, target) : null;
+}
+
 export function Shell() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
-  if (pathname.startsWith("/your-turn")) return <Outlet />;
+  if (pathname.startsWith("/your-turn"))
+    return (
+      <div className="xt min-h-dvh">
+        <Outlet />
+      </div>
+    );
   return <Frame pathname={pathname} />;
 }
 
@@ -77,6 +97,8 @@ function Frame({ pathname }: { pathname: string }) {
   const trialEnded = useTrialEnded();
   const [searchOpen, setSearchOpen] = useState(false);
   const [signOutFailed, setSignOutFailed] = useState(false);
+  const [phoneSlot, setPhoneSlot] = useState<HTMLElement | null>(null);
+  const [customPhoneHeader, setCustomPhoneHeader] = useState(false);
   const current = activeTab(pathname);
   const name = session.profile.displayName || session.profile.email;
 
@@ -91,20 +113,30 @@ function Frame({ pathname }: { pathname: string }) {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
+  // The default phone header shows only while no screen fills the slot.
+  useEffect(() => {
+    if (!phoneSlot) return;
+    const update = () => setCustomPhoneHeader(phoneSlot.childNodes.length > 0);
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(phoneSlot, { childList: true });
+    return () => observer.disconnect();
+  }, [phoneSlot]);
+
   const signOut = async () => {
     setSignOutFailed(false);
     if (!(await session.signOut())) setSignOutFailed(true);
   };
 
   return (
-    <div className="app">
-      <a href="#main" className="sr-only">
-        {t("skipToContent")}
-      </a>
-      <header className="app-header">
-        <div className="topbar">
+    <PhoneHeaderTarget.Provider value={phoneSlot}>
+      <div className="xt app-frame">
+        <a href="#main" className="sr-only">
+          {t("skipToContent")}
+        </a>
+        <header className="topbar">
           <Link to="/" className="topbar__brand" aria-label={t("homeLabel")}>
-            <Logomark />
+            <Logomark size={24} />
             {t("brand")}
           </Link>
           <nav aria-label={t("mainNav")} className="topnav">
@@ -116,7 +148,7 @@ function Frame({ pathname }: { pathname: string }) {
               >
                 {t(`nav.${tab}`)}
                 {tab === "work" && !!needsYou && (
-                  <span className="count-pill">
+                  <span className="topnav__count mono">
                     <span aria-hidden="true">{needsYou}</span>
                     <span className="sr-only">
                       {t("needsYouCount", { count: needsYou })}
@@ -126,97 +158,100 @@ function Frame({ pathname }: { pathname: string }) {
               </Link>
             ))}
           </nav>
-          <div className="ml-auto flex items-center gap-3">
-            <button
-              type="button"
-              className="search-trigger"
-              onClick={() => setSearchOpen(true)}
-            >
-              <SearchIcon />
-              {t("searchPlaceholder")}
-              <Kbd>{t("key.search")}</Kbd>
-            </button>
-            <AccountMenu name={name} onSignOut={signOut} />
+          <button
+            type="button"
+            className="topbar__search"
+            onClick={() => setSearchOpen(true)}
+          >
+            <SearchIcon />
+            {t("searchPlaceholder")}
+            <kbd>{t("key.search")}</kbd>
+          </button>
+          <AccountMenu name={name} onSignOut={signOut} />
+        </header>
+
+        <header className="phonebar">
+          <div
+            ref={setPhoneSlot}
+            className="phonebar__slot"
+            hidden={!customPhoneHeader}
+          />
+          {!customPhoneHeader && (
+            <>
+              <Link to="/" aria-label={t("homeLabel")} className="row">
+                <Logomark size={28} />
+              </Link>
+              <span className="row phonebar__end">
+                <button
+                  type="button"
+                  className="phonebar__icon"
+                  aria-label={t("search")}
+                  onClick={() => setSearchOpen(true)}
+                >
+                  <SearchIcon />
+                </button>
+                <Link
+                  to="/more"
+                  className="phonebar__avatar"
+                  aria-label={t("accountLabel", { name })}
+                >
+                  {initials(name)}
+                </Link>
+              </span>
+            </>
+          )}
+        </header>
+
+        {connection === "reconnecting" && (
+          <div className="frame-notice" role="status">
+            {t("reconnecting")}
           </div>
-        </div>
-
-        <div className="phonebar">
-          <Link to="/" aria-label={t("homeLabel")} className="inline-flex">
-            <Logomark size={28} />
-          </Link>
-          <div className="ml-auto flex items-center gap-2">
-            <button
-              type="button"
-              className="ib-iconbtn ib-iconbtn--md"
-              aria-label={t("search")}
-              onClick={() => setSearchOpen(true)}
-            >
-              <SearchIcon />
-            </button>
-            <Link
-              to="/more"
-              className="avatar avatar--sm no-underline"
-              aria-label={t("accountLabel", { name })}
-            >
-              {initials(name)}
-            </Link>
-          </div>
-        </div>
-      </header>
-
-      {connection === "reconnecting" && (
-        <div className="notice-bar" role="status">
-          {t("reconnecting")}
-        </div>
-      )}
-      {trialEnded && (
-        <div className="notice-bar" role="status">
-          {t("trialEnded")}
-        </div>
-      )}
-      {signOutFailed && (
-        <div className="notice-bar" role="alert">
-          {t("signOutFailed")}
-        </div>
-      )}
-
-      <main id="main" className="app-main" tabIndex={-1}>
-        <Outlet />
-      </main>
-
-      <footer className="trust-footer">
-        <TrustLine />
-      </footer>
-
-      <nav aria-label={t("tabsNav")} className="phonetabs">
-        {[...tabs, { tab: "more" as const, to: "/more" as const }].map(
-          ({ tab, to }) => (
-            <Link
-              key={tab}
-              to={to}
-              aria-current={current === tab ? "page" : undefined}
-            >
-              <TabIcon name={tab} />
-              {t(`nav.${tab}`)}
-              {tab === "work" && !!needsYou && (
-                <span className="count-pill" aria-hidden="true">
-                  {needsYou}
-                </span>
-              )}
-            </Link>
-          ),
         )}
-      </nav>
+        {trialEnded && (
+          <div className="frame-notice" role="status">
+            {t("trialEnded")}
+          </div>
+        )}
+        {signOutFailed && (
+          <div className="frame-notice" role="alert">
+            {t("signOutFailed")}
+          </div>
+        )}
 
-      <SearchDialog
-        open={searchOpen}
-        onOpenChange={setSearchOpen}
-        onPick={(to) => {
-          setSearchOpen(false);
-          void navigate(to);
-        }}
-      />
-    </div>
+        <main id="main" className="frame-main" tabIndex={-1}>
+          <Outlet />
+        </main>
+
+        <nav aria-label={t("tabsNav")} className="phonetabs">
+          {[...tabs, { tab: "more" as const, to: "/more" as const }].map(
+            ({ tab, to }) => (
+              <Link
+                key={tab}
+                to={to}
+                aria-current={current === tab ? "page" : undefined}
+              >
+                <span className="phonetabs__bar" aria-hidden="true" />
+                {t(`nav.${tab}`)}
+                {tab === "work" && !!needsYou && (
+                  <span className="phonetabs__count mono" aria-hidden="true">
+                    {needsYou}
+                  </span>
+                )}
+              </Link>
+            ),
+          )}
+        </nav>
+
+        <SearchDialog
+          open={searchOpen}
+          onOpenChange={setSearchOpen}
+          onPick={(to) => {
+            setSearchOpen(false);
+            void navigate(to);
+          }}
+        />
+      </div>
+    </PhoneHeaderTarget.Provider>
   );
 }
 
@@ -233,7 +268,7 @@ function AccountMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        className="avatar"
+        className="topbar__avatar"
         aria-label={t("accountLabel", { name })}
       >
         {initials(name)}
@@ -256,14 +291,20 @@ function AccountMenu({
   );
 }
 
-/** "Monday 13 October · 09:40" for screen eyebrows. */
-export function useNowEyebrow(): string {
-  const locale = useLocale();
+/** The current day and time for eyebrows, refreshed every minute. */
+export function useNow(): Date {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 60_000);
     return () => clearInterval(timer);
   }, []);
+  return now;
+}
+
+/** "Monday 13 October · 09:40" for screen eyebrows. */
+export function useNowEyebrow(): string {
+  const locale = useLocale();
+  const now = useNow();
   return useMemo(
     () => `${formatLongDay(now, locale)} · ${formatTime(now, locale)}`,
     [now, locale],

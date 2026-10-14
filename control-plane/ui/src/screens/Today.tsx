@@ -32,7 +32,7 @@ import { StatusLine } from "./workLines";
 // a quiet failed line (HOR-459 Design → Today).
 
 export function Today() {
-  const { t } = useTranslation("work");
+  const { t } = useTranslation("today");
   const locale = useLocale();
   const session = useSession();
   const navigate = useNavigate();

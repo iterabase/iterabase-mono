@@ -19,6 +19,7 @@ describe("work model", () => {
     expect(groupOf("todo")).toBe("working");
     const groups = groupItems(fx.items);
     expect(groups.needs.map((item) => item.id)).toEqual([
+      fx.login.id,
       fx.question.id,
       fx.approval.id,
     ]);
@@ -31,6 +32,7 @@ describe("work model", () => {
 
   it("orders decisions oldest first", () => {
     expect(decisionsOf(fx.items).map((item) => item.id)).toEqual([
+      fx.login.id,
       fx.question.id,
       fx.approval.id,
     ]);

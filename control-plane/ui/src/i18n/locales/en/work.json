@@ -1,16 +1,4 @@
 {
-  "allClear": {
-    "backToToday": "Back to Today",
-    "by": "Answered by {{name}}",
-    "next": "The next replies are due around {{at}}. Nothing else needs you right now.",
-    "nothingNext": "Nothing else needs you right now.",
-    "seeAllWork": "See all work",
-    "skipped_one": "{{count, number}} decision is still waiting for you on Work.",
-    "skipped_other": "{{count, number}} decisions are still waiting for you on Work.",
-    "summary_one": "{{count, number}} decision · {{minutes}} min {{seconds}} s of your time",
-    "summary_other": "{{count, number}} decisions · {{minutes}} min {{seconds}} s of your time",
-    "title": "That's everything for now."
-  },
   "artifact": {
     "email": "Email",
     "file": "File",
@@ -200,50 +188,6 @@
     "paused": "Paused",
     "todo": "Starting",
     "waiting": "Waiting"
-  },
-  "today": {
-    "decisionsAbout_one": "decision · about {{minutes}} min",
-    "decisionsAbout_other": "decisions · about {{minutes}} min",
-    "doneSince": "Done since yesterday",
-    "exactFirst": "You see the exact content before anything is sent",
-    "failedLine_one": "Failed · {{count, number}}",
-    "failedLine_other": "Failed · {{count, number}}",
-    "greeting": {
-      "afternoon": "Good afternoon, {{name}}.",
-      "evening": "Good evening, {{name}}.",
-      "morning": "Good morning, {{name}}."
-    },
-    "idle": "Nothing in progress",
-    "noCoworkers": "No AI coworkers are set up yet. Iterabase adds them with you.",
-    "nothingDone": "Nothing finished since yesterday.",
-    "nothingNeedsYou": "Nothing needs you right now.",
-    "nothingWaiting": "Nothing is waiting for you.",
-    "oldestFirst": "oldest first",
-    "openTeam": "Open Team",
-    "seeAllDone_one": "See all {{count, number}} on Work",
-    "seeAllDone_other": "See all {{count, number}} on Work",
-    "sentenceDecisions_one": "{{count, number}} decision is waiting for you, about {{minutes}} min.",
-    "sentenceDecisions_other": "{{count, number}} decisions are waiting for you, about {{minutes}} min in total.",
-    "sentenceDone_one": "Since yesterday your team finished {{count, number}} item.",
-    "sentenceDone_other": "Since yesterday your team finished {{count, number}} items.",
-    "sentenceNothingWaiting": "Nothing is waiting for you.",
-    "startFirst": "Start with the first one",
-    "teamNow": "Your team right now",
-    "timeBack": "You got {{at}} back so far today (estimate)",
-    "waitingForYou": "Waiting for you",
-    "yourTurn": "Your turn"
-  },
-  "turn": {
-    "alreadyAnswered": "Someone already answered this one.",
-    "backToToday": "Back to Today",
-    "done": "Done",
-    "exactNote": "This is exactly what {{name}} continues with once you answer.",
-    "later": "Not now, show the next one",
-    "next": "Next",
-    "openItem": "Open the item",
-    "progress": "Decision {{position, number}} of {{total, number}}",
-    "sideLabel": "Up next and done",
-    "upNext": "Up next"
   },
   "work": {
     "board": "Work",

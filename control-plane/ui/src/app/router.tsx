@@ -177,9 +177,9 @@ export function createAppRouter(history?: RouterHistory) {
     routeTree,
     history,
     defaultPreload: false,
-    // Scroll restoration persists positions in sessionStorage; the app keeps
-    // nothing in browser storage (HOR-582), so it stays off.
-    scrollRestoration: false,
+    // Restores scroll positions on back/forward. TanStack keeps them under
+    // one sessionStorage key; no credential or work data is ever stored.
+    scrollRestoration: true,
   });
 }
 
