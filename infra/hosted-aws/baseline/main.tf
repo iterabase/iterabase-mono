@@ -9,6 +9,7 @@ provider "aws" {
   }
 }
 
-# Authenticates from CLOUDFLARE_API_TOKEN: the founder's token with zone DNS edit
-# and account API-token edit on the hosted zone (see docs/runbooks/aws-hosted.md).
+# Authenticates from CLOUDFLARE_API_TOKEN: the founder's token with DNS edit on
+# the mail and hosted zones, zone-settings and SSL/certificates edit on the
+# hosted zone, and account API-token edit (see docs/runbooks/aws-hosted.md).
 provider "cloudflare" {}

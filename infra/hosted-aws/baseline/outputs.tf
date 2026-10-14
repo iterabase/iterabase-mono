@@ -27,3 +27,8 @@ output "alert_topic_arn" {
   description = "SNS topic for budget and GuardDuty alerts."
   value       = aws_sns_topic.alerts.arn
 }
+
+output "lb_controller_policy_arn" {
+  description = "AWS Load Balancer Controller policy HOR-593 attaches to node roles (DES-HOR-601-02)."
+  value       = aws_iam_policy.lb_controller.arn
+}

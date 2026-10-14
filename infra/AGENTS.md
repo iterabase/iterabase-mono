@@ -9,7 +9,7 @@ Read the root [`AGENTS.md`](../AGENTS.md) first. Its context, Git, ticket, valid
 | Path | Owns |
 | --- | --- |
 | `hosted-aws/bootstrap/` | The shared Terraform state bucket. Local state, applied once. |
-| `hosted-aws/baseline/` | Shared VPC, Forge/support roles, node permissions boundary, backup bucket and KMS key, session logging, CloudTrail and Config, GuardDuty, budget and alerts, ECR pull-through cache, SES, Cloudflare DNS records and the scoped cluster DNS token, and the SSM consumer contract. |
+| `hosted-aws/baseline/` | Shared VPC, Forge/support roles, node permissions boundary, load balancer controller policy, backup bucket and KMS key, session logging, CloudTrail and Config, GuardDuty, budget and alerts, ECR pull-through cache, SES and its mail-zone records, the hosted Cloudflare zone's settings, authenticated origin pulls and scoped cluster DNS token, and the SSM consumer contract. |
 
 Per-customer resources belong to the Forge AWS provider (HOR-593), not here. CI fixture accounts are `docs/runbooks/aws-ci.md` (HOR-591). The operator procedure is [`docs/runbooks/aws-hosted.md`](../docs/runbooks/aws-hosted.md).
 
@@ -37,6 +37,9 @@ Tool versions are pinned in `.github/inputs/remote-content.json` (`ci_tools`: `t
 - **Tag contract.** Per-customer resources carry `iterabase-env=<environment>` on the instance, its volumes and its security groups at creation; the Forge role cannot create or touch untagged resources. Baseline resources carry `iterabase-hosted=baseline`.
 - **Billing activation is payer-owned** (`DES-HOR-603-09`). Resource tagging stays in Terraform; the founder activates `iterabase-hosted` and `iterabase-env` in the Organization management account after Billing discovers them. Neither hosted stack manages this account-wide activation. Do not widen hosted IAM, add a cross-account provider or put management-account credentials in CI. Dated management-account proof that both keys are Active remains an acceptance gate.
 - **Node roles** live under IAM path `/iterabase/env/` and carry the `iterabase-hosted-node-boundary` permissions boundary (`DES-HOR-603-08`). Widening what a node may do is a boundary change here.
+- **Hosted zone separation** (`DES-HOR-601-03`). Customer hostnames, the in-cluster Cloudflare token, zone settings and authenticated origin pulls use `hosted_zone_id` only; the mail/brand zone (`cloudflare_zone_id`) holds SES records and is never reachable from a customer cluster. `tests/test_hosted_zone_separation.py` guards the token scope.
+- **Origin pulls** (`DES-HOR-601-04`). The hosted zone presents an Iterabase client certificate on every origin connection; only the public CA enters the contract. The client key lives in baseline state only.
+- **Load balancer controller isolation** (`DES-HOR-601-02`). `iterabase-hosted-lb-controller` binds every write to the calling node role's `iterabase-env` principal tag and never lets the controller change that tag. Widening it, like widening the boundary, is a change here.
 - **Session audit** (`DES-HOR-603-07`). Interactive Session Manager shells are logged to S3 and CloudWatch; SSH and port-forwarding sessions are audited by CloudTrail only, because AWS does not log their content.
 - **Restricted buckets and key.** The state bucket, backup bucket and backup KMS key deny every principal outside the administrator patterns, the Forge role and (for backups) node roles. A wrong `admin_principal_arns` locks the administrators out; the account root remains the break-glass principal.
 
