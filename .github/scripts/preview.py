@@ -128,6 +128,9 @@ def preview_values(images: dict[str, dict[str, str]], model: str, hosts: dict[st
             # Sign-in is always on: the browser origin is the preview's own
             # Tailscale Service, and the overlay names the first Admin.
             "auth": {"publicOrigin": f"https://{hosts['app']}", "bootstrap": {"adminEmail": admin_email}},
+            # The installation name the prototype shows (DES-HOR-459-08); it
+            # seeds only while unset, so a name an Admin sets survives deploys.
+            "organization": {"name": "Transitários Exemplo"},
         },
         "minio": {"persistence": {"size": "5Gi"}},
         "inference-gateway": {
