@@ -43,7 +43,7 @@ async function assertFreshBrowserState(page: Page): Promise<void> {
 // session cookie is invisible to page script and nothing is kept in browser
 // storage.
 async function signIn(page: Page, secret = password): Promise<void> {
-  await page.getByLabel("Work email").fill(email);
+  await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByLabel("Password", { exact: true }).fill(secret);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
 }
@@ -51,7 +51,7 @@ async function signIn(page: Page, secret = password): Promise<void> {
 async function connect(page: Page, path = "/"): Promise<void> {
   await page.goto(path);
   await assertFreshBrowserState(page);
-  const field = page.getByLabel("Work email");
+  const field = page.getByLabel("Email", { exact: true });
   await field.focus();
   await expect(field).toBeFocused();
   await signIn(page);
@@ -170,14 +170,14 @@ test("lands on Today through a browser session, in both languages, and signs out
   await page.getByRole("button", { name: /account and Settings$/ }).click();
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await expect(
-    page.getByRole("button", { name: /^(Sign in|Iniciar sessão)$/ }),
+    page.getByRole("button", { name: /^(Sign in|Entrar)$/ }),
   ).toBeVisible();
   await assertFreshBrowserState(page);
 
   // Signing out ended the server session: a reload returns to sign-in.
   await page.reload();
   await expect(
-    page.getByRole("button", { name: /^(Sign in|Iniciar sessão)$/ }),
+    page.getByRole("button", { name: /^(Sign in|Entrar)$/ }),
   ).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Main" })).toHaveCount(0);
 });
@@ -401,8 +401,9 @@ test("keeps sign-in, Today, Work and the item usable at a phone viewport", async
     .getByRole("navigation", { name: "Tabs" })
     .getByRole("link", { name: /^Work/ })
     .click();
+  // The phone Work screen is a filtered list, not the desktop board.
   await expect(
-    page.getByRole("region", { name: "Work", exact: true }),
+    page.getByRole("heading", { level: 1, name: "All work" }),
   ).toBeVisible();
   await page.getByRole("link", { name: new RegExp(doneTitle) }).click();
   const detail = page.getByRole("dialog", { name: doneTitle });
