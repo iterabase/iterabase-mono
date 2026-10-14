@@ -1,0 +1,93 @@
+# Hosted AWS edge preset and static fixture (HOR-601). Pair with values-tls.yaml
+# and render as release `opo1` in namespace `portable-system`. A hosted
+# environment's overlay layers the same settings with its own values from the
+# hosted baseline contract (/iterabase/hosted/baseline/v1/*):
+#   - environment name    -> aws-load-balancer-controller.clusterName and
+#                            defaultTags.iterabase-env
+#   - vpc-id              -> aws-load-balancer-controller.vpcId
+#   - origin-pull-ca-cert -> global.originPull.caCert (public CA, not a key)
+#   - hosted-domain       -> Ingress hosts <customer>.<hosted-domain> and the
+#                            external-dns domain filter
+#   - cloudflare-dns-token -> the cloudflare-api-token Secret (overlay secrets)
+# Documentation values below (example.app, vpc-0123..., the example CA) are
+# fixtures, not real resources.
+
+global:
+  originPull:
+    enabled: true
+    caCert: |
+      -----BEGIN CERTIFICATE-----
+      MIIDQDCCAiigAwIBAgIUOAts7P57V4+aQw7qusXvpz1zBkcwDQYJKoZIhvcNAQEL
+      BQAwQDEQMA4GA1UECgwHRXhhbXBsZTEsMCoGA1UEAwwjRXhhbXBsZSBzdGF0aWMt
+      Y2hlY2sgb3JpZ2luLXB1bGwgQ0EwHhcNMjYxMDE0MTIwODM5WhcNMzYxMDExMTIw
+      ODM5WjBAMRAwDgYDVQQKDAdFeGFtcGxlMSwwKgYDVQQDDCNFeGFtcGxlIHN0YXRp
+      Yy1jaGVjayBvcmlnaW4tcHVsbCBDQTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCC
+      AQoCggEBAMD+mND1EpDGXjTLuMm06EwHnUiy5i5Lw244/hfma7LfLKZy104rLJTb
+      g8JDHdv69HhSz0KDNleiuaFpW8newW+5zC2/ZY57lBpGlkJ5KelPvdDw2pROxrQT
+      kAbTldIJ2YduMwxeo1IVWm9jwthAKWufY0sscggXGv7lCA0AEONDzslBS2Mrn06g
+      XquKOhXZAwy28DSRc34qKl1fOxzfU7M7AMAAb8seAWDl2xh0jPdpl9+YB0YVMXGh
+      0xBFex66mggOkTng+XUHYTKT26jdWPGcVGbFOHIc42vR02ejG3Vp7GZkjJeij6MN
+      mP5tsDqjYY9YRkpKIAgi/e5zVbTkDLcCAwEAAaMyMDAwHQYDVR0OBBYEFPrX/GHh
+      6HkSTQsLrzhh37o9ZFhnMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQAD
+      ggEBAEyaWLENs4qig4eeqkcTjBqftrF6BLB9Bwg5OS3g+lBeeInOsKUvmzMD+zqA
+      iw9TVt2zc38w0bCnIlkUQuoVPRlpS6YAE8Rlc8/waI4VFwC3h1t54+MFEJm9ZpMn
+      rqB1XoyPcTwvhAymS48+yy3iO+pvyULAsi/8Ec4yPFxdRlkNLx+CtUcAM9rpPABx
+      SwDCjFzIXtlNpdl+3BQPOHYSh2fKDvAZKBPp2lI4m8frT6i9ieIbnXXEW3bBFtiY
+      s6aaLopJ89hwwN5/Q6+GOz/hca9nAFBdV5TMnY58ep1JnyOXoK9xT6xt8OtQ/XWt
+      Seo2nyY8Jpnp+FHW5dPN8K/azSA=
+      -----END CERTIFICATE-----
+
+# Instance-mode NLB in front of ingress-nginx (PIVOT-ARCH-003). The controller
+# owns the NLB, its target group and its security groups; deleting this Service
+# removes them. HTTPS only: cert-manager uses DNS-01, so port 80 stays closed and
+# the NLB security group admits 443 alone (DES-HOR-601-04).
+ingress-nginx:
+  controller:
+    service:
+      loadBalancerClass: service.k8s.aws/nlb
+      enableHttp: false
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: instance
+        service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+        service.beta.kubernetes.io/aws-load-balancer-ip-address-type: ipv4
+      ipFamilyPolicy: SingleStack
+      ipFamilies:
+        - IPv4
+
+aws-load-balancer-controller:
+  enabled: true
+  clusterName: example
+  vpcId: vpc-0123456789abcdef0
+  defaultTags:
+    iterabase-env: example
+
+cert-issuers:
+  letsencrypt:
+    enabled: true
+    email: operator@example.com
+
+# Records are Cloudflare-proxied (the default); the origin-pull certificate is
+# only presented on proxied requests.
+external-dns:
+  enabled: true
+  domainFilters:
+    - example.app.
+
+inference-gateway:
+  ingress:
+    host: gateway.example.example.app
+    tls:
+      enabled: true
+      clusterIssuer: letsencrypt-prod
+    externalDns:
+      enabled: true
+
+control-plane:
+  ingress:
+    enabled: true
+    host: example.example.app
+    tls:
+      enabled: true
+      clusterIssuer: letsencrypt-prod
+    externalDns:
+      enabled: true

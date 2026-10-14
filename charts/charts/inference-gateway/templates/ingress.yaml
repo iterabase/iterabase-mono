@@ -11,6 +11,9 @@
 {{- /* TLS via cert-manager. When enabled, cert-manager's ingress-shim issues a
     cert for ingress.host (the SAN) into secretName using clusterIssuer, and
     ingress-nginx serves it. host + clusterIssuer are required when enabled. */ -}}
+{{- /* Hosted authenticated origin pulls (DES-HOR-601-04): only clients
+    presenting a certificate from the umbrella's origin-pull CA reach the edge. */ -}}
+{{- $originPull := dig "originPull" "enabled" false (.Values.global | default (dict)) -}}
 {{- $tlsEnabled := .Values.ingress.tls.enabled -}}
 {{- $tlsSecret := "" -}}
 {{- if $tlsEnabled -}}
@@ -36,6 +39,11 @@ metadata:
     {{- end }}
     {{- if $ednsTarget }}
     external-dns.alpha.kubernetes.io/target: {{ $ednsTarget | quote }}
+    {{- end }}
+    {{- if $originPull }}
+    nginx.ingress.kubernetes.io/auth-tls-secret: {{ printf "%s/%s-origin-pull-ca" .Release.Namespace .Release.Name | quote }}
+    nginx.ingress.kubernetes.io/auth-tls-verify-client: "on"
+    nginx.ingress.kubernetes.io/auth-tls-verify-depth: "1"
     {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}

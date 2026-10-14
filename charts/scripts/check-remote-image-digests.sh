@@ -8,6 +8,8 @@ helm template iterabase "$root/charts/iterabase-platform" -f "$root/values-auth.
 helm template iterabase "$root/charts/iterabase-platform" -f "$root/values-auth.yaml" \
   --set external-dns.enabled=true --set reloader.enabled=true --set metallb.enabled=true \
   > "$tmp/optional.yaml"
+helm template iterabase "$root/charts/iterabase-platform" -f "$root/values-auth.yaml" -f "$root/values-tls.yaml" \
+  -f "$root/values-aws-hosted.yaml" > "$tmp/aws-hosted.yaml"
 helm template iterabase-cert-manager "$root/charts/cert-manager-substrate" > "$tmp/cert-manager.yaml"
 helm template iterabase-lvm-storage "$root/charts/lvm-storage-substrate" \
   --set-string agentpool.authorizedManagerIdentity=system:serviceaccount:iterabase-system:iterabase-control-plane-manager > "$tmp/lvm-storage.yaml"

@@ -19,6 +19,15 @@
 global:
   internalTLS:
     enabled: false
+  # Authenticated origin pulls (hosted, DES-HOR-601-04). When enabled, the
+  # umbrella renders <release>-origin-pull-ca from caCert and every public
+  # Ingress requires a client certificate issued by it, so only requests that
+  # came through the hosted Cloudflare zone reach the origin. caCert is the
+  # public CA from the hosted baseline contract
+  # (/iterabase/hosted/baseline/v1/origin-pull-ca-cert); never a private key.
+  originPull:
+    enabled: false
+    caCert: ""
 
 # --- Data deps (self-contained; every generated PVC uses fixed iterabase-lvm-xfs) ---
 # Postgres is provided by the control-plane chart (pgvector); the gateway reads
@@ -94,7 +103,8 @@ control-plane:
 # --- Ingress controller (bundled substrate) ---
 # The edge is always a LoadBalancer Service (no hostNetwork). The LB
 # implementation is pluggable: MetalLB (L2) for bare-metal/kind/OPO1 — enable the
-# metallb + metallb-config deps below — or the cloud LB for cloud deploys (set
+# metallb + metallb-config deps below — the AWS Load Balancer Controller's NLB on
+# hosted AWS (values-aws-hosted.yaml, HOR-601), or another cloud LB (set
 # provider annotations on ingress-nginx.controller.service). external-dns (prod
 # overlay) points the gateway host's Cloudflare record at the LB's external
 # address. The service ipFamilies must match the MetalLB pool family below.
@@ -368,6 +378,54 @@ external-dns:
     enabled: false
   serviceMonitor:
     enabled: false
+
+# --- AWS Load Balancer Controller (hosted AWS edge, HOR-601) ---
+# Provisions an instance-mode NLB for the public ingress-nginx Service on hosted
+# AWS environments only; on-prem/kind keep MetalLB. Disabled by default. The
+# hosted preset (charts/values-aws-hosted.yaml) enables it together with the NLB
+# Service settings and authenticated origin pulls. Each environment's overlay
+# sets clusterName, vpcId and defaultTags from the hosted baseline contract.
+#
+# Credentials come from the node's instance role through IMDS. Hosted nodes keep
+# the IMDSv2 hop limit at 1 so ordinary pods cannot reach IMDS; only this
+# controller runs on the host network to reach it (DES-HOR-601-05). Its ports
+# are moved off common host ports. The node role's controller policy only lets
+# it create resources tagged iterabase-env=<its environment> and touch resources
+# already tagged so (DES-HOR-601-02): defaultTags must carry that tag.
+aws-load-balancer-controller:
+  enabled: false
+  image:
+    repository: public.ecr.aws/eks/aws-load-balancer-controller
+    tag: v3.5.0@sha256:298acdff5a571731276aaea3d5cc450a264e4ad710a5bddf3e518f68a3f9f6cb
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 20m
+      memory: 96Mi
+    limits:
+      memory: 256Mi
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  webhookBindPort: 9449
+  metricsBindAddr: ":9448"
+  region: eu-west-1
+  clusterName: "" # REQUIRED when enabled: the environment name
+  vpcId: "" # REQUIRED when enabled: contract key vpc-id
+  defaultTags: {} # REQUIRED when enabled: {iterabase-env: <environment>}
+  # Webhook serving certificates from the cert-manager substrate, stable across
+  # upgrades instead of regenerated on every render.
+  enableCertManager: true
+  # The edge Service names the NLB class explicitly; never claim other Services.
+  enableServiceMutatorWebhook: false
+  # NLB only: no ALB IngressClass and no ALB-only integrations. The ALB Ingress
+  # validating webhook would otherwise fail closed on every nginx Ingress write
+  # whenever this controller is unavailable.
+  createIngressClassResource: false
+  webhookConfig:
+    disableIngressValidation: true
+  enableShield: false
+  enableWaf: false
+  enableWafv2: false
 
 # --- Observability (HOR-408) ---
 # Prometheus + Grafana + Loki + Alertmanager (kube-prometheus-stack + loki) with

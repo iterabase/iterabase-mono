@@ -1,0 +1,25 @@
+{{- with .Values.global.originPull }}
+{{- if .enabled }}
+{{- /* Public CA only (DES-HOR-601-04): ingress-nginx reads ca.crt to verify the
+    client certificate Cloudflare presents for the hosted zone. */ -}}
+{{- $caCert := required "global.originPull.caCert is required when global.originPull.enabled" .caCert -}}
+{{- if not (hasPrefix "-----BEGIN CERTIFICATE-----" (trim $caCert)) -}}
+{{- fail "global.originPull.caCert must be a PEM certificate" -}}
+{{- end -}}
+{{- if contains "PRIVATE KEY" $caCert -}}
+{{- fail "global.originPull.caCert must not contain a private key" -}}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ printf "%s-origin-pull-ca" $.Release.Name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: origin-pull-ca
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+type: Opaque
+data:
+  ca.crt: {{ trim $caCert | printf "%s\n" | b64enc }}
+{{- end }}
+{{- end }}

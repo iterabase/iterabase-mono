@@ -16,6 +16,9 @@
 {{- end -}}
 {{- /* Edge TLS has a dedicated Secret. It must never reuse the internal API
     serving leaf: those certificates have different issuers and SAN scopes. */ -}}
+{{- /* Hosted authenticated origin pulls (DES-HOR-601-04): only clients
+    presenting a certificate from the umbrella's origin-pull CA reach the edge. */ -}}
+{{- $originPull := dig "originPull" "enabled" false (.Values.global | default (dict)) -}}
 {{- $tlsEnabled := .Values.ingress.tls.enabled -}}
 {{- $tlsSecret := "" -}}
 {{- if $tlsEnabled -}}
@@ -39,7 +42,7 @@ metadata:
   labels:
     {{- include "control-plane.labels" . | nindent 4 }}
     app.kubernetes.io/component: api
-  {{- if or $tlsEnabled $ednsHostname $ednsTarget $ednsCloudflareProxied $backendHTTPS }}
+  {{- if or $tlsEnabled $ednsHostname $ednsTarget $ednsCloudflareProxied $backendHTTPS $originPull }}
   annotations:
     {{- if $tlsEnabled }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
@@ -59,6 +62,11 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"
     nginx.ingress.kubernetes.io/proxy-ssl-server-name: "on"
     nginx.ingress.kubernetes.io/proxy-ssl-name: {{ printf "%s.%s.svc" (include "control-plane.apiName" .) .Release.Namespace | quote }}
+    {{- end }}
+    {{- if $originPull }}
+    nginx.ingress.kubernetes.io/auth-tls-secret: {{ printf "%s/%s-origin-pull-ca" .Release.Namespace .Release.Name | quote }}
+    nginx.ingress.kubernetes.io/auth-tls-verify-client: "on"
+    nginx.ingress.kubernetes.io/auth-tls-verify-depth: "1"
     {{- end }}
   {{- end }}
 spec:
