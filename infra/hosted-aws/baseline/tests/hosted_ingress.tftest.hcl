@@ -118,6 +118,20 @@ run "lb_controller_isolated_by_environment" {
     error_message = "Retag statements must exclude the iterabase-env key."
   }
 
+  # ForAllValues passes when aws:TagKeys is absent, and DeleteTags without Tags
+  # removes every tag, iterabase-env included.
+  assert {
+    condition = alltrue([
+      for statement in data.aws_iam_policy_document.lb_controller.statement :
+      anytrue([
+        for condition in statement.condition :
+        condition.test == "Null" && condition.variable == "aws:TagKeys" && toset(condition.values) == toset(["false"])
+      ])
+      if contains(["RetagOwnSecurityGroups", "RetagOwnLoadBalancers"], statement.sid)
+    ])
+    error_message = "Retag statements must require named tag keys, so a keyless DeleteTags cannot strip iterabase-env."
+  }
+
   assert {
     condition = alltrue([
       for statement in data.aws_iam_policy_document.lb_controller.statement :

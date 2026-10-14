@@ -406,6 +406,13 @@ aws-load-balancer-controller:
       memory: 256Mi
   hostNetwork: true
   dnsPolicy: ClusterFirstWithHostNet
+  # The single replica holds host ports, so its replacement cannot start until
+  # the old pod stops: never surge, or every upgrade stalls on a single node.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   webhookBindPort: 9449
   metricsBindAddr: ":9448"
   region: eu-west-1

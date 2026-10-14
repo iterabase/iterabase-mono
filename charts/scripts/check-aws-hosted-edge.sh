@@ -52,6 +52,9 @@ if controller:
         errors.append("controller must run on the host network with ClusterFirstWithHostNet DNS")
     if controller["spec"].get("replicas") != 1:
         errors.append("controller must run one replica on a single-node environment")
+    strategy = controller["spec"].get("strategy", {})
+    if strategy.get("type") == "RollingUpdate" and strategy.get("rollingUpdate", {}).get("maxSurge") != 0:
+        errors.append("controller holds host ports: its rolling update must not surge")
     for required in ("--aws-region=eu-west-1", "--aws-vpc-id=", "--default-tags=iterabase-env="):
         if not any(arg.startswith(required) for arg in args):
             errors.append(f"controller args missing {required}")
@@ -88,8 +91,21 @@ if ca and set(ca.get("data", {})) != {"ca.crt"}:
 ingresses = [d for d in docs if d["kind"] == "Ingress"]
 if len(ingresses) < 2:
     errors.append(f"expected the gateway and control-plane Ingresses, got {len(ingresses)}")
+external_dns = one("Deployment", f"{release}-external-dns")
+zones = []
+if external_dns:
+    zones = [
+        a.split("=", 1)[1].rstrip(".")
+        for a in external_dns["spec"]["template"]["spec"]["containers"][0]["args"]
+        if a.startswith("--domain-filter=")
+    ]
 for ingress in ingresses:
     annotations = ingress["metadata"].get("annotations", {})
+    # Cloudflare Universal SSL covers the apex and first-level subdomains only.
+    for rule in ingress["spec"].get("rules", []):
+        host = rule.get("host", "")
+        if not any(host.endswith("." + z) and "." not in host[: -len(z) - 1] for z in zones):
+            errors.append(f"Ingress/{ingress['metadata']['name']} host {host!r} must be one label below {zones}")
     want = {
         "nginx.ingress.kubernetes.io/auth-tls-secret": f"{namespace}/{release}-origin-pull-ca",
         "nginx.ingress.kubernetes.io/auth-tls-verify-client": "on",

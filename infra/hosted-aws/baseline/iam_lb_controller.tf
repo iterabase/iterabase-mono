@@ -125,7 +125,8 @@ data "aws_iam_policy_document" "lb_controller" {
     }
   }
 
-  # The controller's ownership tags may change; the environment tag never does.
+  # The controller's ownership tags may change; the environment tag never does,
+  # including through a DeleteTags call that names no keys.
   statement {
     sid       = "RetagOwnSecurityGroups"
     actions   = ["ec2:CreateTags", "ec2:DeleteTags"]
@@ -141,6 +142,14 @@ data "aws_iam_policy_document" "lb_controller" {
       test     = "ForAllValues:StringNotEquals"
       variable = "aws:TagKeys"
       values   = [local.env_tag_key]
+    }
+
+    # ForAllValues passes on an absent key, and DeleteTags without Tags removes
+    # every tag: require the request to name its keys.
+    condition {
+      test     = "Null"
+      variable = "aws:TagKeys"
+      values   = ["false"]
     }
   }
 
@@ -219,6 +228,14 @@ data "aws_iam_policy_document" "lb_controller" {
       test     = "ForAllValues:StringNotEquals"
       variable = "aws:TagKeys"
       values   = [local.env_tag_key]
+    }
+
+    # ForAllValues passes on an absent key, and DeleteTags without Tags removes
+    # every tag: require the request to name its keys.
+    condition {
+      test     = "Null"
+      variable = "aws:TagKeys"
+      values   = ["false"]
     }
   }
 }
