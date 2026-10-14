@@ -1,0 +1,23 @@
+{{- /* Hosted AWS edge invariants (HOR-601). Renders nothing; fails the render
+    when the controller is enabled without what its isolation depends on. */ -}}
+{{- $lbc := index .Values "aws-load-balancer-controller" | default (dict) -}}
+{{- if $lbc.enabled -}}
+{{- $_ := required "aws-load-balancer-controller.vpcId is required when enabled (hosted contract key vpc-id)" $lbc.vpcId -}}
+{{- $env := dig "iterabase-env" "" ($lbc.defaultTags | default (dict)) -}}
+{{- if not $env -}}
+{{- fail "aws-load-balancer-controller.defaultTags.iterabase-env is required: the node policy only allows resources tagged with the node's environment (DES-HOR-601-02)" -}}
+{{- end -}}
+{{- if ne (toString $lbc.clusterName) (toString $env) -}}
+{{- fail "aws-load-balancer-controller.clusterName must equal defaultTags.iterabase-env (one environment per cluster)" -}}
+{{- end -}}
+{{- if not $lbc.hostNetwork -}}
+{{- fail "aws-load-balancer-controller.hostNetwork must stay true: hosted nodes keep the IMDS hop limit at 1 (DES-HOR-601-05)" -}}
+{{- end -}}
+{{- $edgeService := dig "controller" "service" (dict) (index .Values "ingress-nginx") -}}
+{{- if ne (toString $edgeService.loadBalancerClass) "service.k8s.aws/nlb" -}}
+{{- fail "ingress-nginx.controller.service.loadBalancerClass must be service.k8s.aws/nlb when the AWS Load Balancer Controller is enabled" -}}
+{{- end -}}
+{{- if not (dig "originPull" "enabled" false .Values.global) -}}
+{{- fail "global.originPull.enabled is required on hosted AWS edges (DES-HOR-601-04)" -}}
+{{- end -}}
+{{- end -}}

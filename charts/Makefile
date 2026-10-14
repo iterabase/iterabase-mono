@@ -12,6 +12,7 @@ RENDER_OBS := /tmp/$(UMBRELLA).observability.rendered.yaml
 RENDER_OBS_TLS := /tmp/$(UMBRELLA).observability-tls.rendered.yaml
 RENDER_INTERNAL_OBS := /tmp/$(UMBRELLA).internal-observability.rendered.yaml
 RENDER_PRIVATE_CP := /tmp/$(UMBRELLA).private-control-plane.rendered.yaml
+RENDER_AWS_HOSTED := /tmp/$(UMBRELLA).aws-hosted.rendered.yaml
 # Pin Kubernetes schemas to one immutable upstream commit. kubeconform's
 # floating `master` default can fail or change independently of this source SHA.
 KUBECONFORM_SCHEMA_COMMIT := 14355cdd490a43d21e05985668815a36a6f97da6
@@ -36,7 +37,7 @@ else
 E2E_BUILD_DEPS := build-deps
 endif
 
-.PHONY: test-build-dependency-retry build-deps lint template kubeconform template-controlplane kubeconform-controlplane template-tls kubeconform-tls template-observability kubeconform-observability template-observability-tls kubeconform-observability-tls template-internal-observability kubeconform-internal-observability check-internal-observability template-private-control-plane kubeconform-private-control-plane check-private-control-plane check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-redis-exporter-auth check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-resource-limits check-version-links check-alerts test-alert-rules check-dashboards check-gateway-tls-client check-gateway-rbac check-observability-tls check check-tls check-observability test-e2e test-e2e-unit test-e2e-install test-e2e-n-1-upgrade test-e2e-observability test-e2e-observability-tls clean
+.PHONY: template-aws-hosted kubeconform-aws-hosted test-build-dependency-retry build-deps lint template kubeconform template-controlplane kubeconform-controlplane template-tls kubeconform-tls template-observability kubeconform-observability template-observability-tls kubeconform-observability-tls template-internal-observability kubeconform-internal-observability check-internal-observability template-private-control-plane kubeconform-private-control-plane check-private-control-plane check-aws-hosted-edge check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-redis-exporter-auth check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-resource-limits check-version-links check-alerts test-alert-rules check-dashboards check-gateway-tls-client check-gateway-rbac check-observability-tls check check-tls check-observability test-e2e test-e2e-unit test-e2e-install test-e2e-n-1-upgrade test-e2e-observability test-e2e-observability-tls clean
 
 # Compile the owner entrypoint and run hermetic mechanics plus intentional break
 # fixtures without provisioning infrastructure.
@@ -168,7 +169,7 @@ check-gateway-tls-client: build-deps
 check-gateway-rbac: build-deps
 	./scripts/check-gateway-rbac.sh
 
-check: test-build-dependency-retry lint kubeconform kubeconform-controlplane kubeconform-observability check-internal-observability check-private-control-plane check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-redis-exporter-auth check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-resource-limits check-version-links check-alerts check-dashboards check-gateway-tls-client check-gateway-rbac
+check: test-build-dependency-retry lint kubeconform kubeconform-controlplane kubeconform-observability check-internal-observability check-private-control-plane check-aws-hosted-edge check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-redis-exporter-auth check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-resource-limits check-version-links check-alerts check-dashboards check-gateway-tls-client check-gateway-rbac
 
 check-tls: kubeconform-tls kubeconform-observability-tls check-internal-observability check-private-control-plane check-redis-exporter-auth check-observability-tls
 
@@ -226,6 +227,18 @@ kubeconform-private-control-plane: template-private-control-plane
 check-private-control-plane: kubeconform-private-control-plane
 	./scripts/check-private-control-plane-ingress.sh $(RENDER_PRIVATE_CP) $(TLS_TEST_RELEASE) $(TLS_TEST_NAMESPACE)
 
+# Hosted AWS edge (HOR-601): instance-mode NLB through the AWS Load Balancer
+# Controller with authenticated origin pulls; non-hosted renders unchanged.
+template-aws-hosted: build-deps
+	helm template $(TLS_TEST_RELEASE) $(CHARTS_DIR)/$(UMBRELLA) --namespace $(TLS_TEST_NAMESPACE) -f values-auth.yaml -f values-tls.yaml -f values-aws-hosted.yaml > $(RENDER_AWS_HOSTED)
+	@echo "rendered $(RENDER_AWS_HOSTED)"
+
+kubeconform-aws-hosted: template-aws-hosted
+	$(KUBECONFORM) $(RENDER_AWS_HOSTED)
+
+check-aws-hosted-edge: kubeconform-aws-hosted
+	./scripts/check-aws-hosted-edge.sh $(RENDER_AWS_HOSTED) $(TLS_TEST_RELEASE) $(TLS_TEST_NAMESPACE)
+
 clean:
-	rm -f $(RENDER) $(RENDER_CP) $(RENDER_TLS) $(RENDER_OBS) $(RENDER_OBS_TLS) $(RENDER_INTERNAL_OBS) $(RENDER_PRIVATE_CP)
+	rm -f $(RENDER) $(RENDER_CP) $(RENDER_TLS) $(RENDER_OBS) $(RENDER_OBS_TLS) $(RENDER_INTERNAL_OBS) $(RENDER_PRIVATE_CP) $(RENDER_AWS_HOSTED)
 	rm -rf $(CHARTS_DIR)/$(UMBRELLA)/charts $(CHARTS_DIR)/$(CERT_MANAGER_SUBSTRATE)/charts $(CHARTS_DIR)/$(LVM_STORAGE_SUBSTRATE)/charts $(CHARTS_DIR)/$(CONTROLPLANE)/charts $(CHARTS_DIR)/$(OBSERVABILITY)/charts

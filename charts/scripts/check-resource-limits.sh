@@ -36,6 +36,8 @@ render internal-observability opo1 "$umbrella" --namespace portable-system \
   -f values-auth.yaml -f values-observability.yaml -f values-tls.yaml -f values-internal-observability.yaml
 render private-control-plane opo1 "$umbrella" --namespace portable-system \
   -f values-auth.yaml -f values-tls.yaml -f values-private-control-plane.yaml
+render aws-hosted opo1 "$umbrella" --namespace portable-system \
+  -f values-auth.yaml -f values-tls.yaml -f values-aws-hosted.yaml
 # Every optional edge/substrate dependency a production overlay may enable.
 render edge opo1 "$umbrella" --namespace portable-system \
   -f values-auth.yaml -f values-observability.yaml -f values-tls.yaml \

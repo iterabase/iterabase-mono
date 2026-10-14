@@ -226,6 +226,10 @@
       "digest": "sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
     },
     {
+      "reference": "public.ecr.aws/eks/aws-load-balancer-controller:v3.5.0",
+      "digest": "sha256:298acdff5a571731276aaea3d5cc450a264e4ad710a5bddf3e518f68a3f9f6cb"
+    },
+    {
       "reference": "registry.k8s.io/external-dns/external-dns:v0.21.0",
       "digest": "sha256:f53faaf71cb270d1ca9dce6ea0c94bfebf1a18696263487f0fbc74b9bf2bd7ff"
     },
@@ -284,6 +288,13 @@
       "repository": "https://charts.jetstack.io",
       "url": "https://charts.jetstack.io/charts/cert-manager-csi-driver-v0.15.0.tgz",
       "sha256": "2ef022ee88e703167c4a4c05265469f02ad35a3b492f58716078b2e838eaf550"
+    },
+    {
+      "name": "aws-load-balancer-controller",
+      "version": "3.5.0",
+      "repository": "https://aws.github.io/eks-charts",
+      "url": "https://aws.github.io/eks-charts/aws-load-balancer-controller-3.5.0.tgz",
+      "sha256": "45051f634b33e10baccb3354d0681b7de787c60445e599fa276e0c9aedd4ccd5"
     },
     {
       "name": "external-dns",

@@ -1,6 +1,6 @@
 apiVersion: v2
 name: iterabase-platform
-description: Iterabase platform umbrella chart — inference-gateway + control-plane + Postgres/Redis/MinIO + ingress-nginx + external-dns + observability.
+description: Iterabase platform umbrella chart — inference-gateway + control-plane + Postgres/Redis/MinIO + ingress-nginx + external-dns + hosted AWS load balancing + observability.
 type: application
 version: 0.5.0
 appVersion: "0.5.0"
@@ -48,6 +48,12 @@ dependencies:
     version: 1.21.1
     repository: https://kubernetes-sigs.github.io/external-dns/
     condition: external-dns.enabled
+  # Hosted AWS edge only (HOR-601): provisions the instance-mode NLB for the
+  # public ingress-nginx Service. Disabled on every on-prem/kind install.
+  - name: aws-load-balancer-controller
+    version: 3.5.0
+    repository: https://aws.github.io/eks-charts
+    condition: aws-load-balancer-controller.enabled
   # Stakater Reloader: restarts TLS-serving workloads when cert-manager renews
   # their mounted cert Secret (HOR-371 internal TLS). Enabled alongside
   # internalTLS (see values-tls.yaml / the prod overlay); a no-op when no

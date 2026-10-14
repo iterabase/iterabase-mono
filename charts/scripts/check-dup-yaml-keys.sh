@@ -74,5 +74,6 @@ render_and_check iterabase
 render_and_check iterabase --set inference-gateway.workload.enabled=true
 render_and_check iterabase --namespace portable-system -f values-tls.yaml
 render_and_check iterabase --namespace portable-system -f values-observability.yaml
+render_and_check iterabase --namespace portable-system -f values-tls.yaml -f values-aws-hosted.yaml
 
 echo "OK: all full platform renders are free of duplicate YAML mapping keys"

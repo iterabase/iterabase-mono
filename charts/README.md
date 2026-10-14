@@ -53,7 +53,16 @@ no hostNetwork. The LB implementation is pluggable:
   ```
 - **bare-metal/OPO1** — MetalLB L2 with a real pool (e.g. a VLAN range); see the
   prod overlay below.
-- **cloud** — leave MetalLB disabled and set provider annotations on
+- **hosted AWS** — leave MetalLB disabled and layer
+  [`values-aws-hosted.yaml`](values-aws-hosted.yaml): the bundled AWS Load
+  Balancer Controller provisions an instance-mode NLB (HTTPS only) for the edge
+  Service, and every public Ingress requires the hosted zone's
+  authenticated-origin-pull client certificate (HOR-601). The environment's
+  overlay supplies `clusterName`, `vpcId`, `defaultTags.iterabase-env` and
+  `global.originPull.caCert` from the hosted baseline contract; see
+  [`docs/runbooks/aws-hosted.md`](../docs/runbooks/aws-hosted.md). `make
+  check-aws-hosted-edge` pins the contract.
+- **other clouds** — leave MetalLB disabled and set provider annotations on
   `ingress-nginx.controller.service` so the cloud LB provisions the Service.
 
 Get the generated gateway admin API key:
