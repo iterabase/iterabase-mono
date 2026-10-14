@@ -574,7 +574,10 @@ function DetailPanel({
     void refresh();
   }, [refresh]);
   useEffect(() => {
+    // Focus on opening/selection, not on background dashboard refreshes.
     panelRef.current?.focus();
+  }, [item.id]);
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") close();
     };
