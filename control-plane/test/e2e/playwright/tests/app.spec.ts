@@ -56,12 +56,14 @@ async function openWork(page: Page): Promise<void> {
     .getByRole("navigation", { name: "Main" })
     .getByRole("link", { name: /^Work/ })
     .click();
-  await expect(page.getByRole("region", { name: "Work" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Work", exact: true }),
+  ).toBeVisible();
 }
 
 async function setLanguage(page: Page, value: "en" | "pt"): Promise<void> {
   await page.goto("/settings/profile");
-  const language = page.getByLabel(/^(Language|Idioma)$/);
+  const language = page.getByRole("combobox", { name: /^(Language|Idioma)/ });
   await language.selectOption(value);
   await page
     .getByRole("button", { name: /^(Save changes|Guardar alterações)$/ })
@@ -117,10 +119,12 @@ test("lands on Today through a browser session, in both languages, and signs out
 
   await signIn(page);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(greeting);
-  await expect(page.getByRole("region", { name: "Your turn" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Your turn", exact: true }),
+  ).toBeVisible();
   await expect(
     page
-      .getByRole("region", { name: "Waiting for you" })
+      .getByRole("region", { name: "Waiting for you", exact: true })
       .getByText(approvalTitle),
   ).toBeVisible();
   // Sofia and Reports arrive with HOR-452 / HOR-658 (DES-HOR-459-03).
@@ -137,7 +141,9 @@ test("lands on Today through a browser session, in both languages, and signs out
     .getByRole("navigation", { name: "Principal" })
     .getByRole("link", { name: /^Trabalho/ })
     .click();
-  await expect(page.getByRole("region", { name: "Trabalho" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Trabalho", exact: true }),
+  ).toBeVisible();
   await page.getByRole("link", { name: new RegExp(doneTitle) }).click();
   const portugueseDetail = page.getByRole("dialog", { name: doneTitle });
   await expect(
@@ -175,8 +181,8 @@ test("covers Work, search, the customer-safe item sheet, download, keyboard and 
   await connect(page);
   await openWork(page);
   const needsYou = page
-    .getByRole("region", { name: "Work" })
-    .getByRole("region", { name: "Needs you" });
+    .getByRole("region", { name: "Work", exact: true })
+    .getByRole("region", { name: "Needs you", exact: true });
   await expect(
     needsYou.getByText(approvalTitle, { exact: true }),
   ).toBeVisible();
@@ -316,12 +322,16 @@ test("clears decisions in Your turn, reaches All clear and records feedback thro
     page.getByRole("heading", { name: "That's everything for now." }),
   ).toBeVisible();
   await page.getByRole("link", { name: "See all work" }).click();
-  const board = page.getByRole("region", { name: "Work" });
+  const board = page.getByRole("region", { name: "Work", exact: true });
   await expect(
-    board.getByRole("region", { name: "Done" }).getByText(approvalTitle),
+    board
+      .getByRole("region", { name: "Done", exact: true })
+      .getByText(approvalTitle),
   ).toBeVisible();
   await expect(
-    board.getByRole("region", { name: "Done" }).getByText(uploadTitle),
+    board
+      .getByRole("region", { name: "Done", exact: true })
+      .getByText(uploadTitle),
   ).toBeVisible();
 });
 
@@ -381,7 +391,9 @@ test("keeps sign-in, Today, Work and the item usable at a phone viewport", async
     .getByRole("navigation", { name: "Tabs" })
     .getByRole("link", { name: /^Work/ })
     .click();
-  await expect(page.getByRole("region", { name: "Work" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Work", exact: true }),
+  ).toBeVisible();
   await page.getByRole("link", { name: new RegExp(doneTitle) }).click();
   const detail = page.getByRole("dialog", { name: doneTitle });
   await expect(detail).toBeVisible();
