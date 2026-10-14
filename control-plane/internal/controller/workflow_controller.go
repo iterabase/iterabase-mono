@@ -637,15 +637,8 @@ func validatePresentation(title v1alpha1.RequiredLocalizedText, coworker v1alpha
 	if utf8.RuneCountInString(coworker.Name) > coworkerNameLimit {
 		return fmt.Errorf("spec.coworker.name must be at most %d characters", coworkerNameLimit)
 	}
-	switch coworker.Mark.Shape {
-	case "round", "square", "petal":
-	default:
-		return fmt.Errorf("spec.coworker.mark.shape must be round, square or petal")
-	}
-	switch coworker.Mark.Color {
-	case "blue", "green", "sun", "violet", "teal":
-	default:
-		return fmt.Errorf("spec.coworker.mark.color must be blue, green, sun, violet or teal")
+	if err := validateCoworkerMark(coworker.Mark); err != nil {
+		return err
 	}
 	if coworker.Role.EN == "" || coworker.Role.PT == "" {
 		return fmt.Errorf("spec.coworker.role requires en and pt text")
@@ -653,16 +646,33 @@ func validatePresentation(title v1alpha1.RequiredLocalizedText, coworker v1alpha
 	if coworker.Summary.EN == "" || coworker.Summary.PT == "" {
 		return fmt.Errorf("spec.coworker.summary requires en and pt text")
 	}
-	for name, list := range map[string][]v1alpha1.RequiredLocalizedText{
-		"onItsOwn": coworker.OnItsOwn, "connections": coworker.Connections,
-	} {
-		if len(list) > coworkerListLimit {
-			return fmt.Errorf("spec.coworker.%s allows at most %d entries", name, coworkerListLimit)
-		}
-		for i, text := range list {
-			if text.EN == "" || text.PT == "" {
-				return fmt.Errorf("spec.coworker.%s[%d] requires en and pt text", name, i)
-			}
+	if err := validateCoworkerList("onItsOwn", coworker.OnItsOwn); err != nil {
+		return err
+	}
+	return validateCoworkerList("connections", coworker.Connections)
+}
+
+func validateCoworkerMark(mark v1alpha1.CoworkerMark) error {
+	switch mark.Shape {
+	case "round", "square", "petal":
+	default:
+		return fmt.Errorf("spec.coworker.mark.shape must be round, square or petal")
+	}
+	switch mark.Color {
+	case "blue", "green", "sun", "violet", "teal":
+	default:
+		return fmt.Errorf("spec.coworker.mark.color must be blue, green, sun, violet or teal")
+	}
+	return nil
+}
+
+func validateCoworkerList(name string, list []v1alpha1.RequiredLocalizedText) error {
+	if len(list) > coworkerListLimit {
+		return fmt.Errorf("spec.coworker.%s allows at most %d entries", name, coworkerListLimit)
+	}
+	for i, text := range list {
+		if text.EN == "" || text.PT == "" {
+			return fmt.Errorf("spec.coworker.%s[%d] requires en and pt text", name, i)
 		}
 	}
 	return nil

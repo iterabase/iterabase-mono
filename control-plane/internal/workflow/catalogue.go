@@ -143,5 +143,5 @@ func BuildSummary(key, version string, presentation CanonicalPresentation, graph
 }
 
 func summaryText(in CanonicalLocalizedText) CanonicalText {
-	return CanonicalText{EN: in.EN, PT: in.PT}
+	return CanonicalText(in)
 }
