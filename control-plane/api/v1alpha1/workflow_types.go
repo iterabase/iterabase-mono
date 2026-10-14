@@ -57,9 +57,15 @@ type WorkflowSpec struct {
 	// +optional
 	ValueModelRef string `json:"valueModelRef,omitempty"`
 
-	// presentation carries customer-facing workflow/persona labels.
+	// title is the localized customer-facing workflow name.
 	// +kubebuilder:validation:Required
-	Presentation PresentationSpec `json:"presentation"`
+	Title RequiredLocalizedText `json:"title"`
+
+	// coworker is the customer-facing identity of the AI coworker that runs
+	// this workflow. What it always asks first is never declared here: it is
+	// derived from the graph's human_gate nodes.
+	// +kubebuilder:validation:Required
+	Coworker CoworkerSpec `json:"coworker"`
 }
 
 // WorkflowGraph is a directed graph with one active node at a time. Every
@@ -425,20 +431,59 @@ type RequestedCapability struct {
 	Actions []string `json:"actions,omitempty"`
 }
 
-// PresentationSpec carries customer-facing workflow/persona labels.
+// RequiredLocalizedText is approved English/Portuguese customer copy where
+// both locales are mandatory.
 // +kubebuilder:object:generate=true
-type PresentationSpec struct {
+type RequiredLocalizedText struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	WorkflowTitle string `json:"workflowTitle"`
+	EN string `json:"en"`
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	PersonaName string `json:"personaName"`
+	PT string `json:"pt"`
+}
+
+// CoworkerSpec is the customer-facing AI coworker identity for a workflow.
+// +kubebuilder:object:generate=true
+type CoworkerSpec struct {
+	// name is the coworker's proper name. It is never translated.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=40
+	Name string `json:"name"`
+
+	// mark is the coworker's visual identity.
+	// +kubebuilder:validation:Required
+	Mark CoworkerMark `json:"mark"`
+
+	// role is the one-line localized job title.
+	// +kubebuilder:validation:Required
+	Role RequiredLocalizedText `json:"role"`
+
+	// summary is the localized description of what the coworker does.
+	// +kubebuilder:validation:Required
+	Summary RequiredLocalizedText `json:"summary"`
+
+	// onItsOwn lists what the coworker does without asking.
 	// +optional
-	PersonaAvatar string `json:"personaAvatar,omitempty"`
-	// +kubebuilder:validation:Enum=en;pt
+	// +kubebuilder:validation:MaxItems=12
+	OnItsOwn []RequiredLocalizedText `json:"onItsOwn,omitempty"`
+
+	// connections lists the customer systems the coworker works with.
 	// +optional
-	Locale string `json:"locale,omitempty"`
+	// +kubebuilder:validation:MaxItems=12
+	Connections []RequiredLocalizedText `json:"connections,omitempty"`
+}
+
+// CoworkerMark is the coworker's enumerated visual mark.
+// +kubebuilder:object:generate=true
+type CoworkerMark struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=round;square;petal
+	Shape string `json:"shape"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=blue;green;sun;violet;teal
+	Color string `json:"color"`
 }
 
 // WorkflowStatus is the reconciler-observed materialization state.

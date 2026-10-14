@@ -375,6 +375,7 @@ func scanWorkItem(row pgx.Row) (WorkItem, error) {
 	if err := json.Unmarshal(presentation, &out.Presentation); err != nil {
 		return WorkItem{}, err
 	}
+	out.Presentation = out.Presentation.Normalized()
 	if stepKey != nil {
 		step := BusinessStep{Key: *stepKey, State: *stepState, StartedAt: stepStartedAt}
 		if err := json.Unmarshal(stepLabel, &step.Label); err != nil {

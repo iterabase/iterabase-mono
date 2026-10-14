@@ -10,6 +10,7 @@ import (
 	"net/mail"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -148,7 +149,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Materialize the scope identity (kind=workflow) runs execute under.
 	scopeKey := workflowScopeIdentityKey(&wf)
-	ident, err := r.Identities.UpsertIdentity(ctx, scopeKey, "workflow", identity.SourceLocal, wf.Spec.Presentation.WorkflowTitle)
+	ident, err := r.Identities.UpsertIdentity(ctx, scopeKey, "workflow", identity.SourceLocal, wf.Spec.Title.EN)
 	if err != nil {
 		_ = r.patchStatus(ctx, &wf, false, v1alpha1.ValidationValid, fmt.Sprintf("upsert scope identity: %v", err), false)
 		return ctrl.Result{}, err
@@ -386,18 +387,11 @@ func (r *WorkflowReconciler) validateSpec(ctx context.Context, wf *v1alpha1.Work
 			return fmt.Errorf("read Model %q: %w", ref, err)
 		}
 	}
-	// Presentation (REQ-021): customer-facing labels + persona; no separate
-	// Persona CRD.
-	if wf.Spec.Presentation.WorkflowTitle == "" {
-		return fmt.Errorf("spec.presentation.workflowTitle is required")
-	}
-	if wf.Spec.Presentation.PersonaName == "" {
-		return fmt.Errorf("spec.presentation.personaName is required")
-	}
-	switch wf.Spec.Presentation.Locale {
-	case "", "en", "pt":
-	default:
-		return fmt.Errorf("spec.presentation.locale must be en or pt")
+	// Presentation (REQ-021, DES-HOR-459-01): the localized workflow title and
+	// the AI coworker identity; no separate Persona CRD. What the coworker
+	// always asks first is derived from human_gate nodes, never declared.
+	if err := validatePresentation(wf.Spec.Title, wf.Spec.Coworker); err != nil {
+		return err
 	}
 	// Capability validation against the AgentPool's maximum grants (acceptance:
 	// "a workflow cannot request capabilities beyond its AgentPool/customer
@@ -527,12 +521,7 @@ func buildCanonicalSpec(wf *v1alpha1.Workflow) workflow.CanonicalSpec {
 			EntryNode:      wf.Spec.Graph.EntryNode,
 			MaxTransitions: maxTransitions,
 		},
-		Presentation: workflow.CanonicalPresentation{
-			WorkflowTitle: wf.Spec.Presentation.WorkflowTitle,
-			PersonaName:   wf.Spec.Presentation.PersonaName,
-			PersonaAvatar: wf.Spec.Presentation.PersonaAvatar,
-			Locale:        wf.Spec.Presentation.Locale,
-		},
+		Presentation: canonicalPresentation(wf.Spec.Title, wf.Spec.Coworker),
 	}
 	for _, b := range wf.Spec.Source.TriggerBindings {
 		bindingKey, _ := triggerBindingKey(wf.Spec.Source.Type, b) // validated before canonicalization
@@ -630,6 +619,77 @@ func canonicalWait(in *v1alpha1.WaitSpec) *workflow.CanonicalWait {
 		}
 	}
 	return out
+}
+
+// coworkerListLimit bounds the optional coworker description lists.
+const coworkerListLimit = 12
+
+// coworkerNameLimit bounds the coworker's proper name.
+const coworkerNameLimit = 40
+
+func validatePresentation(title v1alpha1.RequiredLocalizedText, coworker v1alpha1.CoworkerSpec) error {
+	if title.EN == "" || title.PT == "" {
+		return fmt.Errorf("spec.title requires en and pt text")
+	}
+	if coworker.Name == "" {
+		return fmt.Errorf("spec.coworker.name is required")
+	}
+	if utf8.RuneCountInString(coworker.Name) > coworkerNameLimit {
+		return fmt.Errorf("spec.coworker.name must be at most %d characters", coworkerNameLimit)
+	}
+	switch coworker.Mark.Shape {
+	case "round", "square", "petal":
+	default:
+		return fmt.Errorf("spec.coworker.mark.shape must be round, square or petal")
+	}
+	switch coworker.Mark.Color {
+	case "blue", "green", "sun", "violet", "teal":
+	default:
+		return fmt.Errorf("spec.coworker.mark.color must be blue, green, sun, violet or teal")
+	}
+	if coworker.Role.EN == "" || coworker.Role.PT == "" {
+		return fmt.Errorf("spec.coworker.role requires en and pt text")
+	}
+	if coworker.Summary.EN == "" || coworker.Summary.PT == "" {
+		return fmt.Errorf("spec.coworker.summary requires en and pt text")
+	}
+	for name, list := range map[string][]v1alpha1.RequiredLocalizedText{
+		"onItsOwn": coworker.OnItsOwn, "connections": coworker.Connections,
+	} {
+		if len(list) > coworkerListLimit {
+			return fmt.Errorf("spec.coworker.%s allows at most %d entries", name, coworkerListLimit)
+		}
+		for i, text := range list {
+			if text.EN == "" || text.PT == "" {
+				return fmt.Errorf("spec.coworker.%s[%d] requires en and pt text", name, i)
+			}
+		}
+	}
+	return nil
+}
+
+func canonicalPresentation(title v1alpha1.RequiredLocalizedText, coworker v1alpha1.CoworkerSpec) workflow.CanonicalPresentation {
+	text := func(in v1alpha1.RequiredLocalizedText) workflow.CanonicalText {
+		return workflow.CanonicalText{EN: in.EN, PT: in.PT}
+	}
+	texts := func(in []v1alpha1.RequiredLocalizedText) []workflow.CanonicalText {
+		out := make([]workflow.CanonicalText, 0, len(in))
+		for _, item := range in {
+			out = append(out, text(item))
+		}
+		return out
+	}
+	return workflow.CanonicalPresentation{
+		Title: text(title),
+		Coworker: workflow.CanonicalCoworker{
+			Name:        coworker.Name,
+			Mark:        workflow.CanonicalCoworkerMark{Shape: coworker.Mark.Shape, Color: coworker.Mark.Color},
+			Role:        text(coworker.Role),
+			Summary:     text(coworker.Summary),
+			OnItsOwn:    texts(coworker.OnItsOwn),
+			Connections: texts(coworker.Connections),
+		},
+	}
 }
 
 func canonicalResultPresentation(in *v1alpha1.ResultPresentation) *workflow.CanonicalResultPresentation {

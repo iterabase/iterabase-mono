@@ -78,7 +78,9 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	assert.Equal(t, workstore.StateTodo, item.State)
 	assert.True(t, item.ValueConfigured)
 	assert.Equal(t, "Quote request", item.SourcePresentation.Title)
-	assert.Equal(t, "Marco", item.Presentation.PersonaName)
+	assert.Equal(t, "Marco", item.Presentation.Coworker.Name)
+	assert.Equal(t, "Quotation", item.Presentation.Title.EN)
+	assert.NotNil(t, item.Presentation.Coworker.OnItsOwn)
 	require.NotNil(t, item.CurrentStep)
 	assert.Equal(t, "Processing quotation", item.CurrentStep.Label.EN)
 	customerJSON, err := json.Marshal(item)
@@ -382,7 +384,7 @@ func seedFoundation(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (stri
 			Edges:            []workflow.CanonicalEdge{{From: "process", Outcome: "needs_information", To: "information"}, {From: "information", Outcome: "information_provided", To: "process"}},
 			TerminalOutcomes: []workflow.CanonicalTerminalOutcome{{Node: "process", Outcome: "completed"}},
 		},
-		Presentation: workflow.CanonicalPresentation{WorkflowTitle: "Quotation", PersonaName: "Marco", Locale: "en"},
+		Presentation: workflow.CanonicalPresentation{Title: workflow.CanonicalText{EN: "Quotation", PT: "Quotation"}, Coworker: workflow.CanonicalCoworker{Name: "Marco", Mark: workflow.CanonicalCoworkerMark{Shape: "round", Color: "blue"}, Role: workflow.CanonicalText{EN: "Coordinator", PT: "Coordenador"}, Summary: workflow.CanonicalText{EN: "Handles the work.", PT: "Trata do trabalho."}}},
 	}
 	specJSON, _ := json.Marshal(spec)
 	presentation, _ := json.Marshal(spec.Presentation)
@@ -429,7 +431,7 @@ func TestWorkStartManualSourceBounded(t *testing.T) {
 				OutputSchema:       json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"classification":{"type":"string","enum":["engineering","pricing"]}}}`),
 				ResultPresentation: result}},
 			TerminalOutcomes: []workflow.CanonicalTerminalOutcome{{Node: "process", Outcome: "completed"}}},
-		Presentation: workflow.CanonicalPresentation{WorkflowTitle: "Quotation", PersonaName: "Marco", Locale: "en"},
+		Presentation: workflow.CanonicalPresentation{Title: workflow.CanonicalText{EN: "Quotation", PT: "Quotation"}, Coworker: workflow.CanonicalCoworker{Name: "Marco", Mark: workflow.CanonicalCoworkerMark{Shape: "round", Color: "blue"}, Role: workflow.CanonicalText{EN: "Coordinator", PT: "Coordenador"}, Summary: workflow.CanonicalText{EN: "Handles the work.", PT: "Trata do trabalho."}}},
 	}
 	specJSON, _ := json.Marshal(spec)
 	presentation, _ := json.Marshal(spec.Presentation)

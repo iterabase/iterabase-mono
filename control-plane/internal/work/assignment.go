@@ -16,16 +16,16 @@ import (
 //nolint:gocyclo // Assignment assembly validates each immutable snapshot and canonical artifact input fail-closed.
 func (s *Store) GetAssignmentContext(ctx context.Context, nodeExecutionID string) (AssignmentContext, error) {
 	var out AssignmentContext
-	var graphJSON, specJSON []byte
+	var graphJSON, presentationJSON []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT a.work_item_id::text, a.id::text, wr.scope_identity_id::text,
-		       d.pool_key, d.spec_json, a.graph_snapshot
+		       d.pool_key, a.presentation_snapshot, a.graph_snapshot
 		FROM runtime.node_executions ne
 		JOIN work.attempts a ON a.id=ne.attempt_id
 		JOIN runtime.workflow_runs wr ON wr.id=a.id
 		JOIN workflow.definitions d ON d.id=a.definition_id
 		WHERE ne.id=$1`, nodeExecutionID).
-		Scan(&out.WorkItemID, &out.AttemptID, &out.ScopeIdentityID, &out.AgentPoolKey, &specJSON, &graphJSON)
+		Scan(&out.WorkItemID, &out.AttemptID, &out.ScopeIdentityID, &out.AgentPoolKey, &presentationJSON, &graphJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AssignmentContext{}, ErrNotFound
 	}
@@ -36,15 +36,15 @@ func (s *Store) GetAssignmentContext(ctx context.Context, nodeExecutionID string
 	if err != nil {
 		return AssignmentContext{}, err
 	}
-	var spec workflow.CanonicalSpec
+	var presentation workflow.CanonicalPresentation
 	var graph workflow.CanonicalGraph
-	if err := json.Unmarshal(specJSON, &spec); err != nil {
+	if err := json.Unmarshal(presentationJSON, &presentation); err != nil {
 		return AssignmentContext{}, err
 	}
 	if err := json.Unmarshal(graphJSON, &graph); err != nil {
 		return AssignmentContext{}, err
 	}
-	out.Persona = spec.Presentation.PersonaName
+	out.Persona = presentation.Coworker.Name
 	def, ok := findNode(graph, out.Node.NodeKey)
 	if !ok {
 		return AssignmentContext{}, ErrNotFound

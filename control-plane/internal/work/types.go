@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
 )
 
 var (
@@ -170,13 +172,9 @@ type WorkItem struct {
 }
 
 // WorkPresentation is snapshotted from the immutable workflow definition for
-// the attempt, so cards never depend on mutable operator configuration.
-type WorkPresentation struct {
-	WorkflowTitle string `json:"workflowTitle"`
-	PersonaName   string `json:"personaName"`
-	PersonaAvatar string `json:"personaAvatar,omitempty"`
-	Locale        string `json:"locale,omitempty"`
-}
+// the attempt, so cards never depend on mutable operator configuration. It is
+// exactly the canonical workflow title + AI coworker shape.
+type WorkPresentation = workflow.CanonicalPresentation
 
 // BusinessStep is the current workflow stage without prompt/model details.
 type BusinessStep struct {

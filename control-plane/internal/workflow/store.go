@@ -782,10 +782,44 @@ type CanonicalCapability struct {
 	Actions        []string `json:"actions,omitempty"`
 }
 
-// CanonicalPresentation is the customer-facing labels + persona.
+// CanonicalPresentation is the customer-facing workflow title and AI
+// coworker identity. It is snapshotted onto each attempt and is the exact
+// work-item presentation contract.
 type CanonicalPresentation struct {
-	WorkflowTitle string `json:"workflowTitle"`
-	PersonaName   string `json:"personaName"`
-	PersonaAvatar string `json:"personaAvatar,omitempty"`
-	Locale        string `json:"locale,omitempty"`
+	Title    CanonicalText     `json:"title"`
+	Coworker CanonicalCoworker `json:"coworker"`
+}
+
+// CanonicalText is customer copy where both v1 locales are always serialized.
+type CanonicalText struct {
+	EN string `json:"en"`
+	PT string `json:"pt"`
+}
+
+// CanonicalCoworker is the customer-facing identity of the AI coworker.
+type CanonicalCoworker struct {
+	Name        string                `json:"name"`
+	Mark        CanonicalCoworkerMark `json:"mark"`
+	Role        CanonicalText         `json:"role"`
+	Summary     CanonicalText         `json:"summary"`
+	OnItsOwn    []CanonicalText       `json:"onItsOwn"`
+	Connections []CanonicalText       `json:"connections"`
+}
+
+// CanonicalCoworkerMark is the coworker's enumerated visual mark.
+type CanonicalCoworkerMark struct {
+	Shape string `json:"shape"`
+	Color string `json:"color"`
+}
+
+// Normalized returns the presentation with nil lists replaced by empty lists,
+// so every serialization carries the same stable shape.
+func (p CanonicalPresentation) Normalized() CanonicalPresentation {
+	if p.Coworker.OnItsOwn == nil {
+		p.Coworker.OnItsOwn = []CanonicalText{}
+	}
+	if p.Coworker.Connections == nil {
+		p.Coworker.Connections = []CanonicalText{}
+	}
+	return p
 }

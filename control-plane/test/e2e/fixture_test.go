@@ -450,10 +450,12 @@ spec:
               - key: approved
                 label: {en: Approved, pt: Aprovado}
     terminalOutcomes: [{node: review, outcome: accepted}]
-  presentation:
-    workflowTitle: Deployed review
-    personaName: Operations reviewer
-    locale: en
+  title: {en: Deployed review, pt: Deployed review}
+  coworker:
+    name: Operations reviewer
+    mark: {shape: round, color: blue}
+    role: {en: Operations reviewer, pt: Revisor de operações}
+    summary: {en: Reviews deployed work., pt: Revê o trabalho implementado.}
 `
 	path := state.writeManifest(t, "work-fixture.yaml", manifest)
 	state.kubectl(t, 30*time.Second, "apply", "-f", path)

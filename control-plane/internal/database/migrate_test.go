@@ -108,24 +108,24 @@ func TestMigrations(t *testing.T) {
 
 	// HOR-489: fresh installs grant only the durable workload-authorization
 	// reads. A migration-22 OPO1 database already has this exact ACL, so moving
-	// down migrations 32 through 23 intentionally preserves it; reapplying
+	// down migrations 33 through 23 intentionally preserves it; reapplying
 	// them must be an idempotent metadata advance with no manual role update.
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
-	require.NoError(t, database.MigrateDown(connStr, 10))
+	require.NoError(t, database.MigrateDown(connStr, 11))
 	var migrationVersion int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
 	assert.Equal(t, 22, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 	require.NoError(t, database.MigrateUp(connStr))
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
-	assert.Equal(t, 32, migrationVersion)
+	assert.Equal(t, 33, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 
 	// HOR-254 must migrate an existing gateway ledger without requiring an
-	// unavailable customer-safe summary backfill. Step back from 32 (HOR-670),
+	// unavailable customer-safe summary backfill. Step back from 33 (HOR-459), 32 (HOR-670),
 	// through 31 (HOR-582), 30 (HOR-597) and the earlier migrations to the
-	// pre-HOR-254 schema; seed a historical write, then apply all seventeen again.
-	require.NoError(t, database.MigrateDown(connStr, 17))
+	// pre-HOR-254 schema; seed a historical write, then apply all eighteen again.
+	require.NoError(t, database.MigrateDown(connStr, 18))
 	_, err = pool.Exec(ctx, `
 		INSERT INTO toolgateway.tool_versions
 		    (name,version,digest,description,input_schema,effect_class,credential_slots,artifact_capabilities,timeout_ms)
@@ -359,9 +359,9 @@ func TestV2OnlyAuthorityMigrationUpgradesALegacyInstallation(t *testing.T) {
 
 	// Step back to the pre-HOR-453 schema (migration 25) and seed a legacy
 	// install shaped like OPO1. The combined tree has 29 (wait/pause),
-	// 30 (backend auth_ref), 31 (V2-only authority) and 32 (locale preference),
-	// so step down seven.
-	require.NoError(t, database.MigrateDown(connStr, 7))
+	// 30 (backend auth_ref), 31 (V2-only authority), 32 (locale preference)
+	// and 33 (workflow coworker), so step down eight.
+	require.NoError(t, database.MigrateDown(connStr, 8))
 	version, dirty, err := database.MigrateVersion(connStr)
 	require.NoError(t, err)
 	require.False(t, dirty)
@@ -522,4 +522,86 @@ func legacyHistory(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[st
 		out[relation] = fingerprint
 	}
 	return out
+}
+
+// TestWorkflowCoworkerPresentationMigration proves migration 33 (HOR-459,
+// DES-HOR-459-01) rewrites old workflow presentation in definitions, their
+// canonical spec, and attempt snapshots into the title + coworker shape, and
+// that the down migration restores the previous shape.
+func TestWorkflowCoworkerPresentationMigration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	pool, connStr := testutil.NewPostgres(t)
+	ctx := context.Background()
+
+	require.NoError(t, database.MigrateDown(connStr, 1))
+	version, dirty, err := database.MigrateVersion(connStr)
+	require.NoError(t, err)
+	require.False(t, dirty)
+	require.Equal(t, uint(32), version)
+
+	var scopeID, humanID, definitionID, emptyDefinitionID, workItemID string
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO identity.identities (key, kind, source, display_name)
+		VALUES ('workflow:default/quotes', 'workflow', 'local', 'Quotes') RETURNING id`).Scan(&scopeID))
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO identity.identities (key, kind, source, display_name)
+		VALUES ('ana@example.com', 'user', 'local', 'Ana') RETURNING id`).Scan(&humanID))
+	oldPresentation := `{"workflowTitle":"Quotation processing","personaName":"Marco","locale":"en"}`
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO workflow.definitions (key, version, digest, spec_json, scope_identity_id, source_type, pool_key, presentation)
+		VALUES ('default/quotes', '1', 'sha256:quotes', jsonb_build_object('key', 'default/quotes', 'presentation', $2::jsonb),
+		        $1, 'graph_email', 'default/pool', $2::jsonb)
+		RETURNING id`, scopeID, oldPresentation).Scan(&definitionID))
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO workflow.definitions (key, version, digest, spec_json, scope_identity_id, source_type, pool_key)
+		VALUES ('default/quotes', '0', 'sha256:empty', '{"key":"default/quotes"}', $1, 'graph_email', 'default/pool')
+		RETURNING id`, scopeID).Scan(&emptyDefinitionID))
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO work.work_items (workflow_key, scope_identity_id, title, start_identity_id,
+			start_idempotency_key, start_payload_hash, initiating_human_identity_id, request_actor_identity_id,
+			authorization_source)
+		VALUES ('default/quotes', $1, 'Quote 7', $2, 'quote-7', 'hash', $2, $2, 'api')
+		RETURNING id`, scopeID, humanID).Scan(&workItemID))
+	var attemptID string
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO runtime.workflow_runs (kind, definition_key, scope_identity_id, session_id, session_dir, trigger,
+			initiating_human_identity_id, request_actor_identity_id, authorization_source)
+		VALUES ('workflow', 'default/quotes:1', $1, 'quote-7', 'quote-7', '{}', $2, $2, 'api')
+		RETURNING id`, scopeID, humanID).Scan(&attemptID))
+	_, err = pool.Exec(ctx, `
+		INSERT INTO work.attempts (id, work_item_id, number, definition_id, definition_key, definition_version,
+			definition_digest, graph_snapshot, presentation_snapshot)
+		VALUES ($1, $2, 1, $3, 'default/quotes', '1', 'sha256:quotes', '{}', $4::jsonb)`,
+		attemptID, workItemID, definitionID, oldPresentation)
+	require.NoError(t, err)
+
+	require.NoError(t, database.MigrateUp(connStr))
+	migrated := `{"title":{"en":"Quotation processing","pt":"Quotation processing"},
+		"coworker":{"name":"Marco","mark":{"shape":"round","color":"blue"},
+			"role":{"en":"","pt":""},"summary":{"en":"","pt":""},"onItsOwn":[],"connections":[]}}`
+	readJSON := func(query string, args ...any) string {
+		t.Helper()
+		var raw string
+		require.NoError(t, pool.QueryRow(ctx, query, args...).Scan(&raw))
+		return raw
+	}
+	assert.JSONEq(t, migrated, readJSON(`SELECT presentation::text FROM workflow.definitions WHERE id=$1`, definitionID))
+	assert.JSONEq(t, migrated, readJSON(`SELECT (spec_json->'presentation')::text FROM workflow.definitions WHERE id=$1`, definitionID))
+	assert.JSONEq(t, migrated, readJSON(`SELECT presentation_snapshot::text FROM work.attempts WHERE id=$1`, attemptID))
+	assert.JSONEq(t, `{"title":{"en":"","pt":""},"coworker":{"name":"","mark":{"shape":"round","color":"blue"},
+		"role":{"en":"","pt":""},"summary":{"en":"","pt":""},"onItsOwn":[],"connections":[]}}`,
+		readJSON(`SELECT presentation::text FROM workflow.definitions WHERE id=$1`, emptyDefinitionID),
+		"the empty default is rewritten to the single new shape")
+	assert.JSONEq(t, `{"key":"default/quotes"}`,
+		readJSON(`SELECT spec_json::text FROM workflow.definitions WHERE id=$1`, emptyDefinitionID),
+		"a canonical spec without presentation is left alone")
+
+	require.NoError(t, database.MigrateDown(connStr, 1))
+	reverted := `{"workflowTitle":"Quotation processing","personaName":"Marco"}`
+	assert.JSONEq(t, reverted, readJSON(`SELECT presentation::text FROM workflow.definitions WHERE id=$1`, definitionID))
+	assert.JSONEq(t, reverted, readJSON(`SELECT (spec_json->'presentation')::text FROM workflow.definitions WHERE id=$1`, definitionID))
+	assert.JSONEq(t, reverted, readJSON(`SELECT presentation_snapshot::text FROM work.attempts WHERE id=$1`, attemptID))
+	require.NoError(t, database.MigrateUp(connStr))
 }

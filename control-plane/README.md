@@ -458,6 +458,16 @@ value-model reference, and a single-active-node directed graph.
   unrepresentable root shape is still rejected. The presentation is snapshotted
   on each node visit so historical results retain customer-readable identity
   and hierarchy without exposing machine keys.
+- **Customer presentation (HOR-459, DES-HOR-459-01)**: `spec.title` is the
+  required EN/PT workflow name and `spec.coworker` the AI coworker identity:
+  `name` (1–40 characters, a proper name that is never translated), `mark`
+  (`shape` round/square/petal, `color` blue/green/sun/violet/teal), required
+  EN/PT `role` and `summary`, and optional EN/PT `onItsOwn` and `connections`
+  lists (at most 12 each). What the coworker "always asks you first" is not
+  declarable: it is derived from the graph's `human_gate` nodes. The canonical
+  `{title, coworker}` presentation is snapshotted onto each attempt and is the
+  work item `presentation` contract. Changing it is a content change and needs
+  a new `spec.version`.
 - A workflow **cannot request capabilities beyond its `poolRef` AgentPool**:
   each requested tool must be granted and its effect/action narrowing must not
   exceed the pool grant; every node exposes an explicit subset, enforced from
@@ -542,7 +552,7 @@ use string, boolean, number, integer, unconstrained object/array JSON, or enum;
 unsupported validation keywords (including nested schemas, patterns, ranges,
 and composition/references) and indirectly declared required fields are
 rejected before deployment.
-Attempts and node visits snapshot workflow/persona/stage presentation for
+Attempts and node visits snapshot workflow title/coworker/stage presentation for
 stable cards. Terminal visits additionally snapshot localized result summaries,
 structured property-path labels, and exact enum-value labels; the Dashboard renders that
 contract rather than agent summaries, stage labels, or raw schema identifiers.

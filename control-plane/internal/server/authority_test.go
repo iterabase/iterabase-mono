@@ -486,7 +486,7 @@ func seedManualValueWorkflow(t *testing.T, ctx context.Context, pool *pgxpool.Po
 				}}},
 			}},
 			TerminalOutcomes: []workflow.CanonicalTerminalOutcome{{Node: "process", Outcome: "completed"}}},
-		Presentation: workflow.CanonicalPresentation{WorkflowTitle: "Quotation", PersonaName: "Marco", Locale: "en"},
+		Presentation: workflow.CanonicalPresentation{Title: workflow.CanonicalText{EN: "Quotation", PT: "Quotation"}, Coworker: workflow.CanonicalCoworker{Name: "Marco", Mark: workflow.CanonicalCoworkerMark{Shape: "round", Color: "blue"}, Role: workflow.CanonicalText{EN: "Coordinator", PT: "Coordenador"}, Summary: workflow.CanonicalText{EN: "Handles the work.", PT: "Trata do trabalho."}}},
 	}
 	specJSON, err := json.Marshal(spec)
 	require.NoError(t, err)
