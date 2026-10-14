@@ -467,9 +467,11 @@ Use an environment name such as `hor-601-edge` throughout.
    platform chart from the merged source with `charts/values-aws-hosted.yaml`
    layered with the environment's values: `clusterName` and
    `defaultTags.iterabase-env` = `hor-601-edge`, `vpcId` and
-   `global.originPull.caCert` from the contract, hosts under
-   `hor-601-edge.<hosted-domain>`, and `external-dns.domainFilters` the hosted
-   domain.
+   `global.originPull.caCert` from the contract, hosts
+   `hor-601-edge.<hosted-domain>` (control plane) and
+   `hor-601-edge-gateway.<hosted-domain>` (gateway), and
+   `external-dns.domainFilters` the hosted domain. Hosts stay one label below
+   the zone, the depth Cloudflare Universal SSL covers.
 4. Prove: the controller creates an internet-facing NLB tagged
    `iterabase-env=hor-601-edge` whose security group admits only TCP 443;
    external-dns publishes proxied records that resolve through Cloudflare to the

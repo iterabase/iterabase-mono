@@ -6,8 +6,11 @@
 #                            defaultTags.iterabase-env
 #   - vpc-id              -> aws-load-balancer-controller.vpcId
 #   - origin-pull-ca-cert -> global.originPull.caCert (public CA, not a key)
-#   - hosted-domain       -> Ingress hosts <customer>.<hosted-domain> and the
-#                            external-dns domain filter
+#   - hosted-domain       -> Ingress hosts <customer>.<hosted-domain> and
+#                            <customer>-gateway.<hosted-domain>, and the
+#                            external-dns domain filter. Hosts stay one label
+#                            below the zone: Cloudflare Universal SSL covers
+#                            only the apex and first-level subdomains.
 #   - cloudflare-dns-token -> the cloudflare-api-token Secret (overlay secrets)
 # Documentation values below (example.app, vpc-0123..., the example CA) are
 # fixtures, not real resources.
@@ -75,7 +78,7 @@ external-dns:
 
 inference-gateway:
   ingress:
-    host: gateway.example.example.app
+    host: example-gateway.example.app
     tls:
       enabled: true
       clusterIssuer: letsencrypt-prod
