@@ -19,6 +19,8 @@ const downloadName = requiredEnv("ITERABASE_BROWSER_DOWNLOAD_NAME");
 const downloadBody = requiredEnv("ITERABASE_BROWSER_DOWNLOAD_BODY");
 
 const greeting = /^Good (morning|afternoon|evening), .+\.$/;
+// The ported All clear heading uses a typographic apostrophe.
+const allClearHeading = /^That[’']s everything for now\.$/;
 
 // The browser session lives only in the HttpOnly cookie: page script can
 // read no cookie, and storage holds nothing but the router's scroll
@@ -277,9 +279,7 @@ test("clears decisions in Your turn, reaches All clear and records feedback thro
   // Clear this journey's two decisions one at a time; decisions other stages
   // of the deployed scenario left open are skipped with "Not now".
   const cleared = new Set<string>();
-  const allClear = page.getByRole("heading", {
-    name: "That's everything for now.",
-  });
+  const allClear = page.getByRole("heading", { name: allClearHeading });
   while (!(await allClear.isVisible())) {
     await expect(
       page.getByText(/^Decision \d+ of \d+$/).or(allClear),
@@ -328,9 +328,7 @@ test("clears decisions in Your turn, reaches All clear and records feedback thro
   }
   expect([...cleared].sort()).toEqual([approvalTitle, uploadTitle].sort());
 
-  await expect(
-    page.getByRole("heading", { name: "That's everything for now." }),
-  ).toBeVisible();
+  await expect(allClear).toBeVisible();
   await page.getByRole("link", { name: "See all work" }).click();
   const board = page.getByRole("region", { name: "Work", exact: true });
   await expect(
@@ -405,6 +403,11 @@ test("keeps sign-in, Today, Work and the item usable at a phone viewport", async
   await expect(
     page.getByRole("heading", { level: 1, name: "All work" }),
   ).toBeVisible();
+  // It opens on Needs you; the Done filter lists finished work.
+  await page
+    .getByRole("group", { name: "Work", exact: true })
+    .getByRole("button", { name: /^Done/ })
+    .click();
   await page.getByRole("link", { name: new RegExp(doneTitle) }).click();
   const detail = page.getByRole("dialog", { name: doneTitle });
   await expect(detail).toBeVisible();
