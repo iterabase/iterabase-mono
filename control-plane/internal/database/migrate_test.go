@@ -544,36 +544,36 @@ func TestWorkflowCoworkerPresentationMigration(t *testing.T) {
 	var scopeID, humanID, definitionID, emptyDefinitionID, workItemID string
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO identity.identities (key, kind, source, display_name)
-		VALUES ('workflow:default/quotes', 'workflow', 'local', 'Quotes') RETURNING id`).Scan(&scopeID))
+		VALUES ('workflow:quotes', 'workflow', 'local', 'Quotes') RETURNING id`).Scan(&scopeID))
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO identity.identities (key, kind, source, display_name)
 		VALUES ('ana@example.com', 'user', 'local', 'Ana') RETURNING id`).Scan(&humanID))
 	oldPresentation := `{"workflowTitle":"Quotation processing","personaName":"Marco","locale":"en"}`
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO workflow.definitions (key, version, digest, spec_json, scope_identity_id, source_type, pool_key, presentation)
-		VALUES ('default/quotes', '1', 'sha256:quotes', jsonb_build_object('key', 'default/quotes', 'presentation', $2::jsonb),
+		VALUES ('quotes', '1', 'sha256:quotes', jsonb_build_object('key', 'quotes', 'presentation', $2::jsonb),
 		        $1, 'graph_email', 'default/pool', $2::jsonb)
 		RETURNING id`, scopeID, oldPresentation).Scan(&definitionID))
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO workflow.definitions (key, version, digest, spec_json, scope_identity_id, source_type, pool_key)
-		VALUES ('default/quotes', '0', 'sha256:empty', '{"key":"default/quotes"}', $1, 'graph_email', 'default/pool')
+		VALUES ('quotes', '0', 'sha256:empty', '{"key":"quotes"}', $1, 'graph_email', 'default/pool')
 		RETURNING id`, scopeID).Scan(&emptyDefinitionID))
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO work.work_items (workflow_key, scope_identity_id, title, start_identity_id,
 			start_idempotency_key, start_payload_hash, initiating_human_identity_id, request_actor_identity_id,
 			authorization_source)
-		VALUES ('default/quotes', $1, 'Quote 7', $2, 'quote-7', 'hash', $2, $2, 'api')
+		VALUES ('quotes', $1, 'Quote 7', $2, 'quote-7', 'hash', $2, $2, 'api')
 		RETURNING id`, scopeID, humanID).Scan(&workItemID))
 	var attemptID string
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO runtime.workflow_runs (kind, definition_key, scope_identity_id, session_id, session_dir, trigger,
 			initiating_human_identity_id, request_actor_identity_id, authorization_source)
-		VALUES ('workflow', 'default/quotes:1', $1, 'quote-7', 'quote-7', '{}', $2, $2, 'api')
+		VALUES ('workflow', 'quotes:1', $1, 'quote-7', 'quote-7', '{}', $2, $2, 'api')
 		RETURNING id`, scopeID, humanID).Scan(&attemptID))
 	_, err = pool.Exec(ctx, `
 		INSERT INTO work.attempts (id, work_item_id, number, definition_id, definition_key, definition_version,
 			definition_digest, graph_snapshot, presentation_snapshot)
-		VALUES ($1, $2, 1, $3, 'default/quotes', '1', 'sha256:quotes', '{}', $4::jsonb)`,
+		VALUES ($1, $2, 1, $3, 'quotes', '1', 'sha256:quotes', '{}', $4::jsonb)`,
 		attemptID, workItemID, definitionID, oldPresentation)
 	require.NoError(t, err)
 
@@ -594,7 +594,7 @@ func TestWorkflowCoworkerPresentationMigration(t *testing.T) {
 		"role":{"en":"","pt":""},"summary":{"en":"","pt":""},"onItsOwn":[],"connections":[]}}`,
 		readJSON(`SELECT presentation::text FROM workflow.definitions WHERE id=$1`, emptyDefinitionID),
 		"the empty default is rewritten to the single new shape")
-	assert.JSONEq(t, `{"key":"default/quotes"}`,
+	assert.JSONEq(t, `{"key":"quotes"}`,
 		readJSON(`SELECT spec_json::text FROM workflow.definitions WHERE id=$1`, emptyDefinitionID),
 		"a canonical spec without presentation is left alone")
 
