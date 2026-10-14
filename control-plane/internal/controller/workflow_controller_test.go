@@ -474,7 +474,23 @@ func TestWorkflowPresentationValidation(t *testing.T) {
 		{"color", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Mark.Color = "red" }, "mark.color"},
 		{"role", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Role.PT = "" }, "spec.coworker.role requires"},
 		{"summary", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Summary.EN = "" }, "spec.coworker.summary requires"},
-		{"onItsOwn item", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.OnItsOwn[0].PT = "" }, "spec.coworker.onItsOwn[0] requires"},
+		{"onItsOwn text", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.OnItsOwn[0].Text.PT = "" }, "spec.coworker.onItsOwn[0].text requires"},
+		{"onItsOwn kind", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.OnItsOwn[0].Kind = "writes" }, "spec.coworker.onItsOwn[0].kind must be reads, sends or does"},
+		{"onItsOwn detail", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) {
+			c.OnItsOwn[0].Detail = &v1alpha1.RequiredLocalizedText{EN: "Inbox"}
+		}, "spec.coworker.onItsOwn[0].detail requires"},
+		{"onItsOwn empty item", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) {
+			c.OnItsOwn[0].Items = []string{"a", ""}
+		}, "spec.coworker.onItsOwn[0].items[1] must be 1 to 200"},
+		{"onItsOwn long item", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) {
+			c.OnItsOwn[0].Items = []string{strings.Repeat("i", coworkerItemLimit+1)}
+		}, "spec.coworker.onItsOwn[0].items[0] must be 1 to 200"},
+		{"onItsOwn items size", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) {
+			c.OnItsOwn[0].Items = make([]string, coworkerListLimit+1)
+		}, "spec.coworker.onItsOwn[0].items allows at most 12"},
+		{"onItsOwn size", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) {
+			c.OnItsOwn = make([]v1alpha1.CoworkerOnItsOwnLine, coworkerListLimit+1)
+		}, "spec.coworker.onItsOwn allows at most 12"},
 		{"connections size", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Connections = tooMany }, "spec.coworker.connections allows at most 12"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -488,11 +504,26 @@ func TestWorkflowPresentationValidation(t *testing.T) {
 	coworker := testCoworker(strings.Repeat("ã", coworkerNameLimit))
 	coworker.OnItsOwn, coworker.Connections = nil, nil
 	assert.NoError(t, validatePresentation(v1alpha1.RequiredLocalizedText{EN: "Quotes", PT: "Cotações"}, coworker))
+
+	// A full line with detail and twelve 200-rune items is valid.
+	full := testCoworker("Marco")
+	full.OnItsOwn[0].Kind = "sends"
+	full.OnItsOwn[0].Detail = &v1alpha1.RequiredLocalizedText{EN: "Pre-approved", PT: "Pré-aprovados"}
+	for range coworkerListLimit {
+		full.OnItsOwn[0].Items = append(full.OnItsOwn[0].Items, strings.Repeat("ã", coworkerItemLimit))
+	}
+	assert.NoError(t, validatePresentation(v1alpha1.RequiredLocalizedText{EN: "Quotes", PT: "Cotações"}, full))
 }
 
 func TestWorkflowCanonicalPresentationShape(t *testing.T) {
 	wf := validWalterWorkflow("workflow-a", "default", "walter-pool")
 	wf.Spec.Coworker.Connections = nil
+	wf.Spec.Coworker.OnItsOwn = append(wf.Spec.Coworker.OnItsOwn, v1alpha1.CoworkerOnItsOwnLine{
+		Text:   v1alpha1.RequiredLocalizedText{EN: "Emails suppliers", PT: "Envia emails a fornecedores"},
+		Kind:   "sends",
+		Detail: &v1alpha1.RequiredLocalizedText{EN: "Pre-approved recipients", PT: "Destinatários pré-aprovados"},
+		Items:  []string{"rates@northsealines.example"},
+	})
 	raw, err := json.Marshal(buildCanonicalSpec(wf).Presentation)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{
@@ -500,7 +531,11 @@ func TestWorkflowCanonicalPresentationShape(t *testing.T) {
 		"coworker":{"name":"Walter Ops","mark":{"shape":"petal","color":"teal"},
 			"role":{"en":"Quotation coordinator","pt":"Coordenador de cotações"},
 			"summary":{"en":"Prepares quotations.","pt":"Prepara cotações."},
-			"onItsOwn":[{"en":"Reads incoming requests","pt":"Lê os pedidos recebidos"}],
+			"onItsOwn":[
+				{"text":{"en":"Reads incoming requests","pt":"Lê os pedidos recebidos"},"kind":"reads"},
+				{"text":{"en":"Emails suppliers","pt":"Envia emails a fornecedores"},"kind":"sends",
+					"detail":{"en":"Pre-approved recipients","pt":"Destinatários pré-aprovados"},
+					"items":["rates@northsealines.example"]}],
 			"connections":[]}}`, string(raw))
 }
 
@@ -871,9 +906,10 @@ func testCoworker(name string) v1alpha1.CoworkerSpec {
 		Mark:    v1alpha1.CoworkerMark{Shape: "petal", Color: "teal"},
 		Role:    v1alpha1.RequiredLocalizedText{EN: "Quotation coordinator", PT: "Coordenador de cotações"},
 		Summary: v1alpha1.RequiredLocalizedText{EN: "Prepares quotations.", PT: "Prepara cotações."},
-		OnItsOwn: []v1alpha1.RequiredLocalizedText{
-			{EN: "Reads incoming requests", PT: "Lê os pedidos recebidos"},
-		},
+		OnItsOwn: []v1alpha1.CoworkerOnItsOwnLine{{
+			Text: v1alpha1.RequiredLocalizedText{EN: "Reads incoming requests", PT: "Lê os pedidos recebidos"},
+			Kind: "reads",
+		}},
 		Connections: []v1alpha1.RequiredLocalizedText{{EN: "Outlook", PT: "Outlook"}},
 	}
 }

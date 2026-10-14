@@ -171,6 +171,16 @@ type WorkItem struct {
 	ValueCurrency      *string            `json:"valueCurrency,omitempty"`
 	ValueDisputed      bool               `json:"valueDisputed"`
 	FailureSummary     json.RawMessage    `json:"failureSummary,omitempty"`
+	// AnsweredBy names the person who answered the item's most recent
+	// resolved approval or decision gate (DES-HOR-459-10); omitted when none
+	// was answered or the person has not chosen a display name.
+	AnsweredBy *AnsweredBy `json:"answeredBy,omitempty"`
+}
+
+// AnsweredBy is the customer-visible display name of the person who answered
+// a gate. It is never an email.
+type AnsweredBy struct {
+	DisplayName string `json:"displayName"`
 }
 
 // WorkPresentation is snapshotted from the immutable workflow definition for

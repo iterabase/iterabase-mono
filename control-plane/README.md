@@ -462,8 +462,11 @@ value-model reference, and a single-active-node directed graph.
   required EN/PT workflow name and `spec.coworker` the AI coworker identity:
   `name` (1–40 characters, a proper name that is never translated), `mark`
   (`shape` round/square/petal, `color` blue/green/sun/violet/teal), required
-  EN/PT `role` and `summary`, and optional EN/PT `onItsOwn` and `connections`
-  lists (at most 12 each). What the coworker "always asks you first" is not
+  EN/PT `role` and `summary`, an optional EN/PT `connections` list, and an
+  optional typed `onItsOwn` list (at most 12 entries each). Each `onItsOwn`
+  line (DES-HOR-459-09) is `{text: {en, pt}, kind: reads|sends|does,
+  detail?: {en, pt}, items?: [string]}` with at most 12 literal items of 1–200
+  characters; `detail` and `items` are omitted from the API when empty. What the coworker "always asks you first" is not
   declarable: it is derived from the graph's `human_gate` nodes. The canonical
   `{title, coworker}` presentation is snapshotted onto each attempt and is the
   work item `presentation` contract. Changing it is a content change and needs
@@ -518,7 +521,7 @@ Work APIs require a `work`-scope bearer key and operation capability
 |---|---|---|
 | `POST` | `/v1/work-items` | Idempotent workflow start (`Idempotency-Key` required) |
 | `GET` | `/v1/workflows` / `/v1/workflows/{key}` | Customer-safe workflow catalogue (`workflows.read`, HOR-459): latest valid definition per key with title, AI coworker, business steps (breadth-first from the entry node) and `alwaysAsks` (its human gates); never prompts, models, skills, tools, pools, value models or schemas. Percent-encode `/` in `{key}` |
-| `GET` | `/v1/work-items` / `/v1/work-items/{id}` | Search/list (`state`, `search`, `from`, `to`, exact `workflowKey`) and customer-safe detail |
+| `GET` | `/v1/work-items` / `/v1/work-items/{id}` | Search/list (`state`, `search`, `from`, `to`, exact `workflowKey`) and customer-safe detail; `answeredBy: {displayName}` names who answered the most recent resolved approval or decision gate across attempts (omitted when none or when the name is email-like, DES-HOR-459-10) |
 | `GET` | `/v1/work-items/{id}/attempts` | Preserved attempt history |
 | `GET` | `/v1/work-attempts/{id}/nodes` | Append-only graph-node visits and structured outputs |
 | `GET` | `/v1/work-items/{id}/timeline` | Customer-safe business timeline; `actorDisplayName` names a human actor (display name only, never an email) |
@@ -568,6 +571,15 @@ shadcn/ui (Radix) and Tailwind on the Iterabase Design System tokens
 Today, Your turn and All clear, Work with the work item side sheet
 (`/work/<id>` deep links), Team and AI coworker detail (from
 `GET /v1/workflows`), and Settings (Profile, Sessions; People for Admins).
+
+The installation name (DES-HOR-459-08) is `identity.organization_settings.name`:
+trimmed, at most 80 characters, empty when unset. `GET /v1/organization/settings`
+returns it as `name`; the Admin-only `PATCH` accepts `name` and/or
+`defaultLocale` and logs each change with the Admin. `GET /v1/auth/session`
+returns it as `organizationName` both signed in and signed out (omitted while
+unset). At startup the API stores `organization.name` (`ORGANIZATION_NAME`,
+chart value `organization.name`) only while no name is stored, so it never
+overwrites an Admin's choice.
 
 The app document (`index.html`) answers `/` and every browser deep link that
 is not under `/v1/`, `/assets/`, `/healthz`, `/readyz`, `/metrics` or

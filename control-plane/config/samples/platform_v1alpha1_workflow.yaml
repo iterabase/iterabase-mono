@@ -123,8 +123,11 @@ spec:
       en: Reads incoming quote requests and prepares a priced quotation for review.
       pt: Lê os pedidos de cotação recebidos e prepara uma cotação para revisão.
     onItsOwn:
-      - {en: Reads quote requests from the shared mailbox, pt: Lê pedidos de cotação da caixa partilhada}
-      - {en: Fills in the quotation workbook, pt: Preenche o livro de cotações}
+      - text: {en: Reads quote requests from the shared mailbox, pt: Lê pedidos de cotação da caixa partilhada}
+        kind: reads
+        detail: {en: Shared quotes mailbox · emails and attachments, pt: Caixa partilhada de cotações · emails e anexos}
+      - text: {en: Fills in the quotation workbook, pt: Preenche o livro de cotações}
+        kind: does
     connections:
       - {en: Outlook, pt: Outlook}
       - {en: Excel, pt: Excel}

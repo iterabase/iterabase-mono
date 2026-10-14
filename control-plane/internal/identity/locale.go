@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -33,15 +34,37 @@ var ErrInvalidLocale = errors.New("identity: invalid locale")
 // update is based on a stale version.
 var ErrOrganizationSettingsConflict = errors.New("identity: organization settings changed since they were loaded")
 
+// ErrInvalidOrganizationName is returned for an installation name longer than
+// OrganizationNameLimit characters after trimming.
+var ErrInvalidOrganizationName = errors.New("identity: invalid organization name")
+
+// ErrEmptyOrganizationSettingsUpdate is returned when an update names no
+// setting to change.
+var ErrEmptyOrganizationSettingsUpdate = errors.New("identity: organization settings update changes nothing")
+
+// OrganizationNameLimit bounds the installation name (DES-HOR-459-08).
+const OrganizationNameLimit = 80
+
+// NormalizeOrganizationName trims an installation name and validates its
+// length. Empty is allowed and means unset.
+func NormalizeOrganizationName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if utf8.RuneCountInString(name) > OrganizationNameLimit {
+		return "", ErrInvalidOrganizationName
+	}
+	return name, nil
+}
+
 // ValidLocale reports whether locale is a supported product locale.
 func ValidLocale(locale string) bool {
 	return locale == LocaleEN || locale == LocalePT
 }
 
 // OrganizationSettings is the deployment-wide settings row. DefaultLocale is
-// empty until an Admin chooses one.
+// empty until an Admin chooses one; Name is empty until seeded or set.
 type OrganizationSettings struct {
 	DefaultLocale       string
+	Name                string
 	UpdatedByIdentityID string
 	UpdatedAt           time.Time
 }
@@ -56,7 +79,7 @@ func (s *Store) GetOrganizationSettings(ctx context.Context) (OrganizationSettin
 }
 
 const organizationSettingsQuery = `
-	SELECT COALESCE(default_locale, ''), COALESCE(updated_by_identity_id::text, ''), updated_at
+	SELECT COALESCE(default_locale, ''), name, COALESCE(updated_by_identity_id::text, ''), updated_at
 	FROM identity.organization_settings WHERE id`
 
 // getOrganizationSettings reads the settings row; lock is appended to the
@@ -64,20 +87,61 @@ const organizationSettingsQuery = `
 func getOrganizationSettings(ctx context.Context, q rowQuerier, lock string) (OrganizationSettings, error) {
 	var settings OrganizationSettings
 	err := q.QueryRow(ctx, organizationSettingsQuery+lock).Scan(
-		&settings.DefaultLocale, &settings.UpdatedByIdentityID, &settings.UpdatedAt)
+		&settings.DefaultLocale, &settings.Name, &settings.UpdatedByIdentityID, &settings.UpdatedAt)
 	if err != nil {
 		return OrganizationSettings{}, fmt.Errorf("get organization settings: %w", err)
 	}
 	return settings, nil
 }
 
-// UpdateOrganizationDefaultLocale sets the organisation default language. It
-// is an Admin action logged with the actor (HOR-459 "Settings changes are
-// logged with the person's name"). A non-nil expected version must match the
-// stored one, so a stale tab cannot overwrite a newer change.
-func (s *Store) UpdateOrganizationDefaultLocale(ctx context.Context, actorID, locale string, expected *time.Time, now time.Time) (OrganizationSettings, error) {
-	if !ValidLocale(locale) {
-		return OrganizationSettings{}, ErrInvalidLocale
+// OrganizationSettingsUpdate names the settings an Admin changes; nil fields
+// are left as they are.
+type OrganizationSettingsUpdate struct {
+	DefaultLocale *string
+	Name          *string
+}
+
+// normalized validates the update and trims the name.
+func (u OrganizationSettingsUpdate) normalized() (OrganizationSettingsUpdate, error) {
+	if u.DefaultLocale == nil && u.Name == nil {
+		return u, ErrEmptyOrganizationSettingsUpdate
+	}
+	if u.DefaultLocale != nil && !ValidLocale(*u.DefaultLocale) {
+		return u, ErrInvalidLocale
+	}
+	if u.Name != nil {
+		name, err := NormalizeOrganizationName(*u.Name)
+		if err != nil {
+			return u, err
+		}
+		u.Name = &name
+	}
+	return u, nil
+}
+
+// auditDetail records each changed setting with its previous value.
+func (u OrganizationSettingsUpdate) auditDetail(previous OrganizationSettings) map[string]any {
+	detail := map[string]any{}
+	if u.DefaultLocale != nil {
+		detail["defaultLocale"] = *u.DefaultLocale
+		detail["previousDefaultLocale"] = previous.DefaultLocale
+	}
+	if u.Name != nil {
+		detail["name"] = *u.Name
+		detail["previousName"] = previous.Name
+	}
+	return detail
+}
+
+// UpdateOrganizationSettings changes the organisation default language and/or
+// the installation name. It is an Admin action logged with the actor (HOR-459
+// "Settings changes are logged with the person's name"). A non-nil expected
+// version must match the stored one, so a stale tab cannot overwrite a newer
+// change.
+func (s *Store) UpdateOrganizationSettings(ctx context.Context, actorID string, update OrganizationSettingsUpdate, expected *time.Time, now time.Time) (OrganizationSettings, error) {
+	update, err := update.normalized()
+	if err != nil {
+		return OrganizationSettings{}, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -96,8 +160,8 @@ func (s *Store) UpdateOrganizationDefaultLocale(ctx context.Context, actorID, lo
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE identity.organization_settings
-		SET default_locale = $1, updated_by_identity_id = $2
-		WHERE id`, locale, actorID); err != nil {
+		SET default_locale = COALESCE($1, default_locale), name = COALESCE($2, name), updated_by_identity_id = $3
+		WHERE id`, update.DefaultLocale, update.Name, actorID); err != nil {
 		return OrganizationSettings{}, fmt.Errorf("update organization settings: %w", err)
 	}
 	if err := AppendSecurityEventTx(ctx, tx, SecurityEvent{
@@ -106,11 +170,8 @@ func (s *Store) UpdateOrganizationDefaultLocale(ctx context.Context, actorID, lo
 		InitiatingHumanIdentityID: actorID,
 		RequestActorIdentityID:    actorID,
 		CredentialKind:            CredentialBrowser,
-		Detail: map[string]any{
-			"defaultLocale":         locale,
-			"previousDefaultLocale": previous.DefaultLocale,
-		},
-		CreatedAt: now,
+		Detail:                    update.auditDetail(previous),
+		CreatedAt:                 now,
 	}); err != nil {
 		return OrganizationSettings{}, err
 	}
@@ -122,6 +183,25 @@ func (s *Store) UpdateOrganizationDefaultLocale(ctx context.Context, actorID, lo
 		return OrganizationSettings{}, fmt.Errorf("commit organization settings update: %w", err)
 	}
 	return updated, nil
+}
+
+// SeedOrganizationName stores the installation name from deployment
+// configuration only while no name is stored, so it never overwrites a name an
+// Admin set. It reports whether the seed was stored.
+func (s *Store) SeedOrganizationName(ctx context.Context, seed string) (bool, error) {
+	name, err := NormalizeOrganizationName(seed)
+	if err != nil {
+		return false, err
+	}
+	if name == "" {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE identity.organization_settings SET name = $1 WHERE id AND name = ''`, name)
+	if err != nil {
+		return false, fmt.Errorf("seed organization name: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // ResolveLocale returns the language to use for a recipient when no browser is

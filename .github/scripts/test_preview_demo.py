@@ -56,6 +56,15 @@ def workflows() -> list[dict]:
 
 
 class Manifests(unittest.TestCase):
+    def test_quotes_lines_are_typed(self) -> None:
+        quotes = next(doc["spec"] for doc in workflows() if doc["spec"]["key"] == "demo/quotes")
+        lines = quotes["coworker"]["onItsOwn"]
+        self.assertEqual([line["kind"] for line in lines], ["reads", "reads", "sends", "does"])
+        self.assertEqual(lines[0]["detail"]["en"], "quotes@exemplo.pt · emails and attachments")
+        self.assertEqual(len(lines[2]["items"]), 6)
+        self.assertIn("rates@northsealines.example", lines[2]["items"])
+        self.assertNotIn("items", lines[0])
+
     def test_pool_never_runs_workers(self) -> None:
         pool = next(doc for doc in preview_demo.manifests("model-a") if doc["kind"] == "AgentPool")
         self.assertEqual(pool["spec"]["replicas"], 0)
@@ -66,9 +75,17 @@ class Manifests(unittest.TestCase):
             spec = workflow["spec"]
             self.assertEqual(spec["poolRef"], preview_demo.POOL)
             self.assertNotIn("presentation", spec)
+            lines = spec["coworker"]["onItsOwn"]
             for text in [spec["title"], spec["coworker"]["role"], spec["coworker"]["summary"],
-                         *spec["coworker"]["onItsOwn"], *spec["coworker"]["connections"]]:
+                         *(line["text"] for line in lines), *(line["detail"] for line in lines if "detail" in line),
+                         *spec["coworker"]["connections"]]:
                 self.assertTrue(text["en"] and text["pt"], text)
+            self.assertLessEqual(len(lines), 12)
+            for line in lines:
+                self.assertIn(line["kind"], {"reads", "sends", "does"})
+                self.assertLessEqual(len(line.get("items", [])), 12)
+                for item in line.get("items", []):
+                    self.assertTrue(0 < len(item) <= 200, item)
             self.assertIn(spec["coworker"]["mark"]["shape"], {"round", "square", "petal"})
 
     def test_every_outcome_is_routed_or_terminal(self) -> None:

@@ -217,8 +217,13 @@ func (h *Handler) authSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// Before sign-in the language follows the organisation default, then the
-	// browser (DES-HOR-670-02).
-	anonymous := authSessionResponse{Locale: h.webLocale(r, "")}
+	// browser (DES-HOR-670-02); the sign-in page also shows the installation
+	// name (DES-HOR-459-08).
+	organization := h.organizationSettings(r)
+	anonymous := authSessionResponse{
+		Locale:           identity.ResolveWebLocale("", organization.DefaultLocale, r.Header.Get("Accept-Language")),
+		OrganizationName: organization.Name,
+	}
 	token, err := h.authCfg.sessionCookie(r)
 	if err != nil {
 		if errors.Is(err, ErrBearerNotAccepted) {
@@ -251,6 +256,7 @@ func (h *Handler) authSession(w http.ResponseWriter, r *http.Request) {
 	profile.RecentPasswordAt = session.RecentPasswordAt
 	writeJSON(w, http.StatusOK, authSessionResponse{
 		Authenticated: true, Profile: &profile, CSRFToken: csrfRaw, Locale: profile.Locale,
+		OrganizationName: organization.Name,
 	})
 }
 
@@ -891,6 +897,9 @@ type authSessionResponse struct {
 	CSRFToken     string           `json:"csrfToken,omitempty"`
 	// Locale is the effective UI language, also before sign-in.
 	Locale string `json:"locale,omitempty"`
+	// OrganizationName is the installation name, also before sign-in; omitted
+	// while unset.
+	OrganizationName string `json:"organizationName,omitempty"`
 }
 
 type profileResponse struct {
@@ -944,20 +953,21 @@ func (h *Handler) profileFor(r *http.Request, user identity.LocalUser) profileRe
 	}
 }
 
-// organizationLocale reads the organisation default language. A read failure
+// organizationSettings reads the organisation settings. A read failure
 // degrades to "not chosen" so a settings outage never blocks sign-in.
-func (h *Handler) organizationLocale(r *http.Request) string {
+func (h *Handler) organizationSettings(r *http.Request) identity.OrganizationSettings {
 	settings, err := h.store.GetOrganizationSettings(r.Context())
 	if err != nil {
 		h.logWarn("reading organization settings failed", err)
-		return ""
+		return identity.OrganizationSettings{}
 	}
-	return settings.DefaultLocale
+	return settings
 }
 
-// webLocale resolves the effective UI language for this request.
-func (h *Handler) webLocale(r *http.Request, preference string) string {
-	return identity.ResolveWebLocale(preference, h.organizationLocale(r), r.Header.Get("Accept-Language"))
+// organizationLocale reads the organisation default language, degrading to
+// "not chosen" on a read failure.
+func (h *Handler) organizationLocale(r *http.Request) string {
+	return h.organizationSettings(r).DefaultLocale
 }
 
 func normalizeLocale(locale string) string {

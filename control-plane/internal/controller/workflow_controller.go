@@ -646,10 +646,41 @@ func validatePresentation(title v1alpha1.RequiredLocalizedText, coworker v1alpha
 	if coworker.Summary.EN == "" || coworker.Summary.PT == "" {
 		return fmt.Errorf("spec.coworker.summary requires en and pt text")
 	}
-	if err := validateCoworkerList("onItsOwn", coworker.OnItsOwn); err != nil {
+	if err := validateCoworkerOnItsOwn(coworker.OnItsOwn); err != nil {
 		return err
 	}
 	return validateCoworkerList("connections", coworker.Connections)
+}
+
+// coworkerItemLimit bounds one literal item listed under an onItsOwn line.
+const coworkerItemLimit = 200
+
+func validateCoworkerOnItsOwn(lines []v1alpha1.CoworkerOnItsOwnLine) error {
+	if len(lines) > coworkerListLimit {
+		return fmt.Errorf("spec.coworker.onItsOwn allows at most %d entries", coworkerListLimit)
+	}
+	for i, line := range lines {
+		if line.Text.EN == "" || line.Text.PT == "" {
+			return fmt.Errorf("spec.coworker.onItsOwn[%d].text requires en and pt text", i)
+		}
+		switch line.Kind {
+		case "reads", "sends", "does":
+		default:
+			return fmt.Errorf("spec.coworker.onItsOwn[%d].kind must be reads, sends or does", i)
+		}
+		if line.Detail != nil && (line.Detail.EN == "" || line.Detail.PT == "") {
+			return fmt.Errorf("spec.coworker.onItsOwn[%d].detail requires en and pt text", i)
+		}
+		if len(line.Items) > coworkerListLimit {
+			return fmt.Errorf("spec.coworker.onItsOwn[%d].items allows at most %d entries", i, coworkerListLimit)
+		}
+		for j, item := range line.Items {
+			if item == "" || utf8.RuneCountInString(item) > coworkerItemLimit {
+				return fmt.Errorf("spec.coworker.onItsOwn[%d].items[%d] must be 1 to %d characters", i, j, coworkerItemLimit)
+			}
+		}
+	}
+	return nil
 }
 
 func validateCoworkerMark(mark v1alpha1.CoworkerMark) error {
@@ -689,6 +720,17 @@ func canonicalPresentation(title v1alpha1.RequiredLocalizedText, coworker v1alph
 		}
 		return out
 	}
+	onItsOwn := make([]workflow.CanonicalOnItsOwnLine, 0, len(coworker.OnItsOwn))
+	for _, line := range coworker.OnItsOwn {
+		canonical := workflow.CanonicalOnItsOwnLine{
+			Text: text(line.Text), Kind: line.Kind, Items: append([]string(nil), line.Items...),
+		}
+		if line.Detail != nil {
+			detail := text(*line.Detail)
+			canonical.Detail = &detail
+		}
+		onItsOwn = append(onItsOwn, canonical)
+	}
 	return workflow.CanonicalPresentation{
 		Title: text(title),
 		Coworker: workflow.CanonicalCoworker{
@@ -696,7 +738,7 @@ func canonicalPresentation(title v1alpha1.RequiredLocalizedText, coworker v1alph
 			Mark:        workflow.CanonicalCoworkerMark{Shape: coworker.Mark.Shape, Color: coworker.Mark.Color},
 			Role:        text(coworker.Role),
 			Summary:     text(coworker.Summary),
-			OnItsOwn:    texts(coworker.OnItsOwn),
+			OnItsOwn:    onItsOwn,
 			Connections: texts(coworker.Connections),
 		},
 	}

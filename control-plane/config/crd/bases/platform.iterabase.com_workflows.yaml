@@ -100,21 +100,61 @@ spec:
                     minLength: 1
                     type: string
                   onItsOwn:
-                    description: onItsOwn lists what the coworker does without asking.
+                    description: |-
+                      onItsOwn lists what the coworker does without asking, each line typed
+                      by whether it reads, sends, or does something.
                     items:
-                      description: |-
-                        RequiredLocalizedText is approved English/Portuguese customer copy where
-                        both locales are mandatory.
+                      description: CoworkerOnItsOwnLine is one typed thing the coworker
+                        does without asking.
                       properties:
-                        en:
-                          minLength: 1
+                        detail:
+                          description: detail is optional localized context shown
+                            under the line.
+                          properties:
+                            en:
+                              minLength: 1
+                              type: string
+                            pt:
+                              minLength: 1
+                              type: string
+                          required:
+                          - en
+                          - pt
+                          type: object
+                        items:
+                          description: |-
+                            items optionally enumerates what the line covers, such as recipients.
+                            Items are literal values and are never translated.
+                          items:
+                            maxLength: 200
+                            minLength: 1
+                            type: string
+                          maxItems: 12
+                          type: array
+                        kind:
+                          description: kind says whether the coworker reads, sends,
+                            or does something.
+                          enum:
+                          - reads
+                          - sends
+                          - does
                           type: string
-                        pt:
-                          minLength: 1
-                          type: string
+                        text:
+                          description: text is the localized line itself.
+                          properties:
+                            en:
+                              minLength: 1
+                              type: string
+                            pt:
+                              minLength: 1
+                              type: string
+                          required:
+                          - en
+                          - pt
+                          type: object
                       required:
-                      - en
-                      - pt
+                      - kind
+                      - text
                       type: object
                     maxItems: 12
                     type: array

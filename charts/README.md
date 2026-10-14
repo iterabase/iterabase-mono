@@ -504,6 +504,14 @@ The workflow supplies the N-1 baseline as exact `oci://…:<version>` references
 plus archive SHA-256 checksums; the scenario fails closed without them.
 Arbitrary-version rollback safety is not claimed.
 
+## Installation name
+
+`control-plane.organization.name` (default `""`) seeds the installation name
+shown in the app and on the sign-in page (DES-HOR-459-08). The api stores it at
+startup only while no name is stored, so a name an Admin later sets in
+Settings is never overwritten by an upgrade or reapply. The value is trimmed
+and must be at most 80 characters; an over-long value fails api startup.
+
 ## Resources and single-node sizing
 
 Every workload ships reviewed requests and memory limits, the release

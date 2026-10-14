@@ -464,15 +464,41 @@ type CoworkerSpec struct {
 	// +kubebuilder:validation:Required
 	Summary RequiredLocalizedText `json:"summary"`
 
-	// onItsOwn lists what the coworker does without asking.
+	// onItsOwn lists what the coworker does without asking, each line typed
+	// by whether it reads, sends, or does something.
 	// +optional
 	// +kubebuilder:validation:MaxItems=12
-	OnItsOwn []RequiredLocalizedText `json:"onItsOwn,omitempty"`
+	OnItsOwn []CoworkerOnItsOwnLine `json:"onItsOwn,omitempty"`
 
 	// connections lists the customer systems the coworker works with.
 	// +optional
 	// +kubebuilder:validation:MaxItems=12
 	Connections []RequiredLocalizedText `json:"connections,omitempty"`
+}
+
+// CoworkerOnItsOwnLine is one typed thing the coworker does without asking.
+// +kubebuilder:object:generate=true
+type CoworkerOnItsOwnLine struct {
+	// text is the localized line itself.
+	// +kubebuilder:validation:Required
+	Text RequiredLocalizedText `json:"text"`
+
+	// kind says whether the coworker reads, sends, or does something.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=reads;sends;does
+	Kind string `json:"kind"`
+
+	// detail is optional localized context shown under the line.
+	// +optional
+	Detail *RequiredLocalizedText `json:"detail,omitempty"`
+
+	// items optionally enumerates what the line covers, such as recipients.
+	// Items are literal values and are never translated.
+	// +optional
+	// +kubebuilder:validation:MaxItems=12
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=200
+	Items []string `json:"items,omitempty"`
 }
 
 // CoworkerMark is the coworker's enumerated visual mark.

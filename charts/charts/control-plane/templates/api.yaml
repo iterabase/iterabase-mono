@@ -150,6 +150,10 @@ spec:
               value: {{ .Values.logLevel | default "info" | quote }}
             - name: LOG_FORMAT
               value: {{ .Values.logFormat | default "json" | quote }}
+            {{- with (dig "name" "" (.Values.organization | default (dict))) }}
+            - name: ORGANIZATION_NAME
+              value: {{ . | quote }}
+            {{- end }}
             {{- include "control-plane.authEnv" . | nindent 12 }}
             {{- if (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) }}
             # Env-gated HTTPS: the api serves HTTPS when both are set (HOR-371),

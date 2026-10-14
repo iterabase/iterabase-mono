@@ -108,24 +108,24 @@ func TestMigrations(t *testing.T) {
 
 	// HOR-489: fresh installs grant only the durable workload-authorization
 	// reads. A migration-22 OPO1 database already has this exact ACL, so moving
-	// down migrations 33 through 23 intentionally preserves it; reapplying
+	// down migrations 34 through 23 intentionally preserves it; reapplying
 	// them must be an idempotent metadata advance with no manual role update.
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
-	require.NoError(t, database.MigrateDown(connStr, 11))
+	require.NoError(t, database.MigrateDown(connStr, 12))
 	var migrationVersion int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
 	assert.Equal(t, 22, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 	require.NoError(t, database.MigrateUp(connStr))
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
-	assert.Equal(t, 33, migrationVersion)
+	assert.Equal(t, 34, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 
 	// HOR-254 must migrate an existing gateway ledger without requiring an
-	// unavailable customer-safe summary backfill. Step back from 33 (HOR-459), 32 (HOR-670),
+	// unavailable customer-safe summary backfill. Step back from 34 and 33 (HOR-459), 32 (HOR-670),
 	// through 31 (HOR-582), 30 (HOR-597) and the earlier migrations to the
-	// pre-HOR-254 schema; seed a historical write, then apply all eighteen again.
-	require.NoError(t, database.MigrateDown(connStr, 18))
+	// pre-HOR-254 schema; seed a historical write, then apply all nineteen again.
+	require.NoError(t, database.MigrateDown(connStr, 19))
 	_, err = pool.Exec(ctx, `
 		INSERT INTO toolgateway.tool_versions
 		    (name,version,digest,description,input_schema,effect_class,credential_slots,artifact_capabilities,timeout_ms)
@@ -359,9 +359,9 @@ func TestV2OnlyAuthorityMigrationUpgradesALegacyInstallation(t *testing.T) {
 
 	// Step back to the pre-HOR-453 schema (migration 25) and seed a legacy
 	// install shaped like OPO1. The combined tree has 29 (wait/pause),
-	// 30 (backend auth_ref), 31 (V2-only authority), 32 (locale preference)
-	// and 33 (workflow coworker), so step down eight.
-	require.NoError(t, database.MigrateDown(connStr, 8))
+	// 30 (backend auth_ref), 31 (V2-only authority), 32 (locale preference),
+	// 33 (workflow coworker) and 34 (organization name), so step down nine.
+	require.NoError(t, database.MigrateDown(connStr, 9))
 	version, dirty, err := database.MigrateVersion(connStr)
 	require.NoError(t, err)
 	require.False(t, dirty)
@@ -535,7 +535,7 @@ func TestWorkflowCoworkerPresentationMigration(t *testing.T) {
 	pool, connStr := testutil.NewPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, database.MigrateDown(connStr, 1))
+	require.NoError(t, database.MigrateDown(connStr, 2))
 	version, dirty, err := database.MigrateVersion(connStr)
 	require.NoError(t, err)
 	require.False(t, dirty)
@@ -598,7 +598,7 @@ func TestWorkflowCoworkerPresentationMigration(t *testing.T) {
 		readJSON(`SELECT spec_json::text FROM workflow.definitions WHERE id=$1`, emptyDefinitionID),
 		"a canonical spec without presentation is left alone")
 
-	require.NoError(t, database.MigrateDown(connStr, 1))
+	require.NoError(t, database.MigrateDown(connStr, 2))
 	reverted := `{"workflowTitle":"Quotation processing","personaName":"Marco"}`
 	assert.JSONEq(t, reverted, readJSON(`SELECT presentation::text FROM workflow.definitions WHERE id=$1`, definitionID))
 	assert.JSONEq(t, reverted, readJSON(`SELECT (spec_json->'presentation')::text FROM workflow.definitions WHERE id=$1`, definitionID))

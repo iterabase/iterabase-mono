@@ -798,12 +798,21 @@ type CanonicalText struct {
 
 // CanonicalCoworker is the customer-facing identity of the AI coworker.
 type CanonicalCoworker struct {
-	Name        string                `json:"name"`
-	Mark        CanonicalCoworkerMark `json:"mark"`
-	Role        CanonicalText         `json:"role"`
-	Summary     CanonicalText         `json:"summary"`
-	OnItsOwn    []CanonicalText       `json:"onItsOwn"`
-	Connections []CanonicalText       `json:"connections"`
+	Name        string                  `json:"name"`
+	Mark        CanonicalCoworkerMark   `json:"mark"`
+	Role        CanonicalText           `json:"role"`
+	Summary     CanonicalText           `json:"summary"`
+	OnItsOwn    []CanonicalOnItsOwnLine `json:"onItsOwn"`
+	Connections []CanonicalText         `json:"connections"`
+}
+
+// CanonicalOnItsOwnLine is one typed thing the coworker does without asking.
+// Kind is reads, sends or does; detail and items are omitted when empty.
+type CanonicalOnItsOwnLine struct {
+	Text   CanonicalText  `json:"text"`
+	Kind   string         `json:"kind"`
+	Detail *CanonicalText `json:"detail,omitempty"`
+	Items  []string       `json:"items,omitempty"`
 }
 
 // CanonicalCoworkerMark is the coworker's enumerated visual mark.
@@ -816,7 +825,7 @@ type CanonicalCoworkerMark struct {
 // so every serialization carries the same stable shape.
 func (p CanonicalPresentation) Normalized() CanonicalPresentation {
 	if p.Coworker.OnItsOwn == nil {
-		p.Coworker.OnItsOwn = []CanonicalText{}
+		p.Coworker.OnItsOwn = []CanonicalOnItsOwnLine{}
 	}
 	if p.Coworker.Connections == nil {
 		p.Coworker.Connections = []CanonicalText{}

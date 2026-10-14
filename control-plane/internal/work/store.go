@@ -275,7 +275,7 @@ func (s *Store) createAttemptTx(ctx context.Context, tx pgx.Tx, in createAttempt
 	return nil
 }
 
-const workItemSelect = `
+var workItemSelect = `
 	SELECT c.id, c.workflow_key, c.scope_identity_id, c.title, c.source, wi.source_presentation,
 	       a.presentation_snapshot, c.current_attempt_id, c.customer_state, c.runtime_state,
 	       c.created_at, c.updated_at, c.started_at, c.finished_at,
@@ -285,7 +285,8 @@ const workItemSelect = `
 	       step.node_key, step.business_label, step.state, step.started_at,
 	       blocker.id::text, blocker.kind, blocker.title,
 	       wt.completion, wt.expected_count, wt.received, wt.deadline_at,
-	       ps.cause, ps.paused_at
+	       ps.cause, ps.paused_at,
+	       ` + humanDisplayName("answered.responded_by") + `
 	FROM work.current_work_items c
 	JOIN work.work_items wi ON wi.id=c.id
 	JOIN work.attempts a ON a.id=c.current_attempt_id
@@ -308,7 +309,16 @@ const workItemSelect = `
 	LEFT JOIN LATERAL (
 		SELECT cause, paused_at FROM work.attempt_pauses
 		WHERE attempt_id=c.current_attempt_id AND resumed_at IS NULL
-	) ps ON true`
+	) ps ON true
+	LEFT JOIN LATERAL (
+		-- DES-HOR-459-10: who answered the most recent resolved approval or
+		-- decision gate across every attempt (reached through the attempt
+		-- indexes, one lateral per row).
+		SELECT b.responded_by FROM work.attempts ax
+		JOIN work.blockers b ON b.attempt_id=ax.id
+		WHERE ax.work_item_id=c.id AND b.state='resolved' AND b.kind IN ('approval','decision')
+		ORDER BY b.resolved_at DESC NULLS LAST, b.created_at DESC LIMIT 1
+	) answered ON true`
 
 // GetWorkItem returns the customer-safe current projection and value status.
 func (s *Store) GetWorkItem(ctx context.Context, id string) (WorkItem, error) {
@@ -356,13 +366,17 @@ func scanWorkItem(row pgx.Row) (WorkItem, error) {
 	var waitCompletion, pauseCause *string
 	var waitExpected, waitReceived *int
 	var waitDeadline, pausedAt *time.Time
+	var answeredBy *string
 	if err := row.Scan(&out.ID, &out.WorkflowKey, &out.ScopeIdentityID, &out.Title, &out.Source,
 		&sourcePresentation, &presentation, &out.CurrentAttemptID, &out.State, &out.RuntimeState,
 		&out.CreatedAt, &out.UpdatedAt, &out.StartedAt, &out.FinishedAt, &failure,
 		&out.ValueConfigured, &out.ValueModel, &out.EstimatedValue, &out.ValueCurrency, &out.ValueDisputed,
 		&stepKey, &stepLabel, &stepState, &stepStartedAt, &blockerID, &blockerKind, &blockerTitle,
-		&waitCompletion, &waitExpected, &waitReceived, &waitDeadline, &pauseCause, &pausedAt); err != nil {
+		&waitCompletion, &waitExpected, &waitReceived, &waitDeadline, &pauseCause, &pausedAt, &answeredBy); err != nil {
 		return WorkItem{}, err
+	}
+	if answeredBy != nil {
+		out.AnsweredBy = &AnsweredBy{DisplayName: *answeredBy}
 	}
 	if waitCompletion != nil && out.State == StateWaiting {
 		out.Wait = &WaitSummary{Completion: *waitCompletion, Expected: *waitExpected, Received: *waitReceived, DeadlineAt: *waitDeadline}

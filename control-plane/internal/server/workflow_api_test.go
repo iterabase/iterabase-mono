@@ -62,9 +62,16 @@ func seedCatalogueWorkflow(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 			Title: workflow.CanonicalText{EN: "Quotes", PT: "Cotações"},
 			Coworker: workflow.CanonicalCoworker{
 				Name: "Beatriz", Mark: workflow.CanonicalCoworkerMark{Shape: "petal", Color: "violet"},
-				Role:        workflow.CanonicalText{EN: "Quotation coordinator", PT: "Coordenadora de cotações"},
-				Summary:     workflow.CanonicalText{EN: "Prepares quotes.", PT: "Prepara cotações."},
-				OnItsOwn:    []workflow.CanonicalText{{EN: "Reads requests", PT: "Lê pedidos"}},
+				Role:    workflow.CanonicalText{EN: "Quotation coordinator", PT: "Coordenadora de cotações"},
+				Summary: workflow.CanonicalText{EN: "Prepares quotes.", PT: "Prepara cotações."},
+				OnItsOwn: []workflow.CanonicalOnItsOwnLine{
+					{Text: workflow.CanonicalText{EN: "Reads requests", PT: "Lê pedidos"}, Kind: "reads"},
+					{
+						Text: workflow.CanonicalText{EN: "Emails suppliers", PT: "Envia emails a fornecedores"}, Kind: "sends",
+						Detail: &workflow.CanonicalText{EN: "Pre-approved", PT: "Pré-aprovados"},
+						Items:  []string{"rates@northsealines.example"},
+					},
+				},
 				Connections: []workflow.CanonicalText{{EN: "Outlook", PT: "Outlook"}},
 			},
 		},
@@ -113,7 +120,10 @@ func TestWorkflowCatalogueIsCustomerSafe(t *testing.T) {
 		"coworker":{"name":"Beatriz","mark":{"shape":"petal","color":"violet"},
 			"role":{"en":"Quotation coordinator","pt":"Coordenadora de cotações"},
 			"summary":{"en":"Prepares quotes.","pt":"Prepara cotações."},
-			"onItsOwn":[{"en":"Reads requests","pt":"Lê pedidos"}],
+			"onItsOwn":[
+				{"text":{"en":"Reads requests","pt":"Lê pedidos"},"kind":"reads"},
+				{"text":{"en":"Emails suppliers","pt":"Envia emails a fornecedores"},"kind":"sends",
+					"detail":{"en":"Pre-approved","pt":"Pré-aprovados"},"items":["rates@northsealines.example"]}],
 			"connections":[{"en":"Outlook","pt":"Outlook"}]},
 		"steps":[
 			{"key":"intake","kind":"agent_task","label":{"en":"Reading the request","pt":"A ler o pedido"}},
@@ -248,4 +258,74 @@ func TestTimeBackIsVisibleToEveryRoleWithoutMoney(t *testing.T) {
 		}
 	}
 	assert.Equal(t, timeBack["admin"], timeBack["operator"])
+}
+
+// TestWorkItemsCarryWhoAnsweredTheLastApprovalOrDecision proves the
+// work-item list and detail return answeredBy (DES-HOR-459-10): the display
+// name of the person who answered the most recent resolved approval or
+// decision gate across attempts, ignoring information gates, and never an
+// email-like name.
+func TestWorkItemsCarryWhoAnsweredTheLastApprovalOrDecision(t *testing.T) {
+	h := newAuthAPIHarness(t)
+	ctx := context.Background()
+	seedManualValueWorkflow(t, ctx, h.pool)
+	admin := h.provisionAdmin("admin@example.com", "admin-long-password")
+	operator := h.activeUser("operator@example.com", "operator", "operator-long-password")
+	operatorSession := h.signIn("operator@example.com", "operator-long-password", operator)
+	_, err := h.pool.Exec(ctx, `UPDATE identity.local_users SET display_name='Rita Lopes' WHERE identity_id=$1`, operator.ID)
+	require.NoError(t, err)
+
+	headers := operatorSession.unsafeHeaders()
+	headers["Idempotency-Key"] = "answered-1"
+	started := h.do(http.MethodPost, "/v1/work-items", map[string]any{
+		"workflowKey": "walter/manual", "title": "Quotation — ACME", "source": map[string]any{"m": 1},
+		"sourcePresentation": map[string]any{"kind": "email", "title": "Quote", "evidence": []any{}},
+	}, headers)
+	require.Equal(t, http.StatusCreated, started.status, "%v", started.body)
+	itemID, _ := started.body["id"].(string)
+
+	resolve := func(kind, responder, resolvedAgo string) {
+		t.Helper()
+		_, err := h.pool.Exec(ctx, `
+			INSERT INTO work.blockers (work_item_id,attempt_id,kind,title,description,state,response_outcome,responded_by,resolved_at)
+			SELECT wi.id, a.id, $2, '{"en":"Gate","pt":"Portão"}', '{"en":"","pt":""}', 'resolved', 'done', $3,
+			       now() - $4::interval
+			FROM work.work_items wi JOIN work.attempts a ON a.work_item_id = wi.id WHERE wi.id = $1`,
+			itemID, kind, responder, resolvedAgo)
+		require.NoError(t, err)
+	}
+	answeredBy := func() []any {
+		t.Helper()
+		var out []any
+		items := h.list("/v1/work-items", admin.headers())
+		require.Len(t, items, 1)
+		detail := h.do(http.MethodGet, "/v1/work-items/"+itemID, nil, admin.headers())
+		require.Equal(t, http.StatusOK, detail.status)
+		for _, item := range []map[string]any{items[0], detail.body} {
+			out = append(out, item["answeredBy"])
+		}
+		return out
+	}
+
+	assert.Equal(t, []any{nil, nil}, answeredBy(), "nothing answered yet")
+	resolve("information", operator.ID, "3 hours")
+	assert.Equal(t, []any{nil, nil}, answeredBy(), "an information gate is not an answer")
+
+	resolve("approval", operator.ID, "2 hours")
+	resolve("information", admin.user.ID, "1 hour")
+	want := map[string]any{"displayName": "Rita Lopes"}
+	assert.Equal(t, []any{want, want}, answeredBy(), "the latest approval wins over a later information gate")
+
+	_, err = h.pool.Exec(ctx, `UPDATE identity.local_users SET display_name='Admin Person' WHERE identity_id=$1`, admin.user.ID)
+	require.NoError(t, err)
+	resolve("decision", admin.user.ID, "30 minutes")
+	want = map[string]any{"displayName": "Admin Person"}
+	assert.Equal(t, []any{want, want}, answeredBy(), "a later decision is the most recent answer")
+
+	_, err = h.pool.Exec(ctx, `UPDATE identity.local_users SET display_name='admin@example.com' WHERE identity_id=$1`, admin.user.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []any{nil, nil}, answeredBy(), "an email-like name is suppressed")
+	raw, err := json.Marshal(h.list("/v1/work-items", operatorSession.headers()))
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "admin@example.com")
 }

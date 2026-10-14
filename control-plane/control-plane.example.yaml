@@ -107,3 +107,9 @@ auth:
   bootstrap:
     admin_email: "${AUTH_BOOTSTRAP_ADMIN_EMAIL}"
     admin_locale: "en"      # en | pt
+
+# Installation name (DES-HOR-459-08), shown in the app and on the sign-in page.
+# Seeded at API startup only while no name is stored; an Admin can change it in
+# Settings and the seed never overwrites that. Trimmed, at most 80 characters.
+organization:
+  name: "${ORGANIZATION_NAME}"

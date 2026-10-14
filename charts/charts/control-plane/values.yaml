@@ -220,6 +220,13 @@ auth:
     emailKey: admin-email
     localeKey: admin-locale
 
+# Organisation settings seeded from the deployment (DES-HOR-459-08).
+organization:
+  # Installation name shown in the app and on the sign-in page. The api stores
+  # it at startup only while no name is stored, so it never overwrites a name
+  # an Admin set in Settings. Trimmed; at most 80 characters; empty = unset.
+  name: ""
+
 # PostgreSQL connection. Defaults match the bundled pgvector postgresql
 # subchart. To BYO: set postgresql.enabled=false and override host/secret.
 postgresql:

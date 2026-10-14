@@ -29,6 +29,15 @@ type Config struct {
 	Logging  LoggingConfig  `yaml:"logging"`
 	Artifact ArtifactConfig `yaml:"artifact"`
 	Auth     AuthConfig     `yaml:"auth"`
+	// Organization seeds deployment-wide organisation settings.
+	Organization OrganizationConfig `yaml:"organization"`
+}
+
+// OrganizationConfig seeds organisation settings from the deployment
+// (DES-HOR-459-08). Name is stored as the installation name at API startup
+// only while no name is stored, so it never overwrites an Admin's choice.
+type OrganizationConfig struct {
+	Name string `yaml:"name"`
 }
 
 // APIConfig configures the HTTP API server (cmd/api).
@@ -376,6 +385,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("AUTH_BOOTSTRAP_ADMIN_LOCALE"); v != "" {
 		cfg.Auth.Bootstrap.AdminLocale = v
+	}
+	if v := os.Getenv("ORGANIZATION_NAME"); v != "" {
+		cfg.Organization.Name = v
 	}
 }
 

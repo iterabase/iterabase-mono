@@ -39,6 +39,16 @@ def _text(en: str, pt: str) -> dict:
     return {"en": en, "pt": pt}
 
 
+def _line(kind: str, text: dict, detail: dict | None = None, items: list[str] | None = None) -> dict:
+    """One typed coworker "On its own" line (DES-HOR-459-09)."""
+    line = {"text": text, "kind": kind}
+    if detail:
+        line["detail"] = detail
+    if items:
+        line["items"] = items
+    return line
+
+
 def _agent_step(key: str, label: dict, model_id: str, summary: dict) -> dict:
     return {
         "key": key,
@@ -99,7 +109,7 @@ def manifests(model_id: str) -> list[dict]:
     }
     quotes = _workflow("preview-demo-quotes", {
         "key": "demo/quotes",
-        "version": "1",
+        "version": "2",
         "poolRef": POOL,
         "defaultModelRef": model_id,
         "source": {"type": "manual_api"},
@@ -148,16 +158,24 @@ def manifests(model_id: str) -> list[dict]:
                 "transforma os pedidos de cotação enviados para quotes@ em cotações que aprova.",
             ),
             "onItsOwn": [
-                _text("Reads customer emails, PDFs and handwriting", "Lê emails, PDFs e letra manuscrita dos clientes"),
-                _text("Asks your usual suppliers for rates", "Pede preços aos seus fornecedores habituais"),
-                _text("Prices with your margin rules", "Calcula o preço com as suas regras de margem"),
+                _line("reads", _text("Read the quotes mailbox", "Lê a caixa de correio de cotações"),
+                      _text("quotes@exemplo.pt · emails and attachments", "quotes@exemplo.pt · emails e anexos")),
+                _line("reads", _text("Read rates on 2 portals", "Lê preços em 2 portais"),
+                      _text("FreightNet, CargoHub · never submits", "FreightNet, CargoHub · nunca submete")),
+                _line("sends", _text("Email your 6 usual suppliers", "Envia email aos seus 6 fornecedores habituais"),
+                      _text("Pre-approved recipients · sent without review",
+                            "Destinatários pré-aprovados · enviado sem revisão"),
+                      ["rates@northsealines.example", "pricing@atlanticfwd.example", "quotes@ibercargo.example",
+                       "sales@portoshipping.example", "lcl@euroconsol.example", "ops@lusofreight.example"]),
+                _line("does", _text("Price with your margin rules", "Calcula o preço com as suas regras de margem"),
+                      _text("LCL at least 12% · FCL at least 10%", "LCL pelo menos 12% · FCL pelo menos 10%")),
             ],
             "connections": [_text("Microsoft 365 mailbox · quotes@", "Caixa de correio Microsoft 365 · quotes@")],
         },
     })
     rates = _workflow("preview-demo-rates", {
         "key": "demo/rates",
-        "version": "1",
+        "version": "2",
         "poolRef": POOL,
         "defaultModelRef": model_id,
         "source": {"type": "manual_api"},
@@ -203,8 +221,12 @@ def manifests(model_id: str) -> list[dict]:
             "summary": _text("checks your portal rates every Monday.",
                              "verifica os preços dos seus portais todas as segundas-feiras."),
             "onItsOwn": [
-                _text("Logs in to FreightNet and CargoHub", "Entra no FreightNet e no CargoHub"),
-                _text("Reads rates, never submits anything", "Lê preços, nunca submete nada"),
+                _line("does", _text("Log in to 2 portals", "Entra em 2 portais"),
+                      _text("FreightNet, CargoHub · asks you for login codes",
+                            "FreightNet, CargoHub · pede-lhe os códigos de acesso")),
+                _line("reads", _text("Read this week's rates", "Lê os preços desta semana"),
+                      _text("Every Monday 06:00 · never submits anything",
+                            "Todas as segundas-feiras às 06:00 · nunca submete nada")),
             ],
             "connections": [_text("FreightNet portal", "Portal FreightNet")],
         },
