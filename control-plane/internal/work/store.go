@@ -330,7 +330,8 @@ func (s *Store) ListWorkItems(ctx context.Context, filter WorkItemFilter) ([]Wor
 		  AND ($2='' OR c.title ILIKE '%' || $2 || '%' OR wi.source_presentation::text ILIKE '%' || $2 || '%')
 		  AND (c.customer_state NOT IN ('done','failed') OR $3::timestamptz IS NULL OR COALESCE(c.finished_at,c.created_at) >= $3)
 		  AND (c.customer_state NOT IN ('done','failed') OR $4::timestamptz IS NULL OR COALESCE(c.finished_at,c.created_at) < $4)
-		ORDER BY c.created_at DESC, c.id DESC LIMIT $5`, filter.State, filter.Search, filter.From, filter.To, filter.Limit)
+		  AND ($6='' OR c.workflow_key=$6)
+		ORDER BY c.created_at DESC, c.id DESC LIMIT $5`, filter.State, filter.Search, filter.From, filter.To, filter.Limit, filter.WorkflowKey)
 	if err != nil {
 		return nil, err
 	}
@@ -467,11 +468,8 @@ func (s *Store) ListTimeline(ctx context.Context, itemID string, after int64, li
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT cursor, id, work_item_id, attempt_id, node_execution_id, code, params,
-		       artifact_refs, actor_identity_id, created_at
-		FROM work.timeline_events
-		WHERE work_item_id=$1 AND cursor>$2 ORDER BY cursor LIMIT $3`, itemID, after, limit)
+	rows, err := s.pool.Query(ctx, timelineSelect+`
+		WHERE t.work_item_id=$1 AND t.cursor>$2 ORDER BY t.cursor LIMIT $3`, itemID, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -483,10 +481,8 @@ func (s *Store) TimelineSince(ctx context.Context, after int64, limit int) ([]Ti
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT cursor, id, work_item_id, attempt_id, node_execution_id, code, params,
-		       artifact_refs, actor_identity_id, created_at
-		FROM work.timeline_events WHERE cursor>$1 ORDER BY cursor LIMIT $2`, after, limit)
+	rows, err := s.pool.Query(ctx, timelineSelect+`
+		WHERE t.cursor>$1 ORDER BY t.cursor LIMIT $2`, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -494,12 +490,18 @@ func (s *Store) TimelineSince(ctx context.Context, after int64, limit int) ([]Ti
 	return scanTimeline(rows)
 }
 
+// timelineSelect reads timeline events with the display name of a human
+// actor. Callers append the WHERE clause on alias t.
+var timelineSelect = `SELECT t.cursor, t.id, t.work_item_id, t.attempt_id, t.node_execution_id, t.code, t.params,
+		       t.artifact_refs, t.actor_identity_id, ` + humanDisplayName("t.actor_identity_id") + `, t.created_at
+		FROM work.timeline_events t`
+
 func scanTimeline(rows pgx.Rows) ([]TimelineEvent, error) {
 	out := make([]TimelineEvent, 0)
 	for rows.Next() {
 		var e TimelineEvent
 		if err := rows.Scan(&e.Cursor, &e.ID, &e.WorkItemID, &e.AttemptID, &e.NodeExecutionID,
-			&e.Code, &e.Params, &e.ArtifactRefs, &e.ActorIdentityID, &e.CreatedAt); err != nil {
+			&e.Code, &e.Params, &e.ArtifactRefs, &e.ActorIdentityID, &e.ActorDisplayName, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

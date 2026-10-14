@@ -138,9 +138,11 @@ type CompletionReport struct {
 type WorkItemFilter struct {
 	State  string
 	Search string
-	From   *time.Time
-	To     *time.Time
-	Limit  int
+	// WorkflowKey, when set, keeps only work of exactly that workflow key.
+	WorkflowKey string
+	From        *time.Time
+	To          *time.Time
+	Limit       int
 }
 
 // WorkItem is the customer-safe current-state projection.
@@ -269,6 +271,16 @@ type Blocker struct {
 	Response             json.RawMessage `json:"response,omitempty"`
 	CreatedAt            time.Time       `json:"createdAt"`
 	ResolvedAt           *time.Time      `json:"resolvedAt,omitempty"`
+	// RespondedBy is the person who resolved the blocker (display name only).
+	RespondedBy *PersonRef `json:"respondedBy,omitempty"`
+}
+
+// PersonRef is a customer-visible reference to a person: their identity and
+// chosen display name, never an email. DisplayName is empty when the person
+// has not chosen a name.
+type PersonRef struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
 }
 
 // Feedback is persisted against the original attempt and starts no work.
@@ -309,7 +321,9 @@ type TimelineEvent struct {
 	Params          json.RawMessage `json:"params"`
 	ArtifactRefs    json.RawMessage `json:"artifactRefs"`
 	ActorIdentityID *string         `json:"actorIdentityId,omitempty"`
-	CreatedAt       time.Time       `json:"createdAt"`
+	// ActorDisplayName is the chosen display name when the actor is a person.
+	ActorDisplayName *string   `json:"actorDisplayName,omitempty"`
+	CreatedAt        time.Time `json:"createdAt"`
 }
 
 // AssignmentContext is the exact non-secret graph-node context dispatch sends

@@ -20,6 +20,7 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 	cpmetrics "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/metrics"
 	workstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/work"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
 	dashboardui "github.com/nunocgoncalves/iterabase-mono/control-plane/ui"
 )
 
@@ -28,6 +29,7 @@ type Services struct {
 	Pool      *pgxpool.Pool
 	Store     *identity.Store
 	Work      *workstore.Store
+	Workflows *workflow.Store
 	Artifacts *artifactstore.Service
 	Metrics   *cpmetrics.Metrics
 	Auth      *AuthServices
@@ -37,6 +39,7 @@ type Services struct {
 type Handler struct {
 	store     *identity.Store
 	work      *workstore.Store
+	workflows *workflow.Store
 	artifacts *artifactstore.Service
 	authCfg   *AuthServices
 	classes   map[string]RouteClass
@@ -74,6 +77,7 @@ func NewClassified(svc Services) (chi.Router, map[string]RouteClass) {
 	h := &Handler{
 		store:     svc.Store,
 		work:      svc.Work,
+		workflows: svc.Workflows,
 		artifacts: svc.Artifacts,
 		authCfg:   svc.Auth,
 		classes:   map[string]RouteClass{},
@@ -90,6 +94,7 @@ func NewClassified(svc Services) (chi.Router, map[string]RouteClass) {
 	h.registerAuthRoutes(r)
 	h.registerPeopleRoutes(r)
 	h.registerWorkRoutes(r)
+	h.registerWorkflowRoutes(r)
 	h.registerArtifactRoutes(r)
 
 	return r, h.classes

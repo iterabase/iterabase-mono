@@ -32,6 +32,7 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/server"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/version"
 	workstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/work"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
 )
 
 func main() {
@@ -135,6 +136,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 			Pool:      pool,
 			Store:     store,
 			Work:      workstore.NewStore(pool),
+			Workflows: workflow.NewStore(pool),
 			Artifacts: artifacts,
 			Metrics:   m,
 			Auth:      authServices,

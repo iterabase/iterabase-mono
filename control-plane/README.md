@@ -517,14 +517,15 @@ Work APIs require a `work`-scope bearer key and operation capability
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/v1/work-items` | Idempotent workflow start (`Idempotency-Key` required) |
-| `GET` | `/v1/work-items` / `/v1/work-items/{id}` | Search/list and customer-safe detail |
+| `GET` | `/v1/workflows` / `/v1/workflows/{key}` | Customer-safe workflow catalogue (`workflows.read`, HOR-459): latest valid definition per key with title, AI coworker, business steps (breadth-first from the entry node) and `alwaysAsks` (its human gates); never prompts, models, skills, tools, pools, value models or schemas. Percent-encode `/` in `{key}` |
+| `GET` | `/v1/work-items` / `/v1/work-items/{id}` | Search/list (`state`, `search`, `from`, `to`, exact `workflowKey`) and customer-safe detail |
 | `GET` | `/v1/work-items/{id}/attempts` | Preserved attempt history |
 | `GET` | `/v1/work-attempts/{id}/nodes` | Append-only graph-node visits and structured outputs |
-| `GET` | `/v1/work-items/{id}/timeline` | Customer-safe business timeline |
+| `GET` | `/v1/work-items/{id}/timeline` | Customer-safe business timeline; `actorDisplayName` names a human actor (display name only, never an email) |
 | `GET` | `/v1/work-items/{id}/artifacts` | Immutable item/attempt artifact links and download metadata |
 | `GET` | `/v1/work-items/{id}/consequences` | Customer-safe external-action tokens required by a revision |
 | `GET` | `/v1/work-items/{id}/blocker` | Current actionable request |
-| `POST` | `/v1/work-blockers/{id}/responses` | Resolve human/consequence gate |
+| `POST` | `/v1/work-blockers/{id}/responses` | Resolve human/consequence gate; a resolved blocker carries `respondedBy: {id, displayName}` |
 | `POST` | `/v1/work-items/{id}/wait/stop` | Stop the open wait and continue through its `cancelled` outcome (cookie session + CSRF only, like blocker responses) |
 | `GET` | `/v1/work-items/{id}/feedback` / `/v1/work-items/{id}/feedback/{feedbackID}` | Original-attempt feedback and revised-attempt association |
 | `POST` | `/v1/work-items/{id}/feedback` | Save feedback without starting work |

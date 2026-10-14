@@ -201,7 +201,46 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 			(id,storage_key,source_type,created_by_identity_id,mime_type,size_bytes,digest,state,available_at)
 		VALUES ($1,'artifacts/human-response','user_upload',$2,'text/csv',12,'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd','available',now())`, responseArtifactID, actorID)
 	require.NoError(t, err)
-	_, err = restarted.RespondBlocker(ctx, workstore.BlockerResponseInput{BlockerID: human.ID, ActorIdentityID: actorID, Outcome: "information_provided", Response: json.RawMessage(`{"information":"See attached CSV"}`), ArtifactRefs: []workstore.ArtifactRef{{ArtifactID: responseArtifactID, Metadata: json.RawMessage(`{"name":"destination.csv"}`)}}})
+	assert.Nil(t, human.RespondedBy, "an open blocker has no responder")
+	_, err = pool.Exec(ctx, `
+		INSERT INTO identity.local_users (identity_id, email, email_normalized, display_name, role, status)
+		VALUES ($1, 'ana@example.com', 'ana@example.com', 'Ana Operator', 'operator', 'active')`, actorID)
+	require.NoError(t, err)
+	resolvedHuman, err := restarted.RespondBlocker(ctx, workstore.BlockerResponseInput{BlockerID: human.ID, ActorIdentityID: actorID, Outcome: "information_provided", Response: json.RawMessage(`{"information":"See attached CSV"}`), ArtifactRefs: []workstore.ArtifactRef{{ArtifactID: responseArtifactID, Metadata: json.RawMessage(`{"name":"destination.csv"}`)}}})
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", resolvedHuman.State)
+	assert.NotNil(t, resolvedHuman.ResolvedAt)
+	assert.Equal(t, &workstore.PersonRef{ID: actorID, DisplayName: "Ana Operator"}, resolvedHuman.RespondedBy)
+	reread, err := restarted.GetBlocker(ctx, human.ID)
+	require.NoError(t, err)
+	assert.Equal(t, resolvedHuman.RespondedBy, reread.RespondedBy)
+	blockerJSON, err := json.Marshal(reread)
+	require.NoError(t, err)
+	assert.Contains(t, string(blockerJSON), `"respondedBy":{"id":"`+actorID+`","displayName":"Ana Operator"}`)
+	assert.NotContains(t, string(blockerJSON), "ana@example.com")
+	attributed, err := restarted.ListTimeline(ctx, item.ID, 0, 1000)
+	require.NoError(t, err)
+	var sawHuman, sawSystem bool
+	for _, event := range attributed {
+		switch {
+		case event.ActorIdentityID != nil && *event.ActorIdentityID == actorID:
+			require.NotNil(t, event.ActorDisplayName, event.Code)
+			assert.Equal(t, "Ana Operator", *event.ActorDisplayName, event.Code)
+			sawHuman = true
+		case event.ActorIdentityID == nil:
+			assert.Nil(t, event.ActorDisplayName, event.Code)
+			sawSystem = true
+		}
+	}
+	assert.True(t, sawHuman, "a human-attributed event carries the display name")
+	assert.True(t, sawSystem)
+	// A display name that is still the delivery email is never exposed.
+	_, err = pool.Exec(ctx, `UPDATE identity.local_users SET display_name='ana@example.com' WHERE identity_id=$1`, actorID)
+	require.NoError(t, err)
+	reread, err = restarted.GetBlocker(ctx, human.ID)
+	require.NoError(t, err)
+	assert.Equal(t, &workstore.PersonRef{ID: actorID}, reread.RespondedBy)
+	_, err = pool.Exec(ctx, `UPDATE identity.local_users SET display_name='Ana Operator' WHERE identity_id=$1`, actorID)
 	require.NoError(t, err)
 
 	// Re-entering process is intercepted before dispatch because it previously

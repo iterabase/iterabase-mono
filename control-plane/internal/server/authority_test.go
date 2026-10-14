@@ -80,6 +80,9 @@ var reviewedRouteClasses = map[string]server.RouteClass{
 	"GET /v1/work-dashboard":                        {Kind: server.RouteAction, Action: identity.ActionWorkRead},
 	"GET /v1/work-events":                           {Kind: server.RouteAction, Action: identity.ActionWorkRead},
 
+	"GET /v1/workflows":       {Kind: server.RouteAction, Action: identity.ActionWorkflowsRead},
+	"GET /v1/workflows/{key}": {Kind: server.RouteAction, Action: identity.ActionWorkflowsRead},
+
 	"POST /v1/artifacts":        {Kind: server.RouteAction, Action: identity.ActionArtifactsUpload},
 	"GET /v1/artifacts/{id}":    {Kind: server.RouteAction, Action: identity.ActionArtifactsRead},
 	"HEAD /v1/artifacts/{id}":   {Kind: server.RouteAction, Action: identity.ActionArtifactsRead},

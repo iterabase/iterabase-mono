@@ -18,6 +18,7 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/server"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/testutil"
 	workstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/work"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
 )
 
 const authTestOrigin = "https://app.example.com"
@@ -44,6 +45,7 @@ func newAuthAPIHarness(t *testing.T) *authAPIHarness {
 		Pool:      pool,
 		Store:     store,
 		Work:      workstore.NewStore(pool),
+		Workflows: workflow.NewStore(pool),
 		Artifacts: artifactstore.NewService(artifactstore.NewStore(pool), newMemoryObjects(), artifactstore.Config{MaxSize: 1 << 20}, nil),
 		Auth: &server.AuthServices{
 			PublicOrigin: authTestOrigin,

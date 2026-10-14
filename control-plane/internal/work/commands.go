@@ -31,10 +31,7 @@ func (s *Store) RespondBlocker(ctx context.Context, in BlockerResponseInput) (Bl
 		return Blocker{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	b, err := scanBlocker(tx.QueryRow(ctx, `
-		SELECT id,work_item_id,attempt_id,node_execution_id,kind,title,description,response_schema,
-		       allowed_outcomes,response_presentation,required_consequences,state,response_outcome,response,created_at,resolved_at
-		FROM work.blockers WHERE id=$1 FOR UPDATE`, in.BlockerID))
+	b, err := scanBlocker(tx.QueryRow(ctx, blockerSelect+` WHERE b.id=$1 FOR UPDATE`, in.BlockerID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Blocker{}, ErrNotFound
 	}
@@ -133,13 +130,14 @@ func (s *Store) RespondBlocker(ctx context.Context, in BlockerResponseInput) (Bl
 			return Blocker{}, err
 		}
 	}
+	resolved, err := scanBlocker(tx.QueryRow(ctx, blockerSelect+` WHERE b.id=$1`, b.ID))
+	if err != nil {
+		return Blocker{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Blocker{}, err
 	}
-	b.State = "resolved"
-	b.ResponseOutcome = &in.Outcome
-	b.Response = in.Response
-	return b, nil
+	return resolved, nil
 }
 
 func (s *Store) completeHumanNodeTx(ctx context.Context, tx pgx.Tx, b Blocker, nodeID, outcome string, response json.RawMessage, artifactRefs []ArtifactRef, actorID string) error {
@@ -393,9 +391,34 @@ func sourceArtifactsTx(ctx context.Context, tx pgx.Tx, itemID string) ([]Artifac
 	return out, rows.Err()
 }
 
+// humanDisplayName is a correlated SQL expression for the customer-visible
+// display name of a human (local user) identity: NULL for any other identity
+// kind, and NULL rather than an email when the person never chose a name (the
+// display name starts as the delivery email until setup or Profile changes it).
+func humanDisplayName(identityColumn string) string {
+	return `(SELECT lu.display_name FROM identity.local_users lu
+		WHERE lu.identity_id = ` + identityColumn + ` AND lu.display_name <> '' AND lu.display_name NOT LIKE '%@%')`
+}
+
+// blockerSelect reads a blocker with the display name of the person who
+// resolved it. Callers append the WHERE clause on alias b.
+var blockerSelect = `
+	SELECT b.id,b.work_item_id,b.attempt_id,b.node_execution_id,b.kind,b.title,b.description,b.response_schema,
+	       b.allowed_outcomes,b.response_presentation,b.required_consequences,b.state,b.response_outcome,b.response,
+	       b.created_at,b.resolved_at,b.responded_by::text,` + humanDisplayName("b.responded_by") + `
+	FROM work.blockers b`
+
 func scanBlocker(row pgx.Row) (Blocker, error) {
 	var b Blocker
-	err := row.Scan(&b.ID, &b.WorkItemID, &b.AttemptID, &b.NodeExecutionID, &b.Kind, &b.Title, &b.Description, &b.ResponseSchema, &b.AllowedOutcomes, &b.ResponsePresentation, &b.RequiredConsequences, &b.State, &b.ResponseOutcome, &b.Response, &b.CreatedAt, &b.ResolvedAt)
+	var respondedBy, respondedByName *string
+	err := row.Scan(&b.ID, &b.WorkItemID, &b.AttemptID, &b.NodeExecutionID, &b.Kind, &b.Title, &b.Description, &b.ResponseSchema, &b.AllowedOutcomes, &b.ResponsePresentation, &b.RequiredConsequences, &b.State, &b.ResponseOutcome, &b.Response, &b.CreatedAt, &b.ResolvedAt,
+		&respondedBy, &respondedByName)
+	if err == nil && respondedBy != nil {
+		b.RespondedBy = &PersonRef{ID: *respondedBy}
+		if respondedByName != nil {
+			b.RespondedBy.DisplayName = *respondedByName
+		}
+	}
 	return b, err
 }
 func equalStrings(a, b []string) bool {
