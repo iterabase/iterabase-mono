@@ -3,7 +3,9 @@
 Original composition decision: HOR-406, approved 2026-08-03. Exact-artifact
 execution: `DES-HOR-540-02`, approved 2026-09-01. Fresh per-run AWS hosts and
 test placement: C1 and C5 of the CI/CD overhaul and `DES-HOR-590-03`, approved
-2026-10-08, on the HOR-591 substrate (`DES-HOR-591-01/02`).
+2026-10-08, on the HOR-591 substrate (`DES-HOR-591-01/02`). Local overlay
+rendering, Flux removal, and ConfigMap tool delivery: `DES-HOR-593-03/04/05`,
+approved 2026-10-14.
 
 ## Goals
 
@@ -95,7 +97,7 @@ AgentPool workspace assertions.
 
 | Scenario | Capacity | Make target | Proves |
 | --- | --- | --- | --- |
-| `cpu` (CI smoke) | cpu | `test-e2e` | GPU refusal on a CPU host, the exact Flux handoff, durable inotify capacity, idempotent reapply, secret sync, and Flux reconciliation |
+| `cpu` (CI smoke) | cpu | `test-e2e` | GPU refusal on a CPU host, the locally rendered overlay handoff, the tool runner loading the client tool, durable inotify capacity, idempotent reapply, secret sync, re-apply delivery of an overlay change with pruning, and refusal to overwrite installation-owned objects |
 | `cpu-workspace` | cpu | `test-e2e-workspace` | process-open raw-device refusal, PV/VG identity and classes, two-worker RWO AgentPool, concurrent isolated work, capacity gating, human-gate worker replacement, XFS/LVM growth, reboot and reapply with persisted bytes, claim release, and non-purging ordinary destroy |
 | `gpu` | gpu | `test-e2e-gpu` | GPU substrate readiness, GPU smoke, exact platform handoff, model-cache seeding, and one real serving completion; the optional `driver-upgrade` stage proves an `emptyDir`-safe driver transition |
 
@@ -119,6 +121,59 @@ observation, never a retry or a pass based only on deletion acknowledgement.
 Forge registers no chart-install-only Kind scenario. Product and chart behavior
 remains in the control-plane and charts owner suites; Forge's deployed checks are
 bounded dependent smokes after Forge-owned substrate and handoff assertions.
+
+## Overlay delivery (`DES-HOR-593-03/04/05`)
+
+Every scenario that installs the platform deploys the fixture overlay in
+[`overlay/`](overlay/README.md). The scenario copies it to a run-private
+directory, adds `values.e2e.yaml` with the run's exact image identities, and
+points forge.yaml at the copy:
+
+```yaml
+overlay:
+  path: <run-private copy>
+  valueFiles: [values.yaml, values.client.yaml, values.e2e.yaml]
+  toolDirs: [tools/client]
+```
+
+The built Forge binary renders the copy on the runner. Nothing is cloned or
+committed on the host, and the cluster runs no Flux. After each overlay apply,
+the scenario checks exactly what reached the installation:
+
+- The host staging directory `/var/lib/forge/overlay/<install>` holds only the
+  value files, as `NN-overlay.yaml` in forge.yaml order (byte-identical to the
+  copy), then Forge's `NN-forge.yaml`.
+- Namespace `iterabase-overlay` holds exactly two tools ConfigMaps: the
+  pointer `overlay-tools` and the immutable archive
+  `overlay-tools-<sha256 hex>`. The pointer's digest, archive, and revision
+  match the apply output. The archive bytes hash to that digest and hold exactly
+  the copy's `tools/client` files.
+- The fixture's probe objects carry `iterabase.com/owner=overlay`,
+  `app.kubernetes.io/managed-by=forge`, and
+  `iterabase.com/overlay-part=objects`.
+- No `flux-system` namespace and no Flux source or Kustomization CRDs exist.
+
+The `cpu` scenario also proves the following:
+
+- **`assert-overlay-tools-loaded`**: every tool-runner pod publishes the
+  delivered client layer byte for byte. The materializer logs that generation
+  from the delivered archive digest, and the runner logs its activation.
+- **`reapply-current-idempotently`**: the same overlay renders the same
+  revision and archive, and the reapply prunes nothing.
+- **`sync-secrets`**: a `secrets.yaml` in the copy materializes the Secret.
+  The value never reaches the apply output or the staged files.
+- **`reapply-delivers-overlay-change`**: this replaces the Flux reconcile
+  stage. Re-running `forge apply --skip-chart` with an extra object and an
+  extra tool file delivers a new archive digest, prunes the superseded archive,
+  applies the object with owner labels, and the runner loads the new layer.
+  Applying the unchanged fixture again prunes the object live, reports it as
+  `overlay pruned`, and restores the original, deterministic archive digest.
+- **`refuse-installation-owned-overlay-clash`**: an overlay object whose name
+  matches a live, unlabelled object makes apply fail with the ownership
+  refusal, and the live object is left unchanged.
+
+The optional GPU `driver-upgrade` apply uses a GPU-only forge.yaml and passes
+`--skip-overlay`, so it does not prune the platform's overlay delivery.
 
 ## Exact artifact contract
 

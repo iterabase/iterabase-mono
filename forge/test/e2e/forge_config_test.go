@@ -39,9 +39,11 @@ type forgeConfigSpec struct {
 	ChartRepository   string
 	ChartRelease      string
 	ChartNamespace    string
-	OverlayRepo       string
-	OverlayRef        string
-	Flux              bool
+	// OverlayPath is the local overlay directory Forge renders on the operator
+	// machine (DES-HOR-593-03); empty means no overlay.
+	OverlayPath       string
+	OverlayValueFiles []string
+	OverlayToolDirs   []string
 }
 
 func e2eK3sVersion() string { return "v1.34.10+k3s1" }
@@ -138,17 +140,14 @@ spec:
 			fmt.Fprintf(&cfg, "    namespace: %s\n", spec.ChartNamespace)
 		}
 	}
-	if spec.OverlayRepo != "" {
-		fmt.Fprintf(&cfg, `  overlay:
-    repo: %s
-    ref: %s
-`, spec.OverlayRepo, spec.OverlayRef)
-	}
-	if spec.Flux {
-		cfg.WriteString(`  flux:
-    enabled: true
-    version: "v2.4.0"
-`)
+	if spec.OverlayPath != "" {
+		fmt.Fprintf(&cfg, "  overlay:\n    path: %q\n", spec.OverlayPath)
+		if len(spec.OverlayValueFiles) > 0 {
+			fmt.Fprintf(&cfg, "    valueFiles: [%s]\n", yamlFlowList(spec.OverlayValueFiles))
+		}
+		if len(spec.OverlayToolDirs) > 0 {
+			fmt.Fprintf(&cfg, "    toolDirs: [%s]\n", yamlFlowList(spec.OverlayToolDirs))
+		}
 	}
 
 	path := filepath.Join(t.TempDir(), "forge.yaml")
@@ -156,6 +155,15 @@ spec:
 		t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+// yamlFlowList renders values as a quoted YAML flow sequence body.
+func yamlFlowList(values []string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = fmt.Sprintf("%q", value)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // writeForgeTrustFile materializes the non-Git host trust file consumed by

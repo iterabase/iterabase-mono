@@ -269,7 +269,7 @@ func collectCPUDiagnostics(t *testing.T, state *cpuFixtureState) {
 	safeClusterLogs := state.diagnostics.verifyBootstrapPrintedNoCredential(t, state.ip, state.privKeyPath)
 	state.diagnostics.collectSSH(t, state.ip, state.privKeyPath, map[string]string{
 		"fixture-state":  "cloud-init status --long 2>&1; systemctl --no-pager --full status k3s 2>&1 || true",
-		"forge-state":    fmt.Sprintf("sudo ls -la /var/lib/forge/overlay/%s 2>&1 || true; sudo k3s kubectl get gitrepositories,kustomizations -A -o wide 2>&1 || true", state.runID),
+		"forge-state":    fmt.Sprintf("sudo ls -la /var/lib/forge/overlay/%s 2>&1 || true; sudo k3s kubectl get configmaps -n iterabase-overlay -L iterabase.com/overlay-part 2>&1 || true; sudo k3s kubectl get configmap overlay-tools -n iterabase-overlay -o yaml 2>&1 || true; sudo k3s kubectl get namespaces,configmaps -A -l iterabase.com/owner=overlay 2>&1 || true", state.runID),
 		"platform-state": "sudo k3s kubectl get nodes -o wide 2>&1 || true; sudo k3s kubectl get deployments,statefulsets,daemonsets,pods,jobs,pvc -A -o wide 2>&1 || true; sudo k3s kubectl get events -A --sort-by=.metadata.creationTimestamp 2>&1 | tail -300 || true",
 		"storage-state":  storageStateDiagnosticCommand(state.dataStorageDevice),
 	})

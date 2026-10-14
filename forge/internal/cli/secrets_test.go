@@ -10,6 +10,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// fakePasswordPrompter is a scripted passwordPrompter.
+type fakePasswordPrompter struct {
+	value    []byte
+	err      error
+	calls    int
+	gotLabel string
+}
+
+func (f *fakePasswordPrompter) Prompt(label string) ([]byte, error) {
+	f.calls++
+	f.gotLabel = label
+	return f.value, f.err
+}
+
 // ensureEnvUnset removes envVar for the test (so os.LookupEnv ok=false), restoring it after.
 func ensureEnvUnset(t *testing.T, envVar string) {
 	t.Helper()

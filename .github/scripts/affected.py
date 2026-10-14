@@ -52,6 +52,9 @@ JOB_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("control-plane/**", ("control-plane",)),
     ("inference-gateway/**", ("inference-gateway",)),
     ("forge/test/e2e/**", ("e2e-modules",)),
+    # The embedded hosted-environment Terraform module is checked with infra's
+    # pinned Terraform toolchain as well as by forge's own tests (HOR-593).
+    ("forge/internal/hosted/module/**", ("forge", "infra")),
     ("forge/**", ("forge",)),
     ("charts/test/e2e/**", ("e2e-modules",)),
     ("charts/**", ("charts",)),

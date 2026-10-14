@@ -42,22 +42,6 @@
       "digest": "sha256:ec714df3813b5405292860f8a1c55c5727bf8c33c88992f1e981efad8065547f"
     },
     {
-      "reference": "ghcr.io/fluxcd/helm-controller:v1.1.0",
-      "digest": "sha256:4c75ca6c24ceb1f1bd7e935d9287a93e4f925c512f206763ec5a47de3ef3ff48"
-    },
-    {
-      "reference": "ghcr.io/fluxcd/kustomize-controller:v1.4.0",
-      "digest": "sha256:e3b0cf847e9cdf47b19af0fbcfe22786b80b598e0caeea8b6d2a5f9c26a48a24"
-    },
-    {
-      "reference": "ghcr.io/fluxcd/notification-controller:v1.4.0",
-      "digest": "sha256:425309a159b15e07f7d97622effc79bc432a37ed55289dd465d37fa217a92a7d"
-    },
-    {
-      "reference": "ghcr.io/fluxcd/source-controller:v1.4.1",
-      "digest": "sha256:3c5f0f022f990ffc0daf00e5b199548fc0fa6e7119e972318f0267081a332963"
-    },
-    {
       "reference": "docker.io/grafana/grafana:13.1.1",
       "digest": "sha256:7cb8c64c4d57a57e734073f3cc94620adb24a0acb929bd80ba9f14017e3a975b"
     },
@@ -435,22 +419,6 @@
       "installed_sha256": "dc1a8c0d10a40f2d0dc1d53c5c42f2b4e00a996b1573227bcbf2855c644d3025"
     },
     {
-      "name": "flux",
-      "version": "v2.4.0",
-      "platform": "linux-amd64",
-      "url": "https://github.com/fluxcd/flux2/releases/download/v2.4.0/flux_2.4.0_linux_amd64.tar.gz",
-      "sha256": "7b70b75af20e28fc30ee66cf5372ec8d51dd466fd2ee21aa42690984de70b09b",
-      "installed_sha256": "11462ee3dd85d8d9fb584659ea6a838a1ca3414f3700ae432bebbcca9132f410"
-    },
-    {
-      "name": "flux",
-      "version": "v2.4.0",
-      "platform": "linux-arm64",
-      "url": "https://github.com/fluxcd/flux2/releases/download/v2.4.0/flux_2.4.0_linux_arm64.tar.gz",
-      "sha256": "4b8c95a1e8ad262dd33a67d28e22979cf3e022a9283d4676763b6728247d92a0",
-      "installed_sha256": "8ee2e8d18fd9027674b622b6e315c70266d134abca6d65f7901e586be3d25846"
-    },
-    {
       "name": "helm",
       "version": "v4.2.3",
       "platform": "linux-amd64",
@@ -523,6 +491,34 @@
       "platform": "linux-arm64",
       "sha256": "cc907ccf9e3c34523f0f32b69745265e0a6908ca85b92f41931d4537860eb83c",
       "url": "https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-arm64.tar.gz"
+    },
+    {
+      "name": "session-manager-plugin",
+      "version": "1.2.835.0",
+      "platform": "darwin-arm64",
+      "sha256": "7287f20d41eef91643b72dcf28b5f135de49090dd297216a408dc18729e70272",
+      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/mac_arm64/sessionmanager-bundle.zip"
+    },
+    {
+      "name": "session-manager-plugin",
+      "version": "1.2.835.0",
+      "platform": "darwin-amd64",
+      "sha256": "03be79726bbf30ad2a26177d6531636ab6a42f574e0e3326dfb146585cedf260",
+      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/mac/sessionmanager-bundle.zip"
+    },
+    {
+      "name": "session-manager-plugin",
+      "version": "1.2.835.0",
+      "platform": "linux-amd64",
+      "sha256": "7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03",
+      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/ubuntu_64bit/session-manager-plugin.deb"
+    },
+    {
+      "name": "session-manager-plugin",
+      "version": "1.2.835.0",
+      "platform": "linux-arm64",
+      "sha256": "0add94c4c8b6ca63f26e44fd655d662b0f6455a268b5b9ebebee0f462214e928",
+      "url": "https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.835.0/ubuntu_arm64/session-manager-plugin.deb"
     }
   ],
   "playwright_archives": [

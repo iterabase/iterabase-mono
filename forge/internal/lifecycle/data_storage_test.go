@@ -12,7 +12,7 @@ import (
 
 func TestPlanInspectsSelectedDataStorageSetWithoutMutation(t *testing.T) {
 	p := &fakeProv{pf: readyPf()}
-	plan, err := Plan(context.Background(), testConfig(), p)
+	plan, err := Plan(context.Background(), testConfig(), p, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, p.workspaceInspectCalls)
 	assert.Zero(t, p.workspaceApplyCalls)
@@ -24,7 +24,7 @@ func TestPlanInspectsSelectedDataStorageSetWithoutMutation(t *testing.T) {
 
 func TestPlanDataStorageUncertaintyFailsClosed(t *testing.T) {
 	p := &fakeProv{pf: readyPf(), workspaceInspectErr: errors.New("signature probe read error")}
-	_, err := Plan(context.Background(), testConfig(), p)
+	_, err := Plan(context.Background(), testConfig(), p, nil)
 	require.ErrorContains(t, err, "signature probe read error")
 	assert.Empty(t, p.installs)
 }
@@ -32,7 +32,7 @@ func TestPlanDataStorageUncertaintyFailsClosed(t *testing.T) {
 func TestApplyReconcilesDataStorageBeforeK3s(t *testing.T) {
 	useTempHome(t)
 	p := &fakeProv{pf: readyPf(), readyAfterInstall: true, kubeconfig: []byte(minKubeconfig)}
-	res, err := Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{ReadyTimeout: time.Second, ReadyInterval: time.Millisecond})
+	res, err := Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{ReadyTimeout: time.Second, ReadyInterval: time.Millisecond})
 	require.NoError(t, err)
 	assert.Equal(t, 1, p.workspaceInspectCalls)
 	assert.Equal(t, 1, p.hostSwapCalls)
@@ -46,7 +46,7 @@ func TestApplyReconcilesDataStorageBeforeK3s(t *testing.T) {
 
 func TestApplyHostSwapFailurePreventsStorageAndK3sMutation(t *testing.T) {
 	p := &fakeProv{pf: readyPf(), hostSwapErr: errors.New("swapoff failed")}
-	_, err := Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{})
+	_, err := Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{})
 	require.ErrorContains(t, err, "host swap hardening: swapoff failed")
 	assert.Equal(t, 1, p.hostSwapCalls)
 	assert.Zero(t, p.workspaceToolsCalls)
@@ -58,7 +58,7 @@ func TestApplyHostSwapFailurePreventsStorageAndK3sMutation(t *testing.T) {
 func TestApplyDoesNotHardenSwapDuringDryRunOrInstalledReapply(t *testing.T) {
 	t.Run("dry-run", func(t *testing.T) {
 		p := &fakeProv{pf: readyPf()}
-		_, err := Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{DryRun: true})
+		_, err := Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{DryRun: true})
 		require.NoError(t, err)
 		assert.Zero(t, p.hostSwapCalls)
 		assert.Empty(t, p.mutationOrder)
@@ -68,7 +68,7 @@ func TestApplyDoesNotHardenSwapDuringDryRunOrInstalledReapply(t *testing.T) {
 		useTempHome(t)
 		p := &fakeProv{pf: readyPf(), state: inSyncState(), ready: true, kubeconfig: []byte(minKubeconfig)}
 		p.pf.Installed = true
-		_, err := Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{
+		_, err := Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{
 			ReadyTimeout: time.Second, ReadyInterval: time.Millisecond,
 		})
 		require.NoError(t, err)
@@ -79,7 +79,7 @@ func TestApplyDoesNotHardenSwapDuringDryRunOrInstalledReapply(t *testing.T) {
 
 func TestApplyDataStorageToolingFailurePreventsPVAndK3sMutation(t *testing.T) {
 	p := &fakeProv{pf: readyPf(), workspaceToolsErr: errors.New("lvm2 install failed")}
-	_, err := Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{})
+	_, err := Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{})
 	require.ErrorContains(t, err, "lvm2 install failed")
 	assert.Equal(t, 1, p.workspaceToolsCalls)
 	assert.Zero(t, p.workspaceApplyCalls)
@@ -88,7 +88,7 @@ func TestApplyDataStorageToolingFailurePreventsPVAndK3sMutation(t *testing.T) {
 
 func TestApplyDataStorageRefusalPreventsK3sMutation(t *testing.T) {
 	p := &fakeProv{pf: readyPf(), workspaceReconcileErr: errors.New("root backing device")}
-	_, err := Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{})
+	_, err := Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{})
 	require.ErrorContains(t, err, "root backing device")
 	assert.Empty(t, p.installs)
 	assert.Zero(t, p.lvmReadinessCalls)
@@ -98,7 +98,7 @@ func TestPlanRefusesInstalledK3sWithLocalStorageFallback(t *testing.T) {
 	p := &fakeProv{pf: readyPf(), state: inSyncState()}
 	p.pf.Installed = true
 	p.state.LocalStorageDisabled = false
-	plan, err := Plan(context.Background(), testConfig(), p)
+	plan, err := Plan(context.Background(), testConfig(), p, nil)
 	require.NoError(t, err)
 	assert.Equal(t, ActionRefuseImmutable, plan.Action)
 	assert.Contains(t, plan.ImmutableDiff, "k3s.disable[local-storage]")

@@ -1,0 +1,8 @@
+# Overlay object instances Forge renders on the operator machine
+# (DES-HOR-593-03). forge apply builds this kustomization in-process, labels
+# every object iterabase.com/owner=overlay, applies it after the platform chart
+# and prunes overlay-owned objects the build no longer renders.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - crds/client

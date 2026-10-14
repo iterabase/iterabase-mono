@@ -2,13 +2,13 @@
 
 > Canonical source: [`iterabase-mono/forge`](https://github.com/nunocgoncalves/iterabase-mono/tree/master/forge). The former standalone repository is historical and read-only.
 
-`forge` is the installer for the Horizonshift / Iterabase platform. It bootstraps a production-ready single-node [k3s](https://k3s.io) cluster on a VM or host over SSH, with dual-stack networking and prod-ready defaults.
+`forge` is the installer for the Horizonshift / Iterabase platform. It bootstraps a production-ready single-node [k3s](https://k3s.io) cluster on a VM or host over SSH, with dual-stack networking and prod-ready defaults, then applies an exact platform release and the customer's overlay.
 
-> Per-customer, fully isolated, self-hosted. forge takes VMs/hosts (SSH) or a kubeconfig; it does **not** provision bare metal, Proxmox, or network appliances.
+> Per-customer, fully isolated. forge takes an existing VM/host (SSH), or, with `provider.aws`, provisions a dedicated environment in the hosted AWS account and reaches it with SSH over SSM (HOR-593). It does **not** provision bare metal, Proxmox, or network appliances.
 
 ## Status
 
-Walking skeleton (HOR-238). Implements single-node k3s bootstrap + the `forge` CLI. The platform Helm umbrella chart (HOR-239), GPU node readiness via the NVIDIA GPU Operator (HOR-240), Flux, and the overlay repo are follow-on tickets; the vLLM/SGLang backend is CRD-driven by the control-plane (HOR-306).
+Single-node k3s bootstrap, the platform chart and its substrates, GPU node readiness (HOR-240), the locally rendered customer overlay (DES-HOR-593-03), and the hosted AWS provider (HOR-593). The vLLM/SGLang backend is CRD-driven by the control-plane (HOR-306).
 
 ## Install
 
@@ -33,19 +33,86 @@ forge status             # cluster health + drift
 forge upgrade --to v1.34.10+k3s1 # upgrade to the current repository-reviewed k3s release
 forge destroy            # customer-safe: uninstall k3s; preserve iterabase-data
 forge destroy --purge-data-storage --reboot --yes # explicit empty-VG/PV decommission lifecycle
+
+# Overlays repository (DES-HOR-593-03/04)
+forge overlay new acme --root ~/src/overlays            # scaffold customers/acme from customers/_template
+forge fleet apply --root ~/src/overlays [--only acme]   # forge apply for every customer
+
+# Hosted AWS environments (provider.aws, HOR-593)
+forge init --provider aws --config customers/acme/forge.yaml   # provision, bootstrap over SSH over SSM, apply
+forge apply --config customers/acme/forge.yaml                 # later releases and overlay changes
+forge tunnel --config customers/acme/forge.yaml                # Kubernetes API on 127.0.0.1:6443 over SSM
+forge destroy --config customers/acme/forge.yaml               # ordered teardown + zero-result tag sweep
 ```
 
-`forge` SSHes to the host as a sudoer user (key auth) and installs k3s with flags derived from `forge.yaml`. `spec.hosts[].sshTrustFile` is required and names a non-Git known_hosts-format file holding the founder-verified host public key(s); every production SSH path verifies the host during key exchange and fails closed on missing, unknown, or mismatched trust before authentication, sessions, commands, or stdin. See [`docs/architecture/forge-ssh-host-trust.md`](../docs/architecture/forge-ssh-host-trust.md). Forge verifies the repository-reviewed K3s executable and airgap image archive before placing either in a privileged path, then runs the pinned K3s service installer with downloads disabled. Helm and Flux are likewise installed only from reviewed archives after both archive and extracted-executable verification; Flux manifests are rejected unless every controller image is replaced by its reviewed digest before apply. The root `flux-system` instance is installed namespace-scoped (`--watch-all-namespaces=false`), so it reconciles only Flux custom resources in `flux-system`; any root-managed Flux CR must live there or be applied by Forge, while a separately bootstrapped tenant instance owns the Flux resources in its own namespace. Unsupported tool versions and changed bytes fail before execution or extraction, and retries cover transport only. These identities are recorded in `.github/inputs/remote-content.json`. The kubeconfig is fetched, rewritten to the host address, and stored at `~/.forge/<install>/kubeconfig.yaml`.
+`forge` SSHes to the host as a sudoer user (key auth) and installs k3s with flags derived from `forge.yaml`. `spec.hosts[].sshTrustFile` is required and names a non-Git known_hosts-format file holding the founder-verified host public key(s); every production SSH path verifies the host during key exchange and fails closed on missing, unknown, or mismatched trust before authentication, sessions, commands, or stdin. See [`docs/architecture/forge-ssh-host-trust.md`](../docs/architecture/forge-ssh-host-trust.md). Forge verifies the repository-reviewed K3s executable and airgap image archive before placing either in a privileged path, then runs the pinned K3s service installer with downloads disabled. Helm is likewise installed only from a reviewed archive after both archive and extracted-executable verification. Unsupported tool versions and changed bytes fail before execution or extraction, and retries cover transport only. These identities are recorded in `.github/inputs/remote-content.json`. The kubeconfig is fetched, rewritten to the host address, and stored at `~/.forge/<install>/kubeconfig.yaml`.
 
 `apply` is **idempotent**: it reconciles from the live system — installs if absent, skips if in sync, refuses immutable changes (`cluster-cidr`/`service-cidr`/`dualStack` → `destroy` + `apply`), and routes version changes to `upgrade`.
 
-`spec.overlay.repo` is an `https://` fork or a `file://` path on the host. With `spec.flux.enabled`, Flux's source-controller must read the same commit Forge applied. It fetches an `https://` fork directly, with a token Secret when one is configured. For a `file://` overlay, Forge serves the overlay from the node over read-only SSH (DES-HOR-632-01). On every apply it:
+### Overlay (DES-HOR-593-03, -04, -05)
 
-- refreshes a bare mirror of `overlay.ref` at `/var/lib/iterabase-overlay-source/overlay.git`;
-- installs one fresh ed25519 key for the dedicated `iterabase-overlay` user. The key is restricted with `restrict`, a forced `git-upload-pack` on that mirror, and `from=` the cluster pod CIDRs, so it gives no shell, no forwarding, no writes and no other paths;
-- points the `overlay` GitRepository at `ssh://iterabase-overlay@<node InternalIP>/…` with an `overlay-git-ssh` Secret that holds the key and the node's own ed25519 host key as `known_hosts`.
+`spec.overlay` is a local directory, normally `customers/<name>/` in the private
+overlays repository. Forge renders it **on the operator machine** and ships only
+the result, so one repository can hold every customer and no installation ever
+receives another customer's content or a Git credential:
 
-`forge destroy` removes the user, key and mirror.
+| `forge.yaml` field | Meaning |
+| --- | --- |
+| `overlay.path` | Overlay directory, relative to `forge.yaml`. Its `kustomization.yaml` (built in-process; remote bases and Helm inflation are refused) yields the object instances: Workflows, Models, ModelBackends, AgentPools. |
+| `overlay.valueFiles` | Helm value files relative to `path`, in order, later wins (default `[values.yaml]`). They may reach shared bases inside the repository, for example `../../bases/hosted/values.yaml`. |
+| `overlay.toolDirs` | Directories holding one subdirectory per customer tool (default `[tools]`). |
+| `secrets.yaml` | Optional declarations of Secrets whose values come from operator environment variables; Secret manifests in the overlay are refused. |
+
+On every apply Forge:
+
+1. stages the value files on the host and materializes declared Secrets;
+2. writes the customer tools as an immutable ConfigMap `overlay-tools-<sha256>`
+   plus the `overlay-tools` pointer in namespace `iterabase-overlay`, which the
+   tool runner reads (DES-HOR-593-05; platform chart 0.6.0 or later);
+3. applies the platform chart with the value files;
+4. applies the object instances labelled `iterabase.com/owner=overlay`, refusing
+   to overwrite any live object without that label;
+5. prunes overlay-owned objects and tool archives the overlay no longer renders.
+   Objects created inside the installation never carry the overlay label and are
+   never touched. Removing the overlay from `forge.yaml` removes its objects.
+
+`forge apply` is the only delivery path; there is no in-cluster GitOps
+controller (DES-HOR-593-04). Use `forge fleet apply` to roll a shared change out
+to every customer.
+
+### Hosted AWS environments (`provider.aws`, HOR-593)
+
+```yaml
+spec:
+  mode: single-node
+  provider:
+    aws:
+      instanceType: m7i-flex.xlarge   # must be in the baseline's allowed-instance-types
+      dataVolumeGiB: 100
+  # no hosts or dataStorage: Forge derives them from the environment
+```
+
+Forge reads the account-level baseline only through the SSM contract
+`/iterabase/hosted/baseline/v1/*` (DES-HOR-603-03), assumes the baseline Forge
+role, and runs its embedded Terraform module with a pinned Terraform binary.
+State lives in the baseline state bucket under `envs/<name>/`. The module
+creates the instance (IMDSv2, hop limit 1), a separate gp3 data volume used as
+the blank `iterabase-data` disk, a security group with no inbound rules, and a
+node role under `/iterabase/env/` capped by the baseline boundary with the load
+balancer controller policy attached; every resource carries
+`iterabase-env=<name>`. The instance's SSH host key is generated with the
+environment and installed by user-data, so trust exists before the first
+connection (DES-HOR-593-02). Forge's SSH runs over an SSM
+`AWS-StartSSHSession` stream through a pinned, checksum-verified
+session-manager-plugin it downloads itself (DES-HOR-593-01); port 22 is never
+opened. The hosted installation facts (load balancer controller identity, VPC,
+hostnames under the hosted domain, origin-pull CA, DNS token Secret) are derived
+from the contract and applied after the overlay's values.
+
+`forge destroy` deletes every LoadBalancer Service and waits for the controller
+to remove the NLB, then runs `terraform destroy`, purges the backup and state
+prefixes, and succeeds only when the tag sweep for `iterabase-env=<name>` finds
+zero resources. See [`docs/runbooks/hosted-environments.md`](../docs/runbooks/hosted-environments.md).
 
 When GPU support is enabled, the default GPU Operator chart archive is bound to its repository-reviewed SHA-256; a custom operator repository/version requires an explicit `gpu.operator.sha256`. `gpu.driver.version` and `gpu.driver.sha256` are both required, and Forge composes that exact driver tag-plus-digest together with repository-pinned operator, validator, toolkit, device-plugin, DCGM exporter, MIG manager, driver manager, and NFD identities. Forge verifies the downloaded chart archive before Helm inspects CRDs, templates, or applies it. Preflight then reports the NVIDIA PCI device and the complete driver-build surface: `/lib/modules/$(uname -r)/build/Makefile`, `dkms`, `gcc`, and `make`. Before GPU Operator reconciliation, `apply` idempotently installs the matching `linux-headers-$(uname -r)`, `build-essential`, and `dkms` packages, verifies the exact surface, and refuses a stale running kernel whose matching headers are no longer available from the configured Ubuntu archives because the driver container must independently resolve that package. Apply then accepts readiness only from one coherent operator/node observation: the ClusterPolicy must expose `Ready=True` and `Error=False`, its configured driver must match any requested pin, and the single node must be Ready, schedulable, outside an active upgrade, and report that exact loaded driver. The GPU Operator's legacy `status.state=notReady` remains visible evidence but is not the sole authority because v26.3.3 writes it separately from conditions and can lose that status update to a resource-version conflict. Forge accepts that one documented contradiction only when every stronger current signal agrees; other missing or contradictory evidence keeps apply blocked, and `upgrade-failed` terminates it immediately. GPU Operator v26.3.3 embeds the NFD 0.18.3 subchart, but Forge pins its compatible runtime image to NFD v0.19.0 and sets the supported master `resyncPeriod` to 30 seconds. NFD v0.19.0 makes that interval drive a periodic full reconcile, so a missed fresh-NodeFeature event cannot defer the required NVIDIA node label until the operator readiness timeout. The embedded chart retains identical NodeFeature CRDs, supplies the default worker pod identity needed by v0.19.0, and leaves the topology updater (whose v0.19.0 image-only upgrade needs additional RBAC) disabled.
 

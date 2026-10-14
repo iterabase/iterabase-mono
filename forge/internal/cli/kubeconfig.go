@@ -9,7 +9,6 @@ import (
 
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/artifacts"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/kubeconfig"
-	"github.com/nunocgoncalves/iterabase-mono/forge/internal/sshprovisioner"
 )
 
 func newKubeconfigCmd() *cobra.Command {
@@ -27,17 +26,19 @@ func runKubeconfig(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	p, err := sshprovisioner.New(cfg.Spec.Hosts[0])
+	t, p, err := connect(context.Background(), cfg)
 	if err != nil {
 		return err
 	}
+	defer t.Close()
 	defer p.Close()
+	cfg = t.Cluster
 
 	raw, err := p.FetchKubeconfig(context.Background())
 	if err != nil {
 		return err
 	}
-	kc, err := kubeconfig.RewriteServer(raw, cfg.Spec.Hosts[0].Address, 6443)
+	kc, err := kubeconfig.RewriteServer(raw, cfg.KubeAPIHost(), 6443)
 	if err != nil {
 		return err
 	}

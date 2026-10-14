@@ -8,10 +8,9 @@ import (
 	"golang.org/x/term"
 )
 
-// passwordPrompter reads a secret/token value from stdin with echo off. The real
-// impl reads from the terminal; tests use a fake. Shared by the overlay git
-// token + the secret-sync value resolution so the terminal read lives in one
-// place.
+// passwordPrompter reads a secret value from stdin with echo off. The real
+// impl reads from the terminal; tests use a fake. Used by the secret-sync value
+// resolution.
 type passwordPrompter interface {
 	Prompt(label string) ([]byte, error)
 }
@@ -27,7 +26,7 @@ func (termPasswordPrompter) Prompt(label string) ([]byte, error) {
 }
 
 // isTTY reports whether stdin is a terminal (gates the interactive prompt path
-// for the overlay git token + secret values). Uses term.IsTerminal so /dev/null
+// for secret values). Uses term.IsTerminal so /dev/null
 // — a CharDevice but not a terminal, e.g. a subprocess's default stdin in CI —
 // is correctly treated as non-interactive (no prompt).
 func isTTY() bool {

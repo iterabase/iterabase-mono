@@ -11,9 +11,11 @@ func NewRootCmd() *cobra.Command {
 		Long: `forge is the installer for the Horizonshift / Iterabase platform.
 
 It bootstraps a production-ready single-node k3s cluster on a VM or host over
-SSH, with dual-stack networking and prod-ready defaults. forge takes VMs/hosts
-(SSH) or a kubeconfig; it does not provision bare metal, Proxmox, or network
-appliances.`,
+SSH, with dual-stack networking and prod-ready defaults, and applies an exact
+platform release plus the customer's overlay, rendered on this machine. With
+provider.aws it also provisions and tears down dedicated environments in the
+hosted AWS account, reached with SSH over SSM. It does not provision bare
+metal, Proxmox, or network appliances.`,
 		SilenceUsage: true,
 	}
 
@@ -29,6 +31,9 @@ appliances.`,
 		newKubeconfigCmd(),
 		newStatusCmd(),
 		newVersionCmd(),
+		newTunnelCmd(),
+		newOverlayCmd(),
+		newFleetCmd(),
 	)
 
 	return root

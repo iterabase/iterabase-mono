@@ -34,8 +34,11 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Generate a forge.yaml config",
-		Long:  "Generate a forge.yaml substrate config, interactively or from flags (--non-interactive).",
-		RunE:  runInit,
+		Long: `Generate a forge.yaml substrate config for an existing host, interactively or
+from flags (--non-interactive). With --provider aws, provision the hosted
+environment that --config describes instead, bootstrap it over SSH over SSM, and
+apply its release and overlay; re-running it is idempotent.`,
+		RunE: runInit,
 	}
 	cmd.Flags().Bool("non-interactive", false, "generate without prompts using flags")
 	cmd.Flags().String("path", "forge.yaml", "output path for the generated config")
@@ -47,14 +50,33 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().String("ssh-host-key", "", "founder-verified OpenSSH host public key; written to the trust file, never to forge.yaml")
 	cmd.Flags().String("k3s-version", "v1.34.10+k3s1", "K3s version (full tag, e.g. v1.34.10+k3s1)")
 	cmd.Flags().Bool("dual-stack", true, "enable dual-stack IPv4+IPv6")
-	cmd.Flags().String("overlay", "", "overlay repo URL (client fork; https:// or file://; empty => no overlay)")
-	cmd.Flags().String("overlay-ref", "master", "overlay ref (branch or tag)")
+	cmd.Flags().String("overlay-path", "", "overlay directory relative to the generated forge.yaml (empty => no overlay)")
 	cmd.Flags().StringArray("data-storage-device", nil, "stable blank whole disk /dev/disk/by-id/... selected for iterabase-data (repeat for multiple disks)")
 	cmd.Flags().Bool("overwrite", false, "overwrite an existing config file (does not authorize disk changes)")
+	cmd.Flags().String("provider", "", `"aws" provisions the hosted environment described by --config (provider.aws), then bootstraps and applies it`)
 	return cmd
 }
 
-func runInit(cmd *cobra.Command, _ []string) error {
+func runInit(cmd *cobra.Command, args []string) error {
+	switch provider, _ := cmd.Flags().GetString("provider"); provider {
+	case "":
+		return runHostInit(cmd, args)
+	case "aws":
+		cfg, err := loadConfig(cmd)
+		if err != nil {
+			return err
+		}
+		if cfg.Spec.Provider.AWS == nil {
+			return fmt.Errorf("--provider aws needs provider.aws in %s (scaffold it with forge overlay new)", cfg.Dir)
+		}
+		return runAWSInit(cmd, cfg)
+	default:
+		return fmt.Errorf("--provider %q is not supported (aws)", provider)
+	}
+}
+
+// runHostInit generates forge.yaml for an operator-supplied host.
+func runHostInit(cmd *cobra.Command, _ []string) error {
 	nonInteractive, _ := cmd.Flags().GetBool("non-interactive")
 	path, _ := cmd.Flags().GetString("path")
 	overwrite, _ := cmd.Flags().GetBool("overwrite")
@@ -73,8 +95,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	sshTrustFile, _ := cmd.Flags().GetString("ssh-trust-file")
 	k3sVersion, _ := cmd.Flags().GetString("k3s-version")
 	dualStack, _ := cmd.Flags().GetBool("dual-stack")
-	overlay, _ := cmd.Flags().GetString("overlay")
-	overlayRef, _ := cmd.Flags().GetString("overlay-ref")
+	overlayPath, _ := cmd.Flags().GetString("overlay-path")
 	flagDevices, _ := cmd.Flags().GetStringArray("data-storage-device")
 	envDevices := strings.TrimSpace(os.Getenv(dataStorageDevicesEnv))
 	dataDevices, err := resolveDataStorageSources(flagDevices, envDevices)
@@ -91,7 +112,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		sshTrustFile = prompt(in, "SSH host trust file (non-Git known_hosts file)", sshTrustFile)
 		sshHostKey = prompt(in, "Founder-verified SSH host key (written to the trust file)", sshHostKey)
 		k3sVersion = prompt(in, "K3s version", k3sVersion)
-		overlay = prompt(in, "Overlay repo URL (optional)", overlay)
+		overlayPath = prompt(in, "Overlay directory (optional)", overlayPath)
 	}
 	if address == "" {
 		return fmt.Errorf("address is required")
@@ -129,11 +150,8 @@ func runInit(cmd *cobra.Command, _ []string) error {
 			},
 		},
 	}
-	if overlay != "" {
-		if overlayRef == "" {
-			overlayRef = config.DefaultOverlayRef
-		}
-		cfg.Spec.Overlay = config.Overlay{Repo: overlay, Ref: overlayRef}
+	if overlayPath != "" {
+		cfg.Spec.Overlay = config.Overlay{Path: overlayPath}
 	}
 	if err := cfg.Validate(); err != nil {
 		return err

@@ -9,7 +9,6 @@ import (
 
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/lifecycle"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/provisioner"
-	"github.com/nunocgoncalves/iterabase-mono/forge/internal/sshprovisioner"
 )
 
 func newStatusCmd() *cobra.Command {
@@ -27,14 +26,16 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	p, err := sshprovisioner.New(cfg.Spec.Hosts[0])
+	t, p, err := connect(context.Background(), cfg)
 	if err != nil {
 		return err
 	}
+	defer t.Close()
 	defer p.Close()
+	cfg = t.Cluster
 
 	ctx := context.Background()
-	plan, err := lifecycle.Plan(ctx, cfg, p)
+	plan, err := lifecycle.Plan(ctx, cfg, p, nil)
 	if err != nil {
 		return err
 	}

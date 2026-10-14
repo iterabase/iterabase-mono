@@ -162,7 +162,9 @@ func applyGPUDriverUpgradeStage(t *testing.T, state *gpuFixtureState) {
 	t.Helper()
 	cfgPath := writeForgeConfigGPUDriver(t, state.runID, state.host.IP, state.privKeyPath, gpuUpgradeCandidateDriver)
 	t.Logf("reconciling exact GPU driver transition %s -> %s", gpuUpgradeBaselineDriver, gpuUpgradeCandidateDriver)
-	out := applyOnce(t, state.forgeBin, state.forgeHome, cfgPath)
+	// This GPU-only config names no overlay. Skip the overlay phase so the driver
+	// transition does not also prune the platform's overlay delivery.
+	out := applyOnceArgs(t, state.forgeBin, state.forgeHome, cfgPath, "--skip-overlay")
 	assertApplyMarkers(t, out, "node ready: true", "gpu ready: true", "gpu driver: "+gpuUpgradeCandidateDriver)
 	state.bindKubeconfigTunnel(t)
 	t.Logf("driver upgrade apply output:\n%s", out)

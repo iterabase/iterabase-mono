@@ -54,6 +54,7 @@ type cpuFixtureState struct {
 	workspaceSession      workspaceSession
 	workspaceWorkKey      string
 	runtimeImageDigests   map[string]importedRuntimeIdentity
+	overlay               overlayDelivery
 	diagnostics           forgeDiagnostics
 }
 
@@ -110,7 +111,7 @@ func rejectGPUOnCPUStage(t *testing.T, state *cpuFixtureState) {
 }
 
 // assertCurrentPlatformStage proves Forge handed the exact desired releases and
-// source artifact to a minimally healthy dependent layer. Chart ownership,
+// overlay to a minimally healthy dependent layer. Chart ownership,
 // rollout, certificate, gateway, and tool-runner correctness remains in the
 // chart/control-plane owner suites.
 func assertCurrentPlatformStage(t *testing.T, state *cpuFixtureState) {
@@ -220,9 +221,8 @@ printf "%%s|%%s\n" "$pv" "$vg"
 	if owner != wantOwner {
 		t.Fatalf("certificate CRD release owner = %q, want %q", owner, wantOwner)
 	}
-	ready, revision, digest := pollFluxReady(t, sc, "gitrepository", "overlay", 2*time.Minute)
-	if !ready || revision == "" || !isCanonicalSHA256Digest(digest) {
-		t.Fatalf("current platform has no exact Ready Flux artifact: ready=%v revision=%q digest=%q", ready, revision, digest)
+	if state.overlay.toolsDigest == "" {
+		t.Fatal("current platform has no recorded overlay delivery")
 	}
 	mustSSHOutput(t, sc, fmt.Sprintf("sudo k3s kubectl rollout status -n iterabase-system deployment/%s-tool-runner --timeout=300s", state.runID))
 
@@ -422,7 +422,7 @@ func destroyPreservesDataStorageStage(t *testing.T, state *cpuFixtureState) {
 	if err := state.fixture.releaseDataStorageConsumers(); err != nil {
 		t.Fatalf("release claims through Kubernetes before ordinary Forge destroy: %v", err)
 	}
-	plan := prepareCandidateOverlay(t, state.runID, state.ip, state.privKeyPath)
+	plan := prepareCandidateOverlay(t)
 	cfgPath := writeCurrentOverlayForgeConfig(t, state.runID, state.ip, state.privKeyPath, state.chartVersion, plan)
 	out, err := runForgeE(state.forgeBin, state.forgeHome, "destroy", "--config", cfgPath, "--yes")
 	if err != nil {
@@ -599,16 +599,25 @@ exit 1`, candidateShellQuote(state.storagePVCUID+"|"+state.storagePV))
 func reapplyCurrentPlatformStage(t *testing.T, state *cpuFixtureState) {
 	t.Helper()
 	prepareCandidateChart(t, state.ip, state.privKeyPath)
-	plan := prepareCandidateOverlay(t, state.runID, state.ip, state.privKeyPath)
+	plan := prepareCandidateOverlay(t)
 	cfgPath := writeCurrentOverlayForgeConfig(
 		t, state.runID, state.ip, state.privKeyPath, state.chartVersion, plan,
 	)
 	out := applyOnce(t, state.forgeBin, state.forgeHome, cfgPath)
-	markers := []string{"action:     skip", "node ready: true", "data storage: iterabase-data", "LVM storage ready: true", "certificate substrate applied: true", "LVM storage substrate applied: true", "chart applied: true", "overlay applied: true"}
-	if plan.flux {
-		markers = append(markers, "flux installed: true")
+	assertApplyMarkers(t, out, "action:     skip", "node ready: true", "data storage: iterabase-data", "LVM storage ready: true",
+		"certificate substrate applied: true", "LVM storage substrate applied: true", "chart applied: true",
+		"overlay revision: sha256:", "overlay tools:  sha256:")
+	sc, err := sshDial(state.ip, state.privKeyPath)
+	if err != nil {
+		t.Fatalf("ssh dial %s: %v", state.ip, err)
 	}
-	assertApplyMarkers(t, out, markers...)
+	defer sc.Close()
+	delivery := assertOverlayDelivered(t, sc, state.runID, plan, out)
+	// The same overlay renders to the same revision and archive, so reapply
+	// rewrites nothing and prunes nothing.
+	if delivery.revision != state.overlay.revision || delivery.toolsDigest != state.overlay.toolsDigest || len(delivery.pruned) != 0 {
+		t.Fatalf("idempotent reapply changed the overlay delivery: first %+v, reapply %+v", state.overlay, delivery)
+	}
 }
 
 func assertRemoteHelmChartVersion(t *testing.T, sc *ssh.Client, release, namespace, want string) {

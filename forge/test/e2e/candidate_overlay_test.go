@@ -1,137 +1,89 @@
 package e2e
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
-	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 )
 
 const (
-	// candidateOverlayRepository is the host-local overlay Forge applies and
-	// serves to Flux over read-only node SSH (DES-HOR-632-01). It is built on
-	// every run from the fixture under ./overlay plus the run's values.
-	candidateOverlayRoot       = "/var/lib/iterabase-e2e/overlay"
-	candidateOverlayRepository = "file://" + candidateOverlayRoot
-	candidateOverlayRef        = "e2e"
-	candidateOverlayFixture    = "overlay"
-	workspaceBehaviorEnv       = "FORGE_E2E_WORKSPACE_BEHAVIOR"
+	// candidateOverlayFixture is the versioned fixture overlay every real-host
+	// run deploys. Forge renders a per-run copy of it on the operator machine
+	// (DES-HOR-593-03); nothing about the overlay is prepared on the host.
+	candidateOverlayFixture = "overlay"
+	// candidateOverlayRunValues carries the run's exact image identities. It is
+	// the last value file, so it wins over the fixture's own values.
+	candidateOverlayRunValues = "values.e2e.yaml"
+	workspaceBehaviorEnv      = "FORGE_E2E_WORKSPACE_BEHAVIOR"
 )
 
+var (
+	candidateOverlayValueFiles = []string{"values.yaml", "values.client.yaml", candidateOverlayRunValues}
+	candidateOverlayToolDirs   = []string{"tools/client"}
+)
+
+// candidateOverlayPlan is one run's rendered-overlay input: a private copy of
+// the fixture plus the run values, and the forge.yaml overlay block naming it.
 type candidateOverlayPlan struct {
-	repository string
-	ref        string
-	flux       bool
+	path       string
+	valueFiles []string
+	toolDirs   []string
 	values     string
 }
 
 func candidateOverlayPlanForEnvironment(t *testing.T) candidateOverlayPlan {
 	t.Helper()
 	return candidateOverlayPlan{
-		repository: candidateOverlayRepository,
-		ref:        candidateOverlayRef,
-		flux:       true,
+		valueFiles: slices.Clone(candidateOverlayValueFiles),
+		toolDirs:   slices.Clone(candidateOverlayToolDirs),
 		values:     candidateOverlayValues(t),
 	}
 }
 
-// candidateOverlayArchive packs the versioned fixture overlay with the run's
-// values appended to values.client.yaml. Entries are sorted and timestamp-free
-// so the same inputs give the same archive.
-func candidateOverlayArchive(fixture, values string) ([]byte, error) {
-	var files []string
-	err := filepath.WalkDir(fixture, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-		files = append(files, path)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sort.Strings(files)
-	var buffer bytes.Buffer
-	gz := gzip.NewWriter(&buffer)
-	archive := tar.NewWriter(gz)
-	for _, path := range files {
-		relative, err := filepath.Rel(fixture, path)
-		if err != nil {
-			return nil, err
-		}
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		if filepath.ToSlash(relative) == "values.client.yaml" {
-			contents = append(contents, []byte(values)...)
-		}
-		if err := archive.WriteHeader(&tar.Header{Name: filepath.ToSlash(relative), Mode: 0o644, Size: int64(len(contents)), Typeflag: tar.TypeReg}); err != nil {
-			return nil, err
-		}
-		if _, err := archive.Write(contents); err != nil {
-			return nil, err
-		}
-	}
-	if err := archive.Close(); err != nil {
-		return nil, err
-	}
-	if err := gz.Close(); err != nil {
-		return nil, err
-	}
-	return buffer.Bytes(), nil
-}
-
-// candidateOverlaySetupScript commits the archive as a fresh one-commit
-// repository at root on the candidate ref. Forge clones it and Flux mirrors the
-// same commit, so the values Helm applies are the values Flux tracks.
-func candidateOverlaySetupScript(archive []byte, root string) string {
-	return fmt.Sprintf(`set -eu
-if ! command -v git >/dev/null 2>&1; then
-  sudo apt-get update -qq
-  sudo apt-get install -y git
-fi
-root=%s
-sudo rm -rf "$root"
-sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0755 "$root"
-printf '%%s' %s | base64 --decode | tar -xz -C "$root"
-cd "$root"
-git init -q -b %s
-git add -A
-git -c user.email=forge-e2e@iterabase.invalid -c user.name="Forge E2E" commit -qm "Forge E2E fixture overlay"
-git rev-parse HEAD
-`, candidateShellQuote(root), candidateShellQuote(base64.StdEncoding.EncodeToString(archive)), candidateShellQuote(candidateOverlayRef))
-}
-
-// prepareCandidateOverlay builds the host-local overlay from the versioned
-// fixture and the run's image identities. Forge's resolved source and Flux's
-// exact artifact are both this commit.
-func prepareCandidateOverlay(t *testing.T, runID, ip, keyPath string) candidateOverlayPlan {
+// prepareCandidateOverlay copies the versioned fixture into a run-private
+// directory and adds the run's image identities as the last value file. Forge
+// renders that directory locally; only the rendered result reaches the host.
+func prepareCandidateOverlay(t *testing.T) candidateOverlayPlan {
 	t.Helper()
 	plan := candidateOverlayPlanForEnvironment(t)
-	archive, err := candidateOverlayArchive(candidateOverlayFixture, plan.values)
-	if err != nil {
-		t.Fatalf("pack fixture overlay: %v", err)
+	plan.path = filepath.Join(t.TempDir(), "overlay")
+	if err := copyOverlayTree(candidateOverlayFixture, plan.path); err != nil {
+		t.Fatalf("copy fixture overlay: %v", err)
 	}
-	client, err := sshDial(ip, keyPath)
-	if err != nil {
-		t.Fatalf("dial candidate host to prepare the fixture overlay: %v", err)
+	if err := os.WriteFile(filepath.Join(plan.path, candidateOverlayRunValues), []byte(plan.values), 0o600); err != nil {
+		t.Fatalf("write run overlay values: %v", err)
 	}
-	defer client.Close()
-	output, err := sshOutput(client, candidateOverlaySetupScript(archive, candidateOverlayRoot))
-	if err != nil {
-		t.Fatalf("prepare the fixture overlay for %s: %v\n%s", runID, err, output)
-	}
-	t.Logf("prepared fixture overlay commit %s from ./%s with selected immutable image identities", strings.TrimSpace(output), candidateOverlayFixture)
+	t.Logf("prepared fixture overlay copy %s from ./%s with the run's immutable image identities", plan.path, candidateOverlayFixture)
 	return plan
+}
+
+// copyOverlayTree copies the regular files and directories under src to dst.
+func copyOverlayTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("fixture overlay entry %s is not a regular file", path)
+		}
+		contents, err := os.ReadFile(path) //nolint:gosec // versioned fixture file
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, contents, 0o600)
+	})
 }
 
 func candidateOverlayValues(t *testing.T) string {
@@ -190,8 +142,8 @@ func TestCandidateOverlayValues(t *testing.T) {
 	t.Setenv(inferenceGatewayDigestEnv, "")
 
 	plan := candidateOverlayPlanForEnvironment(t)
-	if plan.repository != candidateOverlayRepository || plan.ref != candidateOverlayRef || !plan.flux {
-		t.Fatalf("candidate plan must use the host-local fixture overlay with Flux: %+v", plan)
+	if !slices.Equal(plan.valueFiles, candidateOverlayValueFiles) || plan.valueFiles[len(plan.valueFiles)-1] != candidateOverlayRunValues {
+		t.Fatalf("candidate plan must apply the run values last: %+v", plan)
 	}
 	for expected := range map[string]struct{}{
 		"control-plane:":        {},
@@ -268,58 +220,59 @@ func TestCandidateOverlayValuesEnableDispatchForRealWorkspaceBehavior(t *testing
 	}
 }
 
-func TestCandidateOverlayRepositoryCarriesFixtureAndValues(t *testing.T) {
+func TestCandidateOverlayCopyCarriesFixtureAndValues(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("b", 64)
 	t.Setenv("CONTROL_PLANE_IMAGE_REPO", "ghcr.io/example/control-plane")
 	t.Setenv("CONTROL_PLANE_IMAGE_TAG", "candidate-run")
 	t.Setenv(controlPlaneDigestEnv, digest)
 	t.Setenv(toolRunnerDigestEnv, "")
 	t.Setenv(inferenceGatewayDigestEnv, "")
-	plan := candidateOverlayPlanForEnvironment(t)
 
-	archive, err := candidateOverlayArchive(candidateOverlayFixture, plan.values)
-	if err != nil {
-		t.Fatal(err)
+	plan := prepareCandidateOverlay(t)
+	if !filepath.IsAbs(plan.path) {
+		t.Fatalf("overlay copy path %q must be absolute so forge.yaml can live elsewhere", plan.path)
 	}
-	again, err := candidateOverlayArchive(candidateOverlayFixture, plan.values)
-	if err != nil || !bytes.Equal(archive, again) {
-		t.Fatalf("fixture archive is not deterministic: %v", err)
+	if !slices.Equal(plan.valueFiles, []string{"values.yaml", "values.client.yaml", "values.e2e.yaml"}) ||
+		!slices.Equal(plan.toolDirs, []string{"tools/client"}) {
+		t.Fatalf("overlay plan does not name the fixture contract: %+v", plan)
 	}
-
-	root := t.TempDir()
-	home := filepath.Join(root, "home")
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	repo := filepath.Join(root, "overlay")
-	// The host script uses sudo for its root-owned parent; locally run it without.
-	script := strings.ReplaceAll(candidateOverlaySetupScript(archive, repo), "sudo ", "")
-	setup := exec.Command("bash", "-c", script)
-	setup.Env = append(os.Environ(), "HOME="+home)
-	out, err := setup.CombinedOutput()
-	if err != nil {
-		t.Fatalf("build fixture overlay repository: %v\n%s", err, out)
-	}
-
-	checkout := filepath.Join(root, "checkout")
-	clone := exec.Command("git", "clone", "-q", "--branch", candidateOverlayRef, "--depth", "1", "file://"+repo, checkout)
-	clone.Env = setup.Env
-	if out, err := clone.CombinedOutput(); err != nil {
-		t.Fatalf("Forge-style clone of the fixture overlay: %v\n%s", err, out)
-	}
-	for _, required := range []string{"values.yaml", "values.client.yaml", "crds/client/kustomization.yaml", "tools/client/validation-echo/index.mjs"} {
-		if _, err := os.Stat(filepath.Join(checkout, required)); err != nil {
-			t.Fatalf("fixture overlay is missing %s: %v", required, err)
+	for _, required := range []string{"kustomization.yaml", "values.yaml", "values.client.yaml", "crds/client/kustomization.yaml", "crds/client/overlay-probe.yaml", "tools/client/validation-echo/index.mjs", "tools/client/validation-echo/manifest.json"} {
+		if _, err := os.Stat(filepath.Join(plan.path, required)); err != nil {
+			t.Fatalf("fixture overlay copy is missing %s: %v", required, err)
 		}
 	}
-	contents, err := os.ReadFile(filepath.Join(checkout, "values.client.yaml"))
+	contents, err := os.ReadFile(filepath.Join(plan.path, candidateOverlayRunValues))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(contents), plan.values) {
-		t.Fatalf("fixture overlay values.client.yaml lacks the run values:\n%s", contents)
+	if string(contents) != plan.values || !strings.Contains(plan.values, "repository: \"ghcr.io/example/control-plane\"") {
+		t.Fatalf("run values file does not carry the run's image identities:\n%s", contents)
 	}
-	if head := strings.TrimSpace(string(out)); len(head) != 40 {
-		t.Fatalf("setup did not report the overlay commit: %q", out)
+	fixture, err := os.ReadFile(filepath.Join(candidateOverlayFixture, "values.client.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied, err := os.ReadFile(filepath.Join(plan.path, "values.client.yaml"))
+	if err != nil || string(copied) != string(fixture) {
+		t.Fatalf("the run must not rewrite fixture value files: %v", err)
+	}
+}
+
+func TestCandidateOverlayForgeConfigUsesLocalOverlay(t *testing.T) {
+	t.Setenv(hostFixtureHostKeyEnv, "")
+	plan := prepareCandidateOverlay(t)
+	cfgPath := writeCurrentOverlayForgeConfig(t, "forge-e2e", "192.0.2.10", "/tmp/key", "0.6.0", plan)
+	cfg, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("  overlay:\n    path: %q\n    valueFiles: [\"values.yaml\", \"values.client.yaml\", \"values.e2e.yaml\"]\n    toolDirs: [\"tools/client\"]\n", plan.path)
+	if !strings.Contains(string(cfg), want) {
+		t.Fatalf("forge.yaml lacks the local overlay block %q:\n%s", want, cfg)
+	}
+	for _, removed := range []string{"flux:", "repo:", "ref:", "file://"} {
+		if strings.Contains(string(cfg), removed) {
+			t.Fatalf("forge.yaml still carries removed Git/Flux overlay field %q:\n%s", removed, cfg)
+		}
 	}
 }

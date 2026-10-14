@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/lifecycle"
-	"github.com/nunocgoncalves/iterabase-mono/forge/internal/sshprovisioner"
 )
 
 func newUpgradeCmd() *cobra.Command {
@@ -27,11 +26,13 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	}
 	log := newLogger(cmd)
 
-	p, err := sshprovisioner.New(cfg.Spec.Hosts[0])
+	t, p, err := connect(context.Background(), cfg)
 	if err != nil {
 		return err
 	}
+	defer t.Close()
 	defer p.Close()
+	cfg = t.Cluster
 
 	to, _ := cmd.Flags().GetString("to")
 	log.Info("upgrading", "install", cfg.Metadata.Name, "to", to)

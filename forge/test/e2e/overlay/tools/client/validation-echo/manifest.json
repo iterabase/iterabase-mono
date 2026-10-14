@@ -2,8 +2,8 @@
   "apiVersion": "iterabase.io/tool/v1",
   "name": "platform.validation.echo",
   "version": "1.0.0",
-  "digest": "sha256:eb5792a79dc2572d3bf5565b3ffbb9b2e5cba6a6a1e92460acb71ca0eb058230",
-  "description": "Forge exact-Flux materialization and registration canary; intentionally ungranted.",
+  "digest": "sha256:241214edf43e69ab8c95caafe98d0b707f04052f4f02e05ad859a130b4158e6a",
+  "description": "Forge overlay tools delivery and registration canary; intentionally ungranted.",
   "bundle": "index.mjs",
   "inputSchema": {
     "type": "object",

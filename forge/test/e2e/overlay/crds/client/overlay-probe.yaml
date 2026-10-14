@@ -1,0 +1,16 @@
+# Inert fixture objects that prove Forge's overlay object delivery: the owner
+# labels Forge sets, pruning, and the refusal to overwrite installation-owned
+# objects (forge/test/e2e/overlay_delivery_test.go). They live in their own
+# namespace so they never touch the platform release.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: forge-e2e-overlay
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: overlay-probe
+  namespace: forge-e2e-overlay
+data:
+  purpose: forge-overlay-object-delivery

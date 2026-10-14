@@ -31,6 +31,9 @@ func runDestroy(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.Spec.Provider.AWS != nil {
+		return runAWSDestroy(cmd, cfg)
+	}
 	host := cfg.Spec.Hosts[0]
 
 	purgeDataStorage, _ := cmd.Flags().GetBool("purge-data-storage")
@@ -56,7 +59,7 @@ func runDestroy(cmd *cobra.Command, _ []string) error {
 	defer p.Close()
 
 	ctx := context.Background()
-	if err := lifecycle.DestroyWithOptions(ctx, cfg, p, p, p, p, lifecycle.DestroyOpts{
+	if err := lifecycle.DestroyWithOptions(ctx, cfg, p, p, p, lifecycle.DestroyOpts{
 		PurgeDataStorage: purgeDataStorage,
 		Reboot:           reboot,
 	}); err != nil {

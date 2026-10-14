@@ -153,3 +153,43 @@ func TestSelectDataStorageDevicesRejectsDuplicateAndEmptySelection(t *testing.T)
 	_, err = selectDataStorageDevices(bufio.NewReader(strings.NewReader("\n")), &bytes.Buffer{}, devices)
 	require.Error(t, err)
 }
+
+func TestInitNonInteractiveWritesOverlayPath(t *testing.T) {
+	t.Setenv(dataStorageDevicesEnv, "/dev/disk/by-id/scsi-a")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "forge.yaml")
+	cmd := NewRootCmd()
+	cmd.SetArgs(append(initTrustArgs(t), "--path", path, "--address", "192.0.2.10", "--overlay-path", "../overlays/customers/acme"))
+	cmd.SetOut(&bytes.Buffer{})
+	require.NoError(t, cmd.Execute())
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "../overlays/customers/acme", cfg.Spec.Overlay.Path)
+	assert.Equal(t, []string{"values.yaml"}, cfg.Spec.Overlay.ValueFiles)
+	assert.Equal(t, []string{"tools"}, cfg.Spec.Overlay.ToolDirs)
+	assert.Equal(t, dir, cfg.Dir)
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "repo:")
+	assert.NotContains(t, string(raw), "flux")
+}
+
+func TestInitRejectsRemovedGitOverlayFlags(t *testing.T) {
+	for _, flag := range []string{"--overlay", "--overlay-ref"} {
+		cmd := NewRootCmd()
+		cmd.SetArgs(append(initTrustArgs(t), "--path", filepath.Join(t.TempDir(), "forge.yaml"), "--address", "192.0.2.10", flag, "x"))
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		require.ErrorContains(t, cmd.Execute(), "unknown flag", flag)
+	}
+}
+
+func TestApplyRejectsRemovedFlags(t *testing.T) {
+	for _, flag := range []string{"--overlay", "--skip-flux"} {
+		cmd := NewRootCmd()
+		cmd.SetArgs([]string{"apply", "--config", filepath.Join(t.TempDir(), "forge.yaml"), flag})
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		require.ErrorContains(t, cmd.Execute(), "unknown flag", flag)
+	}
+}

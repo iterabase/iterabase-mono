@@ -1,0 +1,22 @@
+#cloud-config
+hostname: ${hostname}
+preserve_hostname: false
+ssh_pwauth: false
+disable_root: true
+# DES-HOR-593-02: replace every stock host key with the Forge-generated one.
+ssh_deletekeys: true
+ssh_genkeytypes: []
+ssh_keys:
+  ed25519_private: |
+    ${indent(4, host_private_key)}
+  ed25519_public: ${host_public_key}
+# The image's default user (ubuntu, passwordless sudo) is Forge's SSH user.
+ssh_authorized_keys:
+  - ${authorized_key}
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-forge-host-key.conf
+    permissions: "0644"
+    content: |
+      HostKey /etc/ssh/ssh_host_ed25519_key
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
