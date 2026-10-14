@@ -75,4 +75,13 @@ export const lengthBudgets: Record<string, number> = {
   "team:filter.done": TAB,
   "team:filter.failed": TAB,
   "team:youConfirm": STATUS,
+  "auth:email": TAB,
+  "team:restart": BUTTON,
+  "team:open": BUTTON,
+  "team:seeWork": BUTTON,
+  "team:itsWork": BUTTON,
+  "team:failed.notRestarted": STATUS,
+  "team:failed.outcomeUnknown": STATUS,
+  "team:youAnswer": STATUS,
+  "work:item.reviewDecide": BUTTON,
 };

@@ -1,5 +1,6 @@
 import {
   FormEvent,
+  ReactNode,
   RefObject,
   useEffect,
   useMemo,
@@ -9,6 +10,12 @@ import {
 import { AuthAPIError, AuthProfile, LocaleCode, authApi } from "./authApi";
 import type { TFunction } from "i18next";
 import { fixedT, setLocale as setActiveLocale } from "../i18n";
+import { AuthFrame } from "./AuthFrame";
+
+// The signed-out journey (HOR-453), ported from XTSignIn / XTPhoneSignIn: every
+// view (sign in, request access, forgot password, verify, setup, reset and
+// their terminal states) sits in the same right-hand card. Single sign-on
+// buttons join with HOR-314.
 
 type AuthT = TFunction<"auth">;
 
@@ -95,6 +102,11 @@ export default function PublicAuth({
   }, []);
 
   useEffect(() => setActiveLocale(locale), [locale]);
+
+  // Each view change moves focus to its heading, so screen readers hear it.
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, [view.kind]);
 
   // A valid setup link discloses only its bounded read-only context: the
   // verified work email and the approved role.
@@ -281,246 +293,440 @@ export default function PublicAuth({
     });
   }
 
+  const go = (kind: "sign-in" | "request" | "forgot") => {
+    setError("");
+    setNotice("");
+    setView({ kind });
+  };
+  const back = (
+    <button
+      type="button"
+      className="link-button self-start"
+      onClick={() => go("sign-in")}
+    >
+      {c("backToSignIn")}
+    </button>
+  );
+
   return (
-    <main className="auth-page">
-      <section className="auth-card" aria-live="polite">
-        <header className="auth-brand">
-          <span className="eyebrow">{c("eyebrow")}</span>
-          <h1>{c("brand")}</h1>
-          <div className="auth-locale" role="group" aria-label={c("language")}>
+    <AuthFrame
+      brand={c("brand")}
+      title={c("heroTitle")}
+      subline={c("heroSub")}
+      trust={[c("trustApproval"), c("trustAttributed"), c("trustData")]}
+      locale={
+        <div
+          className="seg auth-locale"
+          role="group"
+          aria-label={c("language")}
+        >
+          {(["en", "pt"] as const).map((code) => (
             <button
+              key={code}
               type="button"
-              className={locale === "en" ? "active" : ""}
-              aria-pressed={locale === "en"}
-              onClick={() => setLocale("en")}
+              aria-pressed={locale === code}
+              onClick={() => setLocale(code)}
             >
-              {c("languageShort.en")}
+              {c(`languageShort.${code}`)}
             </button>
-            <button
-              type="button"
-              className={locale === "pt" ? "active" : ""}
-              aria-pressed={locale === "pt"}
-              onClick={() => setLocale("pt")}
-            >
-              {c("languageShort.pt")}
-            </button>
-          </div>
-        </header>
-
-        {error && (
-          <div className="form-error" role="alert">
-            {error}
-          </div>
-        )}
-        {notice && (
-          <div className="auth-notice" role="status">
-            {notice}
-          </div>
-        )}
-
-        {(view.kind === "sign-in" ||
-          view.kind === "request" ||
-          view.kind === "request-accepted" ||
-          view.kind === "forgot" ||
-          view.kind === "forgot-accepted") && (
-          <SignInView
-            view={view}
-            copy={c}
-            busy={busy}
-            email={email}
-            password={password}
-            locale={locale}
-            setLocale={setLocale}
-            setEmail={setEmail}
-            setPassword={setPassword}
-            onSignIn={onSignIn}
-            onRequest={onRequestAccess}
-            onForgot={onForgot}
+          ))}
+        </div>
+      }
+    >
+      {view.kind === "sign-in" && (
+        <form className="auth-form" onSubmit={onSignIn} aria-busy={busy}>
+          <Title
             headingRef={headingRef}
-          />
-        )}
-
-        {view.kind === "verify-checking" && (
-          <div className="auth-state" aria-busy="true">
-            <h2 ref={headingRef}>{c("verifyChecking")}</h2>
-            <p className="loading">{c("loading")}</p>
+            className="auth-card-title--phone-hidden"
+          >
+            {c("signInTitle")}
+          </Title>
+          <Feedback error={error} notice={notice} />
+          <EmailField copy={c} value={email} onChange={setEmail} sign />
+          <label className="field">
+            <span>{c("password")}</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+          <button
+            type="submit"
+            className="btn btn-ink btn-lg btn-full"
+            disabled={busy}
+          >
+            {busy ? c("signingIn") : c("signIn")}
+          </button>
+          <div className="auth-links">
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => go("forgot")}
+            >
+              {c("forgotPassword")}
+            </button>
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => go("request")}
+            >
+              {c("requestAccessLink")}
+            </button>
           </div>
-        )}
+        </form>
+      )}
 
-        {view.kind === "verify-error" && (
-          <div className="auth-state" role="status">
-            <h2>{verifyErrorTitle(view.reason, c)}</h2>
-            <p>
-              {view.reason === "expired" || view.reason === "superseded"
-                ? c("verifyExpired")
-                : c("verifyInvalid")}
+      {view.kind === "request" && (
+        <form className="auth-form" onSubmit={onRequestAccess} aria-busy={busy}>
+          <Title headingRef={headingRef}>{c("requestTitle")}</Title>
+          <p className="auth-intro">{c("requestIntro")}</p>
+          <Feedback error={error} notice={notice} />
+          <EmailField copy={c} value={email} onChange={setEmail} />
+          <label className="field">
+            <span>{c("language")}</span>
+            <select
+              value={locale}
+              onChange={(event) => setLocale(event.target.value as LocaleCode)}
+            >
+              <option value="en">{c("languageName.en")}</option>
+              <option value="pt">{c("languageName.pt")}</option>
+            </select>
+          </label>
+          <button
+            type="submit"
+            className="btn btn-ink btn-lg btn-full"
+            disabled={busy}
+          >
+            {busy ? c("requestSubmitting") : c("requestSubmit")}
+          </button>
+          {back}
+        </form>
+      )}
+
+      {view.kind === "forgot" && (
+        <form className="auth-form" onSubmit={onForgot} aria-busy={busy}>
+          <Title headingRef={headingRef}>{c("forgotTitle")}</Title>
+          <p className="auth-intro">{c("forgotIntro")}</p>
+          <Feedback error={error} notice={notice} />
+          <EmailField copy={c} value={email} onChange={setEmail} />
+          <button
+            type="submit"
+            className="btn btn-ink btn-lg btn-full"
+            disabled={busy}
+          >
+            {c("forgotSubmit")}
+          </button>
+          {back}
+        </form>
+      )}
+
+      {view.kind === "request-accepted" && (
+        <State headingRef={headingRef} title={c("requestTitle")}>
+          <p className="auth-intro">{c("requestAccepted")}</p>
+          {back}
+        </State>
+      )}
+
+      {view.kind === "forgot-accepted" && (
+        <State headingRef={headingRef} title={c("forgotTitle")}>
+          <p className="auth-intro">{c("forgotAccepted")}</p>
+          {back}
+        </State>
+      )}
+
+      {view.kind === "verify-checking" && (
+        <div className="auth-state" aria-busy="true">
+          <Title headingRef={headingRef}>{c("verifyChecking")}</Title>
+          <p className="auth-intro">{c("loading")}</p>
+        </div>
+      )}
+
+      {view.kind === "verify-error" && (
+        <State headingRef={headingRef} title={verifyErrorTitle(view.reason, c)}>
+          <p className="auth-intro">
+            {view.reason === "expired" || view.reason === "superseded"
+              ? c("verifyExpired")
+              : c("verifyInvalid")}
+          </p>
+          <div className="auth-links">
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => go("request")}
+            >
+              {c("requestAccessLink")}
+            </button>
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => go("sign-in")}
+            >
+              {c("backToSignIn")}
+            </button>
+          </div>
+        </State>
+      )}
+
+      {view.kind === "request-state" && (
+        <State headingRef={headingRef} title={requestStateTitle(view.state, c)}>
+          <p className="auth-intro">{requestStateBody(view.state, c)}</p>
+          <button
+            type="button"
+            className="btn btn-secondary btn-full"
+            onClick={() => go("sign-in")}
+          >
+            {c("backToSignIn")}
+          </button>
+        </State>
+      )}
+
+      {view.kind === "setup" && (
+        <form className="auth-form" onSubmit={onSetup} aria-busy={busy}>
+          <Title headingRef={headingRef}>{c("setupTitle")}</Title>
+          <p className="auth-intro">{c("setupIntro")}</p>
+          <Feedback error={error} notice={notice} />
+          {contextLoading && (
+            <p className="auth-intro" role="status">
+              {c("loading")}
             </p>
-            <div className="auth-links">
-              <button
-                type="button"
-                className="link-button"
-                onClick={() => setView({ kind: "request" })}
-              >
-                {c("requestAccessLink")}
-              </button>
-              <button
-                type="button"
-                className="link-button"
-                onClick={() => setView({ kind: "sign-in" })}
-              >
-                {c("backToSignIn")}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {view.kind === "request-state" && (
-          <div className="auth-state" role="status">
-            <h2>{requestStateTitle(view.state, c)}</h2>
-            <p>{requestStateBody(view.state, c)}</p>
-            <button type="button" onClick={() => setView({ kind: "sign-in" })}>
-              {c("backToSignIn")}
-            </button>
-          </div>
-        )}
-
-        {view.kind === "setup" && (
-          <form className="auth-form" onSubmit={onSetup} aria-busy={busy}>
-            <h2>{c("setupTitle")}</h2>
-            <p className="auth-intro">{c("setupIntro")}</p>
-            {contextLoading && (
-              <p className="loading" role="status">
-                {c("loading")}
-              </p>
-            )}
-            {setupContext && (
-              <>
-                <label>
-                  <span>{c("email")}</span>
-                  <input value={setupContext.email} readOnly disabled />
-                </label>
-                <label>
-                  <span>{c("role")}</span>
-                  <input
-                    value={
-                      setupContext.role === "admin"
-                        ? c("roleAdmin")
-                        : c("roleOperator")
-                    }
-                    readOnly
-                    disabled
-                  />
-                </label>
-              </>
-            )}
-            <label>
-              <span>{c("displayName")}</span>
-              <input
-                required
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>{c("language")}</span>
-              <select
-                value={locale}
-                onChange={(event) =>
-                  setLocale(event.target.value as LocaleCode)
-                }
-              >
-                <option value="en">{c("languageName.en")}</option>
-                <option value="pt">{c("languageName.pt")}</option>
-              </select>
-            </label>
-            <PasswordFields
-              copy={c}
-              password={password}
-              confirm={confirmPassword}
-              setPassword={(value) => {
-                setPassword(value);
-                setPasswordMismatch("");
-              }}
-              setConfirm={(value) => {
-                setConfirmPassword(value);
-                setPasswordMismatch("");
-              }}
-              mismatch={passwordMismatch}
+          )}
+          {setupContext && (
+            <>
+              <label className="field">
+                <span>{c("email")}</span>
+                <input value={setupContext.email} readOnly disabled />
+              </label>
+              <label className="field">
+                <span>{c("role")}</span>
+                <input
+                  value={
+                    setupContext.role === "admin"
+                      ? c("roleAdmin")
+                      : c("roleOperator")
+                  }
+                  readOnly
+                  disabled
+                />
+              </label>
+            </>
+          )}
+          <label className="field">
+            <span>{c("displayName")}</span>
+            <input
+              required
+              autoComplete="name"
+              value={displayName}
+              onChange={(event) => setDisplayName(event.target.value)}
             />
-            <button type="submit" disabled={busy}>
-              {busy ? c("setupCompleting") : c("finishSetup")}
-            </button>
-          </form>
-        )}
+          </label>
+          <label className="field">
+            <span>{c("language")}</span>
+            <select
+              value={locale}
+              onChange={(event) => setLocale(event.target.value as LocaleCode)}
+            >
+              <option value="en">{c("languageName.en")}</option>
+              <option value="pt">{c("languageName.pt")}</option>
+            </select>
+          </label>
+          <PasswordFields
+            copy={c}
+            password={password}
+            confirm={confirmPassword}
+            setPassword={(value) => {
+              setPassword(value);
+              setPasswordMismatch("");
+            }}
+            setConfirm={(value) => {
+              setConfirmPassword(value);
+              setPasswordMismatch("");
+            }}
+            mismatch={passwordMismatch}
+          />
+          <button
+            type="submit"
+            className="btn btn-ink btn-lg btn-full"
+            disabled={busy}
+          >
+            {busy ? c("setupCompleting") : c("finishSetup")}
+          </button>
+        </form>
+      )}
 
-        {view.kind === "setup-terminal" && (
-          <div className="auth-state" role="status">
-            <h2>{setupTitle(view.reason, c)}</h2>
-            <p>{setupBody(view.reason, c)}</p>
-            <button type="button" disabled={busy} onClick={onResendSetup}>
-              {c("setupResend")}
-            </button>
-            <button type="button" onClick={() => setView({ kind: "sign-in" })}>
-              {c("backToSignIn")}
-            </button>
-          </div>
-        )}
+      {view.kind === "setup-terminal" && (
+        <State headingRef={headingRef} title={setupTitle(view.reason, c)}>
+          <Feedback error={error} notice={notice} />
+          <p className="auth-intro">{setupBody(view.reason, c)}</p>
+          <button
+            type="button"
+            className="btn btn-ink btn-full"
+            disabled={busy}
+            onClick={onResendSetup}
+          >
+            {c("setupResend")}
+          </button>
+          {back}
+        </State>
+      )}
 
-        {view.kind === "setup-done" && (
-          <div className="auth-state" role="status">
-            <h2>{c("setupDoneTitle")}</h2>
-            <p>{c("setupDoneBody")}</p>
-            <button type="button" onClick={() => setView({ kind: "sign-in" })}>
-              {c("signIn")}
-            </button>
-          </div>
-        )}
+      {view.kind === "setup-done" && (
+        <State headingRef={headingRef} title={c("setupDoneTitle")}>
+          <p className="auth-intro">{c("setupDoneBody")}</p>
+          <button
+            type="button"
+            className="btn btn-ink btn-lg btn-full"
+            onClick={() => go("sign-in")}
+          >
+            {c("signIn")}
+          </button>
+        </State>
+      )}
 
-        {view.kind === "reset" && (
-          <form className="auth-form" onSubmit={onReset} aria-busy={busy}>
-            <h2>{c("resetTitle")}</h2>
-            <p className="auth-intro">{c("resetIntro")}</p>
-            <PasswordFields
-              copy={c}
-              password={password}
-              confirm={confirmPassword}
-              setPassword={(value) => {
-                setPassword(value);
-                setPasswordMismatch("");
-              }}
-              setConfirm={(value) => {
-                setConfirmPassword(value);
-                setPasswordMismatch("");
-              }}
-              mismatch={passwordMismatch}
-            />
-            <button type="submit" disabled={busy}>
-              {busy ? c("resetCompleting") : c("resetSubmit")}
-            </button>
-          </form>
-        )}
+      {view.kind === "reset" && (
+        <form className="auth-form" onSubmit={onReset} aria-busy={busy}>
+          <Title headingRef={headingRef}>{c("resetTitle")}</Title>
+          <p className="auth-intro">{c("resetIntro")}</p>
+          <Feedback error={error} notice={notice} />
+          <PasswordFields
+            copy={c}
+            password={password}
+            confirm={confirmPassword}
+            setPassword={(value) => {
+              setPassword(value);
+              setPasswordMismatch("");
+            }}
+            setConfirm={(value) => {
+              setConfirmPassword(value);
+              setPasswordMismatch("");
+            }}
+            mismatch={passwordMismatch}
+          />
+          <button
+            type="submit"
+            className="btn btn-ink btn-lg btn-full"
+            disabled={busy}
+          >
+            {busy ? c("resetCompleting") : c("resetSubmit")}
+          </button>
+        </form>
+      )}
 
-        {view.kind === "reset-terminal" && (
-          <div className="auth-state" role="status">
-            <h2>{resetTitle(view.reason, c)}</h2>
-            <p>{resetBody(view.reason, c)}</p>
-            <button type="button" onClick={() => setView({ kind: "sign-in" })}>
-              {c("backToSignIn")}
-            </button>
-          </div>
-        )}
+      {view.kind === "reset-terminal" && (
+        <State headingRef={headingRef} title={resetTitle(view.reason, c)}>
+          <p className="auth-intro">{resetBody(view.reason, c)}</p>
+          {back}
+        </State>
+      )}
 
-        {view.kind === "reset-done" && (
-          <div className="auth-state" role="status">
-            <h2>{c("resetDoneTitle")}</h2>
-            <p>{c("resetDoneBody")}</p>
-            <button type="button" onClick={() => setView({ kind: "sign-in" })}>
-              {c("signIn")}
-            </button>
-          </div>
-        )}
-      </section>
-    </main>
+      {view.kind === "reset-done" && (
+        <State headingRef={headingRef} title={c("resetDoneTitle")}>
+          <p className="auth-intro">{c("resetDoneBody")}</p>
+          <button
+            type="button"
+            className="btn btn-ink btn-lg btn-full"
+            onClick={() => go("sign-in")}
+          >
+            {c("signIn")}
+          </button>
+        </State>
+      )}
+
+      {/* Errors outside a form view (e.g. a lost session on a terminal
+          state) still reach the person. */}
+      {!formViews.has(view.kind) && view.kind !== "setup-terminal" && (
+        <Feedback error={error} notice={notice} />
+      )}
+    </AuthFrame>
+  );
+}
+
+const formViews = new Set<View["kind"]>([
+  "sign-in",
+  "request",
+  "forgot",
+  "setup",
+  "reset",
+]);
+
+function Title({
+  headingRef,
+  className = "",
+  children,
+}: {
+  headingRef: RefObject<HTMLHeadingElement | null>;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <h2
+      ref={headingRef}
+      tabIndex={-1}
+      className={`auth-card-title ${className}`}
+    >
+      {children}
+    </h2>
+  );
+}
+
+function State({
+  headingRef,
+  title,
+  children,
+}: {
+  headingRef: RefObject<HTMLHeadingElement | null>;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="auth-state" role="status">
+      <Title headingRef={headingRef}>{title}</Title>
+      {children}
+    </div>
+  );
+}
+
+function Feedback({ error, notice }: { error: string; notice: string }) {
+  return (
+    <>
+      {error && (
+        <div className="form-error" role="alert">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="auth-notice" role="status">
+          {notice}
+        </div>
+      )}
+    </>
+  );
+}
+
+function EmailField({
+  copy,
+  value,
+  onChange,
+  sign = false,
+}: {
+  copy: AuthT;
+  value: string;
+  onChange: (value: string) => void;
+  sign?: boolean;
+}) {
+  return (
+    <label className="field">
+      <span>{copy("email")}</span>
+      <input
+        type="email"
+        autoComplete={sign ? "username" : "email"}
+        required
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
   );
 }
 
@@ -541,7 +747,7 @@ function PasswordFields({
 }) {
   return (
     <>
-      <label>
+      <label className="field">
         <span>{copy("password")}</span>
         <input
           type="password"
@@ -554,7 +760,7 @@ function PasswordFields({
           aria-describedby="password-guidance"
         />
       </label>
-      <label>
+      <label className="field">
         <span>{copy("confirmPassword")}</span>
         <input
           type="password"
@@ -569,7 +775,7 @@ function PasswordFields({
         />
       </label>
       {mismatch && (
-        <p className="form-error" role="alert">
+        <p className="form-error m-0" role="alert">
           {mismatch}
         </p>
       )}
@@ -577,194 +783,6 @@ function PasswordFields({
         {copy("passwordGuidance")}
       </p>
     </>
-  );
-}
-
-interface SignInViewProps {
-  view: View;
-  copy: AuthT;
-  busy: boolean;
-  email: string;
-  password: string;
-  locale: LocaleCode;
-  setLocale: (value: LocaleCode) => void;
-  setEmail: (value: string) => void;
-  setPassword: (value: string) => void;
-  onSignIn: (event: FormEvent) => void;
-  onRequest: (event: FormEvent) => void;
-  onForgot: (event: FormEvent) => void;
-  headingRef: RefObject<HTMLHeadingElement | null>;
-}
-
-function SignInView({
-  view,
-  copy,
-  busy,
-  email,
-  password,
-  locale,
-  setLocale,
-  setEmail,
-  setPassword,
-  onSignIn,
-  onRequest,
-  onForgot,
-  headingRef,
-}: SignInViewProps) {
-  const [mode, setMode] = useState<"sign-in" | "request" | "forgot">(
-    view.kind === "request" || view.kind === "request-accepted"
-      ? "request"
-      : view.kind === "forgot" || view.kind === "forgot-accepted"
-        ? "forgot"
-        : "sign-in",
-  );
-
-  useEffect(() => {
-    headingRef.current?.focus();
-  }, [headingRef, mode]);
-
-  if (view.kind === "request-accepted") {
-    return (
-      <div className="auth-state" role="status">
-        <h2>{copy("requestTitle")}</h2>
-        <p>{copy("requestAccepted")}</p>
-        <button type="button" onClick={() => setMode("sign-in")}>
-          {copy("backToSignIn")}
-        </button>
-      </div>
-    );
-  }
-  if (view.kind === "forgot-accepted") {
-    return (
-      <div className="auth-state" role="status">
-        <h2>{copy("forgotTitle")}</h2>
-        <p>{copy("forgotAccepted")}</p>
-        <button type="button" onClick={() => setMode("sign-in")}>
-          {copy("backToSignIn")}
-        </button>
-      </div>
-    );
-  }
-
-  if (mode === "request") {
-    return (
-      <form className="auth-form" onSubmit={onRequest} aria-busy={busy}>
-        <h2 ref={headingRef} tabIndex={-1}>
-          {copy("requestTitle")}
-        </h2>
-        <p className="auth-intro">{copy("requestIntro")}</p>
-        <label>
-          <span>{copy("email")}</span>
-          <input
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-          />
-        </label>
-        <label>
-          <span>{copy("language")}</span>
-          <select
-            aria-label={copy("language")}
-            value={locale}
-            onChange={(event) => setLocale(event.target.value as LocaleCode)}
-          >
-            <option value="en">{copy("languageName.en")}</option>
-            <option value="pt">{copy("languageName.pt")}</option>
-          </select>
-        </label>
-        <button type="submit" disabled={busy}>
-          {busy ? copy("requestSubmitting") : copy("requestSubmit")}
-        </button>
-        <button
-          type="button"
-          className="link-button"
-          onClick={() => setMode("sign-in")}
-        >
-          {copy("backToSignIn")}
-        </button>
-      </form>
-    );
-  }
-
-  if (mode === "forgot") {
-    return (
-      <form className="auth-form" onSubmit={onForgot} aria-busy={busy}>
-        <h2 ref={headingRef} tabIndex={-1}>
-          {copy("forgotTitle")}
-        </h2>
-        <p className="auth-intro">{copy("forgotIntro")}</p>
-        <label>
-          <span>{copy("email")}</span>
-          <input
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-          />
-        </label>
-        <button type="submit" disabled={busy}>
-          {copy("forgotSubmit")}
-        </button>
-        <button
-          type="button"
-          className="link-button"
-          onClick={() => setMode("sign-in")}
-        >
-          {copy("backToSignIn")}
-        </button>
-      </form>
-    );
-  }
-
-  return (
-    <form className="auth-form" onSubmit={onSignIn} aria-busy={busy}>
-      <h2 ref={headingRef} tabIndex={-1}>
-        {copy("signInTitle")}
-      </h2>
-      <p className="auth-intro">{copy("signInIntro")}</p>
-      <label>
-        <span>{copy("email")}</span>
-        <input
-          type="email"
-          autoComplete="username"
-          required
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-        />
-      </label>
-      <label>
-        <span>{copy("password")}</span>
-        <input
-          type="password"
-          autoComplete="current-password"
-          required
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-        />
-      </label>
-      <button type="submit" disabled={busy}>
-        {busy ? copy("signingIn") : copy("signIn")}
-      </button>
-      <div className="auth-links">
-        <button
-          type="button"
-          className="link-button"
-          onClick={() => setMode("forgot")}
-        >
-          {copy("forgotPassword")}
-        </button>
-        <button
-          type="button"
-          className="link-button"
-          onClick={() => setMode("request")}
-        >
-          {copy("requestAccessLink")}
-        </button>
-      </div>
-    </form>
   );
 }
 

@@ -63,7 +63,7 @@ describe("PublicAuth journey", () => {
     const user = userEvent.setup();
     render(<PublicAuth onAuthenticated={onAuthenticated} />);
 
-    await user.type(screen.getByLabelText("Work email"), "ada@example.com");
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.type(screen.getByLabelText("Password"), "ada-long-password");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -91,7 +91,7 @@ describe("PublicAuth journey", () => {
     ]);
     const user = userEvent.setup();
     render(<PublicAuth onAuthenticated={vi.fn()} />);
-    await user.type(screen.getByLabelText("Work email"), "ada@example.com");
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.type(screen.getByLabelText("Password"), "wrong-password");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -118,10 +118,7 @@ describe("PublicAuth journey", () => {
     render(<PublicAuth onAuthenticated={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Request access" }));
     await user.click(screen.getByRole("button", { name: "PT" }));
-    await user.type(
-      screen.getByLabelText("Email de trabalho"),
-      "ada@example.com",
-    );
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.click(screen.getByRole("button", { name: "Pedir acesso" }));
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Consulte o seu email para confirmar este endereço.",
@@ -386,11 +383,14 @@ describe("Settings account panels", () => {
     const user = userEvent.setup();
     render(<SettingsHarness profile={adminProfile} csrf="csrf" />);
     await user.click(await screen.findByRole("link", { name: "People" }));
-    await user.click(await screen.findByRole("button", { name: "Review" }));
-    await user.click(screen.getByRole("radio", { name: "Operator" }));
+    expect(await screen.findByText("ada@example.com")).toBeInTheDocument();
+    expect(screen.getByLabelText("Role")).toHaveValue("operator");
     await user.click(screen.getByRole("button", { name: "Approve" }));
     expect(
       screen.getByText(/Enter your current password to continue/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Approve ada@example.com as Operator\./),
     ).toBeInTheDocument();
     await user.type(screen.getByLabelText("Password"), "admin-long-password");
     await user.click(screen.getByRole("button", { name: "Confirm" }));
@@ -429,9 +429,7 @@ describe("Settings account panels", () => {
 describe("Language preference (HOR-670)", () => {
   it("opens the sign-in page in the organisation or browser language", () => {
     render(<PublicAuth initialLocale="pt" onAuthenticated={vi.fn()} />);
-    expect(
-      screen.getByRole("heading", { name: "Iniciar sessão" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Entrar" })).toBeInTheDocument();
     expect(document.documentElement.lang).toBe("pt-PT");
   });
 
@@ -566,9 +564,7 @@ describe("Language preference (HOR-670)", () => {
     const select = await screen.findByLabelText("Default language");
     await user.selectOptions(select, "pt");
     // Unrelated shell activity: review a request and open reauthentication.
-    await user.click(await screen.findByRole("button", { name: "Review" }));
-    await user.click(screen.getByRole("radio", { name: "Operator" }));
-    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await user.click(await screen.findByRole("button", { name: "Approve" }));
     expect(
       screen.getByText(/Enter your current password to continue/),
     ).toBeInTheDocument();

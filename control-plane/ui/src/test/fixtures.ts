@@ -72,7 +72,10 @@ export const quotes: WorkflowSummary = {
     {
       key: "portals",
       kind: "agent_task",
-      label: { en: "Checks portal rates", pt: "Verifica os preços nos portais" },
+      label: {
+        en: "Checks portal rates",
+        pt: "Verifica os preços nos portais",
+      },
     },
     {
       key: "suppliers",
@@ -153,7 +156,10 @@ export const rates: WorkflowSummary = {
     {
       key: "check",
       kind: "agent_task",
-      label: { en: "Checks portal rates", pt: "Verifica os preços nos portais" },
+      label: {
+        en: "Checks portal rates",
+        pt: "Verifica os preços nos portais",
+      },
     },
   ],
   alwaysAsks: [
@@ -224,7 +230,11 @@ export const question = item({
   id: "W-1045",
   title: "Quote · Lisbon → Luanda, reefer",
   state: "blocked",
-  source: { kind: "chat", title: "Angola Trade", subtitle: "Pedido de cotação" },
+  source: {
+    kind: "chat",
+    title: "Angola Trade",
+    subtitle: "Pedido de cotação",
+  },
   createdAt: minutesAgo(70),
   updatedAt: minutesAgo(35),
   blocker: {

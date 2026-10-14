@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { useSession } from "../app/session";
-import { Button, Kbd } from "../components/ui/button";
+import { Kbd } from "../components/ui/button";
 import { useLocale } from "../i18n";
 import { respondToBlocker, uploadArtifact } from "../lib/api";
 import type { Blocker, JSONSchema } from "../lib/types";
@@ -57,7 +57,26 @@ export interface BlockerResponse {
   error: string;
   /** True when the gate can be answered with a button alone. */
   quick: boolean;
-  submit: (outcome: string) => Promise<boolean>;
+  /**
+   * Set when the gate asks one question with a fixed list of answers, so each
+   * answer can be its own button (XTItemQuestion): picking one submits the
+   * first outcome with that answer. Any further outcomes are answered without
+   * it ("None of these").
+   */
+  choice: Choice | null;
+  /** Submits an outcome; `answers` (field key → draft) override the form. */
+  submit: (
+    outcome: string,
+    answers?: Record<string, unknown>,
+  ) => Promise<boolean>;
+}
+
+export interface Choice {
+  key: string;
+  label: string;
+  outcome: string;
+  options: Array<{ draft: string; label: string }>;
+  others: Array<{ outcome: string; label: string }>;
 }
 
 const NO_BLOCKER: Blocker = {
@@ -99,26 +118,34 @@ export function useBlockerResponse(
     ]),
   );
   const required = blocker.responseSchema.required ?? [];
-  const parsed = new Map(
-    schemaFields.map(([key, field]) => [key, parseField(field, drafts[key])]),
-  );
-  const response = Object.fromEntries(
-    schemaFields.flatMap(([key]) => {
-      const value = parsed.get(key);
-      return value?.present && value.valid ? [[key, value.value]] : [];
-    }),
-  );
   const consequences = blocker.requiredConsequences ?? [];
   const consequencesConfirmed =
     blocker.kind !== "consequence_confirmation" ||
     consequences.every((entry) => confirmed.includes(entry.invocationId));
-  const valid =
-    required.every(
-      (key) => parsed.get(key)?.present && parsed.get(key)?.valid,
-    ) &&
-    [...parsed.values()].every((value) => !value.present || value.valid) &&
-    (blocker.kind !== "artifact" || !!file) &&
-    consequencesConfirmed;
+
+  function evaluate(current: Record<string, unknown>) {
+    const parsed = new Map(
+      schemaFields.map(([key, field]) => [
+        key,
+        parseField(field, current[key]),
+      ]),
+    );
+    const response = Object.fromEntries(
+      schemaFields.flatMap(([key]) => {
+        const value = parsed.get(key);
+        return value?.present && value.valid ? [[key, value.value]] : [];
+      }),
+    );
+    const valid =
+      required.every(
+        (key) => parsed.get(key)?.present && parsed.get(key)?.valid,
+      ) &&
+      [...parsed.values()].every((value) => !value.present || value.valid) &&
+      (blocker.kind !== "artifact" || !!file) &&
+      consequencesConfirmed;
+    return { parsed, response, valid };
+  }
+  const { parsed, valid } = evaluate(drafts);
   const quick =
     schemaFields.length === 0 &&
     blocker.kind !== "artifact" &&
@@ -132,7 +159,38 @@ export function useBlockerResponse(
       t("respond.choiceNumbered", { position: index + 1 }),
   }));
 
-  async function submit(outcome: string): Promise<boolean> {
+  const only = schemaFields.length === 1 ? schemaFields[0] : undefined;
+  const choice: Choice | null =
+    only &&
+    only[1].enum &&
+    only[1].enum.length > 0 &&
+    outcomes.length > 0 &&
+    (outcomes.length === 1 || !required.includes(only[0])) &&
+    blocker.kind !== "artifact" &&
+    blocker.kind !== "consequence_confirmation"
+      ? {
+          key: only[0],
+          label:
+            localized(presentation.get(only[0])?.label, locale) ||
+            t("respond.fieldNumbered", { position: 1 }),
+          outcome: outcomes[0].outcome,
+          options: only[1].enum.map((_, index) => ({
+            draft: String(index),
+            label:
+              localized(presentation.get(only[0])?.options?.[index], locale) ||
+              t("respond.choiceNumbered", { position: index + 1 }),
+          })),
+          others: outcomes.slice(1),
+        }
+      : null;
+
+  async function submit(
+    outcome: string,
+    answers?: Record<string, unknown>,
+  ): Promise<boolean> {
+    const { response, valid } = evaluate(
+      answers ? { ...drafts, ...answers } : drafts,
+    );
     if (!valid || busy) return false;
     setBusy(true);
     setError("");
@@ -298,7 +356,7 @@ export function useBlockerResponse(
     </div>
   );
 
-  return { fields, outcomes, valid, busy, error, quick, submit };
+  return { fields, outcomes, valid, busy, error, quick, choice, submit };
 }
 
 /**
@@ -318,13 +376,12 @@ export function OutcomeButtons({
   const { outcomes, valid, busy } = response;
   const last = outcomes.length - 1;
   return (
-    <div className="decision-footer__actions">
+    <div className="outcome-buttons">
       {outcomes.map(({ outcome, label }, index) => (
-        <Button
+        <button
           key={outcome}
-          variant={index === 0 ? "primary" : "secondary"}
-          size={index === 0 ? "lg" : "md"}
-          full
+          type="button"
+          className={`btn btn-lg ${index === 0 ? "btn-primary outcome-buttons__primary" : "btn-secondary"}`}
           disabled={!valid || busy}
           onClick={() => void response.submit(outcome)}
         >
@@ -333,7 +390,7 @@ export function OutcomeButtons({
           {keys && index === last && last > 0 && (
             <Kbd>{t("key.n", { ns: "app" })}</Kbd>
           )}
-        </Button>
+        </button>
       ))}
       {extra}
     </div>

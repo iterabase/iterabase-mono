@@ -1,1 +1,566 @@
-/* Today, Your turn and All clear: classes for patterns the prototype boards repeat. */
+/* Today, Your turn and All clear: classes for patterns the prototype boards
+   repeat (XTToday, XTPhoneToday, XTDecide, XTPhoneDecide, XTAllClear,
+   XTPhoneAllClear). */
+
+/* ---- Shared ---------------------------------------------------------- */
+
+.done-check {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 99px;
+  background: var(--ok2);
+}
+.done-check--28 {
+  width: 28px;
+  height: 28px;
+}
+.done-check--26 {
+  width: 26px;
+  height: 26px;
+}
+.done-check--24 {
+  width: 24px;
+  height: 24px;
+}
+.done-check--22 {
+  width: 22px;
+  height: 22px;
+}
+
+.state-dot--working {
+  background: var(--ok);
+}
+.state-dot--failed {
+  background: var(--crit);
+}
+.state-dot--available {
+  background: var(--sun);
+}
+.state-dot--waiting {
+  background: var(--ink3);
+}
+.state-word {
+  font-size: 12.5px;
+  color: var(--ink3);
+}
+.state-word--failed {
+  color: var(--crit-ink);
+}
+
+/* Rows that are links but read like the board's plain rows. */
+.today-link {
+  text-decoration: none;
+  color: inherit;
+  border-radius: 10px;
+}
+.today-link:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+/* ---- Today ----------------------------------------------------------- */
+
+.today {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow-x: clip;
+}
+@media (min-width: 900px) {
+  .today {
+    min-height: calc(100dvh - 68px);
+  }
+}
+/* XTToday's warm glow, top right, reaching under the top bar. */
+.today-glow {
+  right: -180px;
+  top: -328px;
+  width: 820px;
+  height: 620px;
+}
+.today-grid {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 16px 0;
+}
+@media (min-width: 900px) {
+  .today-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 380px;
+    gap: 30px 32px;
+    padding: 46px 40px 0;
+  }
+}
+/* Board sizes: three cards to a row; two at narrower desktop widths. */
+.team-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (min-width: 1200px) {
+  .team-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+/* XTPhoneToday's dark Your turn card. */
+.xt .turn-dark {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  text-decoration: none;
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fbf8f2;
+}
+.xt .turn-dark:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+.turn-dark__go {
+  margin-left: auto;
+  flex: none;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: #fbf8f2;
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* The bottom status bar: time back · failed · trust line. */
+.today-status {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: auto 40px 24px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+@media (min-width: 900px) {
+  .today-grid {
+    margin-bottom: 30px;
+  }
+}
+
+/* ---- All clear ------------------------------------------------------- */
+
+.allclear {
+  position: relative;
+  overflow-x: clip;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  padding: 30px 16px 24px;
+}
+@media (min-width: 900px) {
+  .allclear {
+    gap: 14px;
+    padding: 64px 40px 24px;
+    min-height: calc(100dvh - 68px);
+  }
+}
+.allclear-glow {
+  left: 50%;
+  top: 40px;
+  width: 560px;
+  height: 440px;
+  margin-left: -280px;
+  background: radial-gradient(
+    closest-side,
+    #fbefe0 0,
+    rgba(251, 239, 224, 0) 72%
+  );
+}
+@media (min-width: 900px) {
+  .allclear-glow {
+    top: 72px;
+    width: 900px;
+    height: 620px;
+    margin-left: -450px;
+  }
+}
+.allclear-trust {
+  margin-top: auto;
+  padding-top: 40px;
+  display: flex;
+  justify-content: center;
+}
+
+/* The settled pile of three cards and the green check. */
+.pile {
+  position: relative;
+  flex: none;
+  width: 240px;
+  height: 146px;
+}
+.pile__card {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  height: 104px;
+  animation: xt-settle 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.pile__card--1 {
+  bottom: 0;
+  --r: -2.5deg;
+  transform: rotate(-2.5deg);
+}
+.pile__card--2 {
+  bottom: 11px;
+  --r: 1.5deg;
+  transform: rotate(1.5deg);
+  animation-delay: 0.12s;
+}
+.pile__card--3 {
+  bottom: 22px;
+  --r: -0.5deg;
+  transform: rotate(-0.5deg);
+  animation-delay: 0.24s;
+}
+.pile__check {
+  position: absolute;
+  left: 50%;
+  bottom: 40px;
+  margin-left: -27px;
+  width: 54px;
+  height: 54px;
+  border-radius: 99px;
+  background: var(--ok);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 20px -10px rgba(31, 122, 74, 0.7);
+  animation: xt-in 0.4s 0.55s ease-out both;
+}
+.pile--sm {
+  width: 192px;
+  height: 116px;
+}
+.pile--sm .pile__card {
+  left: 9px;
+  right: 9px;
+  height: 83px;
+}
+.pile--sm .pile__card--2 {
+  bottom: 8px;
+}
+.pile--sm .pile__card--3 {
+  bottom: 17px;
+}
+.pile--sm .pile__check {
+  bottom: 32px;
+  margin-left: -21.5px;
+  width: 43px;
+  height: 43px;
+}
+
+/* ---- Your turn ------------------------------------------------------- */
+
+.turn {
+  min-height: 100dvh;
+  background: var(--paper2);
+  display: flex;
+  flex-direction: column;
+}
+.turn-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 14px;
+}
+@media (min-width: 900px) {
+  .turn-head {
+    gap: 16px;
+    height: 68px;
+    padding: 0 40px;
+    border-bottom: 1px solid var(--line2);
+  }
+}
+.turn-close {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+.turn-close:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+.progress-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  background: var(--line);
+}
+.progress-dot--done {
+  background: var(--ink);
+}
+.progress-dot--current {
+  width: 24px;
+  background: var(--ink);
+}
+.turn-main {
+  flex: 1;
+  width: 100%;
+}
+.turn-phone {
+  padding: 2px 14px 230px;
+}
+
+/* Three columns as XTDecide draws them; two below 1340px, the left column
+   moving under the decision. */
+.turn-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 660px) minmax(220px, 280px);
+  grid-template-areas:
+    "center right"
+    "left right";
+  justify-content: center;
+  align-items: start;
+  gap: 36px;
+  padding: 28px 40px 48px;
+}
+@media (min-width: 1340px) {
+  .turn-grid {
+    grid-template-columns: 300px 660px 280px;
+    grid-template-areas: "left center right";
+  }
+}
+.turn-center {
+  grid-area: center;
+  min-width: 0;
+}
+.turn-left {
+  grid-area: left;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.turn-right {
+  grid-area: right;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.turn-stack {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 12px;
+  bottom: -12px;
+  opacity: 0.55;
+  transform: rotate(1.2deg);
+}
+.turn-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 16px;
+}
+@media (min-width: 900px) {
+  .turn-card {
+    gap: 14px;
+    padding: 26px 30px 24px;
+  }
+}
+.turn-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+@media (min-width: 900px) {
+  .turn-title {
+    font-size: 26px;
+    letter-spacing: -0.01em;
+  }
+}
+/* Provenance as the boards draw it: 13px, the name in ink. */
+.turn-card .ib-provenance {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink2);
+}
+.turn-card .ib-provenance b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* The exact content: To / Subject / Attached between rules, then the body. */
+.turn-exact .ib-exact {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.turn-exact .ib-exact > dl {
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 5px 12px;
+  font-size: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line2);
+  border-bottom: 1px solid var(--line2);
+}
+.turn-exact .ib-exact > dl dt {
+  font-size: 14px;
+  color: var(--ink3);
+}
+.turn-exact .ib-exact > dl dd {
+  overflow-wrap: anywhere;
+}
+.turn-exact--phone .ib-exact {
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--sunk);
+  border: 1px solid var(--line2);
+}
+.turn-exact--phone .ib-exact > dl {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  padding: 0;
+  border: 0;
+}
+.turn-exact--phone .ib-exact > dl dt {
+  font-size: 12px;
+}
+.turn-exact--phone .ib-exact > dl dd + dt {
+  margin-top: 8px;
+}
+.turn-exact--clamped {
+  max-height: 260px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 75%, transparent);
+  mask-image: linear-gradient(#000 75%, transparent);
+}
+.turn-more {
+  align-self: flex-start;
+  min-height: 44px;
+  margin: -8px 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--blue);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.turn-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 0;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--sun2);
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--sun-ink);
+}
+@media (min-width: 900px) {
+  .turn-note {
+    padding: 11px 14px;
+    border-radius: 12px;
+    font-size: 13.5px;
+  }
+}
+.turn-actions {
+  display: grid;
+  grid-template-columns: 1.5fr;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 10px;
+  margin-top: 4px;
+}
+.turn-actions .btn {
+  min-width: 0;
+  padding: 0 14px;
+  white-space: normal;
+  text-align: center;
+}
+.turn-skip {
+  align-self: flex-start;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--ink3);
+  text-decoration: underline;
+  cursor: pointer;
+}
+@media (max-width: 899.98px) {
+  .turn-skip {
+    min-height: 44px;
+  }
+}
+.turn-foot {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px calc(30px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+}
+.turn-foot__row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+.turn-foot__row .btn {
+  height: 46px;
+  min-width: 0;
+  white-space: normal;
+}
+
+/* "How it was built": label left, value right. */
+.turn-built {
+  margin: 10px 0 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px 14px;
+  font-size: 13.5px;
+}
+.turn-built dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

@@ -1,46 +1,85 @@
 {
+  "activity": {
+    "filterLabel": "Show",
+    "none": "Nothing in this period.",
+    "periodLabel": "Period",
+    "today": "Today · {{date}}"
+  },
   "alwaysAsks": "Always asks you",
-  "alwaysAsksFirst": "Always asks you first",
-  "anythingElseWaits": "Anything not on these lists also waits for your OK.",
+  "asksBeforeCustomer": "They ask you before anything reaches a customer",
   "asksNothing": "Nothing is set to ask you.",
-  "backEstimate": "back, est.",
+  "backShort": "back, est.",
+  "backTeam": "Team",
   "backThisWeek": "back this week, est.",
   "backToTeam": "Your team",
-  "changeHow": "Want {{name}} to work differently? Tell Iterabase, and we'll update how it works with you.",
+  "can": {
+    "alwaysAsksFirst": "Always asks you first",
+    "anythingElse": "Anything not on these lists also waits for your OK.",
+    "connections": "Connections it uses",
+    "onItsOwn": "On its own"
+  },
   "col": {
+    "after": "After",
+    "item": "Item",
+    "next": "Next step",
     "request": "Request",
     "status": "Status",
     "time": "Time",
+    "when": "When",
     "where": "Where it is",
     "why": "Why it failed"
   },
-  "connections": "Connections it uses",
+  "countWord": {
+    "1": "One",
+    "2": "Two",
+    "3": "Three",
+    "4": "Four",
+    "5": "Five",
+    "6": "Six",
+    "7": "Seven",
+    "8": "Eight",
+    "9": "Nine"
+  },
   "done": "done",
   "empty": "No AI coworkers are set up yet. Iterabase adds them with you.",
-  "failedCount": "failed",
-  "failedMonth": {
-    "byReason_one": "{{count, number}} × {{reason}}",
-    "byReason_other": "{{count, number}} × {{reason}}",
-    "title_one": "{{count, number}} failed this month",
-    "title_other": "{{count, number}} failed this month"
+  "failed": {
+    "notRestarted": "Not restarted",
+    "outcomeUnknown": "Outcome unknown",
+    "restart": "Restart",
+    "review": "Review",
+    "short_one": "{{period}} · {{count, number}} not restarted",
+    "short_other": "{{period}} · {{count, number}} not restarted",
+    "summary_one": "{{count, number}} failure, not restarted yet.",
+    "summary_other": "{{count, number}} failures, none restarted yet.",
+    "unknown_one": "{{count, number}} needs checking because its outcome is unknown.",
+    "unknown_other": "{{count, number}} need checking because their outcome is unknown."
   },
+  "failedCount": "failed",
+  "failedTitle": "{{title}} couldn’t finish.",
   "filter": {
     "all": "All",
     "done": "Done",
     "failed": "Failed",
     "needs": "Needs you"
   },
-  "filterLabel": "Show",
   "handled": "handled",
   "handledThisWeek": "handled this week",
-  "hoursShort": "≈ {{hours}} h {{minutes}}",
-  "idle": "Nothing in progress",
-  "kind": {
+  "hours": "≈ {{hours}} h",
+  "how": {
+    "change": "Want it to work differently? Tell Iterabase, and we’ll update how {{name}} works with you.",
+    "does": "{{name}} does it",
+    "flowLabel": "How {{name}} works, step by step",
+    "live": "Live now",
     "waits": "Waits",
-    "you": "You decide"
+    "you": "You",
+    "youDecide": "You decide"
   },
-  "lead_one": "{{count, number}} AI coworker working in your mailbox and portals, by your rules. It asks you before anything reaches a customer.",
-  "lead_other": "{{count, number}} AI coworkers working in your mailbox and portals, by your rules. They ask you before anything reaches a customer.",
+  "idle": "Nothing in progress",
+  "itsWork": "Its work",
+  "lead_one": "{{word}} AI coworker working in your mailbox and portals, by your rules. It asks you before anything reaches a customer.",
+  "lead_other": "{{word}} AI coworkers working in your mailbox and portals, by your rules. They ask you before anything reaches a customer.",
+  "leadShort_one": "{{word}} AI coworker, working by your rules.",
+  "leadShort_other": "{{word}} AI coworkers, working by your rules.",
   "live": {
     "needs_one": "{{count, number}} needs you",
     "needs_other": "{{count, number}} need you",
@@ -50,7 +89,6 @@
     "working_other": "{{count, number}} working"
   },
   "needsYou": "need you",
-  "noActivity": "Nothing in this period.",
   "noConnections": "No connections declared.",
   "nothingOnItsOwn": "Nothing is set to run on its own.",
   "onItsOwn": "On its own",
@@ -60,16 +98,20 @@
     "today": "Today",
     "week": "This week"
   },
-  "periodLabel": "Period",
+  "restart": "Restart with guidance",
   "roleLine": "{{role}} · AI coworker",
+  "seeWork": "See its work",
   "tabs": {
     "activity": "Activity",
     "can": "What it can do",
     "failed": "Failed this month",
     "how": "How it works"
   },
-  "tabsLabel": "About this AI coworker",
+  "tabsLabel": "Coworker sections",
   "thisWeek": "This week",
+  "thisWeekLead": "This week:",
   "title": "Your team",
+  "whatHappened": "What happened",
+  "youAnswer": "You answer",
   "youConfirm": "You confirm"
 }

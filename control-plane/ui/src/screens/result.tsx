@@ -202,3 +202,120 @@ function FieldValue({
     </>
   );
 }
+
+// The work item's own layout of a presented result (XTItem): short values as
+// labelled rows, long text as the quoted body, and nested values as their own
+// breakdown sections below the decision card.
+
+type Kind = "row" | "body" | "breakdown";
+
+function kindOf(
+  value: unknown,
+  field: ResultFieldPresentation,
+  fields: ResultFieldPresentation[],
+): Kind {
+  const nested = direct(fields, field.path).length > 0;
+  if (
+    nested &&
+    value &&
+    typeof value === "object" &&
+    !field.options?.some((option) => equalJSON(option.value, value))
+  )
+    return "breakdown";
+  if (typeof value === "string" && (value.includes("\n") || value.length > 90))
+    return "body";
+  return "row";
+}
+
+function presented(node: NodeExecution, kind: Kind) {
+  const value = safeObject(node.output);
+  const fields = node.resultPresentation?.fields ?? [];
+  return direct(fields, []).flatMap((field) => {
+    const key = field.path[0];
+    if (!Object.prototype.hasOwnProperty.call(value, key)) return [];
+    return kindOf(value[key], field, fields) === kind
+      ? [{ field, value: value[key], fields }]
+      : [];
+  });
+}
+
+/** The exact content's rows (To, Subject, Attached) and its quoted body. */
+export function ExactRows({ node }: { node: NodeExecution }) {
+  const { t } = useTranslation("work");
+  const locale = useLocale();
+  const rows = presented(node, "row");
+  const body = presented(node, "body");
+  return (
+    <>
+      {rows.length > 0 && (
+        <dl className="exact-rows">
+          {rows.map(({ field, value, fields }) => (
+            <div key={field.path.join("\u0000")} className="contents">
+              <dt className="muted">{localized(field.label, locale)}</dt>
+              <dd className="m-0 min-w-0 break-words">
+                <FieldValue
+                  value={value}
+                  field={field}
+                  fields={fields}
+                  locale={locale}
+                />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {body.map(({ field, value }) => (
+        <blockquote key={field.path.join("\u0000")} className="exact-body">
+          {t("item.quoted", { text: String(value) })}
+        </blockquote>
+      ))}
+    </>
+  );
+}
+
+/** Nested result values, each as a breakdown ("How the price was built"). */
+export function Breakdowns({ node }: { node: NodeExecution }) {
+  const locale = useLocale();
+  return (
+    <>
+      {presented(node, "breakdown").map(({ field, value, fields }) => {
+        const entries = Array.isArray(value) ? value : [value];
+        return (
+          <section
+            key={field.path.join("\u0000")}
+            className="flex flex-col gap-[6px] desk:gap-2"
+          >
+            <h3 className="eyebrow m-0">{localized(field.label, locale)}</h3>
+            <div className="breakdown">
+              {entries.map((entry, index) => (
+                <dl key={index} className="breakdown__rows">
+                  {direct(fields, field.path).flatMap((child) => {
+                    const object = safeObject(entry);
+                    const key = child.path.at(-1)!;
+                    if (!Object.prototype.hasOwnProperty.call(object, key))
+                      return [];
+                    return [
+                      <div key={key} className="contents">
+                        <dt className="muted">
+                          {localized(child.label, locale)}
+                        </dt>
+                        <dd className="mono m-0 text-right">
+                          <FieldValue
+                            value={object[key]}
+                            field={child}
+                            fields={fields}
+                            locale={locale}
+                          />
+                        </dd>
+                      </div>,
+                    ];
+                  })}
+                </dl>
+              ))}
+            </div>
+          </section>
+        );
+      })}
+    </>
+  );
+}

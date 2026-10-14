@@ -4,6 +4,7 @@ import { LiveProvider } from "./app/live";
 import { createAppRouter } from "./app/router";
 import { SessionProvider } from "./app/session";
 import { AuthProfile, probeSession } from "./auth/authApi";
+import { AuthSolo } from "./auth/AuthFrame";
 import PublicAuth from "./auth/PublicAuth";
 import { browserLocale, fixedT, type Locale } from "./i18n";
 
@@ -54,14 +55,16 @@ export default function App({ history }: { history?: RouterHistory }) {
     [],
   );
 
-  if (auth.kind === "probing")
+  if (auth.kind === "probing") {
+    const copy = fixedT(browserLocale(), "auth");
     return (
-      <div className="auth-page">
-        <div className="auth-card" role="status" aria-busy="true">
-          {fixedT(browserLocale(), "common")("loading")}
-        </div>
-      </div>
+      <AuthSolo brand={copy("brand")}>
+        <p className="auth-intro" role="status" aria-busy="true">
+          {copy("loading")}
+        </p>
+      </AuthSolo>
     );
+  }
   if (auth.kind === "anonymous")
     return (
       <PublicAuth
@@ -75,22 +78,20 @@ export default function App({ history }: { history?: RouterHistory }) {
   if (auth.kind === "unavailable") {
     const copy = fixedT(browserLocale(), "auth");
     return (
-      <main className="auth-page">
-        <section className="auth-card">
-          <h1>{copy("unavailableTitle")}</h1>
-          <p>{copy("unavailableBody")}</p>
-          <button
-            type="button"
-            className="ib-btn ib-btn--primary ib-btn--md"
-            onClick={() => {
-              setAuth({ kind: "probing" });
-              probe();
-            }}
-          >
-            {copy("retry")}
-          </button>
-        </section>
-      </main>
+      <AuthSolo brand={copy("brand")}>
+        <h1 className="auth-card-title">{copy("unavailableTitle")}</h1>
+        <p className="auth-intro">{copy("unavailableBody")}</p>
+        <button
+          type="button"
+          className="btn btn-ink btn-full"
+          onClick={() => {
+            setAuth({ kind: "probing" });
+            probe();
+          }}
+        >
+          {copy("retry")}
+        </button>
+      </AuthSolo>
     );
   }
   return (

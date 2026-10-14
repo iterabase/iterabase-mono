@@ -18,11 +18,15 @@
   }
 }
 
-/* Desktop top bar: 68px, logo · pill navigation · search · avatar. */
-.topbar {
+/* One banner landmark holds both bars; it stays at the top. */
+.app-header {
   position: sticky;
   top: 0;
   z-index: 20;
+}
+
+/* Desktop top bar: 68px, logo · pill navigation · search · avatar. */
+.topbar {
   display: none;
   align-items: center;
   gap: 20px;
@@ -114,9 +118,6 @@
 
 /* Phone header: 56px; screens may replace its content (back link, title). */
 .phonebar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -156,7 +157,7 @@
   color: var(--ink2);
   cursor: pointer;
 }
-.phonebar__avatar {
+.xt .phonebar__avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;

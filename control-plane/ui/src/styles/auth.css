@@ -1,289 +1,790 @@
-/* Sign-in journey (HOR-453) and the account panels hosted in Settings
-   (Profile, Sessions, organisation language, access requests), restyled on the
-   Design System tokens. */
-@layer components {
-  .eyebrow {
-    font-family: var(--font-mono);
-    font-size: var(--text-2xs);
-    font-weight: var(--weight-medium);
-    letter-spacing: var(--tracking-label);
-    text-transform: uppercase;
-    color: var(--text-tertiary);
-  }
-  .form-error {
-    padding: 10px 12px;
-    border-radius: var(--radius-md);
-    background: var(--crit-bg);
-    color: var(--crit-ink);
-    font-size: var(--text-sm);
-  }
-  .field-error {
-    color: var(--crit-ink);
-    font-size: var(--text-xs);
-  }
-  .loading {
-    padding: 24px;
-    color: var(--text-tertiary);
-    text-align: center;
-  }
+/* Sign-in journey (XTSignIn / XTPhoneSignIn), the Settings shell with its
+   panels (XTSettingsPeople / XTPhoneSettingsPeople) and phone More
+   (XTPhoneMore), ported from the "Delight, trusted" boards. Unlayered like
+   prototype.css, so these patterns sit alongside the prototype's classes. */
 
-  .auth-page {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 100dvh;
-    padding: 24px var(--gutter-phone);
-    background: var(--bg);
+/* Shared feedback blocks, also used by other screens. */
+.form-error {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--crit-bg);
+  color: var(--crit-ink);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.auth-notice {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--ok-bg);
+  color: var(--ok-ink);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.loading {
+  padding: 24px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+/* ---------- Sign in ---------- */
+
+.auth-page {
+  position: relative;
+  min-height: 100dvh;
+  overflow: hidden;
+  background: var(--paper);
+}
+.auth-glow {
+  display: none;
+}
+.auth-layout {
+  position: relative;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto 1fr;
+  grid-template-areas: "brand" "hero" "panel" "trust";
+  row-gap: 18px;
+  padding: 24px 20px 20px;
+}
+.auth-brand {
+  grid-area: brand;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+  font-size: 16px;
+}
+.auth-hero {
+  grid-area: hero;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 560px;
+}
+.auth-hero-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.auth-marks {
+  display: flex;
+  align-items: center;
+  margin-top: 6px;
+}
+.auth-marks > span {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 99px;
+  background: var(--paper);
+}
+.auth-marks > span + span {
+  margin-left: -8px;
+}
+.auth-marks svg {
+  width: 34px;
+  height: 34px;
+  overflow: visible;
+}
+.auth-title {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.08;
+}
+.auth-sub {
+  margin: 0;
+  font-size: 15.5px;
+  line-height: 1.5;
+  color: var(--ink2);
+}
+.auth-panel {
+  grid-area: panel;
+  display: flex;
+  align-items: center;
+}
+.auth-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.auth-card-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+.auth-card-title:focus {
+  outline: none;
+}
+/* The phone board has no card title on sign-in: the hero says it. */
+.auth-card-title--phone-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.auth-trust {
+  grid-area: trust;
+  align-self: end;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.auth-trust li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--ink3);
+}
+.auth-trust li:not(:last-child) {
+  display: none;
+}
+.auth-trust svg,
+.lock-line svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+.auth-locale {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+  z-index: 1;
+}
+/* Quiet controls keep a 44px hit area on phone without growing visually. */
+.xt .auth-locale.seg button,
+.xt .link-button {
+  position: relative;
+}
+.xt .auth-locale.seg button::after,
+.xt .link-button::after {
+  content: "";
+  position: absolute;
+  inset: -10px -2px;
+}
+.xt .auth-locale.seg button {
+  height: 28px;
+  min-width: 40px;
+  padding: 0 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+}
+
+@media (min-width: 900px) {
+  .auth-glow {
+    display: block;
+    position: absolute;
+    left: -200px;
+    bottom: -320px;
+    width: 900px;
+    height: 700px;
+    border-radius: 50%;
+    background: radial-gradient(
+      closest-side,
+      #fbebd8 0,
+      rgba(251, 235, 216, 0) 70%
+    );
+    pointer-events: none;
   }
-  .auth-card {
-    width: 100%;
-    max-width: 460px;
-    padding: 28px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-xl);
-    background: var(--surface);
-    box-shadow: var(--shadow-sm);
+  .auth-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(400px, 520px);
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas: "brand panel" "hero panel" "trust panel";
+    row-gap: 0;
+    padding: 0;
   }
   .auth-brand {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    margin-bottom: 18px;
+    gap: 10px;
+    font-size: 17px;
+    padding: 44px 64px 0;
   }
-  .auth-brand h1 {
-    margin: 4px 0 0;
-    font-family: var(--font-serif);
-    font-weight: 500;
-    font-size: var(--text-2xl);
-    letter-spacing: var(--tracking-hero);
+  .auth-hero {
+    align-self: center;
+    gap: 22px;
+    max-width: 688px;
+    padding: 40px 64px;
+  }
+  .auth-marks {
+    margin-top: 0;
+  }
+  .auth-marks > span {
+    padding: 4px;
+  }
+  .auth-marks > span + span {
+    margin-left: -10px;
+  }
+  .auth-marks svg {
+    width: 44px;
+    height: 44px;
+  }
+  .auth-title {
+    font-size: 48px;
+  }
+  .auth-sub {
+    font-size: 18px;
+  }
+  .auth-panel {
+    padding: 40px;
+  }
+  .auth-card {
+    padding: 34px 34px 30px;
+    gap: 20px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    box-shadow:
+      0 1px 2px rgba(24, 32, 44, 0.04),
+      0 10px 28px -20px rgba(24, 32, 44, 0.18);
+  }
+  .auth-card-title {
+    font-size: 22px;
+  }
+  .auth-card-title--phone-hidden {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+  }
+  .auth-trust {
+    padding: 0 64px 44px;
+  }
+  .auth-trust li {
+    font-size: 13.5px;
+  }
+  .auth-trust li:not(:last-child) {
+    display: flex;
   }
   .auth-locale {
-    display: flex;
-    gap: 4px;
+    top: 40px;
+    right: 40px;
   }
-  .auth-locale button {
-    min-width: 36px;
-    height: 32px;
-    padding: 0 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: var(--text-sm);
-    cursor: pointer;
-  }
-  .auth-locale button.active {
-    border-color: var(--accent);
-    background: var(--accent-quiet);
-    color: var(--blue-700);
-  }
-  .auth-form,
-  .auth-state {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-  .auth-form h2,
-  .auth-state h2 {
-    margin: 0;
-    font-size: var(--text-lg);
-  }
-  .auth-form label {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-size: var(--text-sm);
-    font-weight: var(--weight-medium);
-  }
-  .auth-form input,
-  .auth-form select {
-    height: 44px;
-    padding: 0 14px;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--text-primary);
-    font: inherit;
-    font-weight: 400;
-  }
-  .auth-form input:disabled {
-    background: var(--surface-sunken);
-    color: var(--text-secondary);
-  }
-  .auth-form button[type="submit"],
-  .auth-state button:not(.link-button) {
-    height: 46px;
-    padding: 0 20px;
-    border: 0;
-    border-radius: var(--radius-lg);
-    background: var(--accent);
-    color: var(--accent-text);
-    font: inherit;
-    font-weight: var(--weight-semibold);
-    box-shadow: var(--shadow-primary);
-    cursor: pointer;
-  }
-  .auth-form button[disabled],
-  .auth-state button[disabled] {
-    opacity: 0.45;
-    cursor: default;
-  }
-  .auth-links {
-    display: flex;
-    justify-content: space-between;
-  }
-  .link-button {
-    padding: 4px 0;
-    border: 0;
-    background: none;
-    color: var(--text-link);
-    font: inherit;
-    font-size: var(--text-sm);
-    text-decoration: underline;
-    cursor: pointer;
-  }
-  .auth-intro,
-  .auth-guidance {
-    margin: 0;
-    color: var(--text-secondary);
-    font-size: var(--text-sm);
-    line-height: var(--leading-normal);
-  }
-  .auth-notice {
-    margin-bottom: 12px;
-    padding: 10px 12px;
-    border-radius: var(--radius-md);
-    background: var(--ok-bg);
-    color: var(--ok-ink);
-    font-size: var(--text-sm);
-  }
+}
 
-  .account-card {
-    padding: 22px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-xl);
-    background: var(--surface);
-    box-shadow: var(--shadow-sm);
+/* Form language shared by the sign-in card and the Settings panels. */
+.auth-form,
+.auth-state {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.auth-state h2,
+.auth-form h2 {
+  margin: 0;
+}
+.xt .field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.xt .field input,
+.xt .field select {
+  height: 48px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background-color: var(--card);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--ink);
+}
+.xt .field select,
+.xt .select {
+  appearance: none;
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23646B7B' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+.xt .field input:disabled {
+  background-color: var(--sunk);
+  color: var(--ink2);
+}
+.xt .field input[aria-invalid="true"] {
+  border-color: var(--crit);
+}
+.auth-intro {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink2);
+}
+.auth-guidance {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink3);
+}
+.auth-links {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.xt .link-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--blue);
+  font: inherit;
+  font-size: 13.5px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.xt .link-button:hover {
+  color: var(--blue-h);
+}
+.xt .link-button[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The probing and unavailable states share the sign-in page. */
+.auth-solo {
+  position: relative;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px 20px;
+}
+.auth-solo .auth-card {
+  margin: auto 0;
+}
+@media (min-width: 900px) {
+  .auth-solo {
+    padding: 44px 64px;
   }
-  .account-card + .account-card {
-    margin-top: 20px;
+  .auth-solo .auth-brand {
+    padding: 0;
   }
-  .account-card h2 {
-    margin: 0 0 4px;
-    font-size: var(--text-lg);
-  }
-  .account-card .auth-intro {
-    margin-bottom: 16px;
-  }
-  .account-card .auth-form {
+  .auth-solo .auth-card {
+    margin: auto;
     max-width: 440px;
   }
-  .session-list,
-  .request-list {
+}
+
+/* ---------- Settings ---------- */
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 6px 14px 16px;
+}
+.settings-head,
+.settings-tabs,
+.settings-foot {
+  display: none;
+}
+@media (min-width: 900px) {
+  .settings-page {
+    gap: 18px;
+    min-height: calc(100dvh - 68px);
+    padding: 30px 40px 22px;
+  }
+  .settings-head {
     display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin: 16px 0;
-    padding: 0;
-    list-style: none;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 12px 20px;
   }
-  .session-list li,
-  .request-list li {
-    padding: 14px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-  }
-  .session-list li.current {
-    border-color: var(--accent);
-  }
-  .session-list dl {
+  .settings-tabs {
     display: flex;
     flex-wrap: wrap;
-    gap: 18px;
-    margin: 8px 0;
+    border-bottom: 1px solid var(--line);
   }
-  .session-list dl div {
-    display: flex;
-    flex-direction: column;
-  }
-  .session-list dt {
-    color: var(--text-tertiary);
-    font-size: var(--text-xs);
-  }
-  .session-list dd {
-    margin: 0;
-  }
-  .session-list button,
-  .request-list button,
-  .account-card > button {
-    min-height: 36px;
-    padding: 0 14px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    color: var(--text-primary);
-    font: inherit;
-    font-size: 14px;
-    font-weight: var(--weight-semibold);
-    cursor: pointer;
-  }
-  .badge {
-    margin-left: 8px;
-    padding: 2px 8px;
-    border-radius: var(--radius-full);
-    background: var(--accent-quiet);
-    color: var(--blue-700);
-    font-size: var(--text-2xs);
-  }
-  .dialog-actions {
+  .settings-foot {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    margin-top: 16px;
+    margin-top: auto;
+    padding-top: 28px;
   }
-  .dialog-actions button {
-    min-height: 40px;
-    padding: 0 16px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    font: inherit;
-    font-weight: var(--weight-semibold);
-    cursor: pointer;
+}
+.settings-tabs a {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 0 4px;
+  margin-right: 18px;
+  text-decoration: none;
+  font-size: 14.5px;
+  font-weight: 500;
+  color: var(--ink2);
+}
+.settings-tabs a[aria-current="page"] {
+  font-weight: 600;
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--ink);
+}
+.count-chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: var(--sun2);
+  color: var(--sun-ink);
+}
+.lock-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink3);
+}
+.settings-head .lock-line {
+  margin: 0 0 4px auto;
+}
+.settings-intro {
+  display: none;
+}
+@media (min-width: 900px) {
+  .settings-intro {
+    display: block;
+    margin: 0;
+    max-width: 760px;
+    font-size: 14.5px;
+    color: var(--ink2);
   }
-  .dialog-actions button:last-child {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: var(--accent-text);
+}
+
+/* A panel: a card with a header row (title · count · action) and a body. */
+.panel-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px;
+}
+.panel-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.panel-title h2,
+.section-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.panel-body {
+  padding: 0 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+@media (min-width: 900px) {
+  .panel-head {
+    padding: 16px 20px;
   }
-  .dialog-actions button[disabled] {
-    opacity: 0.45;
-    cursor: default;
+  .panel-body {
+    padding: 0 20px 20px;
   }
-  .dialog fieldset {
-    display: flex;
-    gap: 16px;
-    margin: 12px 0 0;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+}
+.avatar-chip {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 99px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 12px;
+  background: var(--sun2);
+  color: var(--sun-ink);
+}
+@media (min-width: 900px) {
+  .avatar-chip--lg {
+    width: 40px;
+    height: 40px;
+    font-size: 14px;
   }
-  .dialog label {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-size: var(--text-sm);
+}
+.xt .select {
+  height: 38px;
+  padding-left: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background-color: var(--card);
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.request-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+.request-empty {
+  margin: 0;
+  padding: 16px 18px;
+  font-size: 14px;
+  color: var(--ink2);
+}
+.xt .settings-field-btn {
+  height: 48px;
+}
+@media (min-width: 900px) {
+  .request-card {
+    gap: 12px;
+    padding: 16px 18px;
   }
-  .dialog fieldset label {
-    flex-direction: row;
+}
+@media (max-width: 899.98px) {
+  .xt .settings-field-btn {
+    width: 100%;
+  }
+}
+
+/* Session rows: a list on phone, table columns on desktop. */
+.session-cols {
+  display: none;
+}
+.session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 12px 14px;
+  min-height: 60px;
+}
+.session-row dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink3);
+}
+.session-row dl {
+  flex-direction: column;
+}
+.session-row dl div {
+  display: block;
+}
+.session-row dt,
+.session-row dd {
+  display: inline;
+  margin: 0;
+}
+.session-row dt::after {
+  content: " ";
+}
+.session-list > li {
+  border-top: 1px solid var(--line2);
+}
+.session-row dl {
+  grid-column: 1;
+  grid-row: 2;
+}
+.session-action {
+  grid-column: 1;
+  grid-row: 3;
+  justify-self: start;
+  padding-top: 4px;
+}
+.xt .session-action .btn {
+  min-height: 44px;
+  background: var(--card);
+  border-color: var(--line);
+}
+.xt .session-current {
+  background: var(--blue2);
+  color: var(--blue);
+}
+@media (min-width: 900px) {
+  .session-cols,
+  .session-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 200px 200px 170px;
     align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
   }
-  .dialog input[type="password"] {
-    height: 44px;
+  .session-cols {
+    padding: 10px 20px;
+  }
+  .session-row dl {
+    display: contents;
+  }
+  .session-action {
+    grid-column: auto;
+    grid-row: auto;
+  }
+  .xt .session-action {
+    padding-top: 0;
+  }
+  .xt .session-action .btn {
+    min-height: 36px;
+    background: transparent;
+    border-color: transparent;
+  }
+  .xt .session-action .btn:hover {
+    background: var(--sunk);
+  }
+  .session-row dl div {
+    display: block;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .session-row dt {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+  .session-row > :last-child {
+    justify-self: end;
+  }
+}
+
+/* Dialogs are portaled outside the frame, so they carry .xt themselves. */
+.xt.dialog {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow:
+    0 1px 2px rgba(24, 32, 44, 0.04),
+    0 24px 48px -24px rgba(24, 32, 44, 0.35);
+}
+.dialog-title {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.dialog-body.dialog-context {
+  margin-bottom: 8px;
+  color: var(--ink);
+}
+.dialog-body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink2);
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+/* ---------- More (phone) ---------- */
+
+.more-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 2px 14px 12px;
+}
+@media (min-width: 900px) {
+  .more-page {
+    max-width: 600px;
+    padding: 30px 40px;
+  }
+}
+.more-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 14px;
+  text-decoration: none;
+  font-size: 15px;
+}
+
+/* Access request actions: select · Approve · Decline on phone (XTPhone…),
+   Role select … Decline · Approve on desktop (XTSettingsPeople). */
+.req-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.req-role {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.xt .req-actions .select {
+  width: 100%;
+  height: 44px;
+}
+.xt .req-actions .btn {
+  height: 44px;
+  padding: 0 12px;
+}
+.req-approve {
+  grid-column: 2;
+  grid-row: 1;
+}
+.req-decline {
+  grid-column: 3;
+  grid-row: 1;
+}
+@media (min-width: 900px) {
+  .req-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .xt .req-actions .select {
+    width: auto;
+    height: 38px;
+  }
+  .xt .req-actions .btn {
+    height: 36px;
     padding: 0 14px;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-md);
-    font: inherit;
+    font-size: 14px;
+    border-radius: 10px;
   }
+  .xt .req-actions .req-decline {
+    margin-left: auto;
+    background: transparent;
+    border-color: transparent;
+    color: var(--ink2);
+  }
+  .xt .req-actions .req-decline:hover {
+    background: var(--sunk);
+  }
+}
+.xt .more-signout {
+  color: var(--crit-ink);
 }

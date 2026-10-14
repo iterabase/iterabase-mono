@@ -3,7 +3,7 @@
    one stylesheet per screen area. Tailwind lays out each ported board. */
 @import "tailwindcss";
 @import "./ds.css";
-@import "./prototype.css";
+@import "./prototype.css" layer(components);
 @import "./shell.css";
 @import "./auth.css";
 @import "./today.css";

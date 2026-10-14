@@ -1,4 +1,9 @@
-import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import {
+  Link,
+  Outlet,
+  useNavigate,
+  useRouterState,
+} from "@tanstack/react-router";
 import {
   createContext,
   ReactNode,
@@ -134,72 +139,74 @@ function Frame({ pathname }: { pathname: string }) {
         <a href="#main" className="sr-only">
           {t("skipToContent")}
         </a>
-        <header className="topbar">
-          <Link to="/" className="topbar__brand" aria-label={t("homeLabel")}>
-            <Logomark size={24} />
-            {t("brand")}
-          </Link>
-          <nav aria-label={t("mainNav")} className="topnav">
-            {tabs.map(({ tab, to }) => (
-              <Link
-                key={tab}
-                to={to}
-                aria-current={current === tab ? "page" : undefined}
-              >
-                {t(`nav.${tab}`)}
-                {tab === "work" && !!needsYou && (
-                  <span className="topnav__count mono">
-                    <span aria-hidden="true">{needsYou}</span>
-                    <span className="sr-only">
-                      {t("needsYouCount", { count: needsYou })}
-                    </span>
-                  </span>
-                )}
-              </Link>
-            ))}
-          </nav>
-          <button
-            type="button"
-            className="topbar__search"
-            onClick={() => setSearchOpen(true)}
-          >
-            <SearchIcon />
-            {t("searchPlaceholder")}
-            <kbd>{t("key.search")}</kbd>
-          </button>
-          <AccountMenu name={name} onSignOut={signOut} />
-        </header>
-
-        <header className="phonebar">
-          <div
-            ref={setPhoneSlot}
-            className="phonebar__slot"
-            hidden={!customPhoneHeader}
-          />
-          {!customPhoneHeader && (
-            <>
-              <Link to="/" aria-label={t("homeLabel")} className="row">
-                <Logomark size={28} />
-              </Link>
-              <span className="row phonebar__end">
-                <button
-                  type="button"
-                  className="phonebar__icon"
-                  aria-label={t("search")}
-                  onClick={() => setSearchOpen(true)}
-                >
-                  <SearchIcon />
-                </button>
+        <header className="app-header">
+          <div className="topbar">
+            <Link to="/" className="topbar__brand" aria-label={t("homeLabel")}>
+              <Logomark size={24} />
+              {t("brand")}
+            </Link>
+            <nav aria-label={t("mainNav")} className="topnav">
+              {tabs.map(({ tab, to }) => (
                 <Link
-                  to="/more"
-                  className="phonebar__avatar"
-                  aria-label={t("accountLabel", { name })}
+                  key={tab}
+                  to={to}
+                  aria-current={current === tab ? "page" : undefined}
                 >
-                  {initials(name)}
+                  {t(`nav.${tab}`)}
+                  {tab === "work" && !!needsYou && (
+                    <span className="topnav__count mono">
+                      <span aria-hidden="true">{needsYou}</span>
+                      <span className="sr-only">
+                        {t("needsYouCount", { count: needsYou })}
+                      </span>
+                    </span>
+                  )}
                 </Link>
-              </span>
-            </>
-          )}
+              ))}
+            </nav>
+            <button
+              type="button"
+              className="topbar__search"
+              onClick={() => setSearchOpen(true)}
+            >
+              <SearchIcon />
+              {t("searchPlaceholder")}
+              <kbd>{t("key.search")}</kbd>
+            </button>
+            <AccountMenu name={name} onSignOut={signOut} />
+          </div>
+
+          <div className="phonebar">
+            <div
+              ref={setPhoneSlot}
+              className="phonebar__slot"
+              hidden={!customPhoneHeader}
+            />
+            {!customPhoneHeader && (
+              <>
+                <Link to="/" aria-label={t("homeLabel")} className="row">
+                  <Logomark size={28} />
+                </Link>
+                <span className="row phonebar__end">
+                  <button
+                    type="button"
+                    className="phonebar__icon"
+                    aria-label={t("search")}
+                    onClick={() => setSearchOpen(true)}
+                  >
+                    <SearchIcon />
+                  </button>
+                  <Link
+                    to="/more"
+                    className="phonebar__avatar"
+                    aria-label={t("accountLabel", { name })}
+                  >
+                    {initials(name)}
+                  </Link>
+                </span>
+              </>
+            )}
+          </div>
         </header>
 
         {connection === "reconnecting" && (

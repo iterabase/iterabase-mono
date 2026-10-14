@@ -1,13 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useLiveQuery } from "../app/live";
 import { isNotFound, useSession } from "../app/session";
-import { CloseIcon, MoreIcon } from "../components/brand";
 import { CoworkerMark } from "../components/coworker";
 import { ErrorState, Loading, StaleNotice } from "../components/states";
-import { Exact, Irreversible, Provenance } from "../components/trust";
-import { Button } from "../components/ui/button";
+import { Exact, Irreversible } from "../components/trust";
 import {
   Dialog,
   DialogClose,
@@ -26,26 +24,40 @@ import { StateBadge } from "../components/work-state";
 import { useLocale } from "../i18n";
 import { formatDateTime, formatTime } from "../i18n/format";
 import {
-  artifactName,
   createRevision,
   loadDetail,
-  openArtifact,
   saveFeedback,
   stopWaiting,
 } from "../lib/api";
-import type { DetailData, TimelineEvent, WorkArtifact } from "../lib/types";
+import type { DetailData, WorkItem } from "../lib/types";
 import { failureCode, localized } from "../work/model";
-import { hasPresentedResult, PresentedResult, producingNode } from "./result";
+import {
+  Breakdowns,
+  ExactRows,
+  hasPresentedResult,
+  PresentedResult,
+  producingNode,
+} from "./result";
 import {
   OutcomeButtons,
   useBlockerResponse,
   type BlockerResponse,
 } from "./respond";
+import {
+  CheckIcon,
+  ChevronLeft,
+  CloseIcon,
+  DotsIcon,
+  LockIcon,
+  ShieldIcon,
+} from "./work/icons";
+import { Sources, Timeline } from "./work/itemParts";
 
-// The work item (HOR-459 Design → Work item): status and provenance, the
-// action first, the timeline, sources and documents, and the decision actions
-// in a fixed footer. It opens as a side sheet over Work (full screen on
-// phone); /work/<id> is also its deep link.
+// The work item (XTItem, XTItemQuestion, XTItemFailed, XTItemDone and their
+// phone boards): status and provenance, the action first, the timeline,
+// sources and documents, and the decision in a fixed footer. It opens as a
+// side sheet over Work (full screen on phone, with its own "‹ Work" bar);
+// /work/<id> is also its deep link.
 
 export function WorkItemSheet({
   itemId,
@@ -54,9 +66,20 @@ export function WorkItemSheet({
   itemId: string;
   onClose: () => void;
 }) {
+  const content = useRef<HTMLDivElement>(null);
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent aria-describedby={undefined}>
+      <SheetContent
+        ref={content}
+        className="xt work-sheet"
+        aria-describedby={undefined}
+        onOpenAutoFocus={(event) => {
+          // Focus the sheet itself, so Enter can mirror "Review and decide"
+          // instead of opening the first control (the ⋯ menu).
+          event.preventDefault();
+          content.current?.focus();
+        }}
+      >
         <WorkItemView itemId={itemId} />
       </SheetContent>
     </Dialog>
@@ -70,23 +93,36 @@ const feedbackCategories = [
   "poor_output",
 ] as const;
 
+function isQuestion(kind: string | undefined): boolean {
+  return kind === "information" || kind === "decision";
+}
+
 function WorkItemView({ itemId }: { itemId: string }) {
   const { t } = useTranslation("work");
   const detail = useLiveQuery(() => loadDetail(itemId), [itemId]);
 
-  if (detail.status === "loading")
+  if (detail.status !== "ready")
     return (
       <>
-        <DialogTitle className="sr-only">{t("item.loadingTitle")}</DialogTitle>
-        <Loading />
-      </>
-    );
-  if (detail.status === "error")
-    return (
-      <>
-        <DialogTitle className="sr-only">{t("item.errorTitle")}</DialogTitle>
-        <div className="sheet__body">
-          <ErrorState onRetry={detail.reload} />
+        <header className="item-head">
+          <div className="item-head__bar">
+            <BackToWork />
+            <DialogClose className="item-close" aria-label={t("item.close")}>
+              <CloseIcon />
+            </DialogClose>
+          </div>
+          <DialogTitle className="item-head__title">
+            {detail.status === "loading"
+              ? t("item.loadingTitle")
+              : t("item.errorTitle")}
+          </DialogTitle>
+        </header>
+        <div className="item-body">
+          {detail.status === "loading" ? (
+            <Loading />
+          ) : (
+            <ErrorState onRetry={detail.reload} />
+          )}
         </div>
       </>
     );
@@ -96,6 +132,25 @@ function WorkItemView({ itemId }: { itemId: string }) {
       stale={detail.stale}
       reload={detail.reload}
     />
+  );
+}
+
+function BackToWork() {
+  const { t } = useTranslation("work");
+  return (
+    <DialogClose className="phone-back item-back" aria-label={t("item.back")}>
+      <ChevronLeft />
+      {t("item.backShort")}
+    </DialogClose>
+  );
+}
+
+function interactive(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    !!target.closest(
+      "a, button, input, textarea, select, [role=menu], [role=menuitem]",
+    )
   );
 }
 
@@ -109,85 +164,78 @@ function WorkItemContent({
   reload: () => void;
 }) {
   const { t } = useTranslation("work");
-  const locale = useLocale();
   const [panel, setPanel] = useState<"none" | "feedback" | "restart">("none");
   const [notice, setNotice] = useState("");
+  const [reviewing, setReviewing] = useState(false);
+  const decision = useRef<HTMLElement>(null);
   const { item } = data;
-  const response = useBlockerResponse(
-    item.state === "blocked" ? data.blocker : null,
-    () => {
-      setNotice(t("item.responseSent"));
-      reload();
-    },
-  );
+  const blocker = item.state === "blocked" ? data.blocker : null;
+  const response = useBlockerResponse(blocker, () => {
+    setNotice(t("item.responseSent"));
+    setReviewing(false);
+    reload();
+  });
+  const needsReview = !!blocker && response.quick && !response.choice;
+
+  // "Review and decide" brings the decision card into view and puts the
+  // decision buttons in the footer; Enter mirrors the visible button.
+  const review = () => setReviewing(true);
+  useEffect(() => {
+    if (reviewing) {
+      decision.current?.scrollIntoView?.({ block: "nearest" });
+      decision.current?.focus();
+    }
+  }, [reviewing]);
+  useEffect(() => {
+    if (!needsReview || reviewing) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        event.key === "Enter" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        !interactive(event.target)
+      ) {
+        event.preventDefault();
+        setReviewing(true);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [needsReview, reviewing]);
 
   return (
     <>
-      <header className="sheet__head">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-2">
-            <StateBadge item={item} />
-          </div>
-          <DialogTitle className="m-0 text-[22px] leading-tight font-semibold">
-            {item.title}
-          </DialogTitle>
-          <p className="m-0 mt-1 text-sm muted">
-            <Link
-              to="/team/$key"
-              params={{ key: item.workflowKey }}
-              className="text-link"
-            >
-              {localized(item.presentation.title, locale)}
-            </Link>{" "}
-            · {t("item.byCoworker", { name: item.presentation.coworker.name })}{" "}
-            · {t("item.from", { source: item.source.title })}
-          </p>
+      <div className="item-scroll">
+        <ItemHeader item={item} onFeedback={() => setPanel("feedback")} />
+        <div className="item-body">
+          {stale && <StaleNotice onRetry={reload} />}
+          {notice && (
+            <p role="status" className="item-notice">
+              {notice}
+            </p>
+          )}
+          <ItemBody data={data} response={response} decision={decision} />
+          {panel === "feedback" && (
+            <FeedbackPanel
+              data={data}
+              onDone={(message) => {
+                setPanel("none");
+                setNotice(message);
+                reload();
+              }}
+              onCancel={() => setPanel("none")}
+            />
+          )}
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            className="ib-iconbtn ib-iconbtn--md"
-            aria-label={t("item.moreActions")}
-          >
-            <MoreIcon />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => setPanel("feedback")}>
-              {t("item.giveFeedback")}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <DialogClose
-          className="ib-iconbtn ib-iconbtn--md"
-          aria-label={t("item.close")}
-        >
-          <CloseIcon />
-        </DialogClose>
-      </header>
-
-      <div className="sheet__body">
-        {stale && <StaleNotice onRetry={reload} />}
-        {notice && (
-          <p role="status" className="auth-notice">
-            {notice}
-          </p>
-        )}
-        <ItemBody data={data} response={response} />
-        {panel === "feedback" && (
-          <FeedbackPanel
-            data={data}
-            onDone={(message) => {
-              setPanel("none");
-              setNotice(message);
-              reload();
-            }}
-            onCancel={() => setPanel("none")}
-          />
-        )}
       </div>
 
       <ItemFooter
         data={data}
         response={response}
+        reviewing={reviewing || !needsReview}
+        onReview={review}
         onFeedback={() => setPanel("feedback")}
         onThanks={() => setNotice(t("item.thanks"))}
         onRestart={() => setPanel("restart")}
@@ -207,34 +255,101 @@ function WorkItemContent({
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+const emailKinds = ["email", "graph_email", "outlook"];
+const scheduleKinds = ["schedule", "scheduled"];
+
+/** Badge, id, ⋯ and close; the title; the workflow and where it came from. */
+function ItemHeader({
+  item,
+  onFeedback,
+}: {
+  item: WorkItem;
+  onFeedback: () => void;
+}) {
+  const { t } = useTranslation("work");
+  const locale = useLocale();
+  const { source } = item;
+  const schedule = scheduleKinds.includes(source.kind);
   return (
-    <section className="sheet-section">
-      <h3>{title}</h3>
-      {children}
-    </section>
+    <header className="item-head">
+      <div className="item-head__bar">
+        <BackToWork />
+        <span className="mono muted item-head__id">{item.id}</span>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            className="item-icon item-icon--menu"
+            aria-label={t("item.moreActions")}
+          >
+            <DotsIcon />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-[210px]">
+            <DropdownMenuItem onSelect={onFeedback}>
+              {t("item.giveFeedback")}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <DialogClose
+          className="item-icon item-close"
+          aria-label={t("item.close")}
+        >
+          <CloseIcon />
+        </DialogClose>
+      </div>
+      <span className="item-head__badge">
+        <StateBadge item={item} />
+      </span>
+      <DialogTitle className="item-head__title">{item.title}</DialogTitle>
+      <p className="item-head__source">
+        <Link
+          to="/team/$key"
+          params={{ key: item.workflowKey }}
+          className="desk:underline"
+        >
+          {localized(item.presentation.title, locale)}
+        </Link>{" "}
+        · {t("item.byCoworker", { name: item.presentation.coworker.name })} ·{" "}
+        {schedule
+          ? source.title
+          : emailKinds.includes(source.kind)
+            ? t("item.fromEmail", { from: source.title })
+            : t("item.from", { source: source.title })}
+        {!schedule && (
+          <span className="hidden desk:inline">
+            {" "}
+            · {formatTime(item.createdAt, locale)}
+          </span>
+        )}
+      </p>
+    </header>
   );
 }
 
 /** "Prepared by Quotes · 09:31 · Picks the best rate". */
-export function ItemProvenance({ data }: { data: DetailData }) {
+export function ItemProvenance({
+  data,
+  children,
+}: {
+  data: DetailData;
+  children?: ReactNode;
+}) {
   const { t } = useTranslation("work");
   const locale = useLocale();
   const node = producingNode(data);
   if (!node?.finishedAt) return null;
   return (
-    <Provenance>
+    <p className="item-provenance">
       <CoworkerMark
         coworker={data.item.presentation.coworker}
-        size={22}
+        size={28}
         decorative
       />
-      <span>
+      <span className="min-w-0">
         {t("item.preparedBy")} <b>{data.item.presentation.coworker.name}</b> ·{" "}
-        {formatTime(node.finishedAt, locale)} ·{" "}
+        <span className="mono">{formatTime(node.finishedAt, locale)}</span> ·{" "}
         {localized(node.businessLabel, locale)}
+        {children}
       </span>
-    </Provenance>
+    </p>
   );
 }
 
@@ -253,180 +368,334 @@ export function ExactContent({ data }: { data: DetailData }) {
 function ItemBody({
   data,
   response,
+  decision,
 }: {
   data: DetailData;
   response: BlockerResponse;
+  decision: React.RefObject<HTMLElement | null>;
 }) {
-  const { t } = useTranslation("work");
-  const locale = useLocale();
-  const session = useSession();
   const { item } = data;
-  const [stopping, setStopping] = useState(false);
-  const [stopError, setStopError] = useState(false);
-
   return (
     <>
-      <ItemProvenance data={data} />
-
       {item.state === "blocked" && data.blocker && (
-        <div className="decision-card mt-4 flex flex-col gap-3">
-          <span className="ib-eyebrow text-warm-ink">
-            {data.blocker.kind === "information" ||
-            data.blocker.kind === "decision"
-              ? t("item.answerNeeded")
-              : t("item.okNeeded")}
-          </span>
-          <h3 className="m-0 text-lg font-semibold">
-            {localized(data.blocker.title, locale)}
-          </h3>
-          <p className="m-0 text-ink-2">
-            {localized(data.blocker.description, locale)}
-          </p>
-          <ExactContent data={data} />
-          {response.fields}
-        </div>
+        <DecisionBody data={data} response={response} decision={decision} />
       )}
-
-      {item.state === "waiting" && item.wait && (
-        <Section title={t("item.waitingTitle")}>
-          <p className="m-0">
-            {t("line.waiting", {
-              received: item.wait.received,
-              expected: item.wait.expected,
-              at: formatDateTime(item.wait.deadlineAt, locale),
-            })}
-          </p>
-          <p className="m-0 mt-1 muted text-sm">
-            {item.wait.completion === "any"
-              ? t("item.waitAny")
-              : t("item.waitAll")}{" "}
-            {t("item.nothingNeeded")}
-          </p>
-          <Button
-            className="mt-3"
-            size="sm"
-            disabled={stopping}
-            onClick={async () => {
-              setStopping(true);
-              setStopError(false);
-              try {
-                await session.withCSRF((csrf) => stopWaiting(csrf, item));
-              } catch (err) {
-                if (!session.lost(err)) setStopError(true);
-              } finally {
-                setStopping(false);
-              }
-            }}
-          >
-            {t("item.stopWaiting")}
-          </Button>
-          <p className="m-0 mt-2 muted text-xs">{t("item.stopWaitingHelp")}</p>
-          {stopError && (
-            <p role="alert" className="form-error mt-2">
-              {t("item.actionFailed")}
-            </p>
-          )}
-        </Section>
+      {item.state === "waiting" && item.wait && <WaitingCard item={item} />}
+      {item.state === "paused" && <PausedCard item={item} />}
+      {(item.state === "in_progress" || item.state === "todo") && (
+        <NowCard data={data} />
       )}
+      {item.state === "failed" && <FailedBody data={data} />}
+      {item.state === "done" && <DoneBody data={data} />}
 
-      {item.state === "paused" && (
-        <Section title={t("item.pausedTitle")}>
-          <p className="m-0">{t(`pause.${item.pause?.reason ?? "other"}`)}</p>
-          {item.pause?.since && (
-            <p className="m-0 mt-1 muted text-sm">
-              {t("item.since", {
-                at: formatDateTime(item.pause.since, locale),
-              })}
-            </p>
-          )}
-        </Section>
-      )}
-
-      {item.state === "failed" && <FailedSection data={data} />}
-
-      {item.state === "done" && <DoneSection data={data} />}
-
-      {(item.state === "in_progress" || item.state === "todo") &&
-        item.currentStep && (
-          <Section title={t("item.nowTitle")}>
-            <p className="m-0">{localized(item.currentStep.label, locale)}</p>
-          </Section>
-        )}
-
-      <Section title={t("item.timeline")}>
-        <Timeline data={data} />
-      </Section>
-
-      <Section title={t("item.sources")}>
-        <Sources data={data} />
-      </Section>
+      {item.state !== "done" && <Timeline data={data} />}
+      <Sources data={data} />
+      {item.state === "done" && <DoneMeans />}
     </>
   );
 }
 
-function FailedSection({ data }: { data: DetailData }) {
+function DecisionBody({
+  data,
+  response,
+  decision,
+}: {
+  data: DetailData;
+  response: BlockerResponse;
+  decision: React.RefObject<HTMLElement | null>;
+}) {
   const { t } = useTranslation("work");
   const locale = useLocale();
-  const completed = data.nodes.filter(
-    (node) =>
-      node.attemptId === data.item.currentAttemptId &&
-      node.state === "succeeded",
-  );
-  const unknown = data.consequences.filter(
-    (c) => c.state === "outcome_unknown",
-  );
+  const blocker = data.blocker!;
+  const node = producingNode(data);
+  const exact = hasPresentedResult(node) ? node! : undefined;
+  const description = localized(blocker.description, locale);
+  const fields = response.choice ? null : response.fields;
+
+  if (isQuestion(blocker.kind))
+    return (
+      <>
+        <ItemProvenance data={data} />
+        <section
+          ref={decision}
+          tabIndex={-1}
+          className="flex flex-col gap-2 outline-none"
+          aria-labelledby="decision-title"
+        >
+          <span className="eyebrow">{t("item.answerNeeded")}</span>
+          <h3 id="decision-title" className="m-0 text-[18px] font-semibold">
+            {localized(blocker.title, locale)}
+          </h3>
+          {description && (
+            <p className="m-0 text-[14px] leading-[1.55] text-[var(--ink2)]">
+              {description}
+            </p>
+          )}
+          {fields && <div className="card px-4 py-[14px]">{fields}</div>}
+        </section>
+        {exact && (
+          <figure className="card exact-figure">
+            <ExactRows node={exact} />
+          </figure>
+        )}
+        {exact && <Breakdowns node={exact} />}
+      </>
+    );
+
   return (
     <>
-      <div className="mt-4 flex flex-col gap-2">
-        <h3 className="m-0 text-lg font-semibold">
-          {t(`failure.${failureCode(data.item)}`)}
-        </h3>
-        <p className="m-0 text-ink-2">
-          {t(`failureHelp.${failureCode(data.item)}`)}
+      <ItemProvenance data={data} />
+      <section
+        ref={decision}
+        tabIndex={-1}
+        className="card decision-card"
+        aria-labelledby="decision-title"
+      >
+        <span className="eyebrow decision-card__eyebrow">
+          {t("item.okNeeded")}
+        </span>
+        <b
+          id="decision-title"
+          className="text-[15px] desk:text-[15.5px] font-semibold"
+        >
+          {localized(blocker.title, locale)}
+        </b>
+        {description && (
+          <p className="m-0 text-[13px] desk:text-[13.5px] leading-[1.5] text-[var(--ink2)]">
+            {description}
+          </p>
+        )}
+        {exact && <ExactRows node={exact} />}
+        {fields}
+      </section>
+      {exact && <Breakdowns node={exact} />}
+    </>
+  );
+}
+
+function StateCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="card item-state-card">
+      <h3 className="eyebrow m-0">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function WaitingCard({ item }: { item: WorkItem }) {
+  const { t } = useTranslation("work");
+  const locale = useLocale();
+  const session = useSession();
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState(false);
+  const wait = item.wait!;
+  return (
+    <StateCard title={t("item.waitingTitle")}>
+      <p className="m-0 text-[14px]">
+        {t("line.waiting", {
+          received: wait.received,
+          expected: wait.expected,
+          at: formatDateTime(wait.deadlineAt, locale),
+        })}
+      </p>
+      <p className="m-0 text-[13px] text-[var(--ink3)]">
+        {wait.completion === "any" ? t("item.waitAny") : t("item.waitAll")}{" "}
+        {t("item.nothingNeeded")}
+      </p>
+      <button
+        type="button"
+        className="btn btn-secondary btn-sm self-start mt-1"
+        disabled={stopping}
+        onClick={async () => {
+          setStopping(true);
+          setStopError(false);
+          try {
+            await session.withCSRF((csrf) => stopWaiting(csrf, item));
+          } catch (err) {
+            if (!session.lost(err)) setStopError(true);
+          } finally {
+            setStopping(false);
+          }
+        }}
+      >
+        {t("item.stopWaiting")}
+      </button>
+      <p className="m-0 text-[12.5px] text-[var(--ink3)]">
+        {t("item.stopWaitingHelp")}
+      </p>
+      {stopError && (
+        <p role="alert" className="form-error m-0">
+          {t("item.actionFailed")}
         </p>
+      )}
+    </StateCard>
+  );
+}
+
+function PausedCard({ item }: { item: WorkItem }) {
+  const { t } = useTranslation("work");
+  const locale = useLocale();
+  return (
+    <StateCard title={t("item.pausedTitle")}>
+      <p className="m-0 text-[14px]">
+        {t(`pause.${item.pause?.reason ?? "other"}`)}
+      </p>
+      {item.pause?.since && (
+        <p className="m-0 text-[13px] text-[var(--ink3)]">
+          {t("item.since", { at: formatDateTime(item.pause.since, locale) })}
+        </p>
+      )}
+    </StateCard>
+  );
+}
+
+function NowCard({ data }: { data: DetailData }) {
+  const { t } = useTranslation("work");
+  const locale = useLocale();
+  const step = data.item.currentStep;
+  return (
+    <>
+      <ItemProvenance data={data} />
+      {step && (
+        <StateCard title={t("item.nowTitle")}>
+          <p className="m-0 row gap-2 text-[14px]">
+            <span className="dot live bg-[var(--ok)]" aria-hidden="true" />
+            {localized(step.label, locale)}
+          </p>
+        </StateCard>
+      )}
+    </>
+  );
+}
+
+function FailedBody({ data }: { data: DetailData }) {
+  const { t } = useTranslation("work");
+  const locale = useLocale();
+  const { item } = data;
+  const coworker = item.presentation.coworker;
+  const code = failureCode(item);
+  const steps = data.nodes
+    .filter(
+      (node) =>
+        node.attemptId === item.currentAttemptId &&
+        (node.state === "succeeded" ||
+          node.state === "failed" ||
+          node.state === "interrupted"),
+    )
+    .sort((a, b) => a.executionSeq - b.executionSeq);
+  const kept = steps.filter((node) => node.state === "succeeded").length;
+  const unknown = data.consequences.some((c) => c.state === "outcome_unknown");
+  return (
+    <>
+      <div className="row items-start gap-3 min-w-0">
+        <CoworkerMark coworker={coworker} size={36} state="failed" decorative />
+        <div className="flex flex-col gap-[2px] min-w-0">
+          <span className="row flex-wrap gap-[7px]">
+            <b className="text-[15px] font-semibold">{coworker.name}</b>
+            <span className="muted text-[12.5px]">
+              {localized(coworker.role, locale)}
+            </span>
+            <span className="dot bg-[var(--crit)]" aria-hidden="true" />
+            <span className="text-[12.5px] text-[var(--crit-ink)]">
+              {t("item.failedWord")}
+            </span>
+          </span>
+          <span className="text-[13.5px] leading-[1.4] text-[var(--ink2)]">
+            {t("item.couldntFinish")}
+            {data.consequences.length === 0 && <> {t("item.nothingSent")}</>}
+          </span>
+        </div>
       </div>
-      <Section title={t("item.whatCompleted")}>
-        {completed.length === 0 ? (
-          <p className="m-0 muted">{t("item.nothingCompleted")}</p>
+      <section className="flex flex-col gap-2">
+        <h3 className="m-0 text-[18px] font-semibold">
+          {t(`failure.${code}`)}
+        </h3>
+        <p className="m-0 text-[14px] leading-[1.55] text-[var(--ink2)]">
+          {t(`failureHelp.${code}`)}
+        </p>
+      </section>
+      <section className="card px-4 py-3">
+        <div className="row gap-2">
+          <h3 className="eyebrow m-0">{t("item.whatCompleted")}</h3>
+          <span className="muted ml-auto text-[12.5px]">
+            {t("item.stepsKept", { count: kept })}
+          </span>
+        </div>
+        {steps.length === 0 ? (
+          <p className="m-0 mt-2 text-[13.5px] text-[var(--ink3)]">
+            {t("item.nothingCompleted")}
+          </p>
         ) : (
-          <ul className="m-0 p-0 list-none flex flex-col gap-1">
-            {completed.map((node) => (
-              <li key={node.id}>
-                {localized(node.businessLabel, locale)}{" "}
-                <span className="muted text-sm">· {t("item.kept")}</span>
+          <ul className="list divide mt-1">
+            {steps.map((node) => (
+              <li
+                key={node.id}
+                className={`row gap-[10px] py-[7px] text-[13.5px] ${node.state === "succeeded" ? "" : "text-[var(--ink3)]"}`}
+              >
+                {node.state === "succeeded" ? (
+                  <CheckIcon />
+                ) : (
+                  <span className="w-[15px] text-center" aria-hidden="true">
+                    —
+                  </span>
+                )}
+                <span className="min-w-0">
+                  {localized(node.businessLabel, locale)}
+                </span>
+                <span className="mono ml-auto whitespace-nowrap">
+                  {node.state === "succeeded"
+                    ? t("item.kept")
+                    : t("item.notFinished")}
+                </span>
               </li>
             ))}
           </ul>
         )}
-      </Section>
-      <Section title={t("item.externalActions")}>
-        {data.consequences.length === 0 ? (
-          <p className="m-0 muted">{t("item.noExternalActions")}</p>
-        ) : (
-          <ul className="m-0 p-0 list-none flex flex-col gap-1">
+      </section>
+      {data.consequences.length > 0 && (
+        <section className="card px-4 py-3">
+          <h3 className="eyebrow m-0">{t("item.externalActions")}</h3>
+          <ul className="list divide mt-1">
             {data.consequences.map((consequence) => (
-              <li key={consequence.invocationId}>
-                {localized(consequence.summary, locale)}{" "}
+              <li
+                key={consequence.invocationId}
+                className="row flex-wrap gap-[10px] py-[7px] text-[13.5px]"
+              >
+                <span className="min-w-0">
+                  {localized(consequence.summary, locale)}
+                </span>
                 {consequence.state === "outcome_unknown" && (
-                  <span className="ib-badge ib-badge--warn">
+                  <span className="badge ml-auto bg-[var(--warn2)] text-[var(--warn-ink)]">
                     {t("failed.outcomeUnknown")}
                   </span>
                 )}
               </li>
             ))}
           </ul>
-        )}
-        {unknown.length > 0 && (
-          <Irreversible>{t("item.checkUnknown")}</Irreversible>
-        )}
-      </Section>
+          {unknown && (
+            <div className="mt-2">
+              <Irreversible>{t("item.checkUnknown")}</Irreversible>
+            </div>
+          )}
+        </section>
+      )}
+      <p className="m-0 text-[12.5px] desk:text-[13px] leading-[1.5] text-[var(--ink3)]">
+        {t("restart.intro")}
+      </p>
     </>
   );
 }
 
-function DoneSection({ data }: { data: DetailData }) {
+function DoneBody({ data }: { data: DetailData }) {
   const { t } = useTranslation("work");
   const locale = useLocale();
+  const { item } = data;
   const node = producingNode(data);
   const outcome = data.nodes
     .filter((candidate) =>
@@ -441,206 +710,116 @@ function DoneSection({ data }: { data: DetailData }) {
   const approvals = data.timeline.filter(
     (event) => event.code === "blocker_resolved",
   );
+  const exact = hasPresentedResult(node) ? node! : undefined;
   return (
-    <div className="mt-4 flex flex-col gap-3">
-      <h3 className="m-0 text-lg font-semibold">
-        {localized(summary, locale) || t("item.doneSummary")}
-      </h3>
-      {approvals.map((event) => (
-        <p key={event.id} className="m-0 text-sm text-ok-ink">
-          {event.actorDisplayName
-            ? t("item.approvedBy", {
-                name: event.actorDisplayName,
-                at: formatTime(event.createdAt, locale),
-              })
-            : t("item.answeredAt", { at: formatTime(event.createdAt, locale) })}
-        </p>
-      ))}
-      {hasPresentedResult(node) && (
-        <Exact label={t("item.exactLabel")}>
-          <PresentedResult node={node!} />
-        </Exact>
+    <>
+      <section className="card done-card">
+        <div className="row gap-[10px]">
+          <span className="done-card__check" aria-hidden="true">
+            <CheckIcon size={11} width={3} stroke="var(--ok-ink)" />
+          </span>
+          <h3 className="m-0 text-[14.5px] desk:text-[16px] font-semibold">
+            {localized(summary, locale) || t("item.doneSummary")}
+          </h3>
+        </div>
+        {item.finishedAt && (
+          <p className="m-0 text-[12.5px] desk:text-[13.5px] leading-[1.5] text-[var(--ink2)]">
+            {t("item.finishedAt")}{" "}
+            <span className="mono">{formatTime(item.finishedAt, locale)}</span>
+          </p>
+        )}
+      </section>
+      <ItemProvenance data={data}>
+        {approvals.map((event) => (
+          <span key={event.id}>
+            {" "}
+            ·{" "}
+            {event.actorDisplayName ? (
+              <>
+                {t("item.answeredBy")} <b>{event.actorDisplayName}</b>
+              </>
+            ) : (
+              t("item.answered")
+            )}{" "}
+            ·{" "}
+            <span className="mono">{formatTime(event.createdAt, locale)}</span>
+          </span>
+        ))}
+      </ItemProvenance>
+      {!node?.finishedAt &&
+        approvals.map((event) => (
+          <p key={event.id} className="m-0 text-[13px] text-[var(--ink2)]">
+            {event.actorDisplayName ? (
+              <>
+                {t("item.answeredBy")} <b>{event.actorDisplayName}</b>
+              </>
+            ) : (
+              t("item.answered")
+            )}{" "}
+            ·{" "}
+            <span className="mono">{formatTime(event.createdAt, locale)}</span>
+          </p>
+        ))}
+      {exact && (
+        <section className="flex flex-col gap-[6px]">
+          <div className="row gap-2">
+            <h3 className="eyebrow m-0">{t("item.exactKept")}</h3>
+            {exact.finishedAt && (
+              <span className="muted ml-auto text-[12.5px]">
+                {t("item.copyKeptAt", {
+                  at: formatTime(exact.finishedAt, locale),
+                })}
+              </span>
+            )}
+          </div>
+          <div className="card exact-figure">
+            <ExactRows node={exact} />
+          </div>
+        </section>
       )}
-      <p className="m-0 text-sm text-ink-2">{t("item.doneMeans")}</p>
-    </div>
+      {exact && <Breakdowns node={exact} />}
+      <Timeline data={data} />
+    </>
   );
 }
 
-const eventCodes = [
-  "work_item_created",
-  "attempt_created",
-  "node_started",
-  "node_completed",
-  "work_blocked",
-  "blocker_resolved",
-  "work_completed",
-  "work_failed",
-  "feedback_recorded",
-  "revision_requested",
-  "consequence_confirmation_required",
-  "consequence_repetition_confirmed",
-  "work_waiting",
-  "wait_event_received",
-  "wait_stopped",
-  "work_paused",
-  "work_resumed",
-  "step_interrupted",
-] as const;
-
-function Timeline({ data }: { data: DetailData }) {
+function DoneMeans() {
   const { t } = useTranslation("work");
-  const locale = useLocale();
-  const nodes = new Map(data.nodes.map((node) => [node.id, node]));
-  const events = data.timeline.filter(
-    (event) => !event.code.startsWith("value_"),
-  );
-  const label = (event: TimelineEvent) => {
-    const code = eventCodes.find((known) => known === event.code);
-    return code ? t(`event.${code}`) : t("event.work_updated");
-  };
   return (
-    <ol className="list-none m-0 p-0 flex flex-col gap-2">
-      {events.map((event) => {
-        const node = event.nodeExecutionId
-          ? nodes.get(event.nodeExecutionId)
-          : undefined;
-        return (
-          <li
-            key={event.id}
-            className="grid grid-cols-[52px_1fr] gap-3 text-sm"
-          >
-            <time className="ib-num muted" dateTime={event.createdAt}>
-              {formatTime(event.createdAt, locale)}
-            </time>
-            <span>
-              {label(event)}
-              {node && (
-                <span className="muted">
-                  {" "}
-                  · {localized(node.businessLabel, locale)}
-                </span>
-              )}
-              {event.actorDisplayName && (
-                <span className="muted"> · {event.actorDisplayName}</span>
-              )}
-            </span>
-          </li>
-        );
-      })}
-    </ol>
+    <p className="m-0 text-[12.5px] leading-[1.45] text-[var(--ink3)]">
+      {t("item.doneMeans")}
+    </p>
   );
 }
 
-function artifactKind(
-  artifact: WorkArtifact,
-): "email" | "pdf" | "image" | "file" {
-  if (artifact.mimeType === "message/rfc822") return "email";
-  if (artifact.mimeType === "application/pdf") return "pdf";
-  if (artifact.mimeType.startsWith("image/")) return "image";
-  return "file";
-}
-
-function Sources({ data }: { data: DetailData }) {
-  const { t } = useTranslation("work");
-  const locale = useLocale();
-  const session = useSession();
-  const [failed, setFailed] = useState(false);
-  const { source } = data.item;
+function TrustNote({
+  icon = "lock",
+  children,
+}: {
+  icon?: "lock" | "shield";
+  children: ReactNode;
+}) {
   return (
-    <div className="flex flex-col gap-3">
-      <div className="ib-card ib-card--pad">
-        <span className="ib-eyebrow">
-          {t(`source.${sourceKind(source.kind)}`)}
-        </span>
-        <p className="m-0 mt-1 font-semibold">{source.title}</p>
-        {source.subtitle && (
-          <p className="m-0 muted text-sm">{source.subtitle}</p>
-        )}
-        {!!source.evidence?.length && (
-          <dl className="m-0 mt-3 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-x-4 gap-y-1 text-sm">
-            {source.evidence.map((field, index) => (
-              <div key={index} className="contents">
-                <dt className="muted">{localized(field.label, locale)}</dt>
-                <dd className="m-0">{field.value}</dd>
-              </div>
-            ))}
-          </dl>
-        )}
-        {source.originalUrl && (
-          <a
-            href={source.originalUrl}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="text-link mt-2 inline-block"
-          >
-            {t("item.openOriginal")}
-          </a>
-        )}
-      </div>
-      {data.artifacts.length > 0 && (
-        <ul className="list-none m-0 p-0 ib-card ib-divide">
-          {data.artifacts.map((artifact) => {
-            const kind = artifactKind(artifact);
-            return (
-              <li
-                key={`${artifact.artifactId}-${artifact.role}`}
-                className="px-4 py-3 flex items-center gap-3"
-              >
-                <span className="ib-badge ib-badge--neutral">
-                  {t(`artifact.${kind}`)}
-                </span>
-                <span className="min-w-0 flex-1 truncate">
-                  {artifactName(artifact)}
-                </span>
-                <button
-                  type="button"
-                  className="text-link"
-                  onClick={() =>
-                    void openArtifact(artifact).catch((err: unknown) => {
-                      if (!session.lost(err)) setFailed(true);
-                    })
-                  }
-                >
-                  {t(`artifact.view.${kind}`)}
-                  <span className="sr-only"> {artifactName(artifact)}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {failed && (
-        <p role="alert" className="form-error">
-          {t("item.artifactFailed")}
-        </p>
-      )}
-    </div>
+    <span className="row gap-[7px] text-[12px] desk:text-[12.5px] text-[var(--ink3)]">
+      {icon === "lock" ? <LockIcon /> : <ShieldIcon />}
+      <span>{children}</span>
+    </span>
   );
-}
-
-const knownSources = [
-  "email",
-  "graph_email",
-  "outlook",
-  "api",
-  "schedule",
-  "scheduled",
-  "chat",
-  "artifact",
-] as const;
-function sourceKind(kind: string): (typeof knownSources)[number] | "other" {
-  return knownSources.find((known) => known === kind) ?? "other";
 }
 
 function ItemFooter({
   data,
   response,
+  reviewing,
+  onReview,
   onFeedback,
   onThanks,
   onRestart,
 }: {
   data: DetailData;
   response: BlockerResponse;
+  reviewing: boolean;
+  onReview: () => void;
   onFeedback: () => void;
   onThanks: () => void;
   onRestart: () => void;
@@ -648,40 +827,149 @@ function ItemFooter({
   const { t } = useTranslation("work");
   const { item } = data;
   if (item.state === "blocked" && data.blocker)
-    return <BlockerFooter response={response} />;
+    return (
+      <BlockerFooter
+        question={isQuestion(data.blocker.kind)}
+        response={response}
+        reviewing={reviewing}
+        onReview={onReview}
+      />
+    );
   if (item.state === "done")
     return (
-      <footer className="decision-footer">
-        <p className="m-0 font-semibold">{t("item.wasThisRight")}</p>
-        <div className="grid grid-cols-2 gap-2">
-          <Button onClick={onThanks}>{t("yes")}</Button>
-          <Button onClick={onFeedback}>{t("item.somethingWrong")}</Button>
+      <footer className="item-foot">
+        <b className="text-[14px] font-semibold">{t("item.wasThisRight")}</b>
+        <div className="grid grid-cols-2 gap-2 desk:gap-[10px]">
+          <button
+            type="button"
+            className="btn btn-secondary item-foot__btn"
+            onClick={onThanks}
+          >
+            {t("yes")}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary item-foot__btn px-[10px]"
+            onClick={onFeedback}
+          >
+            {t("item.somethingWrong")}
+          </button>
         </div>
+        <span className="hidden desk:block muted text-[12.5px]">
+          {t("item.feedbackHelps", {
+            name: item.presentation.coworker.name,
+          })}
+        </span>
       </footer>
     );
   if (item.state === "failed")
     return (
-      <footer className="decision-footer">
-        <Button variant="primary" size="lg" full onClick={onRestart}>
+      <footer className="item-foot">
+        <button
+          type="button"
+          className="btn btn-primary btn-lg btn-full"
+          onClick={onRestart}
+        >
           {t("item.restartWithGuidance")}
-        </Button>
-        <p className="m-0 muted text-xs">{t("item.restartHelp")}</p>
+        </button>
+        <span className="row justify-center">
+          <TrustNote icon="shield">{t("item.restartHelp")}</TrustNote>
+        </span>
       </footer>
     );
   return null;
 }
 
-function BlockerFooter({ response }: { response: BlockerResponse }) {
+function BlockerFooter({
+  question,
+  response,
+  reviewing,
+  onReview,
+}: {
+  question: boolean;
+  response: BlockerResponse;
+  reviewing: boolean;
+  onReview: () => void;
+}) {
   const { t } = useTranslation("work");
+  const trust = question ? (
+    t("item.answerTrust")
+  ) : (
+    <>
+      <span className="desk:hidden">{t("item.decisionTrustShort")}</span>
+      <span className="hidden desk:inline">{t("item.decisionTrust")}</span>
+    </>
+  );
+  const error = response.error && (
+    <p role="alert" className="form-error m-0">
+      {response.error}
+    </p>
+  );
+  const { choice } = response;
+  if (choice)
+    return (
+      <footer className="item-foot">
+        {error}
+        <b className="text-[14px] desk:text-[13.5px] font-semibold">
+          {choice.label}
+        </b>
+        {choice.options.map((option) => (
+          <button
+            key={option.draft}
+            type="button"
+            className="card choice-btn"
+            disabled={response.busy}
+            onClick={() =>
+              void response.submit(choice.outcome, {
+                [choice.key]: option.draft,
+              })
+            }
+          >
+            <b className="mono text-[14px]">{option.label}</b>
+          </button>
+        ))}
+        <div className="row flex-wrap gap-[10px]">
+          {choice.others.map((other) => (
+            <button
+              key={other.outcome}
+              type="button"
+              className="btn btn-ghost btn-sm choice-other"
+              disabled={!response.valid || response.busy}
+              onClick={() => void response.submit(other.outcome)}
+            >
+              {other.label}
+            </button>
+          ))}
+          <span className="hidden desk:flex ml-auto">
+            <TrustNote>{trust}</TrustNote>
+          </span>
+        </div>
+      </footer>
+    );
+  if (!reviewing)
+    return (
+      <footer className="item-foot">
+        {error}
+        <button
+          type="button"
+          className="btn btn-primary btn-lg btn-full"
+          onClick={onReview}
+        >
+          {t("item.reviewDecide")}
+          <kbd aria-hidden="true">{t("item.enterKey")}</kbd>
+        </button>
+        <span className="row justify-center">
+          <TrustNote>{trust}</TrustNote>
+        </span>
+      </footer>
+    );
   return (
-    <footer className="decision-footer">
-      {response.error && (
-        <p role="alert" className="form-error m-0">
-          {response.error}
-        </p>
-      )}
+    <footer className="item-foot">
+      {error}
       <OutcomeButtons response={response} />
-      <p className="m-0 muted text-xs">{t("item.decisionTrust")}</p>
+      <span className="row justify-center">
+        <TrustNote>{trust}</TrustNote>
+      </span>
     </footer>
   );
 }
@@ -697,31 +985,38 @@ function FeedbackPanel({
 }) {
   const { t } = useTranslation("work");
   const session = useSession();
+  const panel = useRef<HTMLElement>(null);
   const [category, setCategory] = useState<string>(feedbackCategories[0]);
   const [explanation, setExplanation] = useState("");
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    panel.current?.scrollIntoView?.({ block: "nearest" });
+  }, []);
   return (
     <section
-      className="sheet-section ib-card ib-card--pad"
+      ref={panel}
+      className="card item-state-card"
       aria-labelledby="feedback-title"
     >
-      <h3 id="feedback-title">{t("feedback.title")}</h3>
+      <h3 id="feedback-title" className="m-0 text-[15px] font-semibold">
+        {t("feedback.title")}
+      </h3>
       <fieldset className="m-0 p-0 border-0 flex flex-wrap gap-2">
         <legend className="sr-only">{t("feedback.category")}</legend>
         {feedbackCategories.map((key) => (
-          <Button
+          <button
             key={key}
-            size="sm"
-            variant={category === key ? "ink" : "secondary"}
+            type="button"
+            className={`btn btn-sm ${category === key ? "btn-ink" : "btn-secondary"}`}
             aria-pressed={category === key}
             onClick={() => setCategory(key)}
           >
             {t(`feedback.${key}`)}
-          </Button>
+          </button>
         ))}
       </fieldset>
-      <label className="ib-field mt-3">
+      <label className="ib-field">
         <span className="ib-label">{t("feedback.explanation")}</span>
         <textarea
           className="ib-input py-2 min-h-24"
@@ -730,14 +1025,14 @@ function FeedbackPanel({
         />
       </label>
       {failed && (
-        <p role="alert" className="form-error mt-2">
+        <p role="alert" className="form-error m-0">
           {t("item.actionFailed")}
         </p>
       )}
-      <div className="flex gap-2 mt-3">
-        <Button
-          variant="primary"
-          size="sm"
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
           disabled={busy}
           onClick={async () => {
             setBusy(true);
@@ -755,10 +1050,14 @@ function FeedbackPanel({
           }}
         >
           {t("feedback.save")}
-        </Button>
-        <Button size="sm" variant="ghost" onClick={onCancel}>
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={onCancel}
+        >
           {t("cancel")}
-        </Button>
+        </button>
       </div>
     </section>
   );
@@ -789,11 +1088,11 @@ function RestartDialog({
   );
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent>
-        <DialogTitle className="m-0 text-lg font-semibold">
+      <DialogContent className="xt">
+        <DialogTitle className="m-0 text-[18px] font-semibold">
           {t("item.restartWithGuidance")}
         </DialogTitle>
-        <DialogDescription className="m-0 mt-1 muted text-sm">
+        <DialogDescription className="m-0 mt-1 text-[13.5px] text-[var(--ink2)]">
           {t("restart.intro")}
         </DialogDescription>
         <label className="ib-field mt-4">
@@ -805,11 +1104,13 @@ function RestartDialog({
           />
         </label>
         {data.consequences.length > 0 && (
-          <fieldset className="mt-4 ib-card ib-card--pad flex flex-col gap-2">
+          <fieldset className="mt-4 card px-4 py-3 flex flex-col gap-2">
             <legend className="font-semibold px-1">
               {t("respond.repeatTitle")}
             </legend>
-            <p className="m-0 text-sm text-ink-2">{t("restart.repeatBody")}</p>
+            <p className="m-0 text-[13.5px] text-[var(--ink2)]">
+              {t("restart.repeatBody")}
+            </p>
             {data.consequences.map((consequence) => (
               <label key={consequence.invocationId} className="ib-check">
                 <input
@@ -846,11 +1147,12 @@ function RestartDialog({
           </p>
         )}
         <div className="flex justify-end gap-2 mt-5">
-          <Button variant="ghost" onClick={onClose}>
+          <button type="button" className="btn btn-ghost" onClick={onClose}>
             {t("cancel")}
-          </Button>
-          <Button
-            variant="primary"
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
             disabled={busy || !guidance.trim() || !allConfirmed}
             onClick={async () => {
               setBusy(true);
@@ -889,7 +1191,7 @@ function RestartDialog({
             }}
           >
             {t("restart.start")}
-          </Button>
+          </button>
         </div>
       </DialogContent>
     </Dialog>

@@ -24,10 +24,13 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import { formatDateTime, formatNumber } from "../i18n/format";
+import type { AccessRequests } from "./useAccessRequests";
 
-// The account panels hosted by the Settings shell (HOR-459): Profile and
-// Sessions for everyone; the organisation language and access requests for
-// Admins until HOR-585 delivers People (DES-HOR-670-02 interim placement).
+// The panels hosted by the Settings shell (HOR-459), in the XTSettingsPeople
+// board's language: cards with a title row, quiet column lists, ink and ghost
+// buttons, the role select. Profile and Sessions for everyone; the access
+// requests and the organisation language for Admins under People
+// (DES-HOR-670-02).
 
 export type SettingsT = TFunction<"settings">;
 
@@ -36,6 +39,53 @@ export interface Confirm {
   body: string;
   confirmLabel: string;
   run: () => Promise<void>;
+}
+
+/** A card with the board's title row: title · muted count · action. */
+function Panel({
+  title,
+  count,
+  action,
+  busy,
+  children,
+}: {
+  title: string;
+  count?: string;
+  action?: ReactNode;
+  busy?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <section className="card overflow-hidden" aria-busy={busy}>
+      <div className="panel-head">
+        <div className="panel-title">
+          <h2>{title}</h2>
+          {count && <span className="muted text-[13.5px]">{count}</span>}
+        </div>
+        {action && <span className="ml-auto">{action}</span>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function Failure({
+  message,
+  copy,
+  onRetry,
+}: {
+  message: string;
+  copy: SettingsT;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="form-error" role="alert">
+      {message}{" "}
+      <button type="button" className="link-button" onClick={onRetry}>
+        {copy("retry")}
+      </button>
+    </div>
+  );
 }
 
 interface ProfilePanelProps {
@@ -109,79 +159,85 @@ export function ProfilePanel({
   }
 
   return (
-    <section className="account-card" aria-busy={busy || saving}>
-      <h2>{copy("profileTitle")}</h2>
-      <p className="auth-intro">{copy("profileIntro")}</p>
-      {fieldError && (
-        <div className="form-error" role="alert">
-          {fieldError}
-        </div>
-      )}
-      {conflict && (
-        <div className="form-error" role="alert">
-          {copy("profileConflict")}{" "}
-          <button
-            type="button"
-            onClick={() => {
+    <Panel title={copy("profileTitle")} busy={busy || saving}>
+      <div className="panel-body">
+        {fieldError && (
+          <div className="form-error" role="alert">
+            {fieldError}
+          </div>
+        )}
+        {conflict && (
+          <Failure
+            message={copy("profileConflict")}
+            copy={copy}
+            onRetry={() => {
               setConflict(false);
               void onReload();
             }}
-          >
-            {copy("retry")}
-          </button>
-        </div>
-      )}
-      <form className="auth-form" onSubmit={submit}>
-        <label>
-          <span>{copy("displayName")}</span>
-          <input
-            value={displayName}
-            maxLength={200}
-            onChange={(event) => setDisplayName(event.target.value)}
           />
-        </label>
-        <label>
-          <span>{copy("language")}</span>
-          <select
-            value={pendingLocale}
-            onChange={(event) =>
-              setPendingLocale(event.target.value as LocaleCode | "")
-            }
-          >
-            <option value="">
-              {profile.organizationLocale
-                ? copy("languageFollowOrganization", {
-                    language: copy(
-                      `languageName.${profile.organizationLocale}`,
-                    ),
-                  })
-                : copy("languageFollowBrowser")}
-            </option>
-            <option value="en">{copy("languageName.en")}</option>
-            <option value="pt">{copy("languageName.pt")}</option>
-          </select>
-        </label>
-        <label>
-          <span>{copy("profileEmailReadonly")}</span>
-          <input value={profile.email} readOnly disabled />
-        </label>
-        <label>
-          <span>{copy("profileRoleReadonly")}</span>
-          <input
-            value={
-              profile.role === "admin"
-                ? copy("roleAdmin")
-                : copy("roleOperator")
-            }
-            readOnly
-            disabled
-          />
-        </label>
-        <button type="submit" disabled={saving}>
-          {saving ? copy("profileSaving") : copy("profileSave")}
-        </button>
-      </form>
-    </section>
+        )}
+        <form
+          className="grid gap-[14px] desk:grid-cols-2 desk:gap-x-[18px]"
+          onSubmit={submit}
+        >
+          <label className="field">
+            <span>{copy("displayName")}</span>
+            <input
+              value={displayName}
+              maxLength={200}
+              autoComplete="name"
+              onChange={(event) => setDisplayName(event.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span>{copy("language")}</span>
+            <select
+              value={pendingLocale}
+              onChange={(event) =>
+                setPendingLocale(event.target.value as LocaleCode | "")
+              }
+            >
+              <option value="">
+                {profile.organizationLocale
+                  ? copy("languageFollowOrganization", {
+                      language: copy(
+                        `languageName.${profile.organizationLocale}`,
+                      ),
+                    })
+                  : copy("languageFollowBrowser")}
+              </option>
+              <option value="en">{copy("languageName.en")}</option>
+              <option value="pt">{copy("languageName.pt")}</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>{copy("profileEmailReadonly")}</span>
+            <input value={profile.email} readOnly disabled />
+          </label>
+          <label className="field">
+            <span>{copy("profileRoleReadonly")}</span>
+            <input
+              value={
+                profile.role === "admin"
+                  ? copy("roleAdmin")
+                  : copy("roleOperator")
+              }
+              readOnly
+              disabled
+            />
+          </label>
+          <div className="flex justify-end pt-[4px] desk:col-span-2">
+            <button
+              type="submit"
+              className="btn btn-ink max-desk:w-full"
+              disabled={saving}
+            >
+              {saving ? copy("profileSaving") : copy("profileSave")}
+            </button>
+          </div>
+        </form>
+      </div>
+    </Panel>
   );
 }
 
@@ -195,7 +251,7 @@ interface OrganizationLanguagePanelProps {
 }
 
 // The organisation default language (DES-HOR-670-02): Admin-only and logged
-// with the Admin's name. HOR-585 moves it to Settings → People.
+// with the Admin's name.
 export function OrganizationLanguagePanel({
   copy,
   setNotice,
@@ -268,60 +324,68 @@ export function OrganizationLanguagePanel({
   }
 
   return (
-    <section className="account-card" aria-busy={settings === null || saving}>
-      <h2>{copy("organizationLanguageTitle")}</h2>
-      <p className="auth-intro">{copy("organizationLanguageIntro")}</p>
-      {settings === null && !loadFailed && (
-        <p className="loading" role="status">
-          {copy("loading")}
-        </p>
-      )}
-      {loadFailed && (
-        <div className="form-error" role="alert">
-          {copy("unavailableBody")}{" "}
-          <button type="button" onClick={() => void load()}>
-            {copy("retry")}
-          </button>
-        </div>
-      )}
-      {conflict && (
-        <div className="form-error" role="alert">
-          {copy("settingsConflict")}{" "}
-          <button type="button" onClick={() => void load()}>
-            {copy("retry")}
-          </button>
-        </div>
-      )}
-      {settings && (
-        <form className="auth-form" onSubmit={submit}>
-          <label>
-            <span>{copy("organizationLanguageLabel")}</span>
-            <select
-              value={pending}
-              onChange={(event) =>
-                setPending(event.target.value as LocaleCode | "")
+    <Panel
+      title={copy("organizationLanguageTitle")}
+      busy={settings === null || saving}
+    >
+      <div className="panel-body">
+        <p className="auth-intro">{copy("organizationLanguageIntro")}</p>
+        {settings === null && !loadFailed && (
+          <p className="muted m-0 text-[13.5px]" role="status">
+            {copy("loading")}
+          </p>
+        )}
+        {loadFailed && (
+          <Failure
+            message={copy("unavailableBody")}
+            copy={copy}
+            onRetry={() => void load()}
+          />
+        )}
+        {conflict && (
+          <Failure
+            message={copy("settingsConflict")}
+            copy={copy}
+            onRetry={() => void load()}
+          />
+        )}
+        {settings && (
+          <form
+            className="flex flex-wrap items-end gap-[10px]"
+            onSubmit={submit}
+          >
+            <label className="field min-w-[200px] flex-1">
+              <span>{copy("organizationLanguageLabel")}</span>
+              <select
+                value={pending}
+                onChange={(event) =>
+                  setPending(event.target.value as LocaleCode | "")
+                }
+              >
+                {settings.defaultLocale === "" && (
+                  <option value="" disabled>
+                    {copy("organizationLanguageNotSet")}
+                  </option>
+                )}
+                <option value="en">{copy("languageName.en")}</option>
+                <option value="pt">{copy("languageName.pt")}</option>
+              </select>
+            </label>
+            <button
+              type="submit"
+              className="btn btn-secondary settings-field-btn"
+              disabled={
+                saving || pending === "" || pending === settings.defaultLocale
               }
             >
-              {settings.defaultLocale === "" && (
-                <option value="" disabled>
-                  {copy("organizationLanguageNotSet")}
-                </option>
-              )}
-              <option value="en">{copy("languageName.en")}</option>
-              <option value="pt">{copy("languageName.pt")}</option>
-            </select>
-          </label>
-          <button
-            type="submit"
-            disabled={
-              saving || pending === "" || pending === settings.defaultLocale
-            }
-          >
-            {saving ? copy("profileSaving") : copy("organizationLanguageSave")}
-          </button>
-        </form>
-      )}
-    </section>
+              {saving
+                ? copy("profileSaving")
+                : copy("organizationLanguageSave")}
+            </button>
+          </form>
+        )}
+      </div>
+    </Panel>
   );
 }
 
@@ -342,7 +406,6 @@ export function SessionsPanel({
   busy,
   setNotice,
   withCSRF,
-  onError,
   confirm,
   onSignedOut,
 }: SessionsPanelProps) {
@@ -369,33 +432,74 @@ export function SessionsPanel({
   const others = sessions?.filter((session) => !session.current) ?? [];
 
   return (
-    <section className="account-card" aria-busy={busy || sessions === null}>
-      <h2>{copy("sessionsTitle")}</h2>
-      <p className="auth-intro">{copy("sessionsIntro")}</p>
+    <Panel
+      title={copy("sessionsTitle")}
+      count={
+        sessions && sessions.length > 0
+          ? copy("sessionsCount", {
+              count: sessions.length,
+            })
+          : undefined
+      }
+      busy={busy || sessions === null}
+      action={
+        others.length > 0 && (
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() =>
+              confirm({
+                title: copy("revokeOthersConfirm"),
+                body: copy("revokeOthersConsequence"),
+                confirmLabel: copy("revokeOthers"),
+                run: async () => {
+                  await withCSRF((token) => authApi.revokeOtherSessions(token));
+                  setNotice(copy("revoked"));
+                  await load();
+                },
+              })
+            }
+          >
+            {copy("revokeOthers")} ({formatNumber(others.length, locale)})
+          </button>
+        )
+      }
+    >
       {sessions === null && !loadError && (
-        <p className="loading" role="status">
+        <p className="panel-body muted m-0 text-[13.5px]" role="status">
           {copy("sessionsLoading")}
         </p>
       )}
       {loadError && (
-        <div className="form-error" role="alert">
-          {loadError}{" "}
-          <button type="button" onClick={() => void load()}>
-            {copy("retry")}
-          </button>
+        <div className="panel-body">
+          <Failure
+            message={loadError}
+            copy={copy}
+            onRetry={() => void load()}
+          />
         </div>
       )}
       {sessions && (
         <>
-          <ul className="session-list">
+          <div className="session-cols" aria-hidden="true">
+            <span className="eyebrow">{copy("sessionColumn")}</span>
+            <span className="eyebrow">{copy("created")}</span>
+            <span className="eyebrow">{copy("lastActive")}</span>
+            <span />
+          </div>
+          <ul className="list session-list">
             {sessions.map((session) => (
-              <li key={session.id} className={session.current ? "current" : ""}>
-                <div>
-                  <strong>{sessionLabel(session, copy)}</strong>
+              <li key={session.id} className="session-row">
+                <span className="flex min-w-0 flex-wrap items-center gap-x-[10px] gap-y-[6px]">
+                  <b className="text-[14.5px] font-semibold">
+                    {sessionLabel(session, copy)}
+                  </b>
                   {session.current && (
-                    <span className="badge">{copy("currentSession")}</span>
+                    <span className="badge session-current">
+                      {copy("currentSession")}
+                    </span>
                   )}
-                </div>
+                </span>
                 <dl>
                   <div>
                     <dt>{copy("created")}</dt>
@@ -410,67 +514,51 @@ export function SessionsPanel({
                     </dd>
                   </div>
                 </dl>
-                <button
-                  type="button"
-                  onClick={() =>
-                    session.current
-                      ? confirm({
-                          title: copy("revokeSessionConfirm"),
-                          body: copy("revokeSessionConsequence"),
-                          confirmLabel: copy("signOutThisDevice"),
-                          run: async () => {
-                            try {
-                              await withCSRF((token) => authApi.signOut(token));
-                            } finally {
-                              onSignedOut();
-                            }
-                          },
-                        })
-                      : confirm({
-                          title: copy("revokeSessionConfirm"),
-                          body: copy("revokeSessionConsequence"),
-                          confirmLabel: copy("revokeConfirm"),
-                          run: async () => {
-                            await withCSRF((token) =>
-                              authApi.revokeSession(token, session.id),
-                            );
-                            setNotice(copy("revoked"));
-                            await load();
-                          },
-                        })
-                  }
-                >
-                  {session.current
-                    ? copy("signOutThisDevice")
-                    : copy("signOutSession")}
-                </button>
+                <span className="session-action">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() =>
+                      session.current
+                        ? confirm({
+                            title: copy("revokeSessionConfirm"),
+                            body: copy("revokeSessionConsequence"),
+                            confirmLabel: copy("signOutThisDevice"),
+                            run: async () => {
+                              try {
+                                await withCSRF((token) =>
+                                  authApi.signOut(token),
+                                );
+                              } finally {
+                                onSignedOut();
+                              }
+                            },
+                          })
+                        : confirm({
+                            title: copy("revokeSessionConfirm"),
+                            body: copy("revokeSessionConsequence"),
+                            confirmLabel: copy("revokeConfirm"),
+                            run: async () => {
+                              await withCSRF((token) =>
+                                authApi.revokeSession(token, session.id),
+                              );
+                              setNotice(copy("revoked"));
+                              await load();
+                            },
+                          })
+                    }
+                  >
+                    {session.current
+                      ? copy("signOutThisDevice")
+                      : copy("signOutSession")}
+                  </button>
+                </span>
               </li>
             ))}
           </ul>
-          {others.length > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                confirm({
-                  title: copy("revokeOthersConfirm"),
-                  body: copy("revokeOthersConsequence"),
-                  confirmLabel: copy("revokeOthers"),
-                  run: async () => {
-                    await withCSRF((token) =>
-                      authApi.revokeOtherSessions(token),
-                    );
-                    setNotice(copy("revoked"));
-                    await load();
-                  },
-                })
-              }
-            >
-              {copy("revokeOthers")} ({formatNumber(others.length, locale)})
-            </button>
-          )}
         </>
       )}
-    </section>
+    </Panel>
   );
 }
 
@@ -490,170 +578,203 @@ function formatTime(value: string, locale: LocaleCode): string {
   return formatDateTime(value, locale);
 }
 
+/** Two letters from the email's local part: joao.pires@… → JP. */
+function emailInitials(email: string): string {
+  const parts = (email.split("@")[0] ?? "").split(/[._+-]+/).filter(Boolean);
+  const letters =
+    parts.length > 1
+      ? (parts[0][0] ?? "") + (parts[1][0] ?? "")
+      : (parts[0] ?? "").slice(0, 2);
+  return letters.toUpperCase() || "·";
+}
+
 interface AccessRequestsPanelProps {
   copy: SettingsT;
   locale: LocaleCode;
   busy: boolean;
+  access: AccessRequests;
   setNotice: (notice: string) => void;
   withCSRF: <T>(action: (csrf: string) => Promise<T>) => Promise<T>;
   onError: (err: unknown) => void;
-  requireReauth: (run: () => Promise<void>) => void;
+  /** Runs the action once the Admin re-enters their password. */
+  requireReauth: (run: () => Promise<void>, context: string) => void;
 }
 
+// "Waiting for your approval": one card per verified request with the role,
+// Decline and Approve. Both decisions need a recent password, and the
+// password dialog repeats what is being decided.
 export function AccessRequestsPanel({
   copy,
   locale,
   busy,
+  access,
   setNotice,
   withCSRF,
   onError,
   requireReauth,
 }: AccessRequestsPanelProps) {
-  const [requests, setRequests] = useState<AccessRequest[] | null>(null);
-  const [loadError, setLoadError] = useState("");
-  const [review, setReview] = useState<AccessRequest | null>(null);
-  const [role, setRole] = useState<Role | "">("");
+  const { requests, loadFailed, reload } = access;
+  const [roles, setRoles] = useState<Record<string, Role>>({});
 
-  const load = useCallback(async () => {
-    setLoadError("");
-    try {
-      setRequests(await authApi.accessRequests());
-    } catch (err) {
-      if (err instanceof AuthAPIError && err.status === 403) {
-        onError(err);
-        setRequests([]);
-        return;
-      }
-      setLoadError(copy("requestsError"));
-    }
-  }, [copy("requestsError"), onError]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const roleName = (role: Role) =>
+    role === "admin" ? copy("roleAdmin") : copy("roleOperator");
 
   return (
-    <section className="account-card" aria-busy={busy || requests === null}>
-      <h2>{copy("requestsTitle")}</h2>
-      <p className="auth-intro">{copy("requestsIntro")}</p>
-      {requests === null && !loadError && (
-        <p className="loading" role="status">
+    <section
+      className="flex flex-col gap-[10px]"
+      aria-busy={busy || requests === null}
+      aria-labelledby="requests-title"
+    >
+      <div className="panel-title">
+        <h2 id="requests-title" className="section-title">
+          {copy("requestsWaitingTitle")}
+        </h2>
+        {requests && requests.length > 0 && (
+          <span className="muted text-[13.5px]">
+            {copy("requestsCount", {
+              count: requests.length,
+            })}
+          </span>
+        )}
+      </div>
+      {requests === null && !loadFailed && (
+        <p className="muted m-0 text-[13.5px]" role="status">
           {copy("requestsLoading")}
         </p>
       )}
-      {loadError && (
-        <div className="form-error" role="alert">
-          {loadError}{" "}
-          <button type="button" onClick={() => void load()}>
-            {copy("retry")}
-          </button>
-        </div>
-      )}
-      {requests && requests.length === 0 && <p>{copy("requestsEmpty")}</p>}
-      {requests && requests.length > 0 && (
-        <ul className="request-list">
-          {requests.map((request) => (
-            <li key={request.id}>
-              <div>
-                <strong>{request.email}</strong>
-                {request.verifiedAt && (
-                  <span className="badge">
-                    {copy("verifyVerified")}{" "}
-                    {formatTime(request.verifiedAt, locale)}
-                  </span>
-                )}
-              </div>
-              <div className="dialog-actions">
-                <button type="button" onClick={() => setReview(request)}>
-                  {copy("requestsReview")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    requireReauth(async () => {
-                      try {
-                        await withCSRF((token) =>
-                          authApi.decline(token, request.id),
-                        );
-                        setNotice(copy("declineDone"));
-                        await load();
-                      } catch (err) {
-                        onError(err);
-                      }
-                    })
-                  }
-                >
-                  {copy("requestsDecline")}
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {review && (
-        <Dialog
-          title={copy("approveTitle")}
-          onClose={() => setReview(null)}
+      {loadFailed && (
+        <Failure
+          message={copy("requestsError")}
           copy={copy}
-        >
-          <p>
-            {copy("approveIntro")} {review.email}
-          </p>
-          <fieldset>
-            <legend>{copy("approveAs")}</legend>
-            <label>
-              <input
-                type="radio"
-                name="role"
-                value="operator"
-                checked={role === "operator"}
-                onChange={() => setRole("operator")}
-              />
-              <span>{copy("roleOperator")}</span>
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="role"
-                value="admin"
-                checked={role === "admin"}
-                onChange={() => setRole("admin")}
-              />
-              <span>{copy("roleAdmin")}</span>
-            </label>
-          </fieldset>
-          <div className="dialog-actions">
-            <button type="button" onClick={() => setReview(null)}>
-              {copy("reauthCancel")}
-            </button>
-            <button
-              type="button"
-              disabled={role === ""}
-              onClick={() => {
-                const target = review;
-                const chosen = role;
-                if (!chosen) return;
-                setReview(null);
-                requireReauth(async () => {
+          onRetry={() => void reload()}
+        />
+      )}
+      {requests && requests.length === 0 && (
+        <p className="card request-empty">{copy("requestsEmpty")}</p>
+      )}
+      {requests?.map((request) => {
+        const role = roles[request.id] ?? "operator";
+        return (
+          <RequestCard
+            key={request.id}
+            request={request}
+            copy={copy}
+            locale={locale}
+            role={role}
+            onRole={(value) =>
+              setRoles((current) => ({ ...current, [request.id]: value }))
+            }
+            onDecline={() =>
+              requireReauth(
+                async () => {
                   try {
                     await withCSRF((token) =>
-                      authApi.approve(token, target.id, chosen),
+                      authApi.decline(token, request.id),
                     );
-                    setNotice(copy("approveDone"));
-                    await load();
+                    setNotice(copy("declineDone"));
+                    await reload();
                   } catch (err) {
                     onError(err);
                   }
-                });
-              }}
-            >
-              {copy("approveSubmit")}
-            </button>
-          </div>
-        </Dialog>
-      )}
+                },
+                `${copy("declineContext", { email: request.email })} ${copy("declineIntro")}`,
+              )
+            }
+            onApprove={() =>
+              requireReauth(
+                async () => {
+                  try {
+                    await withCSRF((token) =>
+                      authApi.approve(token, request.id, role),
+                    );
+                    setNotice(copy("approveDone"));
+                    await reload();
+                  } catch (err) {
+                    onError(err);
+                  }
+                },
+                `${copy("approveContext", { email: request.email, role: roleName(role) })} ${copy("approveIntro")}`,
+              )
+            }
+          />
+        );
+      })}
     </section>
+  );
+}
+
+function RequestCard({
+  request,
+  copy,
+  locale,
+  role,
+  onRole,
+  onDecline,
+  onApprove,
+}: {
+  request: AccessRequest;
+  copy: SettingsT;
+  locale: LocaleCode;
+  role: Role;
+  onRole: (role: Role) => void;
+  onDecline: () => void;
+  onApprove: () => void;
+}) {
+  const who = `request-${request.id}`;
+  return (
+    <article className="card request-card" aria-labelledby={who}>
+      <span className="row gap-[12px]">
+        <span className="avatar-chip avatar-chip--lg" aria-hidden="true">
+          {emailInitials(request.email)}
+        </span>
+        <span className="flex min-w-0 flex-col gap-[2px]">
+          <b id={who} className="text-[15px] break-words">
+            {request.email}
+          </b>
+          <span className="muted text-[12.5px] desk:text-[13px]">
+            {request.verifiedAt
+              ? copy("requestVerifiedMeta", {
+                  when: formatTime(request.verifiedAt, locale),
+                })
+              : copy("requestCreatedMeta", {
+                  when: formatTime(request.createdAt, locale),
+                })}
+          </span>
+        </span>
+      </span>
+      <div className="req-actions">
+        <label className="req-role">
+          <span className="muted text-[13px] max-desk:sr-only">
+            {copy("profileRoleReadonly")}
+          </span>
+          <select
+            className="select"
+            value={role}
+            aria-describedby={who}
+            onChange={(event) => onRole(event.target.value as Role)}
+          >
+            <option value="operator">{copy("roleOperator")}</option>
+            <option value="admin">{copy("roleAdmin")}</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          className="btn btn-secondary req-decline"
+          aria-describedby={who}
+          onClick={onDecline}
+        >
+          {copy("requestsDecline")}
+        </button>
+        <button
+          type="button"
+          className="btn btn-ink req-approve"
+          aria-describedby={who}
+          onClick={onApprove}
+        >
+          {copy("approveSubmit")}
+        </button>
+      </div>
+    </article>
   );
 }
 
@@ -665,14 +786,11 @@ export function Dialog({
   title: string;
   children: ReactNode;
   onClose: () => void;
-  copy?: SettingsT;
 }) {
   return (
     <RadixDialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent aria-describedby={undefined}>
-        <DialogTitle className="m-0 mb-2 text-lg font-semibold">
-          {title}
-        </DialogTitle>
+      <DialogContent className="xt" aria-describedby={undefined}>
+        <DialogTitle className="dialog-title">{title}</DialogTitle>
         {children}
       </DialogContent>
     </RadixDialog>
@@ -682,25 +800,30 @@ export function Dialog({
 export function ReauthDialog({
   copy,
   busy,
+  context,
   onCancel,
   onSubmit,
 }: {
   copy: SettingsT;
   busy: boolean;
+  /** What the password confirms, e.g. which request is approved as what. */
+  context?: string;
   onCancel: () => void;
   onSubmit: (password: string) => void;
 }) {
   const [password, setPassword] = useState("");
   return (
-    <Dialog title={copy("reauthTitle")} onClose={onCancel} copy={copy}>
-      <p>{copy("reauthIntro")}</p>
+    <Dialog title={copy("reauthTitle")} onClose={onCancel}>
+      {context && <p className="dialog-body dialog-context">{context}</p>}
+      <p className="dialog-body">{copy("reauthIntro")}</p>
       <form
+        className="mt-[16px]"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit(password);
         }}
       >
-        <label>
+        <label className="field">
           <span>{copy("password")}</span>
           <input
             type="password"
@@ -710,10 +833,14 @@ export function ReauthDialog({
           />
         </label>
         <div className="dialog-actions">
-          <button type="button" onClick={onCancel}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel}>
             {copy("reauthCancel")}
           </button>
-          <button type="submit" disabled={busy || password === ""}>
+          <button
+            type="submit"
+            className="btn btn-ink"
+            disabled={busy || password === ""}
+          >
             {copy("reauthSubmit")}
           </button>
         </div>

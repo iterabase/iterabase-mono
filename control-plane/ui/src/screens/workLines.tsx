@@ -38,9 +38,9 @@ export function StatusLine({ item }: { item: WorkItem }) {
     case "failed":
       return <>{t(`failure.${failureCode(item)}`)}</>;
     case "done":
-      return (
-        <>{localized(item.currentStep?.label, locale) || t("line.done")}</>
-      );
+      // The last step's label would read as an open ask ("You confirm the
+      // quote"); a finished item shows where it came from instead.
+      return <>{item.source.title || t("line.done")}</>;
     default:
       return (
         <>{localized(item.currentStep?.label, locale) || t("line.starting")}</>
@@ -59,24 +59,37 @@ const sourceKinds = [
   "artifact",
 ] as const;
 
+/** "22 min" / "09:41" / "12 Oct": how long ago an item came in. */
+export function AgeLabel({ at }: { at: string }) {
+  const { t } = useTranslation("work");
+  const locale = useLocale();
+  const minutes = minutesBetween(at);
+  return (
+    <>
+      {minutes < 1
+        ? t("now")
+        : minutes < 60
+          ? t("minutesShort", { count: minutes })
+          : new Date(at) >= startOfDay(new Date())
+            ? formatTime(at, locale)
+            : formatShortDate(at, locale)}
+    </>
+  );
+}
+
+export function sourceKey(
+  kind: string,
+): (typeof sourceKinds)[number] | "other" {
+  return sourceKinds.find((known) => known === kind) ?? "other";
+}
+
 /** "Email · 22 min" / "API · 09:41" / "Email · 12 Oct". */
 export function SourceLine({ item }: { item: WorkItem }) {
   const { t } = useTranslation("work");
-  const locale = useLocale();
-  const kind = sourceKinds.find((known) => known === item.source.kind);
-  const at = item.createdAt;
-  const minutes = minutesBetween(at);
-  const when =
-    minutes < 1
-      ? t("now")
-      : minutes < 60
-        ? t("minutesShort", { count: minutes })
-        : new Date(at) >= startOfDay(new Date())
-          ? formatTime(at, locale)
-          : formatShortDate(at, locale);
   return (
     <>
-      {kind ? t(`source.${kind}`) : t("source.other")} · {when}
+      {t(`source.${sourceKey(item.source.kind)}`)} ·{" "}
+      <AgeLabel at={item.createdAt} />
     </>
   );
 }
