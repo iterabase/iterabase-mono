@@ -1,0 +1,75 @@
+{
+  "alwaysAsks": "Always asks you",
+  "alwaysAsksFirst": "Always asks you first",
+  "anythingElseWaits": "Anything not on these lists also waits for your OK.",
+  "asksNothing": "Nothing is set to ask you.",
+  "backEstimate": "back, est.",
+  "backThisWeek": "back this week, est.",
+  "backToTeam": "Your team",
+  "changeHow": "Want {{name}} to work differently? Tell Iterabase, and we'll update how it works with you.",
+  "col": {
+    "request": "Request",
+    "status": "Status",
+    "time": "Time",
+    "where": "Where it is",
+    "why": "Why it failed"
+  },
+  "connections": "Connections it uses",
+  "done": "done",
+  "empty": "No AI coworkers are set up yet. Iterabase adds them with you.",
+  "failedCount": "failed",
+  "failedMonth": {
+    "byReason_one": "{{count, number}} × {{reason}}",
+    "byReason_other": "{{count, number}} × {{reason}}",
+    "title_one": "{{count, number}} failed this month",
+    "title_other": "{{count, number}} failed this month"
+  },
+  "filter": {
+    "all": "All",
+    "done": "Done",
+    "failed": "Failed",
+    "needs": "Needs you"
+  },
+  "filterLabel": "Show",
+  "handled": "handled",
+  "handledThisWeek": "handled this week",
+  "hoursShort": "≈ {{hours}} h {{minutes}}",
+  "idle": "Nothing in progress",
+  "kind": {
+    "waits": "Waits",
+    "you": "You decide"
+  },
+  "lead_one": "{{count, number}} AI coworker working in your mailbox and portals, by your rules. It asks you before anything reaches a customer.",
+  "lead_other": "{{count, number}} AI coworkers working in your mailbox and portals, by your rules. They ask you before anything reaches a customer.",
+  "live": {
+    "needs_one": "{{count, number}} needs you",
+    "needs_other": "{{count, number}} need you",
+    "waiting_one": "{{count, number}} waiting",
+    "waiting_other": "{{count, number}} waiting",
+    "working_one": "{{count, number}} working",
+    "working_other": "{{count, number}} working"
+  },
+  "needsYou": "need you",
+  "noActivity": "Nothing in this period.",
+  "noConnections": "No connections declared.",
+  "nothingOnItsOwn": "Nothing is set to run on its own.",
+  "onItsOwn": "On its own",
+  "open": "Open",
+  "period": {
+    "month": "This month",
+    "today": "Today",
+    "week": "This week"
+  },
+  "periodLabel": "Period",
+  "roleLine": "{{role}} · AI coworker",
+  "tabs": {
+    "activity": "Activity",
+    "can": "What it can do",
+    "failed": "Failed this month",
+    "how": "How it works"
+  },
+  "tabsLabel": "About this AI coworker",
+  "thisWeek": "This week",
+  "title": "Your team",
+  "youConfirm": "You confirm"
+}

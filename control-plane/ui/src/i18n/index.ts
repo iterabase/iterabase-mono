@@ -1,5 +1,5 @@
 import i18next, { type TFunction } from "i18next";
-import { initReactI18next } from "react-i18next";
+import { initReactI18next, useTranslation } from "react-i18next";
 import { formatNumber } from "./format";
 import { PSEUDO_LOCALE, pseudoCatalog } from "./pseudo";
 import { resources } from "./resources";
@@ -101,4 +101,10 @@ export function browserLocale(): Locale {
 
 export function isLocale(value: unknown): value is Locale {
   return value === "en" || value === "pt";
+}
+
+/** The active UI locale for components (the pseudo-locale reads as English). */
+export function useLocale(): Locale {
+  const { i18n: instance } = useTranslation();
+  return instance.language === "pt-PT" ? "pt" : "en";
 }

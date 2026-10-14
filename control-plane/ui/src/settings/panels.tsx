@@ -3,7 +3,6 @@ import {
   ReactNode,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -16,321 +15,27 @@ import {
   Role,
   SessionInfo,
   authApi,
-} from "./authApi";
+} from "../auth/authApi";
 import type { TFunction } from "i18next";
-import { fixedT, setLocale as setActiveLocale } from "../i18n";
+import { fixedT } from "../i18n";
+import {
+  Dialog as RadixDialog,
+  DialogContent,
+  DialogTitle,
+} from "../components/ui/dialog";
 import { formatDateTime, formatNumber } from "../i18n/format";
 
-type SettingsT = TFunction<"settings">;
+// The account panels hosted by the Settings shell (HOR-459): Profile and
+// Sessions for everyone; the organisation language and access requests for
+// Admins until HOR-585 delivers People (DES-HOR-670-02 interim placement).
 
-type View = "profile" | "sessions" | "requests";
+export type SettingsT = TFunction<"settings">;
 
-interface Props {
-  initialProfile: AuthProfile;
-  initialCSRF: string;
-  /** Reports a lost session with the language the sign-in page should use. */
-  onSessionLost: (message?: string, locale?: LocaleCode) => void;
-  onOpenWork?: () => void;
-  /** Reports profile changes (language included) so other surfaces use them. */
-  onProfileChange?: (profile: AuthProfile) => void;
-}
-
-interface PendingAction {
-  run: () => Promise<void>;
-}
-
-interface Confirm {
+export interface Confirm {
   title: string;
   body: string;
   confirmLabel: string;
   run: () => Promise<void>;
-}
-
-export default function AccountShell({
-  initialProfile,
-  initialCSRF,
-  onSessionLost,
-  onOpenWork,
-  onProfileChange,
-}: Props) {
-  const [profile, setProfile] = useState(initialProfile);
-  const [csrf, setCSRF] = useState(initialCSRF);
-  const [locale, setLocale] = useState<LocaleCode>(initialProfile.locale);
-  const [view, setView] = useState<View>("profile");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [pending, setPending] = useState<PendingAction | null>(null);
-  const [confirm, setConfirm] = useState<Confirm | null>(null);
-  const invoker = useRef<HTMLElement | null>(null);
-  // Stable per locale, so panels that depend on it don't reload (and drop
-  // unsaved input) on unrelated shell renders.
-  const c = useMemo(() => fixedT(locale, "settings"), [locale]);
-
-  useEffect(() => setActiveLocale(locale), [locale]);
-
-  // Saved Profile changes and organisation-language refreshes outlive this
-  // surface: the app keeps the latest profile for the work board and the next
-  // visit here (DES-HOR-670-02).
-  const onProfileChangeRef = useRef(onProfileChange);
-  onProfileChangeRef.current = onProfileChange;
-  useEffect(() => {
-    if (profile !== initialProfile) onProfileChangeRef.current?.(profile);
-  }, [profile, initialProfile]);
-
-  const sessionLost = useCallback(
-    (message?: string) => onSessionLost(message, locale),
-    [onSessionLost, locale],
-  );
-
-  const handleError = useCallback(
-    (err: unknown) => {
-      const code = err instanceof AuthAPIError ? err.code : "unavailable";
-      if (
-        code === "session_expired" ||
-        (err instanceof AuthAPIError && err.status === 401)
-      ) {
-        sessionLost(c("sessionExpired"));
-        return;
-      }
-      if (code === "recent_auth_required") {
-        setError("");
-        return;
-      }
-      if (code === "forbidden") setError(c("forbidden"));
-      else if (code === "throttled") setError(c("throttled"));
-      else if (code === "state_changed") setError(c("stateChanged"));
-      else if (code === "account_exists") setError(c("accountExists"));
-      else if (code === "invalid_credentials") setError(c("reauthMismatch"));
-      else setError(c("unavailableBody"));
-    },
-    [c, sessionLost],
-  );
-
-  // callWithCSRF refreshes the session-bound proof once when a request is
-  // refused for a stale token; a lost session is reported to the app.
-  const callWithCSRF = useCallback(
-    async <T,>(action: (token: string) => Promise<T>): Promise<T> => {
-      try {
-        return await action(csrf);
-      } catch (err) {
-        if (err instanceof AuthAPIError && err.code === "csrf") {
-          try {
-            const refreshed = await authApi.profile();
-            setCSRF(refreshed.csrfToken);
-            setProfile(refreshed.profile);
-            return await action(refreshed.csrfToken);
-          } catch (refreshErr) {
-            handleError(refreshErr);
-            throw refreshErr;
-          }
-        }
-        throw err;
-      }
-    },
-    [csrf, handleError],
-  );
-
-  const signOut = useCallback(async () => {
-    setError("");
-    try {
-      await authApi.signOutCurrent(csrf);
-    } catch {
-      // The server session may still be valid: stay signed in and say so.
-      setError(c("signOutFailed"));
-      return;
-    }
-    sessionLost();
-  }, [c, csrf, sessionLost]);
-
-  function openDialog(action: PendingAction) {
-    invoker.current = document.activeElement as HTMLElement | null;
-    setPending(action);
-  }
-
-  function closeDialog() {
-    setPending(null);
-    invoker.current?.focus();
-  }
-
-  async function runQuietly(action: () => Promise<void>) {
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await action();
-    } catch (err) {
-      handleError(err);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="app-shell">
-      <header className="account-header">
-        <div>
-          <span className="eyebrow">{c("eyebrow")}</span>
-          <strong>
-            {c("signedInAs")} {profile.displayName || profile.email}
-          </strong>
-        </div>
-        <nav aria-label={c("eyebrow")} className="account-nav">
-          {onOpenWork && (
-            <button type="button" onClick={onOpenWork}>
-              {c("navWork")}
-            </button>
-          )}
-          {(["profile", "sessions"] as View[]).map((item) => (
-            <button
-              key={item}
-              type="button"
-              aria-current={view === item ? "page" : undefined}
-              className={view === item ? "active" : ""}
-              onClick={() => setView(item)}
-            >
-              {item === "profile" ? c("navProfile") : c("navSessions")}
-            </button>
-          ))}
-          {profile.role === "admin" && (
-            <button
-              type="button"
-              aria-current={view === "requests" ? "page" : undefined}
-              className={view === "requests" ? "active" : ""}
-              onClick={() => setView("requests")}
-            >
-              {c("navRequests")}
-            </button>
-          )}
-          <button type="button" onClick={() => void signOut()}>
-            {c("signOut")}
-          </button>
-        </nav>
-      </header>
-      <main className="account-main">
-        {error && (
-          <div className="form-error" role="alert">
-            {error}
-          </div>
-        )}
-        {notice && (
-          <div className="auth-notice" role="status">
-            {notice}
-          </div>
-        )}
-        {view === "profile" && (
-          <ProfilePanel
-            profile={profile}
-            copy={c}
-            busy={busy}
-            onSaved={(updated) => {
-              setProfile(updated);
-              setLocale(updated.locale);
-            }}
-            onReload={async () => {
-              try {
-                const refreshed = await authApi.profile();
-                setProfile(refreshed.profile);
-                setCSRF(refreshed.csrfToken);
-                setLocale(refreshed.profile.locale);
-              } catch (err) {
-                handleError(err);
-              }
-            }}
-            setNotice={setNotice}
-            withCSRF={callWithCSRF}
-            onError={handleError}
-          />
-        )}
-        {view === "sessions" && (
-          <SessionsPanel
-            copy={c}
-            locale={locale}
-            busy={busy}
-            setNotice={setNotice}
-            withCSRF={callWithCSRF}
-            onError={handleError}
-            confirm={(dialog) => setConfirm(dialog)}
-            onSignedOut={() => sessionLost()}
-          />
-        )}
-        {view === "requests" && profile.role === "admin" && (
-          <OrganizationLanguagePanel
-            copy={c}
-            setNotice={setNotice}
-            withCSRF={callWithCSRF}
-            onError={handleError}
-            onSaved={async () => {
-              // People who follow the organisation, including this Admin,
-              // switch language with it; others keep their own.
-              try {
-                const refreshed = await authApi.profile();
-                setProfile(refreshed.profile);
-                setCSRF(refreshed.csrfToken);
-                setLocale(refreshed.profile.locale);
-                return refreshed.profile.locale;
-              } catch (err) {
-                handleError(err);
-                return undefined;
-              }
-            }}
-          />
-        )}
-        {view === "requests" && profile.role === "admin" && (
-          <AccessRequestsPanel
-            copy={c}
-            locale={locale}
-            busy={busy}
-            setNotice={setNotice}
-            withCSRF={callWithCSRF}
-            onError={handleError}
-            requireReauth={(run) => openDialog({ run })}
-          />
-        )}
-      </main>
-
-      {confirm && (
-        <Dialog title={confirm.title} onClose={() => setConfirm(null)} copy={c}>
-          <p>{confirm.body}</p>
-          <div className="dialog-actions">
-            <button type="button" onClick={() => setConfirm(null)}>
-              {c("revokeCancel")}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                const action = confirm;
-                setConfirm(null);
-                void runQuietly(action.run);
-              }}
-            >
-              {confirm.confirmLabel}
-            </button>
-          </div>
-        </Dialog>
-      )}
-
-      {pending && (
-        <ReauthDialog
-          copy={c}
-          busy={busy}
-          onCancel={closeDialog}
-          onSubmit={(password) => {
-            const action = pending;
-            void runQuietly(async () => {
-              await callWithCSRF((token) =>
-                authApi.reauthenticate(token, password),
-              );
-              setPending(null);
-              invoker.current?.focus();
-              await action.run();
-            });
-          }}
-        />
-      )}
-    </div>
-  );
 }
 
 interface ProfilePanelProps {
@@ -344,7 +49,7 @@ interface ProfilePanelProps {
   onError: (err: unknown) => void;
 }
 
-function ProfilePanel({
+export function ProfilePanel({
   profile,
   copy,
   busy,
@@ -491,7 +196,7 @@ interface OrganizationLanguagePanelProps {
 
 // The organisation default language (DES-HOR-670-02): Admin-only and logged
 // with the Admin's name. HOR-585 moves it to Settings → People.
-function OrganizationLanguagePanel({
+export function OrganizationLanguagePanel({
   copy,
   setNotice,
   withCSRF,
@@ -631,7 +336,7 @@ interface SessionsPanelProps {
   onSignedOut: () => void;
 }
 
-function SessionsPanel({
+export function SessionsPanel({
   copy,
   locale,
   busy,
@@ -795,7 +500,7 @@ interface AccessRequestsPanelProps {
   requireReauth: (run: () => Promise<void>) => void;
 }
 
-function AccessRequestsPanel({
+export function AccessRequestsPanel({
   copy,
   locale,
   busy,
@@ -952,49 +657,29 @@ function AccessRequestsPanel({
   );
 }
 
-function Dialog({
+export function Dialog({
   title,
   children,
   onClose,
-  copy,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
-  copy: SettingsT;
+  copy?: SettingsT;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const node = ref.current;
-    const focusable = node?.querySelector<HTMLElement>(
-      "input, button, select, textarea, [tabindex]",
-    );
-    focusable?.focus();
-    return () => previous?.focus();
-  }, []);
-
   return (
-    <div className="overlay">
-      <div
-        className="account-card dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        ref={ref}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") onClose();
-        }}
-      >
-        <h2>{title}</h2>
+    <RadixDialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent aria-describedby={undefined}>
+        <DialogTitle className="m-0 mb-2 text-lg font-semibold">
+          {title}
+        </DialogTitle>
         {children}
-        {copy("retry") === "" && null}
-      </div>
-    </div>
+      </DialogContent>
+    </RadixDialog>
   );
 }
 
-function ReauthDialog({
+export function ReauthDialog({
   copy,
   busy,
   onCancel,

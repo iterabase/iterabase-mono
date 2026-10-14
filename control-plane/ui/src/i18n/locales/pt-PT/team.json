@@ -1,0 +1,81 @@
+{
+  "alwaysAsks": "Pergunta-lhe sempre",
+  "alwaysAsksFirst": "Pergunta-lhe sempre primeiro",
+  "anythingElseWaits": "Tudo o que não estiver nestas listas também espera pelo seu OK.",
+  "asksNothing": "Nada está definido para lhe perguntar.",
+  "backEstimate": "recuperadas, est.",
+  "backThisWeek": "recuperadas esta semana, est.",
+  "backToTeam": "A sua equipa",
+  "changeHow": "Quer que o {{name}} trabalhe de outra forma? Diga ao Iterabase e atualizamos a forma como trabalha consigo.",
+  "col": {
+    "request": "Pedido",
+    "status": "Estado",
+    "time": "Hora",
+    "where": "Em que ponto está",
+    "why": "Porque falhou"
+  },
+  "connections": "Ligações que utiliza",
+  "done": "concluídos",
+  "empty": "Ainda não há colaboradores de IA configurados. O Iterabase adiciona-os consigo.",
+  "failedCount": "falharam",
+  "failedMonth": {
+    "byReason_one": "{{count, number}} × {{reason}}",
+    "byReason_many": "{{count, number}} × {{reason}}",
+    "byReason_other": "{{count, number}} × {{reason}}",
+    "title_one": "{{count, number}} falhou este mês",
+    "title_many": "{{count, number}} falharam este mês",
+    "title_other": "{{count, number}} falharam este mês"
+  },
+  "filter": {
+    "all": "Todos",
+    "done": "Concluídos",
+    "failed": "Falharam",
+    "needs": "Precisa de si"
+  },
+  "filterLabel": "Mostrar",
+  "handled": "tratados",
+  "handledThisWeek": "tratados esta semana",
+  "hoursShort": "≈ {{hours}} h {{minutes}}",
+  "idle": "Nada em curso",
+  "kind": {
+    "waits": "Espera",
+    "you": "A sua decisão"
+  },
+  "lead_one": "{{count, number}} colaborador de IA a trabalhar na sua caixa de correio e nos seus portais, segundo as suas regras. Pergunta-lhe antes de qualquer coisa chegar a um cliente.",
+  "lead_many": "{{count, number}} colaboradores de IA a trabalhar na sua caixa de correio e nos seus portais, segundo as suas regras. Perguntam-lhe antes de qualquer coisa chegar a um cliente.",
+  "lead_other": "{{count, number}} colaboradores de IA a trabalhar na sua caixa de correio e nos seus portais, segundo as suas regras. Perguntam-lhe antes de qualquer coisa chegar a um cliente.",
+  "live": {
+    "needs_one": "{{count, number}} precisa de si",
+    "needs_many": "{{count, number}} precisam de si",
+    "needs_other": "{{count, number}} precisam de si",
+    "waiting_one": "{{count, number}} à espera",
+    "waiting_many": "{{count, number}} à espera",
+    "waiting_other": "{{count, number}} à espera",
+    "working_one": "{{count, number}} a trabalhar",
+    "working_many": "{{count, number}} a trabalhar",
+    "working_other": "{{count, number}} a trabalhar"
+  },
+  "needsYou": "precisam de si",
+  "noActivity": "Nada neste período.",
+  "noConnections": "Nenhuma ligação declarada.",
+  "nothingOnItsOwn": "Nada está definido para fazer sozinho.",
+  "onItsOwn": "Sozinho",
+  "open": "Abrir",
+  "period": {
+    "month": "Este mês",
+    "today": "Hoje",
+    "week": "Esta semana"
+  },
+  "periodLabel": "Período",
+  "roleLine": "{{role}} · colaborador de IA",
+  "tabs": {
+    "activity": "Atividade",
+    "can": "O que pode fazer",
+    "failed": "Falhas deste mês",
+    "how": "Como funciona"
+  },
+  "tabsLabel": "Sobre este colaborador de IA",
+  "thisWeek": "Esta semana",
+  "title": "A sua equipa",
+  "youConfirm": "Com o seu OK"
+}

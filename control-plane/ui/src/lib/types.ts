@@ -1,3 +1,5 @@
+// Wire types of the customer work API (control-plane internal/work and
+// internal/server). Customer-safe projections only.
 export type Locale = "en" | "pt";
 export type WorkState =
   "todo" | "in_progress" | "waiting" | "paused" | "blocked" | "done" | "failed";
@@ -19,11 +21,39 @@ export interface SourcePresentation {
   originalUrl?: string;
   evidence?: PresentationField[];
 }
+export type CoworkerShape = "round" | "square" | "petal";
+export type CoworkerColor = "blue" | "green" | "sun" | "violet" | "teal";
+export interface CoworkerMark {
+  shape: CoworkerShape;
+  color: CoworkerColor;
+}
+/** The workflow's AI coworker, declared in the overlay (DES-HOR-459-01). */
+export interface Coworker {
+  name: string;
+  mark: CoworkerMark;
+  role: LocalizedText;
+  summary: LocalizedText;
+  onItsOwn?: LocalizedText[];
+  connections?: LocalizedText[];
+}
+/** Snapshotted from the immutable workflow definition for each attempt. */
 export interface WorkPresentation {
-  workflowTitle: string;
-  personaName: string;
-  personaAvatar?: string;
-  locale?: Locale;
+  title: LocalizedText;
+  coworker: Coworker;
+}
+export type StepKind = "agent_task" | "human_gate" | "wait";
+/** Customer-safe workflow projection (GET /v1/workflows). */
+export interface WorkflowSummary {
+  key: string;
+  version: string;
+  title: LocalizedText;
+  coworker: Coworker;
+  steps: Array<{ key: string; kind: StepKind; label: LocalizedText }>;
+  alwaysAsks: Array<{ nodeKey: string; type: string; title: LocalizedText }>;
+}
+export interface Attribution {
+  id: string;
+  displayName: string;
 }
 export interface BusinessStep {
   key: string;
@@ -67,7 +97,11 @@ export interface WorkItem {
   estimatedValue?: string;
   valueCurrency?: string;
   valueDisputed: boolean;
-  failureSummary?: unknown;
+  failureSummary?: FailureSummary;
+}
+export interface FailureSummary {
+  code?: string;
+  message?: string;
 }
 export interface ValueModel {
   ref?: string;
@@ -88,6 +122,13 @@ export interface DashboardSummary {
     models: ValueModel[];
   };
   trend: Array<{ date: string; amount: string; currency: string }>;
+  /** Hours-only time back, visible to every role (DES-HOR-459-02). */
+  timeBack: TimeBack;
+}
+export interface TimeBack {
+  configured: boolean;
+  seconds: number;
+  byWorkflow: Array<{ workflowKey: string; seconds: number }>;
 }
 export interface CurrencyAmount {
   amount: string;
@@ -147,6 +188,9 @@ export interface TimelineEvent {
   code: string;
   params: Record<string, unknown>;
   artifactRefs?: Array<{ artifactId: string }>;
+  actorIdentityId?: string;
+  /** The person behind the event, for "Approved by Rita · 09:41". */
+  actorDisplayName?: string;
   createdAt: string;
 }
 export interface Blocker {
@@ -162,6 +206,10 @@ export interface Blocker {
   responsePresentation: HumanGatePresentation;
   requiredConsequences?: Consequence[];
   state: string;
+  responseOutcome?: string;
+  respondedBy?: Attribution;
+  createdAt: string;
+  resolvedAt?: string;
 }
 export interface HumanGatePresentation {
   outcomes: LocalizedText[];

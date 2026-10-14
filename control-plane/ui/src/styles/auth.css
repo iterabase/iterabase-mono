@@ -1,0 +1,289 @@
+/* Sign-in journey (HOR-453) and the account panels hosted in Settings
+   (Profile, Sessions, organisation language, access requests), restyled on the
+   Design System tokens. */
+@layer components {
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+  .form-error {
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    background: var(--crit-bg);
+    color: var(--crit-ink);
+    font-size: var(--text-sm);
+  }
+  .field-error {
+    color: var(--crit-ink);
+    font-size: var(--text-xs);
+  }
+  .loading {
+    padding: 24px;
+    color: var(--text-tertiary);
+    text-align: center;
+  }
+
+  .auth-page {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100dvh;
+    padding: 24px var(--gutter-phone);
+    background: var(--bg);
+  }
+  .auth-card {
+    width: 100%;
+    max-width: 460px;
+    padding: 28px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+  .auth-brand {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 18px;
+  }
+  .auth-brand h1 {
+    margin: 4px 0 0;
+    font-family: var(--font-serif);
+    font-weight: 500;
+    font-size: var(--text-2xl);
+    letter-spacing: var(--tracking-hero);
+  }
+  .auth-locale {
+    display: flex;
+    gap: 4px;
+  }
+  .auth-locale button {
+    min-width: 36px;
+    height: 32px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+  .auth-locale button.active {
+    border-color: var(--accent);
+    background: var(--accent-quiet);
+    color: var(--blue-700);
+  }
+  .auth-form,
+  .auth-state {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .auth-form h2,
+  .auth-state h2 {
+    margin: 0;
+    font-size: var(--text-lg);
+  }
+  .auth-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+  .auth-form input,
+  .auth-form select {
+    height: 44px;
+    padding: 0 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text-primary);
+    font: inherit;
+    font-weight: 400;
+  }
+  .auth-form input:disabled {
+    background: var(--surface-sunken);
+    color: var(--text-secondary);
+  }
+  .auth-form button[type="submit"],
+  .auth-state button:not(.link-button) {
+    height: 46px;
+    padding: 0 20px;
+    border: 0;
+    border-radius: var(--radius-lg);
+    background: var(--accent);
+    color: var(--accent-text);
+    font: inherit;
+    font-weight: var(--weight-semibold);
+    box-shadow: var(--shadow-primary);
+    cursor: pointer;
+  }
+  .auth-form button[disabled],
+  .auth-state button[disabled] {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .auth-links {
+    display: flex;
+    justify-content: space-between;
+  }
+  .link-button {
+    padding: 4px 0;
+    border: 0;
+    background: none;
+    color: var(--text-link);
+    font: inherit;
+    font-size: var(--text-sm);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .auth-intro,
+  .auth-guidance {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal);
+  }
+  .auth-notice {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    background: var(--ok-bg);
+    color: var(--ok-ink);
+    font-size: var(--text-sm);
+  }
+
+  .account-card {
+    padding: 22px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+  .account-card + .account-card {
+    margin-top: 20px;
+  }
+  .account-card h2 {
+    margin: 0 0 4px;
+    font-size: var(--text-lg);
+  }
+  .account-card .auth-intro {
+    margin-bottom: 16px;
+  }
+  .account-card .auth-form {
+    max-width: 440px;
+  }
+  .session-list,
+  .request-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 16px 0;
+    padding: 0;
+    list-style: none;
+  }
+  .session-list li,
+  .request-list li {
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+  }
+  .session-list li.current {
+    border-color: var(--accent);
+  }
+  .session-list dl {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin: 8px 0;
+  }
+  .session-list dl div {
+    display: flex;
+    flex-direction: column;
+  }
+  .session-list dt {
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+  }
+  .session-list dd {
+    margin: 0;
+  }
+  .session-list button,
+  .request-list button,
+  .account-card > button {
+    min-height: 36px;
+    padding: 0 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 14px;
+    font-weight: var(--weight-semibold);
+    cursor: pointer;
+  }
+  .badge {
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: var(--radius-full);
+    background: var(--accent-quiet);
+    color: var(--blue-700);
+    font-size: var(--text-2xs);
+  }
+  .dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .dialog-actions button {
+    min-height: 40px;
+    padding: 0 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    font: inherit;
+    font-weight: var(--weight-semibold);
+    cursor: pointer;
+  }
+  .dialog-actions button:last-child {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+  .dialog-actions button[disabled] {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .dialog fieldset {
+    display: flex;
+    gap: 16px;
+    margin: 12px 0 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+  .dialog label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: var(--text-sm);
+  }
+  .dialog fieldset label {
+    flex-direction: row;
+    align-items: center;
+  }
+  .dialog input[type="password"] {
+    height: 44px;
+    padding: 0 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    font: inherit;
+  }
+}
