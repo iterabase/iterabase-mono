@@ -39,6 +39,9 @@ gateway:
   kube_namespace: "${GATEWAY_KUBE_NAMESPACE}"
   # Bounded inline JSON/text. Larger tool inputs/results use artifact refs.
   inline_limit: 65536
+  # Mailbox intake and the platform mailbox tools (HOR-358). Off unless set.
+  mailbox:
+    enabled: true
   # Exact deployment-owned identities; reconciled fail-closed at gateway start.
   # Wildcards and empty namespace lists are rejected (HOR-397 / ARCH-015).
   approved_runners:

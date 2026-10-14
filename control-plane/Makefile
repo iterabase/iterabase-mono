@@ -58,6 +58,10 @@ vet: ## Run go vet against code.
 test-unit: ## Run unit tests (skips integration/Docker tests via -short).
 	go test -short -race -count=1 ./...
 
+.PHONY: m365-live-test
+m365-live-test: ## Live Microsoft 365 mailbox checks against the test tenant (HOR-358); needs M365_TEST_* and Docker.
+	go test -tags m365live -run TestLiveMicrosoft365Mailbox -count=1 -v -timeout 15m ./internal/mailbox/graph/
+
 ENVTEST_DEPENDENCY := $(if $(KUBEBUILDER_ASSETS),,setup-envtest)
 .PHONY: test
 test: manifests generate fmt vet $(ENVTEST_DEPENDENCY) ## Run tests (unit + envtest + integration) fresh, without cached results.

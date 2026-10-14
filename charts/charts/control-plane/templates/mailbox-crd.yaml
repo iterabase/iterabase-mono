@@ -1,0 +1,129 @@
+{{- if .Values.enabled }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+  name: mailboxes.platform.iterabase.com
+spec:
+  group: platform.iterabase.com
+  names:
+    kind: Mailbox
+    listKind: MailboxList
+    plural: mailboxes
+    shortNames:
+    - mbx
+    singular: mailbox
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.address
+      name: Address
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Mailbox is an Iterabase-managed mailbox declared by the customer
+          overlay.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MailboxSpec declares one Iterabase-managed mailbox (HOR-358,
+              DES-HOR-358-03). The manager reconciles it into an overlay-owned
+              `mailbox.sources` row; the tool gateway watches it. The spec is non-secret:
+              it names a credential slot, never a Secret, because the slot's value is
+              installation-owned and entered by a customer Admin (HOR-652).
+            properties:
+              address:
+                description: address is the mailbox's primary SMTP address.
+                maxLength: 320
+                minLength: 3
+                pattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+                type: string
+              credentialSlot:
+                description: |-
+                  credentialSlot names the installation-owned credential slot holding the
+                  provider app credentials (Secret `iterabase-credential-<slot>`).
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
+              folders:
+                description: |-
+                  folders are the mail folders watched for new messages: Graph well-known
+                  names (for example `inbox`) or folder ids. Defaults to the inbox.
+                items:
+                  pattern: ^[A-Za-z0-9=_-]{1,255}$
+                  type: string
+                maxItems: 16
+                type: array
+              notifications:
+                description: |-
+                  notifications enables provider change notifications to a publicly
+                  reachable HTTPS endpoint (HOR-356). Without it the mailbox is
+                  polling-only; delta catch-up always runs.
+                properties:
+                  url:
+                    description: url is the public HTTPS notification endpoint.
+                    maxLength: 2048
+                    pattern: ^https://
+                    type: string
+                required:
+                - url
+                type: object
+              pollInterval:
+                description: |-
+                  pollInterval is the delta catch-up / polling interval (10s–1h).
+                  Defaults to 60s.
+                type: string
+              provider:
+                description: provider is the mailbox provider.
+                enum:
+                - microsoft365
+                type: string
+            required:
+            - address
+            - credentialSlot
+            - provider
+            type: object
+          status:
+            description: MailboxStatus reports the materialized mailbox.
+            properties:
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              ready:
+                type: boolean
+              sourceID:
+                type: string
+              validationStatus:
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

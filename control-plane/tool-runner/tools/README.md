@@ -68,5 +68,11 @@ product-only generation, and the chart renders no Flux credentials.
 Overlay authors validate their client layer against a released product layer
 with `docker run --rm -v "$PWD:/overlay:ro" <tool-runner-image> validate /overlay`.
 
+`mailbox-read/` (`platform.mailbox.read`) and `mailbox-send/`
+(`platform.mailbox.send`) are the Microsoft 365 mailbox tools (HOR-358). They
+declare one `oauth_client_credentials` slot, `microsoft365`, and the gateway
+admits only active mailboxes on that slot. See
+[`docs/runbooks/microsoft-365-mailbox.md`](../../../docs/runbooks/microsoft-365-mailbox.md).
+
 `diagnostic/` (`platform.diagnostic`) is the reference product tool. It is a
 read-only echo that proves the release path end to end.

@@ -118,6 +118,7 @@ only the smoke scenarios, even when it moves GPU driver inputs. Add the
 | `dashboard` | `control-plane/ui/**` | typecheck, component tests, production build |
 | `harness` | `control-plane/harness/**`, protobufs | typecheck, tests, the required Linux isolation gate |
 | `tool-runner` | `control-plane/tool-runner/**`, protobufs | typecheck, tests, build |
+| `m365-live` | `control-plane/internal/mailbox/**`, `control-plane/tool-runner/tools/product/mailbox-*/**` | `make -C control-plane m365-live-test`: the live Microsoft 365 mailbox checks against the test tenant, in the `m365-test` environment through Entra workload identity federation, serialised on the tenant (`DES-HOR-358-04`, [runbook](runbooks/microsoft-365-mailbox.md)) |
 | `protobuf` | `control-plane/proto/**`, `control-plane/buf.*` | lint, regenerate, verify committed stubs |
 | `inference-gateway` | `inference-gateway/**` | format, vet, lint, build, unit and testcontainers tests |
 | `forge` | `forge/**` | format, lint, GoReleaser config, build, unit and fake-SSH tests |

@@ -36,6 +36,7 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gateway"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/logging"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/mailbox"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/version"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
 	// +kubebuilder:scaffold:imports
@@ -270,6 +271,15 @@ func run() int {
 		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up Workflow reconciler")
+		return 1
+	}
+
+	if err = (&controller.MailboxReconciler{
+		Client: mgr.GetClient(),
+		Scheme: scheme,
+		Store:  mailbox.NewStore(pool),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up Mailbox reconciler")
 		return 1
 	}
 

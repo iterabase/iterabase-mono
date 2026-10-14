@@ -44,6 +44,7 @@ type testEnv struct {
 	caPool     *x509.CertPool
 	poolID     string // the seeded pool's uuid
 	artifacts  *artifactstore.Service
+	svc        *gateway.Service
 	stop       func()
 }
 
@@ -95,7 +96,7 @@ func newTestEnvWithOAuth(t *testing.T, secrets *gateway.FakeSecretResolver, oaut
 	// registrations, so the shared env declares the permitted set explicitly;
 	// TestGateway_ToolNamespaceEnforced / TestGateway_NamespaceDenyOnEmptyApproval
 	// cover restriction and denial.
-	allowedRunnerNamespaces := []string{"echo", "send_email", "upsert_row", "graph", "danger"}
+	allowedRunnerNamespaces := []string{"echo", "send_email", "upsert_row", "graph", "danger", "platform"}
 	require.NoError(t, store.UpsertApprovedRunner(ctx, "ns-1", "runner-1", runnerSpiffe, allowedRunnerNamespaces))
 	require.NoError(t, store.UpsertApprovedRunner(ctx, "ns-1", "runner-2", runner2Spiffe, allowedRunnerNamespaces))
 	// Workflow-step binding (workflow "wf-quote" -> pool-1, permits echo+send_email).
@@ -148,7 +149,7 @@ func newTestEnvWithOAuth(t *testing.T, secrets *gateway.FakeSecretResolver, oaut
 
 	return &testEnv{
 		store: store, pgpool: pgpool, srvURL: fmt.Sprintf("https://localhost:%d", port),
-		supervisor: supervisor, runner: runner, runner2: runner2, wfStep: wfStep, caPool: ca.Pool, poolID: p.ID, artifacts: artifacts, stop: stop,
+		supervisor: supervisor, runner: runner, runner2: runner2, wfStep: wfStep, caPool: ca.Pool, poolID: p.ID, artifacts: artifacts, svc: svc, stop: stop,
 	}
 }
 

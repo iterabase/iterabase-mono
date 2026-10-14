@@ -54,8 +54,10 @@ jobs:
     name: CI
     needs: gate
     if: needs.gate.outputs.run == 'true'
+    # ci.yml's m365-live job exchanges its OIDC token with Entra (HOR-358).
     permissions:
       contents: read
+      id-token: write
     uses: ./.github/workflows/ci.yml
     secrets: inherit
     with:

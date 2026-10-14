@@ -1,0 +1,12 @@
+# An Iterabase-managed Microsoft 365 mailbox (HOR-358). The credential slot's
+# values live in the installation-owned Secret iterabase-credential-microsoft365.
+apiVersion: platform.iterabase.com/v1alpha1
+kind: Mailbox
+metadata:
+  name: quotes
+spec:
+  provider: microsoft365
+  address: quotes@customer.example
+  credentialSlot: microsoft365
+  folders: [inbox]
+  pollInterval: 60s

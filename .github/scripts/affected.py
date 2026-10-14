@@ -43,6 +43,10 @@ DRIVER_UPGRADE_STAGE = "driver-upgrade"
 # CI jobs in ci.yml, keyed by the paths that select them. First match wins per
 # rule list; a path may select several jobs.
 JOB_RULES: list[tuple[str, tuple[str, ...]]] = [
+    # The live Microsoft 365 checks run against the test tenant only when the
+    # mailbox connector or its product tools change (DES-HOR-358-04).
+    ("control-plane/internal/mailbox/**", ("m365-live", "control-plane")),
+    ("control-plane/tool-runner/tools/product/mailbox-*/**", ("m365-live", "tool-runner")),
     ("control-plane/ui/**", ("ui",)),
     ("control-plane/harness/**", ("harness",)),
     ("control-plane/tool-runner/**", ("tool-runner",)),

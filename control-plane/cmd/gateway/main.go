@@ -31,6 +31,8 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gateway"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gatewayrpc/iterabase/gateway/v1/gatewayv1connect"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/logging"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/mailbox"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/mailbox/graph"
 	cpmetrics "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/metrics"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/version"
 	"k8s.io/client-go/kubernetes"
@@ -141,6 +143,29 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		svc.SetArtifactService(artifacts)
 	}
 	svc.SetMetrics(m)
+
+	// Mailbox intake (HOR-358, DES-HOR-358-02): delta catch-up, polling-only
+	// intake and subscriptions for every active mailbox, with credentials that
+	// never leave this process.
+	if cfg.Gateway.Mailbox.Enabled {
+		mailboxes := mailbox.NewStore(pool)
+		svc.SetMailboxScope(mailboxes)
+		graphSource := graph.New(&graph.SlotTokens{
+			Secrets:      secretResolver,
+			OAuth:        gateway.NewHTTPOAuthAcquirer(nil),
+			LoginBaseURL: cfg.Gateway.Mailbox.LoginBaseURL,
+		})
+		if cfg.Gateway.Mailbox.GraphBaseURL != "" {
+			graphSource.BaseURL = cfg.Gateway.Mailbox.GraphBaseURL
+		}
+		intake := &mailbox.Intake{
+			Store:   mailboxes,
+			Sources: map[string]mailbox.Source{mailbox.ProviderMicrosoft365: graphSource},
+			Log:     logger.With("component", "mailbox-intake"),
+		}
+		go intake.Run(ctx)
+		logger.Info("mailbox intake enabled")
+	}
 
 	// Crash-recovery reconciliation (SCN-008/ARCH-014): classify orphaned
 	// in-flight invocations before accepting traffic, then on a ticker.

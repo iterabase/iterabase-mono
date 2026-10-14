@@ -45,6 +45,12 @@ gateway:
     port: 8090
   trustDomain: iterabase.local
   inlineLimit: 65536
+  # Mailbox intake and the platform mailbox tools (HOR-358). The gateway
+  # watches every active Mailbox through Microsoft Graph, so it needs egress
+  # to graph.microsoft.com and login.microsoftonline.com. With no Mailbox
+  # declared it does nothing.
+  mailbox:
+    enabled: true
   tls:
     generated: true
     serverSecret: "" # default: <release>-control-plane-gateway-tls
