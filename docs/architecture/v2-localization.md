@@ -12,7 +12,7 @@ Every customer-facing surface ships in English and European Portuguese (PT-PT). 
 
 - The control-plane UI uses `i18next` and `react-i18next`. Catalogs are JSON, one file per locale and namespace, under `control-plane/ui/src/i18n/locales/{en,pt-PT}/<namespace>.json`, registered in `src/i18n/resources.ts`.
 - English is the source catalog. Keys are type-checked against it (`src/i18n/i18next.d.ts`), so a missing English key fails `tsc`.
-- Namespaces follow surfaces: `common` (shared, and the fallback namespace for every other one), `auth` (public sign-in journey), `settings` (account shell: Profile, Sessions, Admin), and `legacy` (the pre-V2 API-key dashboard, deleted by HOR-459 with `LegacyDashboard`). New screens add their own namespace.
+- Namespaces follow surfaces: `common` (shared, and the fallback namespace for every other one), `auth` (public sign-in journey), `settings` (the account panels hosted by Settings: Profile, Sessions, Admin), `app` (the app frame, navigation, trust line and shared states), `work` (Today, Your turn, Work and the work item) and `team` (Team and AI coworker detail). HOR-459 removed the pre-V2 `legacy` namespace with the old dashboard. New screens add their own namespace.
 - Components use `useTranslation(ns)` or, where the locale is passed explicitly, `fixedT(locale, ns)`. Product code keeps the stored codes `en | pt`; catalogs and `Intl` use `en` / `pt-PT`.
 - Plurals use i18next suffixes. PT-PT needs `_one`, `_many` and `_other` (CLDR); English needs `_one` and `_other`.
 - Formatting goes through `src/i18n/format.ts`, never raw `Intl` in components. PT-PT follows the approved reference forms rather than raw CLDR: `1.840 €`, `seg., 13 out.`, `13 out. 2026, 15:05` (24-hour). English: `€1,840`, `$1,840`, `Mon 13 Oct`.

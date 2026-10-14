@@ -4,6 +4,10 @@ import { type Page } from "@playwright/test";
 import { requiredEnv } from "../env";
 import { expect, test, type BrowserObservability } from "./fixtures";
 
+// The V2 customer app (HOR-459) against a deployed control plane: sign-in,
+// Today, Your turn to All clear, Work and the work item sheet, live
+// reconnection and the phone layout, in English and European Portuguese.
+
 const email = requiredEnv("ITERABASE_BROWSER_EMAIL");
 const password = requiredEnv("ITERABASE_BROWSER_PASSWORD");
 const coordinator = requiredEnv("ITERABASE_BROWSER_COORDINATOR");
@@ -13,6 +17,8 @@ const uploadTitle = requiredEnv("ITERABASE_BROWSER_UPLOAD_TITLE");
 const reconnectTitle = requiredEnv("ITERABASE_BROWSER_RECONNECT_TITLE");
 const downloadName = requiredEnv("ITERABASE_BROWSER_DOWNLOAD_NAME");
 const downloadBody = requiredEnv("ITERABASE_BROWSER_DOWNLOAD_BODY");
+
+const greeting = /^Good (morning|afternoon|evening), .+\.$/;
 
 async function assertFreshBrowserState(page: Page): Promise<void> {
   await expect
@@ -26,25 +32,43 @@ async function assertFreshBrowserState(page: Page): Promise<void> {
     .toEqual({ cookie: "", local: [], session: [] });
 }
 
-// signIn reaches the work board only through the browser session: the
-// HttpOnly session cookie is invisible to page script and nothing is kept in
-// browser storage.
+// signIn reaches the app only through the browser session: the HttpOnly
+// session cookie is invisible to page script and nothing is kept in browser
+// storage.
 async function signIn(page: Page, secret = password): Promise<void> {
   await page.getByLabel("Work email").fill(email);
   await page.getByLabel("Password", { exact: true }).fill(secret);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
 }
 
-async function connect(page: Page): Promise<void> {
-  await page.goto("/");
+async function connect(page: Page, path = "/"): Promise<void> {
+  await page.goto(path);
   await assertFreshBrowserState(page);
   const field = page.getByLabel("Work email");
   await field.focus();
   await expect(field).toBeFocused();
   await signIn(page);
-  await expect(page.getByRole("region", { name: "Work" })).toBeVisible();
-  await expect(page.getByText(doneTitle, { exact: true })).toBeVisible();
   await assertFreshBrowserState(page);
+}
+
+async function openWork(page: Page): Promise<void> {
+  await page
+    .getByRole("navigation", { name: "Main" })
+    .getByRole("link", { name: /^Work/ })
+    .click();
+  await expect(page.getByRole("region", { name: "Work" })).toBeVisible();
+}
+
+async function setLanguage(page: Page, value: "en" | "pt"): Promise<void> {
+  await page.goto("/settings/profile");
+  const language = page.getByLabel(/^(Language|Idioma)$/);
+  await language.selectOption(value);
+  await page
+    .getByRole("button", { name: /^(Save changes|Guardar alterações)$/ })
+    .click();
+  await expect(
+    page.getByText(/^(Changes saved\.|Alterações guardadas\.)$/),
+  ).toBeVisible();
 }
 
 function allowNetworkOutage(observability: BrowserObservability): void {
@@ -64,7 +88,7 @@ function allowNetworkOutage(observability: BrowserObservability): void {
   );
 }
 
-test("reaches work only through a browser session, with real loading/error responses and both locales", async ({
+test("lands on Today through a browser session, in both languages, and signs out", async ({
   page,
   observability,
 }) => {
@@ -91,22 +115,47 @@ test("reaches work only through a browser session, with real loading/error respo
     "We could not sign you in with those details.",
   );
 
-  let delayed = false;
-  await page.route("**/v1/work-dashboard?*", async (route) => {
-    if (!delayed) {
-      delayed = true;
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-    await route.continue();
-  });
   await signIn(page);
-  await expect(page.getByText(doneTitle, { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(greeting);
+  await expect(page.getByRole("region", { name: "Your turn" })).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", { name: "Waiting for you" })
+      .getByText(approvalTitle),
+  ).toBeVisible();
+  // Sofia and Reports arrive with HOR-452 / HOR-658 (DES-HOR-459-03).
+  await expect(
+    page.getByRole("navigation", { name: "Main" }).getByRole("link"),
+  ).toHaveText(["Today", /^Work/, "Team"]);
   await assertFreshBrowserState(page);
 
-  await page.getByRole("button", { name: "PT", exact: true }).click();
+  // European Portuguese, chosen in Profile, across Today and the work item.
+  await setLanguage(page, "pt");
+  await page.getByRole("link", { name: "Hoje" }).first().click();
+  await expect(page.getByRole("heading", { name: "A sua vez" })).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Principal" })
+    .getByRole("link", { name: /^Trabalho/ })
+    .click();
   await expect(page.getByRole("region", { name: "Trabalho" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Concluído" })).toBeVisible();
-  await page.getByRole("button", { name: "Terminar sessão" }).click();
+  await page.getByRole("link", { name: new RegExp(doneTitle) }).click();
+  const portugueseDetail = page.getByRole("dialog", { name: doneTitle });
+  await expect(
+    portugueseDetail.getByRole("heading", { name: "Revisão concluída" }),
+  ).toBeVisible();
+  await expect(
+    portugueseDetail.getByRole("heading", { name: "Cronologia" }),
+  ).toBeVisible();
+  await expect(
+    portugueseDetail.getByRole("button", {
+      name: new RegExp(`Transferir.*${downloadName}`),
+    }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await setLanguage(page, "en");
+
+  await page.getByRole("button", { name: /account and Settings$/ }).click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
   await expect(
     page.getByRole("button", { name: /^(Sign in|Iniciar sessão)$/ }),
   ).toBeVisible();
@@ -117,26 +166,32 @@ test("reaches work only through a browser session, with real loading/error respo
   await expect(
     page.getByRole("button", { name: /^(Sign in|Iniciar sessão)$/ }),
   ).toBeVisible();
-  await expect(page.getByRole("region", { name: "Work" })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Main" })).toHaveCount(0);
 });
 
-test("covers portfolio search, customer-safe detail, download, keyboard, and accessibility", async ({
+test("covers Work, search, the customer-safe item sheet, download, keyboard and accessibility", async ({
   page,
 }) => {
   await connect(page);
-  await expect(page.getByRole("heading", { name: "Blocked" })).toBeVisible();
-  await expect(page.getByText(approvalTitle, { exact: true })).toBeVisible();
-  await expect(page.getByText(uploadTitle, { exact: true })).toBeVisible();
+  await openWork(page);
+  const needsYou = page
+    .getByRole("region", { name: "Work" })
+    .getByRole("region", { name: "Needs you" });
+  await expect(
+    needsYou.getByText(approvalTitle, { exact: true }),
+  ).toBeVisible();
+  await expect(needsYou.getByText(uploadTitle, { exact: true })).toBeVisible();
 
-  const search = page.getByPlaceholder("Search customer, document, source…");
-  await search.fill("no matching synthetic case");
-  await expect(page.getByText("0 items shown")).toBeVisible();
-  await expect(page.getByText("No items")).toHaveCount(4);
-  await search.fill(doneTitle);
-  await expect(page.getByText(doneTitle, { exact: true })).toBeVisible();
-  await expect(page.getByText(approvalTitle, { exact: true })).toHaveCount(0);
+  // ⌘K search across work items and coworkers.
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.getByRole("dialog", { name: "Search" });
+  await search
+    .getByRole("searchbox", { name: "Search" })
+    .fill("no matching synthetic case");
+  await expect(search.getByText("Nothing matches that.")).toBeVisible();
+  await search.getByRole("searchbox", { name: "Search" }).fill(doneTitle);
+  await search.getByRole("button", { name: new RegExp(doneTitle) }).click();
 
-  await page.getByText(doneTitle, { exact: true }).click();
   const detail = page.getByRole("dialog", { name: doneTitle });
   await expect(detail).toBeVisible();
   await expect(
@@ -156,90 +211,127 @@ test("covers portfolio search, customer-safe detail, download, keyboard, and acc
 
   await page.keyboard.press("Escape");
   await expect(detail).toHaveCount(0);
-  await page.getByRole("button", { name: "PT", exact: true }).click();
-  await page.getByText(doneTitle, { exact: true }).click();
-  const portugueseDetail = page.getByRole("dialog", { name: doneTitle });
-  await expect(
-    portugueseDetail.getByRole("heading", { name: "Revisão concluída" }),
-  ).toBeVisible();
-  await expect(
-    portugueseDetail.getByRole("heading", { name: "Cronologia" }),
-  ).toBeVisible();
-  await expect(
-    portugueseDetail.getByRole("button", {
-      name: new RegExp(`${downloadName}.*Transferir`),
-    }),
-  ).toBeVisible();
+  await expect(page).toHaveURL(/\/work(\?.*)?$/);
+
+  // A deep link opens the same sheet after a reload.
+  await needsYou.getByText(approvalTitle, { exact: true }).click();
+  await expect(page.getByRole("dialog", { name: approvalTitle })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("dialog", { name: approvalTitle })).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "EN", exact: true }).click();
-  await search.fill("");
-  await expect(page.getByText(approvalTitle, { exact: true })).toBeVisible();
 
   test.info().annotations.push({
     type: "accessibility-baseline",
     description:
-      "WCAG 2.0/2.1 A+AA automated structural rules; color contrast stays with the existing component baseline because deterministic visual contrast is not represented by this browser fixture.",
+      "WCAG 2.0/2.1 A+AA automated structural rules; color contrast stays with the Design System token baseline (--ink-500 is the lightest text) because deterministic visual contrast is not represented by this browser fixture.",
   });
-  const accessibility = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-    .disableRules(["color-contrast"])
-    .analyze();
-  expect(accessibility.violations).toEqual([]);
+  for (const path of ["/", "/work", "/team"]) {
+    await page.goto(path);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    const accessibility = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .disableRules(["color-contrast"])
+      .analyze();
+    expect(accessibility.violations, path).toEqual([]);
+  }
 });
 
-test("submits blockers, uploads/downloads artifacts, and records feedback through real APIs", async ({
+test("clears decisions in Your turn, reaches All clear and records feedback through real APIs", async ({
   page,
 }) => {
   await connect(page);
 
-  await page.getByText(doneTitle, { exact: true }).click();
-  await expect(page.getByRole("dialog", { name: doneTitle })).toBeVisible();
-  await page.getByRole("button", { name: /Result needs improvement/ }).click();
-  await page.getByRole("button", { name: "Poor output" }).click();
-  await page
-    .getByPlaceholder(/Explanation/)
+  await openWork(page);
+  await page.getByRole("link", { name: new RegExp(doneTitle) }).click();
+  const done = page.getByRole("dialog", { name: doneTitle });
+  await done.getByRole("button", { name: "Something was wrong" }).click();
+  await done.getByRole("button", { name: "Poor result" }).click();
+  await done
+    .getByLabel("What should it have done? (optional)")
     .fill("Browser-reviewed synthetic correction.");
-  await page.getByRole("button", { name: "Save feedback" }).click();
-  await expect(page.getByRole("status")).toContainText(
-    "Feedback captured without starting new work.",
+  await done.getByRole("button", { name: "Save feedback" }).click();
+  await expect(done.getByRole("status")).toContainText(
+    "Feedback kept with this item. Nothing new was started.",
   );
   await page.keyboard.press("Escape");
 
-  await page.getByRole("button", { name: "PT", exact: true }).click();
-  await page.getByText(approvalTitle, { exact: true }).click();
-  const approval = page.getByRole("dialog", { name: approvalTitle });
-  await expect(
-    approval.getByRole("heading", { name: "Revisão necessária" }),
-  ).toBeVisible();
-  await approval.getByLabel("Aprovado").check();
-  await approval.getByRole("button", { name: "Enviar resposta" }).click();
-  await expect(approval.getByRole("status")).toContainText("Resposta enviada");
-  await expect(approval.locator(".status-badge")).toHaveText("Concluído");
-  await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "EN", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "Main" })
+    .getByRole("link", { name: "Today" })
+    .click();
+  await page.getByRole("link", { name: /Start with the first one/ }).click();
 
-  await page.getByText(uploadTitle, { exact: true }).click();
-  const upload = page.getByRole("dialog", { name: uploadTitle });
-  await expect(
-    upload.getByRole("heading", { name: "Evidence file required" }),
-  ).toBeVisible();
-  await upload.getByLabel("Choose the required artifact").setInputFiles({
-    name: "uploaded-browser-evidence.txt",
-    mimeType: "text/plain",
-    buffer: Buffer.from("Synthetic Playwright upload for HOR-483.\n"),
+  // Clear this journey's two decisions one at a time; decisions other stages
+  // of the deployed scenario left open are skipped with "Not now".
+  const cleared = new Set<string>();
+  const allClear = page.getByRole("heading", {
+    name: "That's everything for now.",
   });
-  await upload.getByLabel("Note").fill("Reviewed in the real browser journey.");
-  await upload.getByRole("button", { name: "Send response" }).click();
-  await expect(upload.getByRole("status")).toContainText("Response sent");
-  await expect(upload.locator(".status-badge")).toHaveText("Done");
+  while (!(await allClear.isVisible())) {
+    await expect(
+      page.getByText(/^Decision \d+ of \d+$/).or(allClear),
+    ).toBeVisible();
+    if (await allClear.isVisible()) break;
+    const progress = await page
+      .getByText(/^Decision \d+ of \d+$/)
+      .textContent();
+    const card = page.getByRole("article");
+    await expect(card.getByRole("heading", { level: 1 })).toBeVisible();
+    if (await card.getByText(approvalTitle, { exact: false }).isVisible()) {
+      await expect(
+        card.getByRole("heading", { level: 1, name: "Review required" }),
+      ).toBeVisible();
+      await card.getByLabel("Approved").check();
+      await card.getByRole("button", { name: /^Accepted/ }).click();
+      cleared.add(approvalTitle);
+    } else if (
+      await card.getByText(uploadTitle, { exact: false }).isVisible()
+    ) {
+      await expect(
+        card.getByRole("heading", { level: 1, name: "Evidence file required" }),
+      ).toBeVisible();
+      await card.getByLabel("Choose the file to send").setInputFiles({
+        name: "uploaded-browser-evidence.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("Synthetic Playwright upload for HOR-483.\n"),
+      });
+      await card
+        .getByLabel("Note")
+        .fill("Reviewed in the real browser journey.");
+      await card.getByRole("button", { name: /^Provided/ }).click();
+      cleared.add(uploadTitle);
+    } else {
+      await card
+        .getByRole("button", { name: "Not now, show the next one" })
+        .click();
+    }
+    // Answering or skipping always moves the progress on (or ends it).
+    await expect(page.getByText(progress ?? "", { exact: true })).toHaveCount(
+      0,
+    );
+  }
+  expect([...cleared].sort()).toEqual([approvalTitle, uploadTitle].sort());
+
+  await expect(
+    page.getByRole("heading", { name: "That's everything for now." }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "See all work" }).click();
+  const board = page.getByRole("region", { name: "Work" });
+  await expect(
+    board.getByRole("region", { name: "Done" }).getByText(approvalTitle),
+  ).toBeVisible();
+  await expect(
+    board.getByRole("region", { name: "Done" }).getByText(uploadTitle),
+  ).toBeVisible();
 });
 
-test("renders the customer error state and reconnects SSE after a Go-owned network break", async ({
+test("says it is reconnecting during a Go-owned network break and shows new work after", async ({
   page,
   request,
   observability,
 }) => {
   await connect(page);
+  await openWork(page);
   allowNetworkOutage(observability);
 
   const restart = await request.post(`${coordinator}/restart`);
@@ -250,13 +342,9 @@ test("renders the customer error state and reconnects SSE after a Go-owned netwo
         (await (await request.get(`${coordinator}/status`)).json()).status,
     )
     .toBe("outage");
-
-  await page
-    .getByPlaceholder("Search customer, document, source…")
-    .fill(reconnectTitle);
-  await expect(page.getByRole("alert")).toHaveText(
-    "Dashboard data could not be refreshed.",
-  );
+  await expect(page.getByText(/^Reconnecting…/)).toBeVisible({
+    timeout: 30_000,
+  });
 
   const recover = await request.post(`${coordinator}/recover`);
   expect(recover.status()).toBe(202);
@@ -264,23 +352,21 @@ test("renders the customer error state and reconnects SSE after a Go-owned netwo
     .poll(
       async () =>
         (await (await request.get(`${coordinator}/status`)).json()).status,
-      {
-        timeout: 30_000,
-      },
+      { timeout: 30_000 },
     )
     .toBe("ready");
   await expect(page.getByText(reconnectTitle, { exact: true })).toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByText(/^Reconnecting…/)).toHaveCount(0);
 });
 
-test("keeps the critical sign-in, board, and detail path usable at a mobile viewport", async ({
+test("keeps sign-in, Today, Work and the item usable at a phone viewport", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await connect(page);
-  await expect(page.getByRole("region", { name: "Work" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(greeting);
   await expect
     .poll(() =>
       page.evaluate(
@@ -291,7 +377,12 @@ test("keeps the critical sign-in, board, and detail path usable at a mobile view
     )
     .toBe(true);
 
-  await page.getByText(doneTitle, { exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "Tabs" })
+    .getByRole("link", { name: /^Work/ })
+    .click();
+  await expect(page.getByRole("region", { name: "Work" })).toBeVisible();
+  await page.getByRole("link", { name: new RegExp(doneTitle) }).click();
   const detail = page.getByRole("dialog", { name: doneTitle });
   await expect(detail).toBeVisible();
   await expect(detail.getByRole("heading", { name: "Timeline" })).toBeVisible();

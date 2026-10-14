@@ -73,7 +73,7 @@ internal/controller/ CRD reconcilers (Git -> DB bridge): agentpool, modelbackend
 internal/runtime/   durable turn + graph runtime state and technical event log — HOR-246/254
 internal/work/      work items, graph orchestration, blockers, feedback, value, business events — HOR-254
 internal/server/    chi HTTP routes, each registered with one authority class (auth, People, work REST + SSE, artifacts)
-ui/                 React/Vite customer Dashboard embedded in the API — HOR-396
+ui/                 React/Vite customer app embedded in the API — HOR-459
 internal/logging/   shared slog logger + logr bridge
 internal/version/   build-time version metadata
 internal/testutil/  shared Postgres test helper (testcontainers)
@@ -505,8 +505,8 @@ with exactly one `runtime.workflow_run`. Current To do / In progress / Waiting /
 Paused / Blocked / Done / Failed presentation is projected from the current
 attempt plus its open actionable blocker, open pause, and open wait, avoiding a
 duplicate mutable state machine. Waiting and Paused are never Blocked; the
-Dashboard shows them in the In progress column with their own state chip.
-Failed remains outside the four normal columns. A pause holds the next step of
+app's Work screen groups them under Waiting, never Needs you. Failed work
+appears only in the Failed strip, outside the four groups. A pause holds the next step of
 matching work while a live `work.pause_conditions` cause (`trial_ended`,
 `provider_unavailable`, `runner_offline`) applies, and resumes it automatically
 when the cause clears.
@@ -561,10 +561,13 @@ Artifact blocker responses accept validated
 `artifactRefs`, link them to the
 human-gate visit, and propagate them as authorized inputs when work resumes.
 
-The private Dashboard is served at `/`. The operator supplies a work-scope API
-key after loading the page; the key is retained only in JavaScript memory and
-is never put in a URL, cookie, local storage, or session storage. Walter access
-remains SSH port-forwarding/screen sharing per the Platform-v1 release boundary.
+The customer app (HOR-459) is served at `/`: React 19 + Vite, TanStack Router,
+shadcn/ui (Radix) and Tailwind on the Iterabase Design System tokens
+(`ui/src/styles/ds.css`). It is reached only through a browser session
+(HOR-582); nothing is kept in a URL, local storage or session storage. Screens:
+Today, Your turn and All clear, Work with the work item side sheet
+(`/work/<id>` deep links), Team and AI coworker detail (from
+`GET /v1/workflows`), and Settings (Profile, Sessions; People for Admins).
 
 The app document (`index.html`) answers `/` and every browser deep link that
 is not under `/v1/`, `/assets/`, `/healthz`, `/readyz`, `/metrics` or
