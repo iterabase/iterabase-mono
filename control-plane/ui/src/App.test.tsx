@@ -924,7 +924,13 @@ describe("Platform v1 Dashboard", () => {
         return json([]);
       if (url.endsWith("/blocker")) return json(blocker);
       if (url === "/v1/artifacts" && init?.method === "POST")
-        return json({ artifactId: "artifact-1" }, 201);
+        return json({ uploadId: "upload-1", state: "checking_security" }, 202);
+      if (url === "/v1/artifacts/upload-1/status")
+        return json({
+          uploadId: "upload-1",
+          state: "processing_content",
+          artifact: { artifactId: "artifact-1", mimeType: "application/pdf" },
+        });
       if (url.includes("/work-blockers/blocker-1/responses"))
         return json({ ...blocker, state: "resolved" });
       return fetchMock(input, init);
@@ -964,6 +970,72 @@ describe("Platform v1 Dashboard", () => {
     expect(upload?.[1]?.credentials).toBe("same-origin");
     expect(headersOf(upload?.[1])["X-CSRF-Token"]).toBe("csrf-1");
     expect(headersOf(upload?.[1])["Content-Type"]).toBe("application/pdf");
+    expect(headersOf(upload?.[1])["X-Artifact-Filename"]).toBe("agreement.pdf");
+    expect(headersOf(upload?.[1])["Idempotency-Key"]).toBeTruthy();
+  });
+
+  it("does not answer a blocker with a file that fails the security check", async () => {
+    const blocked = {
+      ...item,
+      id: "item-blocked",
+      currentAttemptId: "attempt-blocked",
+      state: "blocked",
+      blocker: {
+        id: "blocker-1",
+        kind: "artifact",
+        title: { en: "Signed agreement required" },
+      },
+    };
+    const blocker = {
+      id: "blocker-1",
+      workItemId: blocked.id,
+      attemptId: blocked.currentAttemptId,
+      kind: "artifact",
+      title: blocked.blocker.title,
+      description: { en: "Upload the signed agreement" },
+      responseSchema: { type: "object", properties: {} },
+      allowedOutcomes: ["provided"],
+      state: "open",
+    };
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.startsWith("/v1/work-items?")) return json([blocked]);
+      if (url === "/v1/work-items/item-blocked") return json(blocked);
+      if (url.includes("attempt-blocked") && url.includes("/nodes"))
+        return json([]);
+      if (url.endsWith("/blocker")) return json(blocker);
+      if (url === "/v1/artifacts" && init?.method === "POST")
+        return json({ uploadId: "upload-2", state: "checking_security" }, 202);
+      if (url === "/v1/artifacts/upload-2/status")
+        return json({
+          uploadId: "upload-2",
+          state: "rejected",
+          reason: "malware",
+        });
+      return fetchMock(input, init);
+    });
+    const user = await connect();
+    await user.click(screen.getByText("Quotation request — ACME"));
+    await screen.findByRole("heading", { name: "Signed agreement required" });
+    await user.upload(
+      screen.getByLabelText("Choose the required artifact"),
+      new File(["x"], "agreement.pdf", { type: "application/pdf" }),
+    );
+    const send = screen.getByRole("button", { name: "Send response" });
+    await waitFor(() => expect(send).toBeEnabled());
+    await user.click(send);
+    expect(
+      await screen.findByText(
+        "This file did not pass the security check. Choose a different file.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) =>
+          String(url).includes("/work-blockers/blocker-1/responses"),
+        ),
+    ).toBe(false);
   });
 
   it("renders a done item whose result node exposes fields/artifacts but no outcomes", async () => {
@@ -1001,6 +1073,16 @@ describe("Platform v1 Dashboard", () => {
             metadata: { name: "quote.pdf" },
             mimeType: "application/pdf",
             sizeBytes: 1234,
+            state: "ready",
+            createdAt: item.finishedAt,
+          },
+          {
+            artifactId: "art-2",
+            attemptId: "attempt-1",
+            role: "output",
+            metadata: { name: "blocked.pdf" },
+            mimeType: "application/pdf",
+            state: "rejected",
             createdAt: item.finishedAt,
           },
         ]);
@@ -1011,6 +1093,10 @@ describe("Platform v1 Dashboard", () => {
     // Would white-screen (root unmounted) before the fix; the artifact row must appear.
     expect(await screen.findByText("quote.pdf")).toBeInTheDocument();
     expect(screen.getByText(/Download/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Did not pass the security check"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("blocked.pdf").closest("button")).toBeDisabled();
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 

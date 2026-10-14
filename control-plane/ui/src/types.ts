@@ -205,6 +205,8 @@ export interface WorkArtifact {
   mimeType: string;
   sizeBytes?: number;
   digest?: string;
+  /** Customer security/extraction projection; only cleared states download. */
+  state: string;
   createdAt: string;
 }
 export interface DetailData {

@@ -71,10 +71,10 @@ export interface GatewayClient {
   ): Promise<InvokeResponse>;
   /** Stream an authorized artifact for supervisor materialization. */
   getArtifact?(scope: AssignmentScope, artifactId: string, signal?: AbortSignal): AsyncIterable<GetArtifactResponse>;
-  /** Stream one validated sandbox file into a new immutable artifact. */
+  /** Stream one validated sandbox file into a new quarantined artifact (HOR-461). */
   putArtifact?(
     scope: AssignmentScope,
-    input: { mimeType: string; expectedSizeBytes: bigint; expectedDigest: string; chunks: AsyncIterable<Uint8Array> },
+    input: { mimeType: string; filename?: string; expectedSizeBytes: bigint; expectedDigest: string; chunks: AsyncIterable<Uint8Array> },
     signal?: AbortSignal,
   ): Promise<ArtifactMetadata>;
   /** Cancel an in-flight invocation (ARCH-014 — cannot undo an effect). */
@@ -153,7 +153,7 @@ export function createGatewayClient(cfg: HarnessConfig, transportFactory: () => 
 
     async putArtifact(
       scope: AssignmentScope,
-      input: { mimeType: string; expectedSizeBytes: bigint; expectedDigest: string; chunks: AsyncIterable<Uint8Array> },
+      input: { mimeType: string; filename?: string; expectedSizeBytes: bigint; expectedDigest: string; chunks: AsyncIterable<Uint8Array> },
       signal?: AbortSignal,
     ): Promise<ArtifactMetadata> {
       const client = createClient(ArtifactService, getTransport());
@@ -164,6 +164,7 @@ export function createGatewayClient(cfg: HarnessConfig, transportFactory: () => 
             value: {
               context: artifactContext(scope),
               mimeType: input.mimeType,
+              ...(input.filename === undefined ? {} : { filename: input.filename }),
               expectedSizeBytes: input.expectedSizeBytes,
               expectedDigest: input.expectedDigest,
             },

@@ -205,26 +205,75 @@ export function createRevision(
   );
 }
 
+// Artifact states in which the original is cleared and downloadable.
+const clearedArtifactStates = new Set([
+  "processing_content",
+  "safe_content_not_extracted",
+  "ready",
+]);
+
+export function artifactDownloadable(state: string): boolean {
+  return clearedArtifactStates.has(state);
+}
+
+/** Thrown when an uploaded file can never be used (rejected or unchecked). */
+export class ArtifactSecurityError extends APIError {}
+
+// uploadArtifact streams one file into quarantine and returns its provisional
+// handle. The file is unusable until its security check clears (HOR-461).
 export async function uploadArtifact(
   csrf: string,
   file: File,
-): Promise<{ artifactId: string }> {
-  const artifact = await request<{ artifactId?: unknown }>(
+): Promise<{ uploadId: string }> {
+  const handle = await request<{ uploadId?: unknown }>(
     "/v1/artifacts",
     {
       method: "POST",
       headers: {
         "Content-Type": file.type || "application/octet-stream",
-        "X-Artifact-Source": file.name,
+        "Idempotency-Key": crypto.randomUUID(),
+        "X-Artifact-Filename": encodeURIComponent(file.name),
       },
       body: file,
     },
     csrf,
   );
-  if (typeof artifact.artifactId !== "string" || !artifact.artifactId.trim()) {
+  if (typeof handle.uploadId !== "string" || !handle.uploadId.trim()) {
     throw new APIError(502, "Artifact upload response was incomplete.");
   }
-  return { artifactId: artifact.artifactId };
+  return { uploadId: handle.uploadId };
+}
+
+// waitForArtifactClearance polls the provisional handle until the security
+// check clears and returns the canonical artifact id.
+export async function waitForArtifactClearance(
+  uploadId: string,
+  pollMs = 1500,
+  timeoutMs = 10 * 60 * 1000,
+): Promise<{ artifactId: string }> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const status = await request<{
+      state?: string;
+      artifact?: { artifactId?: string };
+    }>(`/v1/artifacts/${encodeURIComponent(uploadId)}/status`);
+    if (status.artifact?.artifactId)
+      return { artifactId: status.artifact.artifactId };
+    if (status.state === "rejected") {
+      throw new ArtifactSecurityError(422, "rejected", "artifact_rejected");
+    }
+    if (
+      status.state === "security_check_failed_retryable" ||
+      Date.now() > deadline
+    ) {
+      throw new ArtifactSecurityError(
+        503,
+        "unchecked",
+        "artifact_check_failed",
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
 }
 
 export async function downloadArtifact(artifact: WorkArtifact): Promise<void> {
