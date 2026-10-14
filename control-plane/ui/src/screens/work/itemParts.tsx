@@ -50,6 +50,10 @@ export function Timeline({ data }: { data: DetailData }) {
   const events = data.timeline.filter(
     (event) => !event.code.startsWith("value_"),
   );
+  // While it works, the step it is on closes the timeline as a live row.
+  const working =
+    data.item.state === "in_progress" || data.item.state === "todo";
+  const current = working ? data.item.currentStep : undefined;
   const label = (event: TimelineEvent) => {
     const code = eventCodes.find((known) => known === event.code);
     return code ? t(`event.${code}`) : t("event.work_updated");
@@ -84,6 +88,15 @@ export function Timeline({ data }: { data: DetailData }) {
             </li>
           );
         })}
+        {current && (
+          <li className="timeline__row timeline__row--ok">
+            <span className="mono timeline__time">{t("item.nowTitle")}</span>
+            <span className="dot live timeline__dot" aria-hidden="true" />
+            <span className="leading-[1.4] min-w-0">
+              {localized(current.label, locale)}
+            </span>
+          </li>
+        )}
       </ol>
     </section>
   );

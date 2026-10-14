@@ -535,8 +535,48 @@ describe("Language preference (HOR-670)", () => {
     });
     // The Admin follows the organisation, so the shell switches to PT-PT.
     expect(
-      screen.getByRole("heading", { name: "Idioma da organização" }),
+      screen.getByRole("heading", { name: "Organização" }),
     ).toBeInTheDocument();
+  });
+
+  it("lets an Admin name the installation (DES-HOR-459-08)", async () => {
+    const patch = vi.fn();
+    stubFetch([
+      [
+        "/v1/organization/settings",
+        (init) => {
+          if (init?.method !== "PATCH")
+            return json({
+              defaultLocale: "en",
+              name: "",
+              updatedAt: "2026-09-23T10:00:00Z",
+            });
+          patch(JSON.parse(String(init.body)));
+          return json({
+            defaultLocale: "en",
+            name: "Transitários Exemplo",
+            updatedBy: adminProfile.id,
+            updatedAt: "2026-09-23T12:00:00Z",
+          });
+        },
+      ],
+      ["/v1/access-requests", () => json([])],
+    ]);
+    const user = userEvent.setup();
+    render(<SettingsHarness profile={adminProfile} csrf="csrf" />);
+    await user.click(await screen.findByRole("link", { name: "People" }));
+    await user.type(
+      await screen.findByLabelText("Name"),
+      "  Transitários Exemplo ",
+    );
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Organisation name saved.",
+    );
+    expect(patch).toHaveBeenCalledWith({
+      name: "Transitários Exemplo",
+      expectedUpdatedAt: "2026-09-23T10:00:00Z",
+    });
   });
 
   it("keeps the Admin's unsaved organisation language across shell updates", async () => {
@@ -608,7 +648,7 @@ describe("Language preference (HOR-670)", () => {
       "Default language saved.",
     );
     expect(
-      screen.getByRole("heading", { name: "Organisation language" }),
+      screen.getByRole("heading", { name: "Organisation" }),
     ).toBeInTheDocument();
   });
 });
@@ -616,7 +656,10 @@ describe("Language preference (HOR-670)", () => {
 describe("probeSession", () => {
   it("reads the anonymous state without an enabled flag", async () => {
     stubFetch([["/v1/auth/session", () => json({ authenticated: false })]]);
-    await expect(probeSession()).resolves.toEqual({ kind: "anonymous" });
+    await expect(probeSession()).resolves.toEqual({
+      kind: "anonymous",
+      organizationName: "",
+    });
     expect(vi.mocked(fetch).mock.calls[0][1]?.credentials).toBe("include");
   });
 
@@ -636,6 +679,7 @@ describe("probeSession", () => {
       kind: "authenticated",
       profile: operatorProfile,
       csrfToken: "csrf-token",
+      organizationName: "",
     });
   });
 

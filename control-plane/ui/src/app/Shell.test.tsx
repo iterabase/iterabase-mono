@@ -56,3 +56,27 @@ describe("Authority", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("Installation name (DES-HOR-459-08)", () => {
+  it("shows it on the sign-in page and in the top bar", async () => {
+    start("/", operator, { anonymous: true });
+    expect(await screen.findByText("Transitários Exemplo")).toBeInTheDocument();
+  });
+
+  it("shows it after the logo once signed in", async () => {
+    start("/");
+    const banner = await screen.findByRole("banner");
+    expect(
+      await within(banner).findByText("Transitários Exemplo"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no name when the installation has none", async () => {
+    start("/", operator, { organizationName: "" });
+    const banner = await screen.findByRole("banner");
+    await within(banner).findByRole("navigation", { name: "Main" });
+    expect(
+      within(banner).queryByText("Transitários Exemplo"),
+    ).not.toBeInTheDocument();
+  });
+});

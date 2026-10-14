@@ -555,23 +555,9 @@ function PausedCard({ item }: { item: WorkItem }) {
   );
 }
 
+/** Working items lead with provenance; the current step closes the timeline. */
 function NowCard({ data }: { data: DetailData }) {
-  const { t } = useTranslation("work");
-  const locale = useLocale();
-  const step = data.item.currentStep;
-  return (
-    <>
-      <ItemProvenance data={data} />
-      {step && (
-        <StateCard title={t("item.nowTitle")}>
-          <p className="m-0 row gap-2 text-[14px]">
-            <span className="dot live bg-[var(--ok)]" aria-hidden="true" />
-            {localized(step.label, locale)}
-          </p>
-        </StateCard>
-      )}
-    </>
-  );
+  return <ItemProvenance data={data} />;
 }
 
 function FailedBody({ data }: { data: DetailData }) {

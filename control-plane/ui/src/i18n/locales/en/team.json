@@ -16,7 +16,13 @@
     "alwaysAsksFirst": "Always asks you first",
     "anythingElse": "Anything not on these lists also waits for your OK.",
     "connections": "Connections it uses",
-    "onItsOwn": "On its own"
+    "onItsOwn": "On its own",
+    "kind": {
+      "reads": "Reads",
+      "sends": "Sends",
+      "does": "Does"
+    },
+    "itemsLabel": "Values for: {{text}}"
   },
   "col": {
     "after": "After",
@@ -27,7 +33,9 @@
     "time": "Time",
     "when": "When",
     "where": "Where it is",
-    "why": "Why it failed"
+    "why": "Why it failed",
+    "confirmedBy": "Confirmed by",
+    "nobody": "No one yet"
   },
   "countWord": {
     "1": "One",
@@ -41,7 +49,7 @@
     "9": "Nine"
   },
   "done": "done",
-  "empty": "No AI coworkers are set up yet. Iterabase adds them with you.",
+  "empty": "Iterabase sets up your first AI coworker with you. Each one shows here with what it does on its own and what it always asks you first.",
   "failed": {
     "notRestarted": "Not restarted",
     "outcomeUnknown": "Outcome unknown",
@@ -113,5 +121,6 @@
   "title": "Your team",
   "whatHappened": "What happened",
   "youAnswer": "You answer",
-  "youConfirm": "You confirm"
+  "youConfirm": "You confirm",
+  "emptyTitle": "No AI coworkers yet"
 }

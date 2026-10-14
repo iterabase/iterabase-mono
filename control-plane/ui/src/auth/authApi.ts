@@ -17,6 +17,8 @@ export interface AuthProfile {
 
 export interface OrganizationSettings {
   defaultLocale: LocaleCode | "";
+  /** The installation's name (DES-HOR-459-08); "" until set. */
+  name?: string;
   updatedBy?: string;
   updatedAt: string;
 }
@@ -197,7 +199,11 @@ export const authApi = {
     request<OrganizationSettings>("/v1/organization/settings"),
   updateOrganizationSettings: (
     csrf: string,
-    body: { defaultLocale: LocaleCode; expectedUpdatedAt?: string },
+    body: {
+      defaultLocale?: LocaleCode;
+      name?: string;
+      expectedUpdatedAt?: string;
+    },
   ) =>
     request<OrganizationSettings>(
       "/v1/organization/settings",
@@ -219,8 +225,13 @@ export const authApi = {
 };
 
 export type ProbeResult =
-  | { kind: "authenticated"; profile: AuthProfile; csrfToken: string }
-  | { kind: "anonymous"; locale?: LocaleCode }
+  | {
+      kind: "authenticated";
+      profile: AuthProfile;
+      csrfToken: string;
+      organizationName: string;
+    }
+  | { kind: "anonymous"; locale?: LocaleCode; organizationName: string }
   | { kind: "unavailable" };
 
 /**
@@ -240,16 +251,20 @@ export async function probeSession(): Promise<ProbeResult> {
       profile?: AuthProfile;
       csrfToken?: string;
       locale?: string;
+      organizationName?: string;
     };
+    const organizationName = payload.organizationName?.trim() ?? "";
     if (payload.authenticated && payload.profile && payload.csrfToken) {
       return {
         kind: "authenticated",
         profile: payload.profile,
         csrfToken: payload.csrfToken,
+        organizationName,
       };
     }
     return {
       kind: "anonymous",
+      organizationName,
       locale:
         payload.locale === "pt" || payload.locale === "en"
           ? payload.locale

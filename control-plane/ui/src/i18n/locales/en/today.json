@@ -15,7 +15,8 @@
     "summaryShort_other": "{{count, number}} decisions · {{minutes}} min {{seconds}} s",
     "summary_one": "{{count, number}} decision · {{minutes}} min {{seconds}} s of your time",
     "summary_other": "{{count, number}} decisions · {{minutes}} min {{seconds}} s of your time",
-    "title": "That’s everything for now."
+    "title": "That’s everything for now.",
+    "nothingToClear": "Nothing needs you right now."
   },
   "hoursMinutes": "{{hours}} h {{minutes}}",
   "minutesAgo_one": "{{count, number}} min",

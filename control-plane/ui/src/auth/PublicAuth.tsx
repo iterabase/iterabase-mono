@@ -49,6 +49,8 @@ interface Props {
   initialMessage?: string;
   /** The organisation default, else the browser language (DES-HOR-670-02). */
   initialLocale?: LocaleCode;
+  /** The installation's name (DES-HOR-459-08); "" shows no eyebrow. */
+  organizationName?: string;
   onAuthenticated: (profile: AuthProfile, csrfToken: string) => void;
 }
 
@@ -77,6 +79,7 @@ function initialState(): View {
 export default function PublicAuth({
   initialMessage,
   initialLocale = "en",
+  organizationName = "",
   onAuthenticated,
 }: Props) {
   const [locale, setLocale] = useState<LocaleCode>(initialLocale);
@@ -311,6 +314,7 @@ export default function PublicAuth({
   return (
     <AuthFrame
       brand={c("brand")}
+      eyebrow={organizationName}
       title={c("heroTitle")}
       subline={c("heroSub")}
       trust={[c("trustApproval"), c("trustAttributed"), c("trustData")]}

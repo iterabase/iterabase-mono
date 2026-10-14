@@ -19,7 +19,8 @@
     "summary_many": "{{count, number}} decisões · {{minutes}} min {{seconds}} s do seu tempo",
     "summary_one": "{{count, number}} decisão · {{minutes}} min {{seconds}} s do seu tempo",
     "summary_other": "{{count, number}} decisões · {{minutes}} min {{seconds}} s do seu tempo",
-    "title": "Por agora, é tudo."
+    "title": "Por agora, é tudo.",
+    "nothingToClear": "Neste momento, nada precisa de si."
   },
   "hoursMinutes": "{{hours}} h {{minutes}}",
   "minutesAgo_many": "{{count, number}} min",

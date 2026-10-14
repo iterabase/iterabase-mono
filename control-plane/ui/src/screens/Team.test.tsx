@@ -37,6 +37,20 @@ describe("Team", () => {
     ).toBeInTheDocument();
   });
 
+  it("says when a new installation has no AI coworkers yet", async () => {
+    startApp("/team", operator, { empty: true });
+    expect(
+      await screen.findByRole("heading", { name: "No AI coworkers yet" }),
+    ).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it("keeps the page gutters for a coworker that does not exist", async () => {
+    startApp("/team/nobody");
+    const title = await screen.findByRole("heading", { name: "Nothing here" });
+    expect(title.closest(".state-page")).not.toBeNull();
+  });
+
   it("shows the week in real counts and the estimated hours back", async () => {
     startApp("/team");
     const card = await screen.findByRole("article", { name: "Quotes" });
@@ -120,6 +134,38 @@ describe("AI coworker", () => {
       expect(steps[6]).toHaveTextContent("You confirm the quote1 needs you"),
     );
     expect(steps[4]).toHaveTextContent("Collects replies1 waiting");
+  });
+
+  it("types what it does on its own, with details and approved values (DES-HOR-459-09)", async () => {
+    startApp(`${quotesPath}?tab=can`);
+    const own = await screen.findByRole("region", { name: /On its own/ });
+    const sends = within(own)
+      .getByText("Asks your 6 usual suppliers for rates")
+      .closest("li")!;
+    expect(sends).toHaveTextContent("Sends");
+    expect(sends).toHaveTextContent(
+      "Pre-approved recipients · sent without review",
+    );
+    expect(
+      within(
+        within(sends).getByRole("list", { name: /^Values for:/ }),
+      ).getAllByRole("listitem"),
+    ).toHaveLength(6);
+    expect(
+      within(own)
+        .getByText("Reads customer emails, PDFs and handwriting")
+        .closest("li"),
+    ).toHaveTextContent("Reads");
+  });
+
+  it("shows who confirmed each item in Activity (DES-HOR-459-10)", async () => {
+    startApp(`${quotesPath}?tab=activity&period=week`);
+    const table = await screen.findByRole("table");
+    expect(
+      within(table).getByRole("columnheader", { name: "Confirmed by" }),
+    ).toBeInTheDocument();
+    const row = within(table).getByText("Rita Mendes").closest("tr")!;
+    expect(row).toHaveTextContent(fx.done.title);
   });
 
   it("marks what it asks you by the gate's kind and splits connections", async () => {

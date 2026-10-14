@@ -117,6 +117,16 @@ describe("Work", () => {
     );
   });
 
+  it("closes a working item's timeline with the step it is on now", async () => {
+    startApp(`/work/${fx.working.id}`);
+    const sheet = await screen.findByRole("dialog", { name: fx.working.title });
+    const timeline = within(sheet)
+      .getByRole("heading", { name: "Timeline" })
+      .closest("section")!;
+    const rows = within(timeline).getAllByRole("listitem");
+    expect(rows.at(-1)).toHaveTextContent(/^Now/);
+  });
+
   it("opens an item in the side sheet and closes back to the board", async () => {
     const user = userEvent.setup();
     const { history } = start("/work?period=week");

@@ -33,8 +33,16 @@ export interface Coworker {
   mark: CoworkerMark;
   role: LocalizedText;
   summary: LocalizedText;
-  onItsOwn?: LocalizedText[];
+  onItsOwn?: OnItsOwnLine[];
   connections?: LocalizedText[];
+}
+/** One thing the coworker does without asking (DES-HOR-459-09). */
+export interface OnItsOwnLine {
+  text: LocalizedText;
+  kind: "reads" | "sends" | "does";
+  detail?: LocalizedText;
+  /** Plain values such as pre-approved addresses, shown as chips. */
+  items?: string[];
 }
 /** Snapshotted from the immutable workflow definition for each attempt. */
 export interface WorkPresentation {
@@ -98,6 +106,8 @@ export interface WorkItem {
   valueCurrency?: string;
   valueDisputed: boolean;
   failureSummary?: FailureSummary;
+  /** Who answered the latest approval or decision (DES-HOR-459-10). */
+  answeredBy?: { displayName: string };
 }
 export interface FailureSummary {
   code?: string;

@@ -7,10 +7,11 @@ import { localized } from "../../work/model";
 import { CheckMark, LockMark, splitLine } from "./parts";
 
 // What it can do (boards XTCoworkerPermissions / XTPhoneCoworkerPermissions):
-// the declared on-its-own lines, the always-asks lines derived from the human
-// gates, and the connections it uses. The API classifies none of the
-// on-its-own lines as reading or sending, so they carry no pill; an ask's
-// pill follows its gate type (approval: you confirm, information: you answer).
+// the declared on-its-own lines with their Reads/Sends/Does pill, detail and
+// chips (DES-HOR-459-09), the always-asks lines derived from the human gates
+// (an ask's pill follows its gate type: approval, you confirm; information,
+// you answer), and the connections it uses. Connections carry no status
+// until HOR-652 observes one (DES-HOR-459-11).
 
 export function WhatItCanDo({ workflow }: { workflow: WorkflowSummary }) {
   const { t } = useTranslation("team");
@@ -29,9 +30,37 @@ export function WhatItCanDo({ workflow }: { workflow: WorkflowSummary }) {
         ) : (
           <ul className="cw-panel__list">
             {onItsOwn.map((line, index) => (
-              <li key={index}>
+              <li key={index} className="flex-wrap">
                 <CheckMark size={16} className="cw-panel__icon" />
-                <b className="cw-panel__title">{localized(line, locale)}</b>
+                <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                  <b className="cw-panel__title">
+                    {localized(line.text, locale)}
+                  </b>
+                  {line.detail && (
+                    <span className="muted text-[12.5px]">
+                      {localized(line.detail, locale)}
+                    </span>
+                  )}
+                </span>
+                <span className="ml-auto hidden flex-none desk:inline-flex">
+                  <span className="badge bg-[var(--paper2)] text-[var(--ink2)]">
+                    {t(`can.kind.${line.kind}`)}
+                  </span>
+                </span>
+                {!!line.items?.length && (
+                  <ul
+                    className="cw-chips"
+                    aria-label={t("can.itemsLabel", {
+                      text: localized(line.text, locale),
+                    })}
+                  >
+                    {line.items.map((value) => (
+                      <li key={value} className="mono">
+                        {value}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </li>
             ))}
           </ul>

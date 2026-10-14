@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { useLive, useLiveQuery } from "../app/live";
-import { CoworkerMark } from "../components/coworker";
+import { CoworkerMark, NoCoworkers } from "../components/coworker";
 import { Empty, ErrorState, Loading, StaleNotice } from "../components/states";
 import { TrustLine } from "../components/trust";
 import { useLocale } from "../i18n";
@@ -94,7 +94,7 @@ export function Team() {
       </div>
 
       {count === 0 ? (
-        <Empty>{t("empty")}</Empty>
+        <NoCoworkers title={t("emptyTitle")} body={t("empty")} />
       ) : (
         <ul className="team-cards">
           {workflows.map((workflow) => (
@@ -262,7 +262,7 @@ function CoworkerCard({
               {onItsOwn.map((line, index) => (
                 <li key={index} className="team-rule">
                   <CheckMark className="mt-[2px]" />
-                  <span>{localized(line, locale)}</span>
+                  <span>{localized(line.text, locale)}</span>
                 </li>
               ))}
             </ul>

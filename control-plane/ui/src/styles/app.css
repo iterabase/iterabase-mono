@@ -230,3 +230,40 @@
     transition: none !important;
   }
 }
+
+/* No AI coworkers yet (Team and Today on a new installation). */
+.xt .no-coworkers {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px;
+  max-width: 560px;
+}
+.xt .no-coworkers--compact {
+  flex-direction: row;
+  align-items: center;
+  max-width: none;
+  padding: 14px 18px;
+  font-size: 14px;
+}
+.no-coworkers__marks {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.no-coworkers__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+/* A state that stands in for a whole screen keeps the screen's gutters. */
+.state-page {
+  padding: 16px;
+}
+@media (min-width: 900px) {
+  .state-page {
+    padding: 34px 40px 0;
+  }
+}

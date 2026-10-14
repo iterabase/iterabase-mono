@@ -31,16 +31,45 @@ export const quotes: WorkflowSummary = {
     },
     onItsOwn: [
       {
-        en: "Reads customer emails, PDFs and handwriting",
-        pt: "Lê emails, PDFs e letra manuscrita dos clientes",
+        kind: "reads",
+        text: {
+          en: "Reads customer emails, PDFs and handwriting",
+          pt: "Lê emails, PDFs e letra manuscrita dos clientes",
+        },
+        detail: {
+          en: "quotes@exemplo.pt · emails and attachments",
+          pt: "quotes@exemplo.pt · emails e anexos",
+        },
       },
       {
-        en: "Asks your 6 usual suppliers for rates",
-        pt: "Pede preços aos seus 6 fornecedores habituais",
+        kind: "sends",
+        text: {
+          en: "Asks your 6 usual suppliers for rates",
+          pt: "Pede preços aos seus 6 fornecedores habituais",
+        },
+        detail: {
+          en: "Pre-approved recipients · sent without review",
+          pt: "Destinatários pré-aprovados · enviado sem revisão",
+        },
+        items: [
+          "rates@northsealines.example",
+          "pricing@atlanticfwd.example",
+          "quotes@ibercargo.example",
+          "sales@portoshipping.example",
+          "lcl@euroconsol.example",
+          "ops@lusofreight.example",
+        ],
       },
       {
-        en: "Prices with your margin rules",
-        pt: "Calcula o preço com as suas regras de margem",
+        kind: "does",
+        text: {
+          en: "Prices with your margin rules",
+          pt: "Calcula o preço com as suas regras de margem",
+        },
+        detail: {
+          en: "LCL at least 12% · FCL at least 10%",
+          pt: "LCL pelo menos 12% · FCL pelo menos 10%",
+        },
       },
     ],
     connections: [
@@ -132,12 +161,22 @@ export const rates: WorkflowSummary = {
     },
     onItsOwn: [
       {
-        en: "Logs in to FreightNet and CargoHub",
-        pt: "Entra no FreightNet e no CargoHub",
+        kind: "does",
+        text: {
+          en: "Logs in to FreightNet and CargoHub",
+          pt: "Entra no FreightNet e no CargoHub",
+        },
+        detail: {
+          en: "Iterabase browser · rates@exemplo.pt",
+          pt: "Navegador Iterabase · rates@exemplo.pt",
+        },
       },
       {
-        en: "Reads rates, never submits anything",
-        pt: "Lê preços, nunca submete nada",
+        kind: "reads",
+        text: {
+          en: "Reads rates, never submits anything",
+          pt: "Lê preços, nunca submete nada",
+        },
       },
     ],
     connections: [
@@ -323,6 +362,7 @@ export const done = item({
   updatedAt: minutesAgo(90),
   finishedAt: minutesAgo(90),
   currentStep: step(quotes, "confirm", "succeeded"),
+  answeredBy: { displayName: "Rita Mendes" },
 });
 
 export const done2 = item({
@@ -333,6 +373,7 @@ export const done2 = item({
   updatedAt: minutesAgo(140),
   finishedAt: minutesAgo(140),
   currentStep: step(quotes, "confirm", "succeeded"),
+  answeredBy: { displayName: "Paulo Reis" },
 });
 
 // Failed in the last 7 days.
@@ -385,6 +426,22 @@ export const summary: DashboardSummary = {
       { workflowKey: rates.key, seconds: 600 },
     ],
   },
+};
+
+/** A new installation's dashboard: nothing has run yet. */
+export const emptySummary: DashboardSummary = {
+  counts: {
+    todo: 0,
+    in_progress: 0,
+    waiting: 0,
+    paused: 0,
+    blocked: 0,
+    done: 0,
+    failed: 0,
+  },
+  value: { configured: false, estimated: true, totals: [], models: [] },
+  trend: [],
+  timeBack: { configured: false, seconds: 0, byWorkflow: [] },
 };
 
 export const blockers: Record<string, Blocker> = {

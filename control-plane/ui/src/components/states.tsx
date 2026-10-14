@@ -43,15 +43,17 @@ export function ErrorState({
 export function Denied() {
   const { t } = useTranslation("app");
   return (
-    <div
-      role="alert"
-      className="ib-card ib-card--pad my-6 flex flex-col items-start gap-3"
-    >
-      <h1 className="ib-hero ib-hero--page">{t("deniedTitle")}</h1>
-      <p className="m-0 muted">{t("deniedBody")}</p>
-      <Link to="/" className="text-link">
-        {t("backToToday")}
-      </Link>
+    <div className="state-page">
+      <div
+        role="alert"
+        className="ib-card ib-card--pad flex flex-col items-start gap-3"
+      >
+        <h1 className="ib-hero ib-hero--page">{t("deniedTitle")}</h1>
+        <p className="m-0 muted">{t("deniedBody")}</p>
+        <Link to="/" className="text-link">
+          {t("backToToday")}
+        </Link>
+      </div>
     </div>
   );
 }
@@ -59,12 +61,14 @@ export function Denied() {
 export function NotFound() {
   const { t } = useTranslation("app");
   return (
-    <div className="ib-card ib-card--pad my-6 flex flex-col items-start gap-3">
-      <h1 className="ib-hero ib-hero--page">{t("notFoundTitle")}</h1>
-      <p className="m-0 muted">{t("notFoundBody")}</p>
-      <Link to="/" className="text-link">
-        {t("backToToday")}
-      </Link>
+    <div className="state-page">
+      <div className="ib-card ib-card--pad flex flex-col items-start gap-3">
+        <h1 className="ib-hero ib-hero--page">{t("notFoundTitle")}</h1>
+        <p className="m-0 muted">{t("notFoundBody")}</p>
+        <Link to="/" className="text-link">
+          {t("backToToday")}
+        </Link>
+      </div>
     </div>
   );
 }

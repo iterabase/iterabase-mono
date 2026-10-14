@@ -19,6 +19,9 @@ import { AuthAPIError, authApi, type AuthProfile } from "../auth/authApi";
 
 export interface Session {
   profile: AuthProfile;
+  /** The installation's name (DES-HOR-459-08); "" when unset. */
+  organizationName: string;
+  setOrganizationName: (name: string) => void;
   locale: Locale;
   isAdmin: boolean;
   /** Runs an unsafe request with the CSRF proof, refreshing a stale proof once. */
@@ -61,11 +64,15 @@ export function isNotFound(err: unknown): boolean {
 export function SessionProvider({
   profile: initialProfile,
   csrfToken,
+  organizationName = "",
+  onOrganizationNameChange,
   onSessionLost,
   children,
 }: {
   profile: AuthProfile;
   csrfToken: string;
+  organizationName?: string;
+  onOrganizationNameChange?: (name: string) => void;
   /** Reports a lost session with the language the sign-in page should use. */
   onSessionLost: (message: string | undefined, locale: Locale) => void;
   children: ReactNode;
@@ -139,6 +146,8 @@ export function SessionProvider({
   const value = useMemo<Session>(
     () => ({
       profile,
+      organizationName,
+      setOrganizationName: (name: string) => onOrganizationNameChange?.(name),
       locale,
       isAdmin: profile.role === "admin",
       withCSRF,
@@ -148,7 +157,17 @@ export function SessionProvider({
       expire,
       signOut,
     }),
-    [profile, locale, withCSRF, lost, recheck, expire, signOut],
+    [
+      profile,
+      organizationName,
+      onOrganizationNameChange,
+      locale,
+      withCSRF,
+      lost,
+      recheck,
+      expire,
+      signOut,
+    ],
   );
 
   return (

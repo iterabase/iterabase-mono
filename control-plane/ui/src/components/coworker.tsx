@@ -131,3 +131,44 @@ export function CoworkerLine({
     </div>
   );
 }
+
+const placeholderMarks: Mark[] = [
+  { shape: "round", color: "blue" },
+  { shape: "square", color: "green" },
+  { shape: "petal", color: "sun" },
+];
+
+/**
+ * A new installation has no AI coworkers yet: the three generic marks (as on
+ * sign-in) with a title and a line. Compact on Today, a full card on Team.
+ */
+export function NoCoworkers({
+  title,
+  body,
+  compact = false,
+}: {
+  title?: string;
+  body: string;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      className={cn("card no-coworkers", compact && "no-coworkers--compact")}
+    >
+      <span className="no-coworkers__marks" aria-hidden="true">
+        {placeholderMarks.map((mark) => (
+          <CoworkerMark
+            key={mark.shape}
+            coworker={{ name: "", mark }}
+            size={compact ? 28 : 40}
+            decorative
+          />
+        ))}
+      </span>
+      <div className="flex min-w-0 flex-col gap-1">
+        {title && <h2 className="no-coworkers__title">{title}</h2>}
+        <p className="m-0 muted">{body}</p>
+      </div>
+    </div>
+  );
+}

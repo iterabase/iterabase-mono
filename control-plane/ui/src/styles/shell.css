@@ -50,6 +50,19 @@
   font-size: 16px;
   text-decoration: none;
 }
+/* The installation's name after a hairline, as on the boards (DES-HOR-459-08). */
+.topbar__org {
+  max-width: 240px;
+  margin-left: 18px;
+  padding-left: 18px;
+  border-left: 1px solid var(--line);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  line-height: 22px;
+  color: var(--ink2);
+}
 .topnav {
   display: flex;
   align-items: center;
@@ -252,4 +265,7 @@
   color: var(--ink2);
   font-size: 13.5px;
   text-align: center;
+}
+.topbar__org + .topnav {
+  margin-left: 30px;
 }

@@ -20,11 +20,15 @@ type AuthState =
 
 export default function App({ history }: { history?: RouterHistory }) {
   const [auth, setAuth] = useState<AuthState>({ kind: "probing" });
+  // The installation's name (DES-HOR-459-08), public on the sign-in page.
+  const [organizationName, setOrganizationName] = useState("");
 
   const probe = useCallback(() => {
     let cancelled = false;
     void probeSession().then((result) => {
       if (cancelled) return;
+      if (result.kind !== "unavailable")
+        setOrganizationName(result.organizationName);
       if (result.kind === "authenticated")
         setAuth({
           kind: "authenticated",
@@ -70,6 +74,7 @@ export default function App({ history }: { history?: RouterHistory }) {
       <PublicAuth
         initialMessage={auth.message}
         initialLocale={auth.locale ?? browserLocale()}
+        organizationName={organizationName}
         onAuthenticated={(profile, csrfToken) =>
           setAuth({ kind: "authenticated", profile, csrfToken })
         }
@@ -98,6 +103,8 @@ export default function App({ history }: { history?: RouterHistory }) {
     <SessionProvider
       profile={auth.profile}
       csrfToken={auth.csrfToken}
+      organizationName={organizationName}
+      onOrganizationNameChange={setOrganizationName}
       onSessionLost={onSessionLost}
     >
       <LiveProvider>

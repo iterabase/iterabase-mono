@@ -26,6 +26,7 @@ export function Brand({ name }: { name: string }) {
 
 export function AuthFrame({
   brand,
+  eyebrow,
   title,
   subline,
   trust,
@@ -33,6 +34,8 @@ export function AuthFrame({
   children,
 }: {
   brand: string;
+  /** The installation's name above the hero (DES-HOR-459-08). */
+  eyebrow?: string;
   title: string;
   subline: string;
   trust: [string, string, string];
@@ -58,6 +61,7 @@ export function AuthFrame({
             ))}
           </span>
           <div className="auth-hero-copy">
+            {eyebrow && <p className="eyebrow m-0">{eyebrow}</p>}
             <h1 className="serif auth-title">{title}</h1>
             <p className="auth-sub">{subline}</p>
           </div>

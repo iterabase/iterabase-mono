@@ -172,7 +172,7 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 18px;
-    align-items: stretch;
+    align-items: start;
     background: none;
     border: 0;
     border-radius: 0;
@@ -296,11 +296,20 @@
   background: var(--card);
   box-shadow: 0 1px 2px rgba(24, 32, 44, 0.08);
 }
+/* A small centred pill, like the top bar's Work count, so the number sits
+   on the label's centre line instead of floating above it. */
 .cw-tabs__count {
   display: none;
-  margin-left: 6px;
+  margin-left: 7px;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: var(--paper2);
   font-size: 11px;
-  color: var(--ink3);
+  line-height: 16px;
+  color: var(--ink2);
+}
+.cw-tabs a[aria-current="page"] .cw-tabs__count {
+  background: var(--sunk);
 }
 .cw-week {
   display: none;
@@ -337,7 +346,7 @@
     font-size: 14.5px;
   }
   .cw-tabs__count {
-    display: inline;
+    display: inline-block;
   }
   .cw-week {
     display: flex;
@@ -610,7 +619,7 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 18px;
-    align-items: stretch;
+    align-items: start;
   }
   .cw-panel {
     gap: 4px;
@@ -747,5 +756,33 @@
   .cw-chip {
     height: 34px;
     padding: 0 13px;
+  }
+}
+
+/* Pre-approved values under an on-its-own line (DES-HOR-459-09). */
+.cw-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-basis: 100%;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.xt .cw-chips li {
+  padding: 3px 8px;
+  border-radius: 7px;
+  background: var(--paper2);
+  border: 1px solid var(--line2);
+  font-size: 11.5px;
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+}
+.cw-chips {
+  padding-left: 27px;
+}
+@media (min-width: 900px) {
+  .cw-chips {
+    padding-left: 30px;
   }
 }

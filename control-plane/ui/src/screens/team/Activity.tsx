@@ -179,6 +179,7 @@ function Rows({ items, period }: { items: WorkItem[]; period: PeriodPreset }) {
               <th scope="col">{t("col.request")}</th>
               <th scope="col">{t("col.where")}</th>
               <th scope="col">{t("col.status")}</th>
+              <th scope="col">{t("col.confirmedBy")}</th>
             </tr>
           </thead>
           <tbody>
@@ -198,6 +199,13 @@ function Rows({ items, period }: { items: WorkItem[]; period: PeriodPreset }) {
                 </td>
                 <td>
                   <WorkBadge item={item} />
+                </td>
+                <td className="text-[13.5px] text-[var(--ink2)]">
+                  {item.answeredBy?.displayName ?? (
+                    <span className="muted" aria-label={t("col.nobody")}>
+                      —
+                    </span>
+                  )}
                 </td>
               </tr>
             ))}

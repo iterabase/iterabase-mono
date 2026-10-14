@@ -16,7 +16,13 @@
     "alwaysAsksFirst": "Pergunta-lhe sempre primeiro",
     "anythingElse": "Tudo o que não esteja nestas listas também espera pelo seu OK.",
     "connections": "Ligações que usa",
-    "onItsOwn": "Sozinho"
+    "onItsOwn": "Sozinho",
+    "kind": {
+      "reads": "Lê",
+      "sends": "Envia",
+      "does": "Faz"
+    },
+    "itemsLabel": "Valores de: {{text}}"
   },
   "col": {
     "after": "Depois",
@@ -27,7 +33,9 @@
     "time": "Hora",
     "when": "Quando",
     "where": "Onde está",
-    "why": "Porque falhou"
+    "why": "Porque falhou",
+    "confirmedBy": "Confirmado por",
+    "nobody": "Ainda ninguém"
   },
   "countWord": {
     "1": "Um",
@@ -41,7 +49,7 @@
     "9": "Nove"
   },
   "done": "concluídos",
-  "empty": "Ainda não há colaboradores de IA configurados. A Iterabase adiciona-os consigo.",
+  "empty": "O Iterabase configura consigo o primeiro colaborador de IA. Cada um aparece aqui, com o que faz sozinho e o que lhe pergunta sempre primeiro.",
   "failed": {
     "notRestarted": "Não reiniciado",
     "outcomeUnknown": "Resultado desconhecido",
@@ -121,5 +129,6 @@
   "title": "A sua equipa",
   "whatHappened": "O que aconteceu",
   "youAnswer": "Responde",
-  "youConfirm": "Confirma"
+  "youConfirm": "Confirma",
+  "emptyTitle": "Ainda não há colaboradores de IA"
 }

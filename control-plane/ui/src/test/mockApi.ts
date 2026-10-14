@@ -56,9 +56,18 @@ export function createMockApi(
     workflowsStatus: number;
     /** Starts signed out; any sign-in succeeds (design preview of sign-in). */
     anonymous: boolean;
+    /** A new installation: no AI coworkers and no work yet. */
+    empty: boolean;
+    /** The installation's name (DES-HOR-459-08). */
+    organizationName: string;
   }> = {},
 ): MockApi {
-  const items = fx.items.map((item) => ({ ...item }));
+  const items = overrides.empty ? [] : fx.items.map((item) => ({ ...item }));
+  const workflows = overrides.empty ? [] : fx.workflows;
+  const summary = overrides.empty ? fx.emptySummary : fx.summary;
+  const organizationName =
+    overrides.organizationName ??
+    (overrides.empty ? "" : "Transitários Exemplo");
   const calls: MockCall[] = [];
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   let cursor = 100;
@@ -120,23 +129,35 @@ export function createMockApi(
       return json({ profile, csrfToken: "csrf-1" });
     }
     if (path === "/v1/auth/session" && !signedIn)
-      return json({ authenticated: false, locale: profile.locale });
+      return json({
+        authenticated: false,
+        locale: profile.locale,
+        organizationName,
+      });
     if (path === "/v1/auth/session")
       return json({
         authenticated: true,
         profile,
         csrfToken: "csrf-1",
         locale: profile.locale,
+        organizationName,
       });
     if (path === "/v1/profile") return json({ profile, csrfToken: "csrf-2" });
     if (path === "/v1/sessions") return json([]);
+    if (path === "/v1/access-requests") return json([]);
+    if (path === "/v1/organization/settings")
+      return json({
+        defaultLocale: "en",
+        name: organizationName,
+        updatedAt: "2026-10-14T09:00:00Z",
+      });
     if (path === "/v1/auth/sign-out")
       return new Response(null, { status: 204 });
     if (path === "/v1/workflows")
       return overrides.workflowsStatus
         ? json({ error: "unavailable" }, overrides.workflowsStatus)
-        : json({ workflows: fx.workflows });
-    if (path === "/v1/work-dashboard") return json(fx.summary);
+        : json({ workflows });
+    if (path === "/v1/work-dashboard") return json(summary);
     if (path === "/v1/work-events") {
       if (overrides.eventsStatus)
         return json({ error: "unauthorized" }, overrides.eventsStatus);

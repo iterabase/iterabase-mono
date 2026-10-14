@@ -71,6 +71,8 @@ export function AllClear({ state }: { state: AllClearState }) {
         values={{ at: formatTime(next, locale) }}
         components={{ b: <b className="text-[var(--ink)]" /> }}
       />
+    ) : cleared.length === 0 ? (
+      t("allClear.nothingToClear")
     ) : (
       t("allClear.nothingNext")
     );

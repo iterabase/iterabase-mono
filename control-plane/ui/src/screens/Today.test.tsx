@@ -335,6 +335,8 @@ describe("Pseudo-locale", () => {
       const data = [
         operator.displayName,
         "RM",
+        // The installation's name is the customer's own data (DES-HOR-459-08).
+        "Transitários Exemplo",
         ...fx.items.flatMap((item) => [item.title, item.source.title]),
         ...fx.workflows.map((workflow) => workflow.coworker.name),
       ];

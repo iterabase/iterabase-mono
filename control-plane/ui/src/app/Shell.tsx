@@ -145,6 +145,9 @@ function Frame({ pathname }: { pathname: string }) {
               <Logomark size={24} />
               {t("brand")}
             </Link>
+            {session.organizationName && (
+              <span className="topbar__org">{session.organizationName}</span>
+            )}
             <nav aria-label={t("mainNav")} className="topnav">
               {tabs.map(({ tab, to }) => (
                 <Link

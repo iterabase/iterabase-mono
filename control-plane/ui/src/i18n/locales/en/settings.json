@@ -28,7 +28,6 @@
   "organizationLanguageNotSet": "Not set (each person's browser language)",
   "organizationLanguageSave": "Save default language",
   "organizationLanguageSaved": "Default language saved.",
-  "organizationLanguageTitle": "Organisation language",
   "peopleIntro": "Who can see work and approve what AI coworkers prepare. Admins also manage settings.",
   "profileConflict": "Your profile changed elsewhere. Reload to see the current values.",
   "profileEmailReadonly": "Email",
@@ -79,5 +78,10 @@
   "stateChanged": "This request changed. Refresh to see the current state.",
   "toApprove_one": "{{count, number}} to approve",
   "toApprove_other": "{{count, number}} to approve",
-  "verifyVerified": "Email verified."
+  "verifyVerified": "Email verified.",
+  "organizationTitle": "Organisation",
+  "organizationNameLabel": "Name",
+  "organizationNameSave": "Save name",
+  "organizationNameSaved": "Organisation name saved.",
+  "organizationNameHelp": "Shown on the sign-in page and at the top of the app. Changes are logged with your name."
 }

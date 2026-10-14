@@ -28,7 +28,6 @@
   "organizationLanguageNotSet": "Não definido (idioma do browser de cada pessoa)",
   "organizationLanguageSave": "Guardar idioma predefinido",
   "organizationLanguageSaved": "Idioma predefinido guardado.",
-  "organizationLanguageTitle": "Idioma da organização",
   "peopleIntro": "Quem pode ver o trabalho e aprovar o que os colaboradores de IA preparam. Os Admins também gerem as definições.",
   "profileConflict": "O seu perfil foi alterado noutro local. Recarregue para ver os valores atuais.",
   "profileEmailReadonly": "Email",
@@ -82,5 +81,10 @@
   "toApprove_many": "{{count, number}} por aprovar",
   "toApprove_one": "{{count, number}} por aprovar",
   "toApprove_other": "{{count, number}} por aprovar",
-  "verifyVerified": "Email confirmado."
+  "verifyVerified": "Email confirmado.",
+  "organizationTitle": "Organização",
+  "organizationNameLabel": "Nome",
+  "organizationNameSave": "Guardar nome",
+  "organizationNameSaved": "Nome da organização guardado.",
+  "organizationNameHelp": "Aparece na página de entrada e no topo da aplicação. As alterações ficam registadas com o seu nome."
 }

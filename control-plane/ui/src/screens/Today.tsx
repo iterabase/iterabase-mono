@@ -6,7 +6,7 @@ import { SearchDialog } from "../app/Search";
 import { useSession } from "../app/session";
 import { PhoneHeader, useNow, useNowEyebrow } from "../app/Shell";
 import { Logomark } from "../components/brand";
-import { CoworkerMark } from "../components/coworker";
+import { CoworkerMark, NoCoworkers } from "../components/coworker";
 import { Empty, ErrorState, Loading, StaleNotice } from "../components/states";
 import { useLocale } from "../i18n";
 import { formatDay, formatNumber, formatTime } from "../i18n/format";
@@ -226,7 +226,7 @@ function TodayBoard() {
           items.status === "ready" &&
           all.length === 0 && (
             <div className="desk:col-span-full">
-              <Empty>{t("today.noCoworkers")}</Empty>
+              <NoCoworkers body={t("today.noCoworkers")} compact />
             </div>
           )}
       </div>

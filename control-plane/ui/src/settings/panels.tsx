@@ -248,7 +248,12 @@ interface OrganizationLanguagePanelProps {
   onError: (err: unknown) => void;
   /** Refreshes the viewer's profile and returns their effective locale. */
   onSaved: () => Promise<LocaleCode | undefined>;
+  /** The installation's name changed (DES-HOR-459-08). */
+  onNameSaved: (name: string) => void;
 }
+
+/** The longest installation name the API accepts (DES-HOR-459-08). */
+const maxOrganizationName = 80;
 
 // The organisation default language (DES-HOR-670-02): Admin-only and logged
 // with the Admin's name.
@@ -258,9 +263,12 @@ export function OrganizationLanguagePanel({
   withCSRF,
   onError,
   onSaved,
+  onNameSaved,
 }: OrganizationLanguagePanelProps) {
   const [settings, setSettings] = useState<OrganizationSettings | null>(null);
   const [pending, setPending] = useState<LocaleCode | "">("");
+  const [pendingName, setPendingName] = useState("");
+  const [savingName, setSavingName] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -276,6 +284,7 @@ export function OrganizationLanguagePanel({
       const loaded = await authApi.organizationSettings();
       setSettings(loaded);
       setPending(loaded.defaultLocale);
+      setPendingName(loaded.name ?? "");
     } catch (err) {
       if (err instanceof AuthAPIError && err.status === 403) {
         onErrorRef.current(err);
@@ -323,13 +332,41 @@ export function OrganizationLanguagePanel({
     }
   }
 
+  async function submitName(event: FormEvent) {
+    event.preventDefault();
+    if (!settings) return;
+    const name = pendingName.trim();
+    setSavingName(true);
+    setConflict(false);
+    setNotice("");
+    try {
+      const updated = await withCSRF((token) =>
+        authApi.updateOrganizationSettings(token, {
+          name,
+          expectedUpdatedAt: settings.updatedAt,
+        }),
+      );
+      setSettings(updated);
+      setPendingName(updated.name ?? "");
+      onNameSaved(updated.name ?? "");
+      setNotice(copy("organizationNameSaved"));
+    } catch (err) {
+      if (err instanceof AuthAPIError && err.code === "settings_conflict") {
+        setConflict(true);
+      } else {
+        onError(err);
+      }
+    } finally {
+      setSavingName(false);
+    }
+  }
+
   return (
     <Panel
-      title={copy("organizationLanguageTitle")}
-      busy={settings === null || saving}
+      title={copy("organizationTitle")}
+      busy={settings === null || saving || savingName}
     >
       <div className="panel-body">
-        <p className="auth-intro">{copy("organizationLanguageIntro")}</p>
         {settings === null && !loadFailed && (
           <p className="muted m-0 text-[13.5px]" role="status">
             {copy("loading")}
@@ -349,6 +386,37 @@ export function OrganizationLanguagePanel({
             onRetry={() => void load()}
           />
         )}
+        {settings && (
+          <form
+            className="flex flex-wrap items-end gap-[10px]"
+            onSubmit={submitName}
+          >
+            <label className="field min-w-[200px] flex-1">
+              <span>{copy("organizationNameLabel")}</span>
+              <input
+                value={pendingName}
+                maxLength={maxOrganizationName}
+                autoComplete="organization"
+                onChange={(event) => setPendingName(event.target.value)}
+              />
+            </label>
+            <button
+              type="submit"
+              className="btn btn-secondary settings-field-btn"
+              disabled={
+                savingName || pendingName.trim() === (settings.name ?? "")
+              }
+            >
+              {savingName
+                ? copy("profileSaving")
+                : copy("organizationNameSave")}
+            </button>
+            <p className="muted m-0 basis-full text-[13px]">
+              {copy("organizationNameHelp")}
+            </p>
+          </form>
+        )}
+        <p className="auth-intro">{copy("organizationLanguageIntro")}</p>
         {settings && (
           <form
             className="flex flex-wrap items-end gap-[10px]"

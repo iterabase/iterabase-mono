@@ -219,6 +219,7 @@ export function Settings({ tab }: { tab: string }) {
                 setNotice={setNotice}
                 withCSRF={session.withCSRF}
                 onError={handleError}
+                onNameSaved={session.setOrganizationName}
                 onSaved={async () => {
                   // People who follow the organisation, this Admin included,
                   // switch language with it.
