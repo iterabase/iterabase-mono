@@ -71,6 +71,7 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	unreferenced, err := store.Dashboard(ctx, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 	require.NoError(t, err)
 	assert.False(t, unreferenced.Value.Configured, "an unreferenced registry row is not Dashboard configuration")
+	assert.Equal(t, workstore.TimeBackSummary{ByWorkflow: []workstore.WorkflowTimeBack{}}, unreferenced.TimeBack)
 
 	item, created, err := store.Start(ctx, workstore.StartInput{ActorIdentityID: actorID, WorkflowKey: "walter/quotation", IdempotencyKey: "notification-1", Title: "Quotation — ACME", Source: json.RawMessage(`{"messageId":"m-1","tenant":"acme"}`), SourcePresentation: sourcePresentation, ArtifactRefs: sourceArtifacts})
 	require.NoError(t, err)
@@ -293,6 +294,9 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	dashboard, err = restarted.Dashboard(ctx, periodFrom, periodTo)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), dashboard.Counts[workstore.StateDone])
+	assert.Equal(t, workstore.TimeBackSummary{Configured: true, Seconds: 1200, ByWorkflow: []workstore.WorkflowTimeBack{
+		{WorkflowKey: "walter/quotation", Seconds: 1200},
+	}}, dashboard.TimeBack, "a credited completion hands back the baseline time")
 	artifacts, err := restarted.ListArtifacts(ctx, item.ID)
 	require.NoError(t, err)
 	artifactIDs := make([]string, 0, len(artifacts))
@@ -327,6 +331,15 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, disputed.ValueDisputed)
 	assert.Equal(t, "0.000000", *disputed.EstimatedValue)
+	corrected, err := restarted.Dashboard(ctx, periodFrom, periodTo)
+	require.NoError(t, err)
+	assert.Equal(t, workstore.TimeBackSummary{Configured: true, Seconds: 0, ByWorkflow: []workstore.WorkflowTimeBack{
+		{WorkflowKey: "walter/quotation", Seconds: 0},
+	}}, corrected.TimeBack, "a corrected run never counts as time back")
+	timeBackJSON, err := json.Marshal(corrected.TimeBack)
+	require.NoError(t, err)
+	assert.NotContains(t, string(timeBackJSON), "EUR")
+	assert.NotContains(t, string(timeBackJSON), "currency")
 	_, err = pool.Exec(ctx, `UPDATE work.value_ledger SET amount=1 WHERE work_item_id=$1`, item.ID)
 	assert.Error(t, err, "value history must be append-only")
 	_, err = pool.Exec(ctx, `DELETE FROM work.timeline_events WHERE work_item_id=$1`, item.ID)

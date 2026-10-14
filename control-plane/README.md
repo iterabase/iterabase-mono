@@ -530,7 +530,7 @@ Work APIs require a `work`-scope bearer key and operation capability
 | `GET` | `/v1/work-items/{id}/feedback` / `/v1/work-items/{id}/feedback/{feedbackID}` | Original-attempt feedback and revised-attempt association |
 | `POST` | `/v1/work-items/{id}/feedback` | Save feedback without starting work |
 | `POST` | `/v1/work-items/{id}/revisions` | Explicit revised attempt with exact consequence confirmation |
-| `GET` | `/v1/work-dashboard` | State counts plus explainable estimated value/trend |
+| `GET` | `/v1/work-dashboard` | State counts, explainable estimated value/trend (Admin `value.read` only), and `timeBack` `{configured, seconds, byWorkflow[{workflowKey, seconds}]}` for every role: net credited minus deducted value-model `baselineSeconds` in the period, never money (DES-HOR-459-02) |
 | `GET` | `/v1/work-events` | Resumable SSE (`Last-Event-ID`) of business-safe events |
 | `POST` | `/v1/value-models` | Admin-only immutable value-model version creation |
 

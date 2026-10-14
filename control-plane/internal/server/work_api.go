@@ -441,6 +441,8 @@ func (h *Handler) getWorkDashboard(w http.ResponseWriter, r *http.Request) {
 		writeWorkError(w, err)
 		return
 	}
+	// Money is Admin-only (value.read); timeBack carries no money and is
+	// returned to every role holding work.read (DES-HOR-459-02).
 	if !principal.Can(identity.ActionValueRead) {
 		summary.Value = workstore.ValueSummary{Totals: []workstore.CurrencyAmount{}, Models: []workstore.ValueModelSnapshot{}}
 		summary.Trend = []workstore.ValueTrendPoint{}

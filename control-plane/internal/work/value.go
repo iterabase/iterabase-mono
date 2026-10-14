@@ -77,6 +77,25 @@ type DashboardSummary struct {
 	Counts map[string]int64  `json:"counts"`
 	Value  ValueSummary      `json:"value"`
 	Trend  []ValueTrendPoint `json:"trend"`
+	// TimeBack is the labour time handed back in the period (DES-HOR-459-02).
+	// It carries no money, so every role holding work.read receives it.
+	TimeBack TimeBackSummary `json:"timeBack"`
+}
+
+// TimeBackSummary is the net labour time the credited work in a period saved:
+// each completion credit adds its value model's baselineSeconds and each
+// feedback deduction removes it again, so corrected runs never count. It is
+// configured exactly when the euro value is.
+type TimeBackSummary struct {
+	Configured bool               `json:"configured"`
+	Seconds    int64              `json:"seconds"`
+	ByWorkflow []WorkflowTimeBack `json:"byWorkflow"`
+}
+
+// WorkflowTimeBack is the net time back for one workflow key.
+type WorkflowTimeBack struct {
+	WorkflowKey string `json:"workflowKey"`
+	Seconds     int64  `json:"seconds"`
 }
 type ValueSummary struct {
 	Configured bool                 `json:"configured"`
@@ -154,8 +173,12 @@ func (s *Store) Dashboard(ctx context.Context, from, to time.Time) (DashboardSum
 		return out, err
 	}
 	out.Value = ValueSummary{Configured: relevant > 0 && configured == relevant, Estimated: relevant > 0 && configured == relevant, Totals: make([]CurrencyAmount, 0), Models: make([]ValueModelSnapshot, 0)}
+	out.TimeBack = TimeBackSummary{Configured: out.Value.Configured, ByWorkflow: make([]WorkflowTimeBack, 0)}
 	if !out.Value.Configured {
 		return out, nil
+	}
+	if err := s.timeBack(ctx, from, to, &out.TimeBack); err != nil {
+		return out, err
 	}
 	modelRows, err := s.pool.Query(ctx, `
 		WITH relevant_attempts AS (
@@ -226,4 +249,31 @@ func (s *Store) Dashboard(ctx context.Context, from, to time.Time) (DashboardSum
 		out.Trend = append(out.Trend, p)
 	}
 	return out, trendRows.Err()
+}
+
+// timeBack sums the period's credited and deducted value-ledger entries in
+// seconds, using the baselineSeconds of the immutable value-model snapshot each
+// entry was priced from (the same basis as the euro totals).
+func (s *Store) timeBack(ctx context.Context, from, to time.Time, out *TimeBackSummary) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT wi.workflow_key,
+		       SUM(CASE WHEN l.kind='completion_credit' THEN 1 ELSE -1 END
+		           * (l.formula_snapshot->>'baselineSeconds')::bigint)::bigint
+		FROM work.value_ledger l
+		JOIN work.work_items wi ON wi.id=l.work_item_id
+		WHERE l.created_at >= $1 AND l.created_at < $2
+		GROUP BY wi.workflow_key ORDER BY wi.workflow_key`, from, to)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var entry WorkflowTimeBack
+		if err := rows.Scan(&entry.WorkflowKey, &entry.Seconds); err != nil {
+			return err
+		}
+		out.Seconds += entry.Seconds
+		out.ByWorkflow = append(out.ByWorkflow, entry)
+	}
+	return rows.Err()
 }

@@ -202,3 +202,50 @@ func TestWorkItemsFilterByWorkflowKeyAndOperatorSeesActorNames(t *testing.T) {
 		assert.NotContains(t, string(raw), "operator@example.com", name)
 	}
 }
+
+// TestTimeBackIsVisibleToEveryRoleWithoutMoney proves the Dashboard timeBack
+// block (DES-HOR-459-02) is identical for an Admin and an Operator, while the
+// euro value stays clipped for the Operator and timeBack carries no money.
+func TestTimeBackIsVisibleToEveryRoleWithoutMoney(t *testing.T) {
+	h := newAuthAPIHarness(t)
+	ctx := context.Background()
+	seedManualValueWorkflow(t, ctx, h.pool)
+	admin := h.provisionAdmin("admin@example.com", "admin-long-password")
+	operator := h.activeUser("operator@example.com", "operator", "operator-long-password")
+	operatorSession := h.signIn("operator@example.com", "operator-long-password", operator)
+
+	headers := operatorSession.unsafeHeaders()
+	headers["Idempotency-Key"] = "time-back-1"
+	started := h.do(http.MethodPost, "/v1/work-items", map[string]any{
+		"workflowKey": "walter/manual", "title": "Quotation — ACME", "source": map[string]any{"m": 1},
+		"sourcePresentation": map[string]any{"kind": "email", "title": "Quote", "evidence": []any{}},
+	}, headers)
+	require.Equal(t, http.StatusCreated, started.status, "%v", started.body)
+	itemID, _ := started.body["id"].(string)
+	// Credit the completion exactly as the engine does: the attempt's immutable
+	// value-model snapshot (baselineSeconds 1200) priced the entry.
+	_, err := h.pool.Exec(ctx, `
+		INSERT INTO work.value_ledger (work_item_id,attempt_id,value_model_id,kind,amount,currency,formula_snapshot)
+		SELECT wi.id, a.id, a.value_model_id, 'completion_credit', 10, 'EUR', a.value_model_snapshot
+		FROM work.work_items wi JOIN work.attempts a ON a.work_item_id = wi.id
+		WHERE wi.id = $1`, itemID)
+	require.NoError(t, err)
+
+	timeBack := map[string]any{}
+	for name, session := range map[string]signedIn{"admin": admin, "operator": operatorSession} {
+		dashboard := h.do(http.MethodGet, "/v1/work-dashboard", nil, session.headers())
+		require.Equal(t, http.StatusOK, dashboard.status, name)
+		got, _ := dashboard.body["timeBack"].(map[string]any)
+		timeBack[name] = got
+		raw, err := json.Marshal(got)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"configured":true,"seconds":1200,"byWorkflow":[{"workflowKey":"walter/manual","seconds":1200}]}`, string(raw), name)
+		assert.NotContains(t, string(raw), "EUR", name)
+		value, _ := dashboard.body["value"].(map[string]any)
+		assert.Equal(t, name == "admin", value["configured"], "%s euro value visibility", name)
+		if name == "operator" {
+			assert.Empty(t, value["totals"], "an Operator never receives euro totals")
+		}
+	}
+	assert.Equal(t, timeBack["admin"], timeBack["operator"])
+}
