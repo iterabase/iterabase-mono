@@ -74,6 +74,9 @@ CREATE TABLE mailbox.subscriptions (
 -- read content through the bounded product tools.
 CREATE TABLE mailbox.messages (
     id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- Delivery order. A batch is recorded in one transaction, so recorded_at
+    -- ties; seq keeps consumers in insertion order.
+    seq                   bigint GENERATED ALWAYS AS IDENTITY UNIQUE,
     source_id             uuid NOT NULL REFERENCES mailbox.sources(id) ON DELETE RESTRICT,
     provider_message_id   text NOT NULL CHECK (length(provider_message_id) BETWEEN 1 AND 1024),
     folder                text NOT NULL,
@@ -92,7 +95,7 @@ CREATE TABLE mailbox.messages (
     acknowledged_at       timestamptz,
     UNIQUE (source_id, provider_message_id)
 );
-CREATE INDEX messages_pending ON mailbox.messages (recorded_at) WHERE acknowledged_at IS NULL;
+CREATE INDEX messages_pending ON mailbox.messages (seq) WHERE acknowledged_at IS NULL;
 CREATE INDEX messages_internet_message_id ON mailbox.messages (internet_message_id) WHERE internet_message_id <> '';
 CREATE INDEX messages_conversation ON mailbox.messages (source_id, conversation_id) WHERE conversation_id <> '';
 

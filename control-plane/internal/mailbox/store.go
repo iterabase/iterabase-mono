@@ -413,7 +413,7 @@ type Events interface {
 
 var _ Events = (*Store)(nil)
 
-// ClaimEvents leases up to limit unacknowledged events, oldest first.
+// ClaimEvents leases up to limit unacknowledged events in recording order.
 func (s *Store) ClaimEvents(ctx context.Context, limit int, lease time.Duration) ([]Event, error) {
 	rows, err := s.pool.Query(ctx, `
 		WITH claimed AS (
@@ -421,7 +421,7 @@ func (s *Store) ClaimEvents(ctx context.Context, limit int, lease time.Duration)
 		    WHERE id IN (
 		        SELECT id FROM mailbox.messages
 		        WHERE acknowledged_at IS NULL AND (claimed_until IS NULL OR claimed_until < now())
-		        ORDER BY recorded_at
+		        ORDER BY seq
 		        LIMIT $1
 		        FOR UPDATE SKIP LOCKED)
 		    RETURNING *)
@@ -429,7 +429,7 @@ func (s *Store) ClaimEvents(ctx context.Context, limit int, lease time.Duration)
 		       c.internet_message_id, c.conversation_id, c.in_reply_to, c."references",
 		       c.sender_address, c.sender_name, c.subject, c.has_attachments, c.received_at, c.recorded_at
 		FROM claimed c JOIN mailbox.sources s ON s.id = c.source_id
-		ORDER BY c.recorded_at`, limit, lease.String())
+		ORDER BY c.seq`, limit, lease.String())
 	if err != nil {
 		return nil, fmt.Errorf("claim mailbox events: %w", err)
 	}
