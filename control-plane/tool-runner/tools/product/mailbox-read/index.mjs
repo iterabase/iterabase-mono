@@ -3,7 +3,7 @@
 // slot (DES-HOR-358-03) and hands the runner only a short-lived access token.
 // Bodies are bounded inline; HTML bodies and attachment bytes go to the
 // artifact service, never into the result.
-export const identity = { name: "platform.mailbox.read", version: "1.0.0" };
+export const identity = { name: "platform.mailbox.read", version: "1.0.1" };
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 const MAX_TEXT_BYTES = 32 * 1024;

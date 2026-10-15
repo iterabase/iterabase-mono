@@ -8,7 +8,7 @@
 // cannot be set, so the draft is created first and its internetMessageId and
 // conversationId are known before the send. A send whose outcome is unknown
 // returns `outcome_unknown` with the draft identity, never a silent retry.
-export const identity = { name: "platform.mailbox.send", version: "1.0.0" };
+export const identity = { name: "platform.mailbox.send", version: "1.0.1" };
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 // Provider responses are read through this byte limit before parsing.
