@@ -183,7 +183,11 @@ The durable at-most-once ledger (`toolgateway.invocations`) is uniquely keyed by
 attempt + caller scope + tool-call id + exact version digest + idempotency key.
 Duplicates of a completed invocation return the committed result; duplicates in
 progress report the existing invocation; a possible effect with no committed
-result becomes `outcome_unknown` and is never automatically repeated. Retry is
+result becomes `outcome_unknown` and is never automatically repeated. A tool
+that cannot confirm its own effect reports the reserved `outcome_unknown`
+error code; the runner returns it as `INVOKE_STATE_OUTCOME_UNKNOWN`, the
+ledger records `outcome_unknown` (a read-only tool fails instead), and the
+caller receives the tool's receipt in `ErrorDetail.details_json` (HOR-358). Retry is
 classified by effect class: `read_only` may bounded-retry; `idempotent_write`
 only when the descriptor proves a stable strategy; `non_idempotent_write` never
 auto-retries after execution begins (ARCH-014).
@@ -270,8 +274,10 @@ provider-neutral boundary: the `Source` interface (Microsoft Graph in
 - Intake claims due mailboxes under a lease, runs Graph delta per folder from
   the persisted cursor (mail received before the folder's baseline is history),
   records each new message once in `mailbox.messages` keyed by its immutable
-  provider id, and only then advances the cursor. An expired cursor resyncs
-  from 15 minutes before the newest recorded message. With a notification URL
+  provider id, and only then advances the cursor. Delta pages are unordered,
+  so only a completed round proves earlier mail was seen: completing a round
+  moves the folder's `synced_through` checkpoint to the round's start minus
+  15 minutes, and an expired cursor restarts from that checkpoint. With a notification URL
   it also keeps a Graph subscription per folder; only a hash of its
   `clientState` is stored. Credential failures are recorded per slot with a
   customer-safe reason in `mailbox.credential_status`.

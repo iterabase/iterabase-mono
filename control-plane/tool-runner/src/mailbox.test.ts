@@ -112,6 +112,35 @@ describe("platform.mailbox.read", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("cancels an oversized body response before buffering it", async () => {
+    // 12 MiB of HTML in 64 KiB chunks against an 8 MiB response limit.
+    const chunk = new Uint8Array(64 * 1024).fill(0x61);
+    let pulled = 0;
+    let cancelled = false;
+    const oversized = () => new Response(new ReadableStream({
+      pull(controller) {
+        if (pulled >= 12 * 1024 * 1024) return controller.close();
+        pulled += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+      cancel() { cancelled = true; },
+    }), { status: 200 });
+    stubGraph((call) => call.url.includes("$select=body") ? oversized() : json({ id: "m" }));
+    await expect(read.module.invoke(context(), { mailbox: "q@c.pt", operation: "get_message", messageId: "m" }))
+      .rejects.toMatchObject({ name: "ToolError", code: "message_too_large" });
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThan(9 * 1024 * 1024);
+  });
+
+  it("refuses a response whose declared length exceeds the limit and cancels it", async () => {
+    let cancelled = false;
+    stubGraph(() => new Response(new ReadableStream({ cancel() { cancelled = true; } }),
+      { status: 200, headers: { "content-length": String(2 * 1024 * 1024) } }));
+    await expect(read.module.invoke(context(), { mailbox: "q@c.pt", operation: "list_attachments", messageId: "m" }))
+      .rejects.toMatchObject({ code: "message_too_large" });
+    expect(cancelled).toBe(true);
+  });
+
   it("lists attachments without content", async () => {
     stubGraph(() => json({ value: [{ id: "a1", name: "rfq.pdf", contentType: "application/pdf", size: 1024, isInline: false, "@odata.type": "#microsoft.graph.fileAttachment" }] }));
     const out = await read.module.invoke(context(), { mailbox: "q@c.pt", operation: "list_attachments", messageId: "m" });
@@ -165,6 +194,32 @@ describe("platform.mailbox.send", () => {
     expect(calls[0].body).toMatchObject({ message: { body: { contentType: "HTML", content: "<p>Yes</p>" } } });
     expect(calls[1].method).toBe("GET");
     expect(calls[2].url).toContain("/messages/draft-2/send");
+  });
+
+  it("re-reads missing identifiers and never sends without both", async () => {
+    let reads = 0;
+    const calls = stubGraph((call) => {
+      if (call.url.endsWith("/send")) return new Response(null, { status: 202 });
+      if (call.method === "POST") return json({ id: "draft-1" }, 201);
+      reads++;
+      return json({ id: "draft-1", internetMessageId: "<x@c.pt>" }); // conversationId never arrives
+    });
+    await expect(send.module.invoke(context(), { mailbox: "q@c.pt", to: "a@b.com", subject: "s", body: "b" }))
+      .rejects.toMatchObject({ code: "not_sent", details: { providerMessageId: "draft-1" } });
+    expect(reads).toBe(3);
+    expect(calls.some((c) => c.url.endsWith("/send"))).toBe(false);
+  });
+
+  it("sends once the identifiers arrive on a later read", async () => {
+    let reads = 0;
+    stubGraph((call) => {
+      if (call.url.endsWith("/send")) return new Response(null, { status: 202 });
+      if (call.method === "POST") return json({ id: "draft-1" }, 201);
+      reads++;
+      return json(reads < 2 ? { id: "draft-1" } : { id: "draft-1", internetMessageId: "<x@c.pt>", conversationId: "conv" });
+    });
+    const out = await send.module.invoke(context(), { mailbox: "q@c.pt", to: "a@b.com", subject: "s", body: "b" });
+    expect(out.result).toMatchObject({ status: "sent", internetMessageId: "<x@c.pt>", conversationId: "conv" });
   });
 
   it("reports not_sent when the draft cannot be created", async () => {

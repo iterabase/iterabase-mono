@@ -180,33 +180,39 @@ func (s *Store) Cursor(ctx context.Context, sourceID, folder string) (string, ti
 	return cursor, baseline, nil
 }
 
-// SaveCursor records the folder's next delta cursor.
-func (s *Store) SaveCursor(ctx context.Context, sourceID, folder, cursor string) error {
+// SaveCursor records the folder's next delta cursor. roundStart is when the
+// call that produced it began; an open round keeps its first start. When
+// complete (the provider returned its final delta link) every message received
+// before the round started has been seen, so synced_through advances to the
+// round start minus resyncOverlap.
+func (s *Store) SaveCursor(ctx context.Context, sourceID, folder, cursor string, complete bool, roundStart time.Time) error {
 	_, err := s.pool.Exec(ctx, `
-		UPDATE mailbox.folder_cursors SET cursor = $3, updated_at = now()
-		WHERE source_id = $1 AND folder = $2`, sourceID, folder, cursor)
+		UPDATE mailbox.folder_cursors SET
+		    cursor = $3,
+		    synced_through = CASE WHEN $4
+		        THEN GREATEST(synced_through, COALESCE(round_started_at, $5) - $6::interval)
+		        ELSE synced_through END,
+		    round_started_at = CASE WHEN $4 THEN NULL ELSE COALESCE(round_started_at, $5) END,
+		    updated_at = now()
+		WHERE source_id = $1 AND folder = $2`, sourceID, folder, cursor, complete, roundStart, resyncOverlap.String())
 	if err != nil {
 		return fmt.Errorf("save folder cursor: %w", err)
 	}
 	return nil
 }
 
-// resyncOverlap re-reads a window before the newest recorded message when a
-// cursor expires, so mail that arrived around the reset is not missed.
-// Deduplication absorbs the repeats.
+// resyncOverlap is subtracted from a completed round's start, covering clock
+// skew between this process and the provider. Deduplication absorbs repeats.
 const resyncOverlap = 15 * time.Minute
 
-// ResetCursor clears an expired cursor. The next sync starts shortly before
-// the newest recorded message in the folder, never before the baseline.
+// ResetCursor clears an expired cursor and restarts the folder from the last
+// completed round's checkpoint. Messages a partial round recorded never move
+// the restart point, so nothing it had not yet reached is skipped.
 func (s *Store) ResetCursor(ctx context.Context, sourceID, folder string) error {
 	_, err := s.pool.Exec(ctx, `
-		UPDATE mailbox.folder_cursors c
-		SET cursor = '', updated_at = now(),
-		    baseline_at = GREATEST(c.baseline_at, COALESCE(
-		        (SELECT max(received_at) FROM mailbox.messages m WHERE m.source_id = c.source_id AND m.folder = c.folder)
-		            - $3::interval,
-		        c.baseline_at))
-		WHERE source_id = $1 AND folder = $2`, sourceID, folder, resyncOverlap.String())
+		UPDATE mailbox.folder_cursors
+		SET cursor = '', baseline_at = synced_through, round_started_at = NULL, updated_at = now()
+		WHERE source_id = $1 AND folder = $2`, sourceID, folder)
 	if err != nil {
 		return fmt.Errorf("reset folder cursor: %w", err)
 	}

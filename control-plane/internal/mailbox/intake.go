@@ -141,6 +141,7 @@ func (in *Intake) drain(ctx context.Context, src Source, mb Mailbox, folder stri
 		if err != nil {
 			return err
 		}
+		started := in.now()
 		changes, err := src.Changes(ctx, mb, folder, cursor, baseline)
 		if errors.Is(err, ErrCursorExpired) && !resynced {
 			in.log().Info("mailbox intake: cursor expired, resyncing", "mailbox", mb.Name, "folder", folder)
@@ -156,7 +157,7 @@ func (in *Intake) drain(ctx context.Context, src Source, mb Mailbox, folder stri
 		if err := in.record(ctx, src, mb, folder, changes.Messages); err != nil {
 			return err
 		}
-		if err := in.Store.SaveCursor(ctx, mb.ID, folder, changes.Cursor); err != nil {
+		if err := in.Store.SaveCursor(ctx, mb.ID, folder, changes.Cursor, !changes.More, started); err != nil {
 			return err
 		}
 		if !changes.More {

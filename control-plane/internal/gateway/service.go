@@ -545,6 +545,20 @@ func (s *Service) classifyAmbiguous(ctx context.Context, inv Invocation, tv Tool
 	return resp, nil
 }
 
+// outcomeUnknownDetail is the caller-facing error for a tool-reported unknown
+// outcome: always code outcome_unknown and unknown retryability, with the
+// tool's message and receipt details.
+func outcomeUnknownDetail(stored []byte) *v1.ErrorDetail {
+	out := &v1.ErrorDetail{Code: "outcome_unknown", Message: "the tool could not confirm whether its effect happened", Retryability: v1.Retryability_RETRYABILITY_UNKNOWN}
+	if e := parseError(stored); e != nil {
+		if e.Message != "" {
+			out.Message = e.Message
+		}
+		out.DetailsJson = e.DetailsJson
+	}
+	return out
+}
+
 func (s *Service) finishFailed(ctx context.Context, inv Invocation, err *v1.ErrorDetail) (*v1.InvokeResponse, error) {
 	errJSON, _ := marshalJSON(err)
 	commitCtx, cancel := s.detachedCtx(ctx)
@@ -563,6 +577,10 @@ func (s *Service) finishFailed(ctx context.Context, inv Invocation, err *v1.Erro
 func (s *Service) finishFromResult(ctx context.Context, inv Invocation, tv ToolVersion, res dispatchResult) (*v1.InvokeResponse, error) {
 	state := res.state
 	resultJSON := res.resultJSON
+	// A read-only tool has no effect to be uncertain about.
+	if state == InvocationOutcomeUnknown && tv.EffectClass == EffectReadOnly {
+		state = InvocationFailed
+	}
 	// Bound + validate runner output before committing.
 	if state == InvocationSucceeded {
 		if err := s.validateArtifactOutputs(ctx, inv, parseArtifactRefs(res.artifactRefs)); err != nil {
@@ -585,10 +603,17 @@ func (s *Service) finishFromResult(ctx context.Context, inv Invocation, tv ToolV
 		return nil, fmt.Errorf("commit result: %w", ferr)
 	}
 	resp := &v1.InvokeResponse{InvocationId: inv.ID}
-	if state == InvocationSucceeded {
+	switch state {
+	case InvocationSucceeded:
 		resp.State = v1.InvokeState_INVOKE_STATE_SUCCEEDED
 		resp.ResultJson = resultJSON
-	} else {
+	case InvocationOutcomeUnknown:
+		// Never automatically repeated (ARCH-014). The tool's receipt (for a
+		// send, the draft identity) travels with it so the caller can check
+		// what happened (REQ-039, DES-HOR-358-05).
+		resp.State = v1.InvokeState_INVOKE_STATE_OUTCOME_UNKNOWN
+		resp.Error = outcomeUnknownDetail(res.errorDetail)
+	default:
 		resp.State = v1.InvokeState_INVOKE_STATE_FAILED
 		resp.Error = &v1.ErrorDetail{Code: "tool_failed", Message: "tool execution failed", Retryability: v1.Retryability_RETRYABILITY_UNKNOWN}
 	}

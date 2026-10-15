@@ -10,6 +10,10 @@ const MAX_TEXT_BYTES = 32 * 1024;
 const MAX_HTML_BYTES = 4 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENTS = 100;
+// Provider responses are read through these byte limits before any parsing.
+const MAX_JSON_BYTES = 1024 * 1024;
+// A body response carries the body JSON-escaped, so allow for its expansion.
+const MAX_BODY_RESPONSE_BYTES = 2 * MAX_HTML_BYTES + 64 * 1024;
 const MESSAGE_FIELDS = "id,internetMessageId,conversationId,subject,from,sender,toRecipients,ccRecipients,replyTo,receivedDateTime,sentDateTime,hasAttachments,internetMessageHeaders";
 
 export async function invoke(context, args) {
@@ -30,8 +34,8 @@ export async function invoke(context, args) {
 
 async function getMessage(context, token, base) {
   const meta = await graphJSON(context, token, `${base}?$select=${MESSAGE_FIELDS}`);
-  const text = await graphJSON(context, token, `${base}?$select=body`, { Prefer: 'outlook.body-content-type="text"' });
-  const html = await graphJSON(context, token, `${base}?$select=body`, { Prefer: 'outlook.body-content-type="html"' });
+  const text = await graphJSON(context, token, `${base}?$select=body`, { Prefer: 'outlook.body-content-type="text"' }, MAX_BODY_RESPONSE_BYTES);
+  const html = await graphJSON(context, token, `${base}?$select=body`, { Prefer: 'outlook.body-content-type="html"' }, MAX_BODY_RESPONSE_BYTES);
   const headers = Object.fromEntries((meta.internetMessageHeaders ?? [])
     .filter((h) => ["in-reply-to", "references"].includes(String(h.name).toLowerCase()))
     .map((h) => [String(h.name).toLowerCase(), String(h.value)]));
@@ -90,7 +94,7 @@ async function getAttachment(context, token, base, attachment) {
   if (kindName === "reference") throw toolError("unsupported_attachment", "linked cloud attachments cannot be read");
   // $value returns file bytes, or MIME for an attached message.
   const response = await graph(context, token, `${base}/attachments/${attachment}/$value`);
-  const bytes = await boundedBytes(response, MAX_ATTACHMENT_BYTES);
+  const bytes = await boundedBytes(response, MAX_ATTACHMENT_BYTES, "attachment_too_large", "attachment exceeds the read limit");
   const mimeType = kindName === "item" ? "message/rfc822" : safeMime(meta.contentType);
   const ref = await writeArtifact(context, mimeType, bytes);
   return {
@@ -124,9 +128,14 @@ async function graph(context, token, url, { Prefer: prefer } = {}) {
   throw statusError(response.status);
 }
 
-async function graphJSON(context, token, url, headers) {
+async function graphJSON(context, token, url, headers, limit = MAX_JSON_BYTES) {
   const response = await graph(context, token, url, headers);
-  return response.json();
+  const bytes = await boundedBytes(response, limit, "message_too_large", "the Microsoft 365 response exceeds the read limit");
+  try {
+    return JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw toolError("provider_error", "Microsoft 365 returned an unreadable response");
+  }
 }
 
 // Only the status is surfaced: provider text may echo request content.
@@ -138,13 +147,26 @@ function statusError(status) {
   return toolError("provider_error", `Microsoft 365 returned HTTP ${status}`);
 }
 
-async function boundedBytes(response, limit) {
+// Reads at most limit bytes; a larger response is cancelled, never buffered.
+async function boundedBytes(response, limit, code, message) {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit) {
+    await response.body?.cancel();
+    throw toolError(code, message);
+  }
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
   const chunks = [];
   let total = 0;
-  for await (const chunk of response.body) {
-    total += chunk.byteLength;
-    if (total > limit) throw toolError("attachment_too_large", "attachment exceeds the read limit");
-    chunks.push(chunk);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      throw toolError(code, message);
+    }
+    chunks.push(value);
   }
   return Buffer.concat(chunks);
 }

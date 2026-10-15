@@ -41,15 +41,21 @@ CREATE INDEX sources_due ON mailbox.sources (next_poll_at) WHERE disabled_at IS 
 CREATE TRIGGER sources_updated_at BEFORE UPDATE ON mailbox.sources
     FOR EACH ROW EXECUTE FUNCTION identity.set_updated_at();
 
--- The provider delta position per source folder. `baseline_at` is when the
--- folder was first observed: mail received before it is history, never an
--- event. A reset cursor resumes from the newest event already recorded.
+-- The provider delta position per source folder. `baseline_at` is the lower
+-- bound of the current sync: mail received before the folder was first
+-- observed is history, never an event. Provider pages are unordered, so only a
+-- completed delta round proves every earlier message was seen: completing a
+-- round that started at T sets `synced_through` to T minus an overlap. An
+-- expired cursor restarts from `synced_through`, never from what a partial
+-- round happened to record. `round_started_at` is set while a round is open.
 CREATE TABLE mailbox.folder_cursors (
-    source_id    uuid NOT NULL REFERENCES mailbox.sources(id) ON DELETE CASCADE,
-    folder       text NOT NULL CHECK (length(folder) BETWEEN 1 AND 255),
-    cursor       text NOT NULL DEFAULT '',
-    baseline_at  timestamptz NOT NULL DEFAULT now(),
-    updated_at   timestamptz NOT NULL DEFAULT now(),
+    source_id         uuid NOT NULL REFERENCES mailbox.sources(id) ON DELETE CASCADE,
+    folder            text NOT NULL CHECK (length(folder) BETWEEN 1 AND 255),
+    cursor            text NOT NULL DEFAULT '',
+    baseline_at       timestamptz NOT NULL DEFAULT now(),
+    synced_through    timestamptz NOT NULL DEFAULT now(),
+    round_started_at  timestamptz,
+    updated_at        timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (source_id, folder)
 );
 

@@ -2,7 +2,7 @@
   "apiVersion": "iterabase.io/tool/v1",
   "name": "platform.mailbox.send",
   "version": "1.0.0",
-  "digest": "sha256:97994928617ea87c823d3c50a6f595c603e205a2c04601e9bc6681c035c8437e",
+  "digest": "sha256:e0b3b5001ec73b7e8fa980beef95424ad3bf6afbb5011b5504ae3479d5af4d04",
   "description": "Send one email, or one reply to a received message, as a bound Microsoft 365 mailbox. Returns the sent message's internetMessageId and conversationId for reply matching.",
   "bundle": "index.mjs",
   "inputSchema": {

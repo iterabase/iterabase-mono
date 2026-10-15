@@ -11,6 +11,11 @@
 export const identity = { name: "platform.mailbox.send", version: "1.0.0" };
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
+// Provider responses are read through this byte limit before parsing.
+const MAX_JSON_BYTES = 1024 * 1024;
+// Identifiers missing from the draft are re-read a bounded number of times.
+const ID_READ_ATTEMPTS = 3;
+const ID_READ_DELAY_MS = 500;
 
 export async function invoke(context, args) {
   const token = accessToken(context);
@@ -31,17 +36,23 @@ export async function invoke(context, args) {
     throw notSent(error);
   }
   if (!draft?.id) throw toolError("not_sent", "Microsoft 365 returned no draft; nothing was sent");
-  if (!draft.internetMessageId || !draft.conversationId) {
+  // Both identifiers must be known before the send (DES-HOR-358-05); without
+  // them a reply could not be matched, so the draft is never sent.
+  for (let attempt = 0; attempt < ID_READ_ATTEMPTS && !(draft.internetMessageId && draft.conversationId); attempt++) {
+    if (attempt > 0) await delay(ID_READ_DELAY_MS, context.signal);
     try {
       draft = { ...draft, ...await graphJSON(context, token, "GET", `${mailbox}/messages/${encodeURIComponent(draft.id)}?$select=id,internetMessageId,conversationId`) };
     } catch (error) {
       throw notSent(error);
     }
   }
+  if (!draft.internetMessageId || !draft.conversationId) {
+    throw toolError("not_sent", "Microsoft 365 did not return the draft's identifiers; nothing was sent", true, { providerMessageId: draft.id });
+  }
   const sent = {
     providerMessageId: draft.id,
-    internetMessageId: draft.internetMessageId ?? "",
-    conversationId: draft.conversationId ?? "",
+    internetMessageId: draft.internetMessageId,
+    conversationId: draft.conversationId,
   };
 
   // 2. Send. A definite rejection means not sent; anything else is unknown.
@@ -87,7 +98,43 @@ async function graphJSON(context, token, method, url, body) {
     await response.body?.cancel();
     throw statusError(response.status);
   }
-  return response.json();
+  return boundedJSON(response, MAX_JSON_BYTES);
+}
+
+// Reads at most limit bytes before parsing; a larger response is cancelled.
+async function boundedJSON(response, limit) {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit) {
+    await response.body?.cancel();
+    throw toolError("provider_error", "the Microsoft 365 response exceeds the read limit");
+  }
+  const chunks = [];
+  let total = 0;
+  if (response.body) {
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel();
+        throw toolError("provider_error", "the Microsoft 365 response exceeds the read limit");
+      }
+      chunks.push(value);
+    }
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw toolError("provider_error", "Microsoft 365 returned an unreadable response");
+  }
+}
+
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(timer); reject(toolError("canceled", "tool invocation canceled")); }, { once: true });
+  });
 }
 
 function notSent(error) {

@@ -1006,6 +1006,62 @@ func TestGateway_AmbiguousOutcomeNotRepeated(t *testing.T) {
 	assert.JSONEq(t, `{"en":"Send an email to x@y","pt":"Enviar um email para x@y"}`, string(invocation.ConsequenceSummary), "summary is committed before an ambiguous effect")
 }
 
+// TestGateway_ToolReportedOutcomeUnknown: a write tool that cannot confirm its
+// effect (a mailbox send whose /send was ambiguous, HOR-358) reports
+// OUTCOME_UNKNOWN. The ledger commits outcome_unknown with the tool's receipt,
+// the caller receives that state and receipt, and a duplicate never repeats
+// the effect. A read-only tool cannot be uncertain, so it fails instead.
+func TestGateway_ToolReportedOutcomeUnknown(t *testing.T) {
+	env := newTestEnv(t, nil)
+	receipt := `{"providerMessageId":"draft-1","internetMessageId":"<d1@c.pt>","conversationId":"conv-1"}`
+	unknown := func(*v1.Invoke) (*v1.InvokeResult, bool) {
+		return &v1.InvokeResult{State: v1.InvokeState_INVOKE_STATE_OUTCOME_UNKNOWN, Error: &v1.ErrorDetail{
+			Code: "outcome_unknown", Message: "the email may or may not have been sent",
+			Retryability: v1.Retryability_RETRYABILITY_UNKNOWN, DetailsJson: receipt,
+		}}, false
+	}
+	dispatched := 0
+	rr := startRefRunner(t, env, sendEmailDescriptor(), func(inv *v1.Invoke) (*v1.InvokeResult, bool) {
+		dispatched++
+		return unknown(inv)
+	})
+	t.Cleanup(rr.close)
+	ro := startRefRunnerWithCert(t, env, env.runner2, echoDescriptor(), unknown)
+	t.Cleanup(ro.close)
+
+	runID, turnID := seedTurnAttempt(t, env)
+	gc := gatewayClient(env, env.supervisor)
+	req := &v1.InvokeRequest{
+		AttemptId: runID, CallerScope: v1.CallerScope_CALLER_SCOPE_TURN, CallerScopeId: turnID, FencingGeneration: 1,
+		ToolCallId: "call-1", ToolName: "send_email", ToolVersionDigest: "sha256:send-1",
+		ArgumentsJson: []byte(`{"to":"x@y"}`), IdempotencyKey: "send-unknown",
+	}
+	first, err := gc.InvokeTool(context.Background(), connect.NewRequest(req))
+	require.NoError(t, err)
+	assert.Equal(t, v1.InvokeState_INVOKE_STATE_OUTCOME_UNKNOWN, first.Msg.State)
+	require.NotNil(t, first.Msg.Error)
+	assert.Equal(t, "outcome_unknown", first.Msg.Error.Code)
+	assert.Equal(t, v1.Retryability_RETRYABILITY_UNKNOWN, first.Msg.Error.Retryability)
+	assert.JSONEq(t, receipt, first.Msg.Error.DetailsJson, "the caller receives the draft receipt")
+
+	record, err := env.store.GetInvocation(context.Background(), first.Msg.InvocationId)
+	require.NoError(t, err)
+	assert.Equal(t, gateway.InvocationOutcomeUnknown, record.State, "the ledger never records a possible effect as failed")
+
+	second, err := gc.InvokeTool(context.Background(), connect.NewRequest(req))
+	require.NoError(t, err)
+	assert.Equal(t, v1.InvokeState_INVOKE_STATE_OUTCOME_UNKNOWN, second.Msg.State)
+	assert.JSONEq(t, receipt, second.Msg.Error.DetailsJson)
+	assert.Equal(t, 1, dispatched, "an outcome_unknown write is never repeated")
+
+	readResp, err := gc.InvokeTool(context.Background(), connect.NewRequest(&v1.InvokeRequest{
+		AttemptId: runID, CallerScope: v1.CallerScope_CALLER_SCOPE_TURN, CallerScopeId: turnID, FencingGeneration: 1,
+		ToolCallId: "call-2", ToolName: "echo", ToolVersionDigest: "sha256:echo-1", ArgumentsJson: []byte(`{}`),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, v1.InvokeState_INVOKE_STATE_FAILED, readResp.Msg.State, "a read-only tool has no uncertain effect")
+}
+
 func TestGateway_ReadOnlyRetryOnStreamLoss(t *testing.T) {
 	env := newTestEnv(t, nil)
 	var calls int32

@@ -2,7 +2,7 @@
   "apiVersion": "iterabase.io/tool/v1",
   "name": "platform.mailbox.read",
   "version": "1.0.0",
-  "digest": "sha256:f18c6c7c1d3ad9a4c79aaf005d20c48fe5b2990baaf407cf8e6bac837892bcf7",
+  "digest": "sha256:bbb901cd3349285d66167a436b9ba33ccd325934e9e7390f8c22bf096ef9c435",
   "description": "Read one message, its attachment list, or one attachment from a bound Microsoft 365 mailbox. Text bodies are bounded inline; HTML bodies and attachment bytes are written as artifacts.",
   "bundle": "index.mjs",
   "inputSchema": {

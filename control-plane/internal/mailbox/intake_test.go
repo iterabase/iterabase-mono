@@ -169,17 +169,16 @@ func TestIntakeRecordsEachNewMessageExactlyOnce(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM mailbox.messages`).Scan(&count))
 	assert.Equal(t, 4, count)
 
-	// An expired cursor resyncs from shortly before the newest recorded message
-	// (never before the folder baseline, which is aged here so the overlap
-	// rule decides).
-	_, err = pool.Exec(ctx, `UPDATE mailbox.folder_cursors SET baseline_at = now() - interval '2 hours'`)
-	require.NoError(t, err)
+	// An expired cursor resyncs from the last completed round's start minus
+	// the overlap, never before the folder's own baseline. The rounds above
+	// completed seconds after the folder was first watched, so the baseline
+	// (about now) is the restart point.
 	makeDue(t, pool)
 	src.script("inbox",
 		func(string, time.Time) (mailbox.Changes, error) { return mailbox.Changes{}, mailbox.ErrCursorExpired },
 		func(cursor string, since time.Time) (mailbox.Changes, error) {
 			assert.Empty(t, cursor)
-			assert.WithinDuration(t, now.Add(-15*time.Minute), since, 2*time.Second)
+			assert.WithinDuration(t, now, since, 5*time.Second)
 			return mailbox.Changes{Messages: []mailbox.Message{message("m4", now), message("m5", now)}, Cursor: "delta-3"}, nil
 		},
 	)
@@ -193,6 +192,55 @@ func TestIntakeRecordsEachNewMessageExactlyOnce(t *testing.T) {
 	status, err := store.GetCredentialStatus(ctx, "m365")
 	require.NoError(t, err)
 	assert.False(t, status.Failing)
+}
+
+// TestIntakeResyncNeverSkipsAnUnfinishedRound reproduces unordered delta
+// pages: page one of a round records a message received a minute ago, then the
+// cursor expires while a 30-minute-old message is still unseen. The restart
+// must cover it, so it starts from the last completed round, not from what the
+// partial round recorded.
+func TestIntakeResyncNeverSkipsAnUnfinishedRound(t *testing.T) {
+	pool, _ := testutil.NewPostgres(t)
+	ctx := context.Background()
+	store := mailbox.NewStore(pool)
+	mb, err := store.UpsertOverlay(ctx, overlay("quotes", "quotes@customer.pt"))
+	require.NoError(t, err)
+	_, _, err = store.Cursor(ctx, mb.ID, "inbox")
+	require.NoError(t, err)
+	// The folder has been watched for two hours; nothing completed since.
+	_, err = pool.Exec(ctx, `UPDATE mailbox.folder_cursors SET baseline_at = now() - interval '2 hours', synced_through = now() - interval '2 hours'`)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	src := newFakeSource()
+	src.script("inbox",
+		func(string, time.Time) (mailbox.Changes, error) {
+			return mailbox.Changes{Messages: []mailbox.Message{message("recent", now.Add(-time.Minute))}, Cursor: "page-2", More: true}, nil
+		},
+		func(string, time.Time) (mailbox.Changes, error) { return mailbox.Changes{}, mailbox.ErrCursorExpired },
+		func(cursor string, since time.Time) (mailbox.Changes, error) {
+			assert.Empty(t, cursor)
+			assert.WithinDuration(t, now.Add(-2*time.Hour), since, 5*time.Second, "restart from the last completed round")
+			older := message("older", now.Add(-30*time.Minute))
+			return mailbox.Changes{Messages: []mailbox.Message{older, message("recent", now.Add(-time.Minute))}, Cursor: "delta-1"}, nil
+		},
+	)
+	intake(store, src).RunOnce(ctx)
+
+	var ids []string
+	rows, err := pool.Query(ctx, `SELECT provider_message_id FROM mailbox.messages ORDER BY seq`)
+	require.NoError(t, err)
+	for rows.Next() {
+		var id string
+		require.NoError(t, rows.Scan(&id))
+		ids = append(ids, id)
+	}
+	assert.Equal(t, []string{"recent", "older"}, ids, "the unseen message is recovered and the seen one is not repeated")
+
+	// Completing the resynced round moves the checkpoint forward.
+	var synced time.Time
+	require.NoError(t, pool.QueryRow(ctx, `SELECT synced_through FROM mailbox.folder_cursors WHERE source_id = $1`, mb.ID).Scan(&synced))
+	assert.WithinDuration(t, now.Add(-15*time.Minute), synced, 5*time.Second)
 }
 
 func TestIntakeFailuresAndSubscriptions(t *testing.T) {
