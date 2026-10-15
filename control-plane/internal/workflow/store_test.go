@@ -51,13 +51,13 @@ func sampleDefinition(key, version, scopeID string) workflow.Definition {
 			`"defaultModelRef":"model-one","graph":{"entryNode":"write","maxTransitions":10,` +
 			`"nodes":[{"key":"write","label":{"en":"Writing result","pt":"A escrever resultado"},"kind":"agent_task","prompt":"write","skills":["walter-quotation"],"capabilities":["graph.excel.write"],"outcomes":["completed"],"outputSchema":{"type":"object","additionalProperties":false},"resultPresentation":{"outcomes":[{"outcome":"completed","summary":{"en":"Quotation processed","pt":"Pedido de cotação processado"}}]}}],` +
 			`"terminalOutcomes":[{"node":"write","outcome":"completed"}]},` +
-			`"presentation":{"workflowTitle":"Quotation","personaName":"Walter Ops"},` +
+			`"presentation":{"title":{"en":"Quotation","pt":"Cotação"},"coworker":{"name":"Walter Ops","mark":{"shape":"round","color":"blue"},"role":{"en":"Coordinator","pt":"Coordenador"},"summary":{"en":"Handles quotes.","pt":"Trata das cotações."},"onItsOwn":[],"connections":[]}},` +
 			`"poolRef":"walter-pool","source":{"type":"graph_email"}}`),
 		ValidationStatus: workflow.ValidationValid,
 		ScopeIdentityID:  scopeID,
 		SourceType:       "graph_email",
 		PoolKey:          "default/walter-pool",
-		Presentation:     []byte(`{"workflowTitle":"Quotation","personaName":"Walter Ops","locale":"en"}`),
+		Presentation:     []byte(`{"title":{"en":"Quotation","pt":"Cotação"},"coworker":{"name":"Walter Ops","mark":{"shape":"round","color":"blue"},"role":{"en":"Coordinator","pt":"Coordenador"},"summary":{"en":"Handles quotes.","pt":"Trata das cotações."},"onItsOwn":[],"connections":[]}}`),
 	}
 }
 
@@ -413,7 +413,7 @@ func TestCanonicalSpec_DeterministicMarshal(t *testing.T) {
 			Nodes: []workflow.CanonicalNode{{Key: "write", Label: workflow.CanonicalLocalizedText{EN: "Writing result", PT: "A escrever resultado"}, Kind: workflow.NodeAgentTask, Prompt: "write", Skills: []string{"walter"}, Capabilities: []string{"graph.excel.write"}, Outcomes: []string{"completed"}, OutputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
 				ResultPresentation: &workflow.CanonicalResultPresentation{Outcomes: []workflow.CanonicalResultOutcomePresentation{{Outcome: "completed", Summary: workflow.CanonicalLocalizedText{EN: "Quotation processed", PT: "Pedido de cotação processado"}}}}}},
 			TerminalOutcomes: []workflow.CanonicalTerminalOutcome{{Node: "write", Outcome: "completed"}}},
-		Presentation: workflow.CanonicalPresentation{WorkflowTitle: "Quotation", PersonaName: "Walter Ops"},
+		Presentation: workflow.CanonicalPresentation{Title: workflow.CanonicalText{EN: "Quotation", PT: "Quotation"}, Coworker: workflow.CanonicalCoworker{Name: "Walter Ops", Mark: workflow.CanonicalCoworkerMark{Shape: "round", Color: "blue"}, Role: workflow.CanonicalText{EN: "Coordinator", PT: "Coordenador"}, Summary: workflow.CanonicalText{EN: "Handles the work.", PT: "Trata do trabalho."}}},
 	}
 	b1, err := json.Marshal(s)
 	require.NoError(t, err)

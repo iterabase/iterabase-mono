@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import {
   afterAll,
   afterEach,
@@ -8,7 +8,7 @@ import {
   it,
   vi,
 } from "vitest";
-import AccountShell from "../auth/AccountShell";
+import { SettingsHarness } from "../test/settingsHarness";
 import PublicAuth from "../auth/PublicAuth";
 import { PSEUDO_LOCALE, i18n, setPseudoLocale } from "./index";
 import { PSEUDO_EXPANSION, pseudoLocalize } from "./pseudo";
@@ -79,7 +79,7 @@ describe("pseudo-locale", () => {
     }
   });
 
-  it("leaves no unlocalized copy in Profile", () => {
+  it("leaves no unlocalized copy in Settings → Profile", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
@@ -91,13 +91,8 @@ describe("pseudo-locale", () => {
         ),
       ),
     );
-    const { container } = render(
-      <AccountShell
-        initialProfile={profile}
-        initialCSRF="csrf"
-        onSessionLost={vi.fn()}
-      />,
-    );
+    const { container } = render(<SettingsHarness profile={profile} />);
+    await waitFor(() => expect(container.querySelector("form")).not.toBeNull());
     expect(unlocalizedText(container)).toEqual([]);
   });
 });

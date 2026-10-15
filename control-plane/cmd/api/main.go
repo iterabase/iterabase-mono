@@ -32,6 +32,7 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/server"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/version"
 	workstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/work"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
 )
 
 func main() {
@@ -120,6 +121,9 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	}
 
 	store := identity.NewStore(pool)
+	if err := seedOrganizationName(ctx, store, cfg.Organization.Name, logger); err != nil {
+		return err
+	}
 	authServices, authWorker, err := buildAuthServices(cfg, logger, store)
 	if err != nil {
 		return fmt.Errorf("configuring browser authentication: %w", err)
@@ -135,6 +139,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 			Pool:      pool,
 			Store:     store,
 			Work:      workstore.NewStore(pool),
+			Workflows: workflow.NewStore(pool),
 			Artifacts: artifacts,
 			Metrics:   m,
 			Auth:      authServices,
@@ -175,6 +180,20 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		}
 		return nil
 	}
+}
+
+// seedOrganizationName stores the deployment's installation name
+// (organization.name / ORGANIZATION_NAME) while none is stored; an Admin-set
+// name is never overwritten (DES-HOR-459-08).
+func seedOrganizationName(ctx context.Context, store *identity.Store, seed string, logger *slog.Logger) error {
+	seeded, err := store.SeedOrganizationName(ctx, seed)
+	if err != nil {
+		return fmt.Errorf("seeding organization name: %w", err)
+	}
+	if seeded {
+		logger.Info("organization name seeded from configuration")
+	}
+	return nil
 }
 
 func runMigrate(cfg *config.Config, logger *slog.Logger, args []string) error {

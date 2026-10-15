@@ -1,4 +1,6 @@
 import type {
+  WorkState,
+  WorkflowSummary,
   Blocker,
   Consequence,
   DashboardSummary,
@@ -11,6 +13,9 @@ import type {
   WorkItem,
 } from "./types";
 
+// The customer work API. Every call rides the same-origin browser session
+// cookie (HOR-582); unsafe methods also carry the session-bound CSRF proof.
+
 export class APIError extends Error {
   constructor(
     public status: number,
@@ -21,8 +26,6 @@ export class APIError extends Error {
   }
 }
 
-// Every work call rides the same-origin browser session cookie. Unsafe methods
-// also carry the session-bound CSRF proof.
 async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -62,25 +65,49 @@ export interface Period {
   from: Date;
   to: Date;
 }
-const periodParams = (period: Period) =>
-  new URLSearchParams({
+
+export interface WorkQuery {
+  from?: Date;
+  to?: Date;
+  state?: WorkState;
+  workflowKey?: string;
+  search?: string;
+  limit?: number;
+}
+
+/** Active items always; done and failed items finished within the period. */
+export function listWorkItems(query: WorkQuery = {}): Promise<WorkItem[]> {
+  const params = new URLSearchParams();
+  if (query.from) params.set("from", query.from.toISOString());
+  if (query.to) params.set("to", query.to.toISOString());
+  if (query.state) params.set("state", query.state);
+  if (query.workflowKey) params.set("workflowKey", query.workflowKey);
+  if (query.search?.trim()) params.set("search", query.search.trim());
+  params.set("limit", String(query.limit ?? 200));
+  return request<WorkItem[]>(`/v1/work-items?${params}`);
+}
+
+export function loadSummary(period: Period): Promise<DashboardSummary> {
+  const params = new URLSearchParams({
     from: period.from.toISOString(),
     to: period.to.toISOString(),
   });
+  return request<DashboardSummary>(`/v1/work-dashboard?${params}`);
+}
 
-export async function loadDashboard(
-  period: Period,
-  search = "",
-): Promise<{ summary: DashboardSummary; items: WorkItem[] }> {
-  const summaryParams = periodParams(period);
-  const itemParams = periodParams(period);
-  itemParams.set("limit", "200");
-  if (search.trim()) itemParams.set("search", search.trim());
-  const [summary, items] = await Promise.all([
-    request<DashboardSummary>(`/v1/work-dashboard?${summaryParams}`),
-    request<WorkItem[]>(`/v1/work-items?${itemParams}`),
-  ]);
-  return { summary, items };
+export async function listWorkflows(): Promise<WorkflowSummary[]> {
+  const body = await request<{ workflows: WorkflowSummary[] }>("/v1/workflows");
+  return body.workflows;
+}
+
+export function getWorkItem(id: string): Promise<WorkItem> {
+  return request<WorkItem>(`/v1/work-items/${encodeURIComponent(id)}`);
+}
+
+export function listConsequences(id: string): Promise<Consequence[]> {
+  return request<Consequence[]>(
+    `/v1/work-items/${encodeURIComponent(id)}/consequences`,
+  );
 }
 
 async function optional<T>(promise: Promise<T>): Promise<T | null> {
@@ -92,8 +119,8 @@ async function optional<T>(promise: Promise<T>): Promise<T | null> {
   }
 }
 
-export async function loadDetail(item: WorkItem): Promise<DetailData> {
-  const id = encodeURIComponent(item.id);
+export async function loadDetail(itemId: string): Promise<DetailData> {
+  const id = encodeURIComponent(itemId);
   const [
     fresh,
     attempts,
@@ -227,7 +254,12 @@ export async function uploadArtifact(
   return { artifactId: artifact.artifactId };
 }
 
-export async function downloadArtifact(artifact: WorkArtifact): Promise<void> {
+/**
+ * Opens a PDF or screenshot in a new tab and downloads any other artifact
+ * (an email or file). The bytes come through the
+ * session; no artifact URL with credentials is ever exposed.
+ */
+export async function openArtifact(artifact: WorkArtifact): Promise<void> {
   const response = await fetch(
     `/v1/artifacts/${encodeURIComponent(artifact.artifactId)}`,
     { credentials: "same-origin" },
@@ -235,67 +267,21 @@ export async function downloadArtifact(artifact: WorkArtifact): Promise<void> {
   if (!response.ok) throw new APIError(response.status, response.statusText);
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download =
-    typeof artifact.metadata?.name === "string"
-      ? artifact.metadata.name
-      : `artifact-${artifact.artifactId}`;
-  link.click();
-  URL.revokeObjectURL(url);
+  const viewable = /^(application\/pdf|image\/)/.test(artifact.mimeType);
+  // "noopener" would make window.open return null; drop the opener instead.
+  const opened = viewable ? window.open(url, "_blank") : null;
+  if (opened) opened.opener = null;
+  if (!opened) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = artifactName(artifact);
+    link.click();
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-// This fetch-based SSE reader rides the session cookie and resumes with
-// Last-Event-ID, keeping credentials out of URLs and browser storage. A lost
-// session stops the reader and is reported instead of retried.
-export function subscribe(
-  onEvent: () => void,
-  onSessionLost: () => void,
-): () => void {
-  const controller = new AbortController();
-  let cursor = "";
-  const run = async () => {
-    while (!controller.signal.aborted) {
-      try {
-        const response = await fetch("/v1/work-events", {
-          credentials: "same-origin",
-          headers: cursor ? { "Last-Event-ID": cursor } : {},
-          signal: controller.signal,
-        });
-        if (response.status === 401) {
-          onSessionLost();
-          return;
-        }
-        if (!response.ok || !response.body)
-          throw new APIError(response.status, response.statusText);
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (!controller.signal.aborted) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let boundary = buffer.indexOf("\n\n");
-          while (boundary >= 0) {
-            const frame = buffer.slice(0, boundary);
-            buffer = buffer.slice(boundary + 2);
-            const id = frame
-              .split("\n")
-              .find((line) => line.startsWith("id: "))
-              ?.slice(4);
-            if (id) {
-              cursor = id;
-              onEvent();
-            }
-            boundary = buffer.indexOf("\n\n");
-          }
-        }
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      }
-    }
-  };
-  void run();
-  return () => controller.abort();
+export function artifactName(artifact: WorkArtifact): string {
+  return typeof artifact.metadata?.name === "string"
+    ? artifact.metadata.name
+    : `artifact-${artifact.artifactId}`;
 }

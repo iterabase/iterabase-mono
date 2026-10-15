@@ -145,3 +145,29 @@ export function formatDateTime(
   }).format(date);
   return `${day}, ${time}`;
 }
+
+/** Weekday, day and month in full: Monday 13 October / segunda-feira, 13 de outubro. */
+export function formatLongDay(
+  value: Date | string | number,
+  locale: Locale,
+  timeZone?: string,
+): string {
+  const date = toDate(value);
+  if (locale === "pt")
+    return new Intl.DateTimeFormat("pt-PT", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      timeZone,
+    }).format(date);
+  const weekday = new Intl.DateTimeFormat("en-GB", {
+    weekday: "long",
+    timeZone,
+  }).format(date);
+  const day = new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "long",
+    timeZone,
+  }).format(date);
+  return `${weekday} ${day}`;
+}

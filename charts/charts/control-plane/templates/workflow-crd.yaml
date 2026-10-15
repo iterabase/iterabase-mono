@@ -49,6 +49,150 @@ spec:
               attempt for a customer response. There is deliberately no top-level
               tool_call node.
             properties:
+              coworker:
+                description: |-
+                  coworker is the customer-facing identity of the AI coworker that runs
+                  this workflow. What it always asks first is never declared here: it is
+                  derived from the graph's human_gate nodes.
+                properties:
+                  connections:
+                    description: connections lists the customer systems the coworker
+                      works with.
+                    items:
+                      description: |-
+                        RequiredLocalizedText is approved English/Portuguese customer copy where
+                        both locales are mandatory.
+                      properties:
+                        en:
+                          minLength: 1
+                          type: string
+                        pt:
+                          minLength: 1
+                          type: string
+                      required:
+                      - en
+                      - pt
+                      type: object
+                    maxItems: 12
+                    type: array
+                  mark:
+                    description: mark is the coworker's visual identity.
+                    properties:
+                      color:
+                        enum:
+                        - blue
+                        - green
+                        - sun
+                        - violet
+                        - teal
+                        type: string
+                      shape:
+                        enum:
+                        - round
+                        - square
+                        - petal
+                        type: string
+                    required:
+                    - color
+                    - shape
+                    type: object
+                  name:
+                    description: name is the coworker's proper name. It is never translated.
+                    maxLength: 40
+                    minLength: 1
+                    type: string
+                  onItsOwn:
+                    description: |-
+                      onItsOwn lists what the coworker does without asking, each line typed
+                      by whether it reads, sends, or does something.
+                    items:
+                      description: CoworkerOnItsOwnLine is one typed thing the coworker
+                        does without asking.
+                      properties:
+                        detail:
+                          description: detail is optional localized context shown
+                            under the line.
+                          properties:
+                            en:
+                              minLength: 1
+                              type: string
+                            pt:
+                              minLength: 1
+                              type: string
+                          required:
+                          - en
+                          - pt
+                          type: object
+                        items:
+                          description: |-
+                            items optionally enumerates what the line covers, such as recipients.
+                            Items are literal values and are never translated.
+                          items:
+                            maxLength: 200
+                            minLength: 1
+                            type: string
+                          maxItems: 12
+                          type: array
+                        kind:
+                          description: kind says whether the coworker reads, sends,
+                            or does something.
+                          enum:
+                          - reads
+                          - sends
+                          - does
+                          type: string
+                        text:
+                          description: text is the localized line itself.
+                          properties:
+                            en:
+                              minLength: 1
+                              type: string
+                            pt:
+                              minLength: 1
+                              type: string
+                          required:
+                          - en
+                          - pt
+                          type: object
+                      required:
+                      - kind
+                      - text
+                      type: object
+                    maxItems: 12
+                    type: array
+                  role:
+                    description: role is the one-line localized job title.
+                    properties:
+                      en:
+                        minLength: 1
+                        type: string
+                      pt:
+                        minLength: 1
+                        type: string
+                    required:
+                    - en
+                    - pt
+                    type: object
+                  summary:
+                    description: summary is the localized description of what the
+                      coworker does.
+                    properties:
+                      en:
+                        minLength: 1
+                        type: string
+                      pt:
+                        minLength: 1
+                        type: string
+                    required:
+                    - en
+                    - pt
+                    type: object
+                required:
+                - mark
+                - name
+                - role
+                - summary
+                type: object
               defaultModelRef:
                 description: |-
                   defaultModelRef is the Model natural key used by agent nodes that do not
@@ -469,27 +613,6 @@ spec:
               poolRef:
                 description: poolRef names the AgentPool security/integration boundary.
                 type: string
-              presentation:
-                description: presentation carries customer-facing workflow/persona
-                  labels.
-                properties:
-                  locale:
-                    enum:
-                    - en
-                    - pt
-                    type: string
-                  personaAvatar:
-                    type: string
-                  personaName:
-                    minLength: 1
-                    type: string
-                  workflowTitle:
-                    minLength: 1
-                    type: string
-                required:
-                - personaName
-                - workflowTitle
-                type: object
               requestedCapabilities:
                 description: |-
                   requestedCapabilities are the workflow-level maximum gateway capabilities.
@@ -583,6 +706,19 @@ spec:
                 required:
                 - type
                 type: object
+              title:
+                description: title is the localized customer-facing workflow name.
+                properties:
+                  en:
+                    minLength: 1
+                    type: string
+                  pt:
+                    minLength: 1
+                    type: string
+                required:
+                - en
+                - pt
+                type: object
               valueModelRef:
                 description: valueModelRef references an operator-configured transparent
                   value model.
@@ -595,11 +731,12 @@ spec:
                 pattern: ^[^:]+$
                 type: string
             required:
+            - coworker
             - graph
             - key
             - poolRef
-            - presentation
             - source
+            - title
             - version
             type: object
           status:

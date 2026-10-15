@@ -64,6 +64,14 @@ with_ca=$(helm template "$release" "$chart" "${values[@]}" --set auth.email.caSe
 grep -q 'value: "/etc/control-plane/smtp-ca/ca.crt"' <<<"$with_ca" || fail "SMTP CA file is not configured"
 grep -q 'secretName: "relay-ca"' <<<"$with_ca" || fail "SMTP CA Secret is not mounted"
 
+# The installation name (DES-HOR-459-08) is an optional api-only seed.
+if grep -q 'name: ORGANIZATION_NAME' <<<"$rendered"; then
+  fail "an unset organization.name must not render ORGANIZATION_NAME"
+fi
+named=$(helm template "$release" "$chart" "${values[@]}" --set-string 'organization.name=Exemplo Logística')
+[[ "$(grep -c 'name: ORGANIZATION_NAME' <<<"$named")" -eq 1 ]] || fail "organization.name must seed only the api container"
+grep -A1 'name: ORGANIZATION_NAME' <<<"$named" | grep -q 'value: "Exemplo Logística"' || fail "organization.name is not passed to the api"
+
 # Every install fails closed when a prerequisite is missing; there is no
 # unauthenticated default.
 expect_fail helm template "$release" "$chart"
@@ -75,4 +83,4 @@ expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.email.ho
 expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.email.from=
 expect_fail helm template "$release" "$chart" "${values[@]}" --set auth.bootstrap.adminEmail=
 
-echo "OK: always-on authentication configuration, SES, relay CA, and fail-closed prerequisites render correctly"
+echo "OK: always-on authentication configuration, SES, relay CA, organization name seed, and fail-closed prerequisites render correctly"

@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -59,9 +60,9 @@ func TestResolveLocaleAndOrganizationDefault(t *testing.T) {
 	assert.Empty(t, settings.DefaultLocale)
 
 	// The organisation default applies to people who follow it.
-	_, err = h.store.UpdateOrganizationDefaultLocale(ctx, admin.ID, "xx", nil, h.now)
+	_, err = h.store.UpdateOrganizationSettings(ctx, admin.ID, OrganizationSettingsUpdate{DefaultLocale: new("xx")}, nil, h.now)
 	require.ErrorIs(t, err, ErrInvalidLocale)
-	updated, err := h.store.UpdateOrganizationDefaultLocale(ctx, admin.ID, "pt", &settings.UpdatedAt, h.now)
+	updated, err := h.store.UpdateOrganizationSettings(ctx, admin.ID, OrganizationSettingsUpdate{DefaultLocale: new("pt")}, &settings.UpdatedAt, h.now)
 	require.NoError(t, err)
 	assert.Equal(t, "pt", updated.DefaultLocale)
 	assert.Equal(t, admin.ID, updated.UpdatedByIdentityID)
@@ -70,7 +71,7 @@ func TestResolveLocaleAndOrganizationDefault(t *testing.T) {
 	assert.Equal(t, "pt", locale)
 
 	// A stale version cannot overwrite a newer change.
-	_, err = h.store.UpdateOrganizationDefaultLocale(ctx, admin.ID, "en", &settings.UpdatedAt, h.now)
+	_, err = h.store.UpdateOrganizationSettings(ctx, admin.ID, OrganizationSettingsUpdate{DefaultLocale: new("en")}, &settings.UpdatedAt, h.now)
 	require.ErrorIs(t, err, ErrOrganizationSettingsConflict)
 
 	// The change is logged with the Admin who made it.
@@ -116,7 +117,7 @@ func TestAuthEmailsFollowTheRecipientsResolvedLocale(t *testing.T) {
 	// Portuguese.
 	_, err = h.store.UpdateLocalUserProfile(ctx, user.ID, "Rita", "", h.now)
 	require.NoError(t, err)
-	_, err = h.store.UpdateOrganizationDefaultLocale(ctx, admin.ID, "pt", nil, h.now)
+	_, err = h.store.UpdateOrganizationSettings(ctx, admin.ID, OrganizationSettingsUpdate{DefaultLocale: new("pt")}, nil, h.now)
 	require.NoError(t, err)
 	queued, err := h.store.RequestPasswordReset(ctx, "rita@example.com", h.now)
 	require.NoError(t, err)
@@ -145,7 +146,7 @@ func TestOrganizationDefaultLocaleConcurrentWritersConflict(t *testing.T) {
 		wg.Add(1)
 		go func(i int, locale string) {
 			defer wg.Done()
-			_, results[i] = h.store.UpdateOrganizationDefaultLocale(ctx, admin.ID, locale, &settings.UpdatedAt, h.now)
+			_, results[i] = h.store.UpdateOrganizationSettings(ctx, admin.ID, OrganizationSettingsUpdate{DefaultLocale: new(locale)}, &settings.UpdatedAt, h.now)
 		}(i, locale)
 	}
 	require.Eventually(t, func() bool {
@@ -176,4 +177,60 @@ func TestOrganizationDefaultLocaleConcurrentWritersConflict(t *testing.T) {
 	require.NoError(t, h.store.pool.QueryRow(ctx, `
 		SELECT count(*) FROM identity.security_events WHERE event = $1`, EventOrganizationSettingsUpdated).Scan(&events))
 	assert.Equal(t, 1, events, "only the winning write is audited")
+}
+
+// TestOrganizationNameUpdateAndSeed covers DES-HOR-459-08: the installation
+// name is trimmed and bounded, its change is logged with the Admin, and the
+// deployment seed is stored only while no name is stored.
+func TestOrganizationNameUpdateAndSeed(t *testing.T) {
+	h := newAuthHarness(t)
+	ctx := context.Background()
+	admin := h.createAdmin(t, "admin@example.com")
+
+	// Nothing to seed; then the first seed is stored (trimmed).
+	seeded, err := h.store.SeedOrganizationName(ctx, "   ")
+	require.NoError(t, err)
+	assert.False(t, seeded)
+	_, err = h.store.SeedOrganizationName(ctx, strings.Repeat("n", OrganizationNameLimit+1))
+	require.ErrorIs(t, err, ErrInvalidOrganizationName)
+	seeded, err = h.store.SeedOrganizationName(ctx, " Exemplo Logística ")
+	require.NoError(t, err)
+	assert.True(t, seeded)
+	settings, err := h.store.GetOrganizationSettings(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "Exemplo Logística", settings.Name)
+
+	// A stored name is never overwritten by a later seed.
+	seeded, err = h.store.SeedOrganizationName(ctx, "Another")
+	require.NoError(t, err)
+	assert.False(t, seeded)
+
+	// An Admin renames it; the change is logged with the actor and the
+	// language is untouched.
+	_, err = h.store.UpdateOrganizationSettings(ctx, admin.ID, OrganizationSettingsUpdate{}, nil, h.now)
+	require.ErrorIs(t, err, ErrEmptyOrganizationSettingsUpdate)
+	_, err = h.store.UpdateOrganizationSettings(ctx, admin.ID,
+		OrganizationSettingsUpdate{Name: new(strings.Repeat("ã", OrganizationNameLimit+1))}, nil, h.now)
+	require.ErrorIs(t, err, ErrInvalidOrganizationName)
+	updated, err := h.store.UpdateOrganizationSettings(ctx, admin.ID,
+		OrganizationSettingsUpdate{Name: new("  Exemplo  ")}, &settings.UpdatedAt, h.now)
+	require.NoError(t, err)
+	assert.Equal(t, "Exemplo", updated.Name)
+	assert.Empty(t, updated.DefaultLocale)
+	assert.Equal(t, admin.ID, updated.UpdatedByIdentityID)
+	var actor, detail string
+	require.NoError(t, h.store.pool.QueryRow(ctx, `
+		SELECT request_actor_identity_id::text, detail::text FROM identity.security_events
+		WHERE event = $1`, EventOrganizationSettingsUpdated).Scan(&actor, &detail))
+	assert.Equal(t, admin.ID, actor)
+	assert.JSONEq(t, `{"name":"Exemplo","previousName":"Exemplo Logística"}`, detail)
+
+	// An Admin-set name survives the next startup's seed; an Admin may clear
+	// it, after which the seed applies again.
+	seeded, err = h.store.SeedOrganizationName(ctx, "Exemplo Logística")
+	require.NoError(t, err)
+	assert.False(t, seeded)
+	cleared, err := h.store.UpdateOrganizationSettings(ctx, admin.ID, OrganizationSettingsUpdate{Name: new("")}, nil, h.now)
+	require.NoError(t, err)
+	assert.Empty(t, cleared.Name)
 }

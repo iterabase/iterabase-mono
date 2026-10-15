@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
 )
 
 var (
@@ -136,9 +138,11 @@ type CompletionReport struct {
 type WorkItemFilter struct {
 	State  string
 	Search string
-	From   *time.Time
-	To     *time.Time
-	Limit  int
+	// WorkflowKey, when set, keeps only work of exactly that workflow key.
+	WorkflowKey string
+	From        *time.Time
+	To          *time.Time
+	Limit       int
 }
 
 // WorkItem is the customer-safe current-state projection.
@@ -167,16 +171,22 @@ type WorkItem struct {
 	ValueCurrency      *string            `json:"valueCurrency,omitempty"`
 	ValueDisputed      bool               `json:"valueDisputed"`
 	FailureSummary     json.RawMessage    `json:"failureSummary,omitempty"`
+	// AnsweredBy names the person who answered the item's most recent
+	// resolved approval or decision gate (DES-HOR-459-10); omitted when none
+	// was answered or the person has not chosen a display name.
+	AnsweredBy *AnsweredBy `json:"answeredBy,omitempty"`
+}
+
+// AnsweredBy is the customer-visible display name of the person who answered
+// a gate. It is never an email.
+type AnsweredBy struct {
+	DisplayName string `json:"displayName"`
 }
 
 // WorkPresentation is snapshotted from the immutable workflow definition for
-// the attempt, so cards never depend on mutable operator configuration.
-type WorkPresentation struct {
-	WorkflowTitle string `json:"workflowTitle"`
-	PersonaName   string `json:"personaName"`
-	PersonaAvatar string `json:"personaAvatar,omitempty"`
-	Locale        string `json:"locale,omitempty"`
-}
+// the attempt, so cards never depend on mutable operator configuration. It is
+// exactly the canonical workflow title + AI coworker shape.
+type WorkPresentation = workflow.CanonicalPresentation
 
 // BusinessStep is the current workflow stage without prompt/model details.
 type BusinessStep struct {
@@ -271,6 +281,16 @@ type Blocker struct {
 	Response             json.RawMessage `json:"response,omitempty"`
 	CreatedAt            time.Time       `json:"createdAt"`
 	ResolvedAt           *time.Time      `json:"resolvedAt,omitempty"`
+	// RespondedBy is the person who resolved the blocker (display name only).
+	RespondedBy *PersonRef `json:"respondedBy,omitempty"`
+}
+
+// PersonRef is a customer-visible reference to a person: their identity and
+// chosen display name, never an email. DisplayName is empty when the person
+// has not chosen a name.
+type PersonRef struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
 }
 
 // Feedback is persisted against the original attempt and starts no work.
@@ -311,7 +331,9 @@ type TimelineEvent struct {
 	Params          json.RawMessage `json:"params"`
 	ArtifactRefs    json.RawMessage `json:"artifactRefs"`
 	ActorIdentityID *string         `json:"actorIdentityId,omitempty"`
-	CreatedAt       time.Time       `json:"createdAt"`
+	// ActorDisplayName is the chosen display name when the actor is a person.
+	ActorDisplayName *string   `json:"actorDisplayName,omitempty"`
+	CreatedAt        time.Time `json:"createdAt"`
 }
 
 // AssignmentContext is the exact non-secret graph-node context dispatch sends

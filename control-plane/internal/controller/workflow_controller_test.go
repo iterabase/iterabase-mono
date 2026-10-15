@@ -121,7 +121,8 @@ func validWalterWorkflow(name, ns, poolName string) *v1alpha1.Workflow {
 				Edges:            []v1alpha1.WorkflowEdge{{From: "process", Outcome: "needs_review", To: "review"}, {From: "review", Outcome: "changes_requested", To: "process"}},
 				TerminalOutcomes: []v1alpha1.WorkflowTerminalOutcome{{Node: "process", Outcome: "completed"}, {Node: "review", Outcome: "approved"}},
 			},
-			Presentation: v1alpha1.PresentationSpec{WorkflowTitle: "Quotation Processing", PersonaName: "Walter Ops", Locale: "en"},
+			Title:    v1alpha1.RequiredLocalizedText{EN: "Quotation Processing", PT: "Quotation Processing"},
+			Coworker: testCoworker("Walter Ops"),
 		},
 	}
 }
@@ -447,10 +448,95 @@ func TestWorkflowValidation(t *testing.T) {
 				Nodes: []v1alpha1.WorkflowNode{{Key: "map", Label: v1alpha1.LocalizedText{EN: "Building shipment map", PT: "A criar mapa de envios"}, Kind: v1alpha1.WorkflowNodeAgentTask, Prompt: "Build the shipment map", Outcomes: []string{"completed"},
 					OutputSchema: jsonConfig(`{"type":"object","additionalProperties":false}`), ResultPresentation: terminalResult("completed", "Export processed", "Exportação processada")}},
 				TerminalOutcomes: []v1alpha1.WorkflowTerminalOutcome{{Node: "map", Outcome: "completed"}}},
-			Presentation: v1alpha1.PresentationSpec{WorkflowTitle: "Shipment Map", PersonaName: "XBS Ops", Locale: "pt"},
+			Title:    v1alpha1.RequiredLocalizedText{EN: "Shipment Map", PT: "Shipment Map"},
+			Coworker: testCoworker("XBS Ops"),
 		},
 	}
 	assert.NoError(t, newReconciler(pool).validateSpec(ctx, xbs), "XBS operator_artifact workflow should be representable")
+}
+
+func TestWorkflowPresentationValidation(t *testing.T) {
+	long := strings.Repeat("n", coworkerNameLimit+1)
+	tooMany := make([]v1alpha1.RequiredLocalizedText, coworkerListLimit+1)
+	for i := range tooMany {
+		tooMany[i] = v1alpha1.RequiredLocalizedText{EN: "x", PT: "x"}
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*v1alpha1.RequiredLocalizedText, *v1alpha1.CoworkerSpec)
+		error  string
+	}{
+		{"title pt", func(t *v1alpha1.RequiredLocalizedText, _ *v1alpha1.CoworkerSpec) { t.PT = "" }, "spec.title requires en and pt"},
+		{"title en", func(t *v1alpha1.RequiredLocalizedText, _ *v1alpha1.CoworkerSpec) { t.EN = "" }, "spec.title requires en and pt"},
+		{"name", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Name = "" }, "spec.coworker.name is required"},
+		{"long name", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Name = long }, "at most 40 characters"},
+		{"shape", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Mark.Shape = "hex" }, "mark.shape"},
+		{"color", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Mark.Color = "red" }, "mark.color"},
+		{"role", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Role.PT = "" }, "spec.coworker.role requires"},
+		{"summary", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Summary.EN = "" }, "spec.coworker.summary requires"},
+		{"onItsOwn text", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.OnItsOwn[0].Text.PT = "" }, "spec.coworker.onItsOwn[0].text requires"},
+		{"onItsOwn kind", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.OnItsOwn[0].Kind = "writes" }, "spec.coworker.onItsOwn[0].kind must be reads, sends or does"},
+		{"onItsOwn detail", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) {
+			c.OnItsOwn[0].Detail = &v1alpha1.RequiredLocalizedText{EN: "Inbox"}
+		}, "spec.coworker.onItsOwn[0].detail requires"},
+		{"onItsOwn empty item", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) {
+			c.OnItsOwn[0].Items = []string{"a", ""}
+		}, "spec.coworker.onItsOwn[0].items[1] must be 1 to 200"},
+		{"onItsOwn long item", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) {
+			c.OnItsOwn[0].Items = []string{strings.Repeat("i", coworkerItemLimit+1)}
+		}, "spec.coworker.onItsOwn[0].items[0] must be 1 to 200"},
+		{"onItsOwn items size", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) {
+			c.OnItsOwn[0].Items = make([]string, coworkerListLimit+1)
+		}, "spec.coworker.onItsOwn[0].items allows at most 12"},
+		{"onItsOwn size", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) {
+			c.OnItsOwn = make([]v1alpha1.CoworkerOnItsOwnLine, coworkerListLimit+1)
+		}, "spec.coworker.onItsOwn allows at most 12"},
+		{"connections size", func(_ *v1alpha1.RequiredLocalizedText, c *v1alpha1.CoworkerSpec) { c.Connections = tooMany }, "spec.coworker.connections allows at most 12"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			title := v1alpha1.RequiredLocalizedText{EN: "Quotes", PT: "Cotações"}
+			coworker := testCoworker("Marco")
+			test.mutate(&title, &coworker)
+			assert.ErrorContains(t, validatePresentation(title, coworker), test.error)
+		})
+	}
+	// A 40-rune proper name with non-ASCII characters is still valid.
+	coworker := testCoworker(strings.Repeat("ã", coworkerNameLimit))
+	coworker.OnItsOwn, coworker.Connections = nil, nil
+	assert.NoError(t, validatePresentation(v1alpha1.RequiredLocalizedText{EN: "Quotes", PT: "Cotações"}, coworker))
+
+	// A full line with detail and twelve 200-rune items is valid.
+	full := testCoworker("Marco")
+	full.OnItsOwn[0].Kind = "sends"
+	full.OnItsOwn[0].Detail = &v1alpha1.RequiredLocalizedText{EN: "Pre-approved", PT: "Pré-aprovados"}
+	for range coworkerListLimit {
+		full.OnItsOwn[0].Items = append(full.OnItsOwn[0].Items, strings.Repeat("ã", coworkerItemLimit))
+	}
+	assert.NoError(t, validatePresentation(v1alpha1.RequiredLocalizedText{EN: "Quotes", PT: "Cotações"}, full))
+}
+
+func TestWorkflowCanonicalPresentationShape(t *testing.T) {
+	wf := validWalterWorkflow("workflow-a", "default", "walter-pool")
+	wf.Spec.Coworker.Connections = nil
+	wf.Spec.Coworker.OnItsOwn = append(wf.Spec.Coworker.OnItsOwn, v1alpha1.CoworkerOnItsOwnLine{
+		Text:   v1alpha1.RequiredLocalizedText{EN: "Emails suppliers", PT: "Envia emails a fornecedores"},
+		Kind:   "sends",
+		Detail: &v1alpha1.RequiredLocalizedText{EN: "Pre-approved recipients", PT: "Destinatários pré-aprovados"},
+		Items:  []string{"rates@northsealines.example"},
+	})
+	raw, err := json.Marshal(buildCanonicalSpec(wf).Presentation)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"title":{"en":"Quotation Processing","pt":"Quotation Processing"},
+		"coworker":{"name":"Walter Ops","mark":{"shape":"petal","color":"teal"},
+			"role":{"en":"Quotation coordinator","pt":"Coordenador de cotações"},
+			"summary":{"en":"Prepares quotations.","pt":"Prepara cotações."},
+			"onItsOwn":[
+				{"text":{"en":"Reads incoming requests","pt":"Lê os pedidos recebidos"},"kind":"reads"},
+				{"text":{"en":"Emails suppliers","pt":"Envia emails a fornecedores"},"kind":"sends",
+					"detail":{"en":"Pre-approved recipients","pt":"Destinatários pré-aprovados"},
+					"items":["rates@northsealines.example"]}],
+			"connections":[]}}`, string(raw))
 }
 
 func TestWorkflowCanonicalSpecIncludesAllExecutionIdentityInputs(t *testing.T) {
@@ -812,4 +898,18 @@ func TestCanonicalNode_WaitFillsReservedOutcomesAndDeadlines(t *testing.T) {
 	assert.Equal(t, []string{"cancelled", "received", "deadline"}, absolute.Outcomes, "explicit outcomes are kept for validation")
 	assert.Equal(t, &workflow.CanonicalOutputReference{Node: "plan", Path: []string{"replyBy"}}, absolute.Wait.Deadline.At)
 	assert.Empty(t, absolute.Wait.Deadline.After)
+}
+
+func testCoworker(name string) v1alpha1.CoworkerSpec {
+	return v1alpha1.CoworkerSpec{
+		Name:    name,
+		Mark:    v1alpha1.CoworkerMark{Shape: "petal", Color: "teal"},
+		Role:    v1alpha1.RequiredLocalizedText{EN: "Quotation coordinator", PT: "Coordenador de cotações"},
+		Summary: v1alpha1.RequiredLocalizedText{EN: "Prepares quotations.", PT: "Prepara cotações."},
+		OnItsOwn: []v1alpha1.CoworkerOnItsOwnLine{{
+			Text: v1alpha1.RequiredLocalizedText{EN: "Reads incoming requests", PT: "Lê os pedidos recebidos"},
+			Kind: "reads",
+		}},
+		Connections: []v1alpha1.RequiredLocalizedText{{EN: "Outlook", PT: "Outlook"}},
+	}
 }

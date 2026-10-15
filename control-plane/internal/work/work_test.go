@@ -71,6 +71,7 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	unreferenced, err := store.Dashboard(ctx, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 	require.NoError(t, err)
 	assert.False(t, unreferenced.Value.Configured, "an unreferenced registry row is not Dashboard configuration")
+	assert.Equal(t, workstore.TimeBackSummary{ByWorkflow: []workstore.WorkflowTimeBack{}}, unreferenced.TimeBack)
 
 	item, created, err := store.Start(ctx, workstore.StartInput{ActorIdentityID: actorID, WorkflowKey: "walter/quotation", IdempotencyKey: "notification-1", Title: "Quotation — ACME", Source: json.RawMessage(`{"messageId":"m-1","tenant":"acme"}`), SourcePresentation: sourcePresentation, ArtifactRefs: sourceArtifacts})
 	require.NoError(t, err)
@@ -78,7 +79,9 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	assert.Equal(t, workstore.StateTodo, item.State)
 	assert.True(t, item.ValueConfigured)
 	assert.Equal(t, "Quote request", item.SourcePresentation.Title)
-	assert.Equal(t, "Marco", item.Presentation.PersonaName)
+	assert.Equal(t, "Marco", item.Presentation.Coworker.Name)
+	assert.Equal(t, "Quotation", item.Presentation.Title.EN)
+	assert.NotNil(t, item.Presentation.Coworker.OnItsOwn)
 	require.NotNil(t, item.CurrentStep)
 	assert.Equal(t, "Processing quotation", item.CurrentStep.Label.EN)
 	customerJSON, err := json.Marshal(item)
@@ -199,7 +202,46 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 			(id,storage_key,source_type,created_by_identity_id,mime_type,size_bytes,digest,state,available_at)
 		VALUES ($1,'artifacts/human-response','user_upload',$2,'text/csv',12,'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd','available',now())`, responseArtifactID, actorID)
 	require.NoError(t, err)
-	_, err = restarted.RespondBlocker(ctx, workstore.BlockerResponseInput{BlockerID: human.ID, ActorIdentityID: actorID, Outcome: "information_provided", Response: json.RawMessage(`{"information":"See attached CSV"}`), ArtifactRefs: []workstore.ArtifactRef{{ArtifactID: responseArtifactID, Metadata: json.RawMessage(`{"name":"destination.csv"}`)}}})
+	assert.Nil(t, human.RespondedBy, "an open blocker has no responder")
+	_, err = pool.Exec(ctx, `
+		INSERT INTO identity.local_users (identity_id, email, email_normalized, display_name, role, status)
+		VALUES ($1, 'ana@example.com', 'ana@example.com', 'Ana Operator', 'operator', 'active')`, actorID)
+	require.NoError(t, err)
+	resolvedHuman, err := restarted.RespondBlocker(ctx, workstore.BlockerResponseInput{BlockerID: human.ID, ActorIdentityID: actorID, Outcome: "information_provided", Response: json.RawMessage(`{"information":"See attached CSV"}`), ArtifactRefs: []workstore.ArtifactRef{{ArtifactID: responseArtifactID, Metadata: json.RawMessage(`{"name":"destination.csv"}`)}}})
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", resolvedHuman.State)
+	assert.NotNil(t, resolvedHuman.ResolvedAt)
+	assert.Equal(t, &workstore.PersonRef{ID: actorID, DisplayName: "Ana Operator"}, resolvedHuman.RespondedBy)
+	reread, err := restarted.GetBlocker(ctx, human.ID)
+	require.NoError(t, err)
+	assert.Equal(t, resolvedHuman.RespondedBy, reread.RespondedBy)
+	blockerJSON, err := json.Marshal(reread)
+	require.NoError(t, err)
+	assert.Contains(t, string(blockerJSON), `"respondedBy":{"id":"`+actorID+`","displayName":"Ana Operator"}`)
+	assert.NotContains(t, string(blockerJSON), "ana@example.com")
+	attributed, err := restarted.ListTimeline(ctx, item.ID, 0, 1000)
+	require.NoError(t, err)
+	var sawHuman, sawSystem bool
+	for _, event := range attributed {
+		switch {
+		case event.ActorIdentityID != nil && *event.ActorIdentityID == actorID:
+			require.NotNil(t, event.ActorDisplayName, event.Code)
+			assert.Equal(t, "Ana Operator", *event.ActorDisplayName, event.Code)
+			sawHuman = true
+		case event.ActorIdentityID == nil:
+			assert.Nil(t, event.ActorDisplayName, event.Code)
+			sawSystem = true
+		}
+	}
+	assert.True(t, sawHuman, "a human-attributed event carries the display name")
+	assert.True(t, sawSystem)
+	// A display name that is still the delivery email is never exposed.
+	_, err = pool.Exec(ctx, `UPDATE identity.local_users SET display_name='ana@example.com' WHERE identity_id=$1`, actorID)
+	require.NoError(t, err)
+	reread, err = restarted.GetBlocker(ctx, human.ID)
+	require.NoError(t, err)
+	assert.Equal(t, &workstore.PersonRef{ID: actorID}, reread.RespondedBy)
+	_, err = pool.Exec(ctx, `UPDATE identity.local_users SET display_name='Ana Operator' WHERE identity_id=$1`, actorID)
 	require.NoError(t, err)
 
 	// Re-entering process is intercepted before dispatch because it previously
@@ -252,6 +294,9 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	dashboard, err = restarted.Dashboard(ctx, periodFrom, periodTo)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), dashboard.Counts[workstore.StateDone])
+	assert.Equal(t, workstore.TimeBackSummary{Configured: true, Seconds: 1200, ByWorkflow: []workstore.WorkflowTimeBack{
+		{WorkflowKey: "walter/quotation", Seconds: 1200},
+	}}, dashboard.TimeBack, "a credited completion hands back the baseline time")
 	artifacts, err := restarted.ListArtifacts(ctx, item.ID)
 	require.NoError(t, err)
 	artifactIDs := make([]string, 0, len(artifacts))
@@ -286,6 +331,15 @@ func TestWorkGraphLifecycle_CycleBlockerFeedbackRevisionAndValue(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, disputed.ValueDisputed)
 	assert.Equal(t, "0.000000", *disputed.EstimatedValue)
+	corrected, err := restarted.Dashboard(ctx, periodFrom, periodTo)
+	require.NoError(t, err)
+	assert.Equal(t, workstore.TimeBackSummary{Configured: true, Seconds: 0, ByWorkflow: []workstore.WorkflowTimeBack{
+		{WorkflowKey: "walter/quotation", Seconds: 0},
+	}}, corrected.TimeBack, "a corrected run never counts as time back")
+	timeBackJSON, err := json.Marshal(corrected.TimeBack)
+	require.NoError(t, err)
+	assert.NotContains(t, string(timeBackJSON), "EUR")
+	assert.NotContains(t, string(timeBackJSON), "currency")
 	_, err = pool.Exec(ctx, `UPDATE work.value_ledger SET amount=1 WHERE work_item_id=$1`, item.ID)
 	assert.Error(t, err, "value history must be append-only")
 	_, err = pool.Exec(ctx, `DELETE FROM work.timeline_events WHERE work_item_id=$1`, item.ID)
@@ -382,7 +436,7 @@ func seedFoundation(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (stri
 			Edges:            []workflow.CanonicalEdge{{From: "process", Outcome: "needs_information", To: "information"}, {From: "information", Outcome: "information_provided", To: "process"}},
 			TerminalOutcomes: []workflow.CanonicalTerminalOutcome{{Node: "process", Outcome: "completed"}},
 		},
-		Presentation: workflow.CanonicalPresentation{WorkflowTitle: "Quotation", PersonaName: "Marco", Locale: "en"},
+		Presentation: workflow.CanonicalPresentation{Title: workflow.CanonicalText{EN: "Quotation", PT: "Quotation"}, Coworker: workflow.CanonicalCoworker{Name: "Marco", Mark: workflow.CanonicalCoworkerMark{Shape: "round", Color: "blue"}, Role: workflow.CanonicalText{EN: "Coordinator", PT: "Coordenador"}, Summary: workflow.CanonicalText{EN: "Handles the work.", PT: "Trata do trabalho."}}},
 	}
 	specJSON, _ := json.Marshal(spec)
 	presentation, _ := json.Marshal(spec.Presentation)
@@ -429,7 +483,7 @@ func TestWorkStartManualSourceBounded(t *testing.T) {
 				OutputSchema:       json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"classification":{"type":"string","enum":["engineering","pricing"]}}}`),
 				ResultPresentation: result}},
 			TerminalOutcomes: []workflow.CanonicalTerminalOutcome{{Node: "process", Outcome: "completed"}}},
-		Presentation: workflow.CanonicalPresentation{WorkflowTitle: "Quotation", PersonaName: "Marco", Locale: "en"},
+		Presentation: workflow.CanonicalPresentation{Title: workflow.CanonicalText{EN: "Quotation", PT: "Quotation"}, Coworker: workflow.CanonicalCoworker{Name: "Marco", Mark: workflow.CanonicalCoworkerMark{Shape: "round", Color: "blue"}, Role: workflow.CanonicalText{EN: "Coordinator", PT: "Coordenador"}, Summary: workflow.CanonicalText{EN: "Handles the work.", PT: "Trata do trabalho."}}},
 	}
 	specJSON, _ := json.Marshal(spec)
 	presentation, _ := json.Marshal(spec.Presentation)

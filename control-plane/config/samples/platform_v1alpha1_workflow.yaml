@@ -110,10 +110,27 @@ spec:
         outcome: completed
 
   valueModelRef: walter-quotation-handling
-  presentation:
-    workflowTitle: Quotation processing
-    personaName: Marco
-    locale: en
+  title:
+    en: Quotation processing
+    pt: Processamento de cotações
+  coworker:
+    name: Marco
+    mark: {shape: round, color: blue}
+    role:
+      en: Quotation coordinator
+      pt: Coordenador de cotações
+    summary:
+      en: Reads incoming quote requests and prepares a priced quotation for review.
+      pt: Lê os pedidos de cotação recebidos e prepara uma cotação para revisão.
+    onItsOwn:
+      - text: {en: Reads quote requests from the shared mailbox, pt: Lê pedidos de cotação da caixa partilhada}
+        kind: reads
+        detail: {en: Shared quotes mailbox · emails and attachments, pt: Caixa partilhada de cotações · emails e anexos}
+      - text: {en: Fills in the quotation workbook, pt: Preenche o livro de cotações}
+        kind: does
+    connections:
+      - {en: Outlook, pt: Outlook}
+      - {en: Excel, pt: Excel}
 ---
 # Generic exported-artifact workflow for XBS discovery. Customer-specific schema
 # and mapping remain in the immutable skill/artifact, not platform-core fields.
@@ -163,7 +180,15 @@ spec:
     terminalOutcomes:
       - node: process-export
         outcome: completed
-  presentation:
-    workflowTitle: Exported data processing
-    personaName: XBS Operations
-    locale: pt
+  title:
+    en: Exported data processing
+    pt: Processamento de dados exportados
+  coworker:
+    name: Sofia
+    mark: {shape: petal, color: teal}
+    role:
+      en: Data operations assistant
+      pt: Assistente de operações de dados
+    summary:
+      en: Processes exported data files and produces the shipment map.
+      pt: Processa ficheiros de dados exportados e produz o mapa de envios.

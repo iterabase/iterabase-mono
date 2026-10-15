@@ -73,7 +73,7 @@ internal/controller/ CRD reconcilers (Git -> DB bridge): agentpool, modelbackend
 internal/runtime/   durable turn + graph runtime state and technical event log — HOR-246/254
 internal/work/      work items, graph orchestration, blockers, feedback, value, business events — HOR-254
 internal/server/    chi HTTP routes, each registered with one authority class (auth, People, work REST + SSE, artifacts)
-ui/                 React/Vite customer Dashboard embedded in the API — HOR-396
+ui/                 React/Vite customer app embedded in the API — HOR-459
 internal/logging/   shared slog logger + logr bridge
 internal/version/   build-time version metadata
 internal/testutil/  shared Postgres test helper (testcontainers)
@@ -458,6 +458,19 @@ value-model reference, and a single-active-node directed graph.
   unrepresentable root shape is still rejected. The presentation is snapshotted
   on each node visit so historical results retain customer-readable identity
   and hierarchy without exposing machine keys.
+- **Customer presentation (HOR-459, DES-HOR-459-01)**: `spec.title` is the
+  required EN/PT workflow name and `spec.coworker` the AI coworker identity:
+  `name` (1–40 characters, a proper name that is never translated), `mark`
+  (`shape` round/square/petal, `color` blue/green/sun/violet/teal), required
+  EN/PT `role` and `summary`, an optional EN/PT `connections` list, and an
+  optional typed `onItsOwn` list (at most 12 entries each). Each `onItsOwn`
+  line (DES-HOR-459-09) is `{text: {en, pt}, kind: reads|sends|does,
+  detail?: {en, pt}, items?: [string]}` with at most 12 literal items of 1–200
+  characters; `detail` and `items` are omitted from the API when empty. What the coworker "always asks you first" is not
+  declarable: it is derived from the graph's `human_gate` nodes. The canonical
+  `{title, coworker}` presentation is snapshotted onto each attempt and is the
+  work item `presentation` contract. Changing it is a content change and needs
+  a new `spec.version`.
 - A workflow **cannot request capabilities beyond its `poolRef` AgentPool**:
   each requested tool must be granted and its effect/action narrowing must not
   exceed the pool grant; every node exposes an explicit subset, enforced from
@@ -495,8 +508,8 @@ with exactly one `runtime.workflow_run`. Current To do / In progress / Waiting /
 Paused / Blocked / Done / Failed presentation is projected from the current
 attempt plus its open actionable blocker, open pause, and open wait, avoiding a
 duplicate mutable state machine. Waiting and Paused are never Blocked; the
-Dashboard shows them in the In progress column with their own state chip.
-Failed remains outside the four normal columns. A pause holds the next step of
+app's Work screen groups them under Waiting, never Needs you. Failed work
+appears only in the Failed strip, outside the four groups. A pause holds the next step of
 matching work while a live `work.pause_conditions` cause (`trial_ended`,
 `provider_unavailable`, `runner_offline`) applies, and resumes it automatically
 when the cause clears.
@@ -507,19 +520,20 @@ Work APIs require a `work`-scope bearer key and operation capability
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/v1/work-items` | Idempotent workflow start (`Idempotency-Key` required) |
-| `GET` | `/v1/work-items` / `/v1/work-items/{id}` | Search/list and customer-safe detail |
+| `GET` | `/v1/workflows` / `/v1/workflows/{key}` | Customer-safe workflow catalogue (`workflows.read`, HOR-459): latest valid definition per key with title, AI coworker, business steps (breadth-first from the entry node) and `alwaysAsks` (its human gates); never prompts, models, skills, tools, pools, value models or schemas. Percent-encode `/` in `{key}` |
+| `GET` | `/v1/work-items` / `/v1/work-items/{id}` | Search/list (`state`, `search`, `from`, `to`, exact `workflowKey`) and customer-safe detail; `answeredBy: {displayName}` names who answered the most recent resolved approval or decision gate across attempts (omitted when none or when the name is email-like, DES-HOR-459-10) |
 | `GET` | `/v1/work-items/{id}/attempts` | Preserved attempt history |
 | `GET` | `/v1/work-attempts/{id}/nodes` | Append-only graph-node visits and structured outputs |
-| `GET` | `/v1/work-items/{id}/timeline` | Customer-safe business timeline |
+| `GET` | `/v1/work-items/{id}/timeline` | Customer-safe business timeline; `actorDisplayName` names a human actor (display name only, never an email) |
 | `GET` | `/v1/work-items/{id}/artifacts` | Immutable item/attempt artifact links and download metadata |
 | `GET` | `/v1/work-items/{id}/consequences` | Customer-safe external-action tokens required by a revision |
 | `GET` | `/v1/work-items/{id}/blocker` | Current actionable request |
-| `POST` | `/v1/work-blockers/{id}/responses` | Resolve human/consequence gate |
+| `POST` | `/v1/work-blockers/{id}/responses` | Resolve human/consequence gate; a resolved blocker carries `respondedBy: {id, displayName}` |
 | `POST` | `/v1/work-items/{id}/wait/stop` | Stop the open wait and continue through its `cancelled` outcome (cookie session + CSRF only, like blocker responses) |
 | `GET` | `/v1/work-items/{id}/feedback` / `/v1/work-items/{id}/feedback/{feedbackID}` | Original-attempt feedback and revised-attempt association |
 | `POST` | `/v1/work-items/{id}/feedback` | Save feedback without starting work |
 | `POST` | `/v1/work-items/{id}/revisions` | Explicit revised attempt with exact consequence confirmation |
-| `GET` | `/v1/work-dashboard` | State counts plus explainable estimated value/trend |
+| `GET` | `/v1/work-dashboard` | State counts, explainable estimated value/trend (Admin `value.read` only), and `timeBack` `{configured, seconds, byWorkflow[{workflowKey, seconds}]}` for every role: net credited minus deducted value-model `baselineSeconds` in the period, never money (DES-HOR-459-02) |
 | `GET` | `/v1/work-events` | Resumable SSE (`Last-Event-ID`) of business-safe events |
 | `POST` | `/v1/value-models` | Admin-only immutable value-model version creation |
 
@@ -542,7 +556,7 @@ use string, boolean, number, integer, unconstrained object/array JSON, or enum;
 unsupported validation keywords (including nested schemas, patterns, ranges,
 and composition/references) and indirectly declared required fields are
 rejected before deployment.
-Attempts and node visits snapshot workflow/persona/stage presentation for
+Attempts and node visits snapshot workflow title/coworker/stage presentation for
 stable cards. Terminal visits additionally snapshot localized result summaries,
 structured property-path labels, and exact enum-value labels; the Dashboard renders that
 contract rather than agent summaries, stage labels, or raw schema identifiers.
@@ -550,10 +564,31 @@ Artifact blocker responses accept validated
 `artifactRefs`, link them to the
 human-gate visit, and propagate them as authorized inputs when work resumes.
 
-The private Dashboard is served at `/`. The operator supplies a work-scope API
-key after loading the page; the key is retained only in JavaScript memory and
-is never put in a URL, cookie, local storage, or session storage. Walter access
-remains SSH port-forwarding/screen sharing per the Platform-v1 release boundary.
+The customer app (HOR-459) is served at `/`: React 19 + Vite, TanStack Router,
+shadcn/ui (Radix) and Tailwind on the Iterabase Design System tokens
+(`ui/src/styles/ds.css`). It is reached only through a browser session
+(HOR-582); nothing is kept in a URL, local storage or session storage. Screens:
+Today, Your turn and All clear, Work with the work item side sheet
+(`/work/<id>` deep links), Team and AI coworker detail (from
+`GET /v1/workflows`), and Settings (Profile, Sessions; People for Admins).
+
+The installation name (DES-HOR-459-08) is `identity.organization_settings.name`:
+trimmed, at most 80 characters, empty when unset. `GET /v1/organization/settings`
+returns it as `name`; the Admin-only `PATCH` accepts `name` and/or
+`defaultLocale` and logs each change with the Admin. `GET /v1/auth/session`
+returns it as `organizationName` both signed in and signed out (omitted while
+unset). At startup the API stores `organization.name` (`ORGANIZATION_NAME`,
+chart value `organization.name`) only while no name is stored, so it never
+overwrites an Admin's choice.
+
+The app document (`index.html`) answers `/` and every browser deep link that
+is not under `/v1/`, `/assets/`, `/healthz`, `/readyz`, `/metrics` or
+`/.well-known/` (DES-HOR-459-04); unknown `/v1/` paths keep a JSON 404 and
+unknown assets a 404. Each document response carries a fresh random CSP style
+nonce, published as `<meta property="csp-nonce" content="…">` and allowed by
+`style-src 'self' 'nonce-…'`; `script-src` stays `'self'`. A binary built
+without the app (only `ui/dist/placeholder.txt`) answers document requests
+with 503.
 
 `runtime.events` and gateway ledgers remain technical/operator records and are
 never returned by customer work APIs. `work.timeline_events` is append-only and

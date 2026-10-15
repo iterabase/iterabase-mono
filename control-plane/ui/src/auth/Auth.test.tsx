@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import AccountShell from "./AccountShell";
+import { SettingsHarness } from "../test/settingsHarness";
 import PublicAuth from "./PublicAuth";
 import { probeSession } from "./authApi";
 
@@ -63,7 +63,7 @@ describe("PublicAuth journey", () => {
     const user = userEvent.setup();
     render(<PublicAuth onAuthenticated={onAuthenticated} />);
 
-    await user.type(screen.getByLabelText("Work email"), "ada@example.com");
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.type(screen.getByLabelText("Password"), "ada-long-password");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -91,7 +91,7 @@ describe("PublicAuth journey", () => {
     ]);
     const user = userEvent.setup();
     render(<PublicAuth onAuthenticated={vi.fn()} />);
-    await user.type(screen.getByLabelText("Work email"), "ada@example.com");
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.type(screen.getByLabelText("Password"), "wrong-password");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -117,11 +117,8 @@ describe("PublicAuth journey", () => {
     const user = userEvent.setup();
     render(<PublicAuth onAuthenticated={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Request access" }));
-    await user.click(screen.getByRole("button", { name: "PT" }));
-    await user.type(
-      screen.getByLabelText("Email de trabalho"),
-      "ada@example.com",
-    );
+    await user.selectOptions(screen.getByLabelText("Language"), "pt");
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.click(screen.getByRole("button", { name: "Pedir acesso" }));
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Consulte o seu email para confirmar este endereço.",
@@ -232,7 +229,7 @@ describe("PublicAuth journey", () => {
   });
 });
 
-describe("AccountShell", () => {
+describe("Settings account panels", () => {
   it("saves profile changes and applies the language", async () => {
     stubFetch([
       [
@@ -250,14 +247,8 @@ describe("AccountShell", () => {
       ],
     ]);
     const user = userEvent.setup();
-    render(
-      <AccountShell
-        initialProfile={operatorProfile}
-        initialCSRF="csrf-token"
-        onSessionLost={vi.fn()}
-      />,
-    );
-    const name = screen.getByLabelText("Your name");
+    render(<SettingsHarness profile={operatorProfile} csrf="csrf-token" />);
+    const name = await screen.findByLabelText("Your name");
     await user.clear(name);
     await user.type(name, "Ada L.");
     await user.selectOptions(screen.getByLabelText("Language"), "pt");
@@ -288,14 +279,8 @@ describe("AccountShell", () => {
       ],
     ]);
     const user = userEvent.setup();
-    render(
-      <AccountShell
-        initialProfile={operatorProfile}
-        initialCSRF="csrf-token"
-        onSessionLost={vi.fn()}
-      />,
-    );
-    const name = screen.getByLabelText("Your name");
+    render(<SettingsHarness profile={operatorProfile} csrf="csrf-token" />);
+    const name = await screen.findByLabelText("Your name");
     await user.clear(name);
     await user.type(name, "Ada L.");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
@@ -337,14 +322,8 @@ describe("AccountShell", () => {
       ],
     ]);
     const user = userEvent.setup();
-    render(
-      <AccountShell
-        initialProfile={operatorProfile}
-        initialCSRF="csrf-token"
-        onSessionLost={vi.fn()}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Sessions" }));
+    render(<SettingsHarness profile={operatorProfile} csrf="csrf-token" />);
+    await user.click(await screen.findByRole("link", { name: "Sessions" }));
     expect(
       await screen.findByText(/Chrome · macOS · Desktop/),
     ).toBeInTheDocument();
@@ -372,15 +351,9 @@ describe("AccountShell", () => {
 
   it("hides People administration from Operators", async () => {
     stubFetch([["/v1/sessions", () => json([])]]);
-    render(
-      <AccountShell
-        initialProfile={operatorProfile}
-        initialCSRF="csrf"
-        onSessionLost={vi.fn()}
-      />,
-    );
+    render(<SettingsHarness profile={operatorProfile} csrf="csrf" />);
     expect(
-      screen.queryByRole("button", { name: "Access requests" }),
+      screen.queryByRole("link", { name: "People" }),
     ).not.toBeInTheDocument();
   });
 
@@ -408,19 +381,16 @@ describe("AccountShell", () => {
       ],
     ]);
     const user = userEvent.setup();
-    render(
-      <AccountShell
-        initialProfile={adminProfile}
-        initialCSRF="csrf"
-        onSessionLost={vi.fn()}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Access requests" }));
-    await user.click(await screen.findByRole("button", { name: "Review" }));
-    await user.click(screen.getByRole("radio", { name: "Operator" }));
+    render(<SettingsHarness profile={adminProfile} csrf="csrf" />);
+    await user.click(await screen.findByRole("link", { name: "People" }));
+    expect(await screen.findByText("ada@example.com")).toBeInTheDocument();
+    expect(screen.getByLabelText("Role")).toHaveValue("operator");
     await user.click(screen.getByRole("button", { name: "Approve" }));
     expect(
       screen.getByText(/Enter your current password to continue/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Approve ada@example.com as Operator\./),
     ).toBeInTheDocument();
     await user.type(screen.getByLabelText("Password"), "admin-long-password");
     await user.click(screen.getByRole("button", { name: "Confirm" }));
@@ -445,13 +415,13 @@ describe("AccountShell", () => {
     ]);
     const user = userEvent.setup();
     render(
-      <AccountShell
-        initialProfile={operatorProfile}
-        initialCSRF="csrf"
+      <SettingsHarness
+        profile={operatorProfile}
+        csrf="csrf"
         onSessionLost={onSessionLost}
       />,
     );
-    await user.click(screen.getByRole("button", { name: "Sessions" }));
+    await user.click(await screen.findByRole("link", { name: "Sessions" }));
     await waitFor(() => expect(onSessionLost).toHaveBeenCalled());
   });
 });
@@ -459,9 +429,7 @@ describe("AccountShell", () => {
 describe("Language preference (HOR-670)", () => {
   it("opens the sign-in page in the organisation or browser language", () => {
     render(<PublicAuth initialLocale="pt" onAuthenticated={vi.fn()} />);
-    expect(
-      screen.getByRole("heading", { name: "Iniciar sessão" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Entrar" })).toBeInTheDocument();
     expect(document.documentElement.lang).toBe("pt-PT");
   });
 
@@ -486,13 +454,12 @@ describe("Language preference (HOR-670)", () => {
     ]);
     const user = userEvent.setup();
     render(
-      <AccountShell
-        initialProfile={{ ...operatorProfile, organizationLocale: "pt" }}
-        initialCSRF="csrf-token"
-        onSessionLost={vi.fn()}
+      <SettingsHarness
+        profile={{ ...operatorProfile, organizationLocale: "pt" }}
+        csrf="csrf-token"
       />,
     );
-    const language = screen.getByLabelText("Language");
+    const language = await screen.findByLabelText("Language");
     expect(
       within(language).getByRole("option", {
         name: "Organisation default (Português (Portugal))",
@@ -543,13 +510,12 @@ describe("Language preference (HOR-670)", () => {
     ]);
     const user = userEvent.setup();
     render(
-      <AccountShell
-        initialProfile={{ ...adminProfile, localePreference: "" }}
-        initialCSRF="csrf"
-        onSessionLost={vi.fn()}
+      <SettingsHarness
+        profile={{ ...adminProfile, localePreference: "" }}
+        csrf="csrf"
       />,
     );
-    await user.click(screen.getByRole("button", { name: "Access requests" }));
+    await user.click(await screen.findByRole("link", { name: "People" }));
     const select = await screen.findByLabelText("Default language");
     expect(
       within(select).getByRole("option", {
@@ -569,8 +535,48 @@ describe("Language preference (HOR-670)", () => {
     });
     // The Admin follows the organisation, so the shell switches to PT-PT.
     expect(
-      screen.getByRole("heading", { name: "Idioma da organização" }),
+      screen.getByRole("heading", { name: "Organização" }),
     ).toBeInTheDocument();
+  });
+
+  it("lets an Admin name the installation (DES-HOR-459-08)", async () => {
+    const patch = vi.fn();
+    stubFetch([
+      [
+        "/v1/organization/settings",
+        (init) => {
+          if (init?.method !== "PATCH")
+            return json({
+              defaultLocale: "en",
+              name: "",
+              updatedAt: "2026-09-23T10:00:00Z",
+            });
+          patch(JSON.parse(String(init.body)));
+          return json({
+            defaultLocale: "en",
+            name: "Transitários Exemplo",
+            updatedBy: adminProfile.id,
+            updatedAt: "2026-09-23T12:00:00Z",
+          });
+        },
+      ],
+      ["/v1/access-requests", () => json([])],
+    ]);
+    const user = userEvent.setup();
+    render(<SettingsHarness profile={adminProfile} csrf="csrf" />);
+    await user.click(await screen.findByRole("link", { name: "People" }));
+    await user.type(
+      await screen.findByLabelText("Name"),
+      "  Transitários Exemplo ",
+    );
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Organisation name saved.",
+    );
+    expect(patch).toHaveBeenCalledWith({
+      name: "Transitários Exemplo",
+      expectedUpdatedAt: "2026-09-23T10:00:00Z",
+    });
   });
 
   it("keeps the Admin's unsaved organisation language across shell updates", async () => {
@@ -593,20 +599,12 @@ describe("Language preference (HOR-670)", () => {
       ],
     ]);
     const user = userEvent.setup();
-    render(
-      <AccountShell
-        initialProfile={adminProfile}
-        initialCSRF="csrf"
-        onSessionLost={vi.fn()}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Access requests" }));
+    render(<SettingsHarness profile={adminProfile} csrf="csrf" />);
+    await user.click(await screen.findByRole("link", { name: "People" }));
     const select = await screen.findByLabelText("Default language");
     await user.selectOptions(select, "pt");
     // Unrelated shell activity: review a request and open reauthentication.
-    await user.click(await screen.findByRole("button", { name: "Review" }));
-    await user.click(screen.getByRole("radio", { name: "Operator" }));
-    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await user.click(await screen.findByRole("button", { name: "Approve" }));
     expect(
       screen.getByText(/Enter your current password to continue/),
     ).toBeInTheDocument();
@@ -637,14 +635,8 @@ describe("Language preference (HOR-670)", () => {
       ["/v1/access-requests", () => json([])],
     ]);
     const user = userEvent.setup();
-    render(
-      <AccountShell
-        initialProfile={adminProfile}
-        initialCSRF="csrf"
-        onSessionLost={vi.fn()}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Access requests" }));
+    render(<SettingsHarness profile={adminProfile} csrf="csrf" />);
+    await user.click(await screen.findByRole("link", { name: "People" }));
     await user.selectOptions(
       await screen.findByLabelText("Default language"),
       "pt",
@@ -656,7 +648,7 @@ describe("Language preference (HOR-670)", () => {
       "Default language saved.",
     );
     expect(
-      screen.getByRole("heading", { name: "Organisation language" }),
+      screen.getByRole("heading", { name: "Organisation" }),
     ).toBeInTheDocument();
   });
 });
@@ -664,7 +656,10 @@ describe("Language preference (HOR-670)", () => {
 describe("probeSession", () => {
   it("reads the anonymous state without an enabled flag", async () => {
     stubFetch([["/v1/auth/session", () => json({ authenticated: false })]]);
-    await expect(probeSession()).resolves.toEqual({ kind: "anonymous" });
+    await expect(probeSession()).resolves.toEqual({
+      kind: "anonymous",
+      organizationName: "",
+    });
     expect(vi.mocked(fetch).mock.calls[0][1]?.credentials).toBe("include");
   });
 
@@ -684,6 +679,7 @@ describe("probeSession", () => {
       kind: "authenticated",
       profile: operatorProfile,
       csrfToken: "csrf-token",
+      organizationName: "",
     });
   });
 
@@ -695,23 +691,5 @@ describe("probeSession", () => {
       ],
     ]);
     await expect(probeSession()).resolves.toEqual({ kind: "unavailable" });
-  });
-});
-
-describe("AccountShell work navigation", () => {
-  it("offers the way back to the work board when the app provides one", async () => {
-    const onOpenWork = vi.fn();
-    stubFetch([]);
-    const user = userEvent.setup();
-    render(
-      <AccountShell
-        initialProfile={operatorProfile}
-        initialCSRF="csrf"
-        onSessionLost={vi.fn()}
-        onOpenWork={onOpenWork}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Work" }));
-    expect(onOpenWork).toHaveBeenCalled();
   });
 });

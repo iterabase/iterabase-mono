@@ -6,7 +6,7 @@ import {
   formatNumber,
   formatTime,
 } from "./format";
-import { legacyT } from "./legacy";
+import { fixedT } from "./index";
 
 // The approved reference forms from HOR-670 (PT: 1.840 €, 24h, seg., 13 out.).
 const nbsp = / | /g;
@@ -42,14 +42,13 @@ describe("locale formatting", () => {
 
 describe("numbers inside catalog strings", () => {
   it("formats interpolated numbers per locale and keeps plural selection", () => {
-    expect(legacyT("pt")("sizeBytes", { count: 1840 })).toBe("1.840 bytes");
-    expect(legacyT("en")("sizeBytes", { count: 1840 })).toBe("1,840 bytes");
-    expect(legacyT("en")("sizeBytes", { count: 1 })).toBe("1 byte");
-    expect(legacyT("pt")("itemsShown", { count: 12000 })).toBe(
-      "12.000 itens visíveis",
-    );
+    const pt = fixedT("pt", "work");
+    const en = fixedT("en", "work");
+    expect(pt("work.itemCount", { count: 12000 })).toBe("12.000 itens");
+    expect(en("work.itemCount", { count: 12000 })).toBe("12,000 items");
+    expect(en("work.itemCount", { count: 1 })).toBe("1 item");
     expect(
-      legacyT("pt")("waitingProgress", { received: 1200, expected: 1840 }),
-    ).toBe("1.200 de 1.840 recebidas");
+      pt("line.waiting", { received: 1200, expected: 1840, at: "17:00" }),
+    ).toBe("Respostas 1.200 de 1.840 · até às 17:00");
   });
 });

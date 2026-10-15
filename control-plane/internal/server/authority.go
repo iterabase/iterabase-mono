@@ -57,6 +57,24 @@ func bearerAction(name string) RouteClass { return RouteClass{Kind: RouteBearerA
 // RouteKey is the classification key for one method and chi pattern.
 func RouteKey(method, pattern string) string { return method + " " + pattern }
 
+// FallbackRouteKey classifies the handler for every request no route matches:
+// the app's browser deep links, and the JSON 404 for unknown API paths.
+var FallbackRouteKey = RouteKey("FALLBACK", "/*")
+
+// fallback registers the classified handler for requests no route matches.
+func (h *Handler) fallback(r chi.Router, class RouteClass, handler http.HandlerFunc) {
+	if _, dup := h.classes[FallbackRouteKey]; dup {
+		panic("server: fallback registered twice")
+	}
+	h.classes[FallbackRouteKey] = class
+	var chained http.Handler = handler
+	middlewares := h.authorityFor(class)
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		chained = middlewares[i](chained)
+	}
+	r.NotFound(chained.ServeHTTP)
+}
+
 // route registers one classified route.
 func (h *Handler) route(r chi.Router, method, pattern string, class RouteClass, handler http.HandlerFunc) {
 	key := RouteKey(method, pattern)

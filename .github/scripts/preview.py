@@ -31,6 +31,7 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import e2e_inputs  # noqa: E402
+import preview_demo  # noqa: E402
 import preview_inference  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -127,6 +128,9 @@ def preview_values(images: dict[str, dict[str, str]], model: str, hosts: dict[st
             # Sign-in is always on: the browser origin is the preview's own
             # Tailscale Service, and the overlay names the first Admin.
             "auth": {"publicOrigin": f"https://{hosts['app']}", "bootstrap": {"adminEmail": admin_email}},
+            # The installation name the prototype shows (DES-HOR-459-08); it
+            # seeds only while unset, so a name an Admin sets survives deploys.
+            "organization": {"name": "Transitários Exemplo"},
         },
         "minio": {"persistence": {"size": "5Gi"}},
         "inference-gateway": {
@@ -291,6 +295,16 @@ def seed_admin(host: Host, email: str, password: str) -> None:
     raise PreviewError(f"preview bootstrap Admin {email} did not appear")
 
 
+def seed_demo(host: Host, hosts: dict[str, str], email: str, password: str, model_ref: str) -> None:
+    """Demo AI coworkers and work so the app can be reviewed (DES-HOR-459-06)."""
+    script = preview_demo.seed_script(ingress_target(host), hosts["app"], email, model_ref)
+    try:
+        print(run("ssh", *host.base, f"ubuntu@{host.address}", preview_demo.REMOTE, stdin=f"{password}\n{script}"),
+              file=sys.stderr)
+    except subprocess.CalledProcessError as error:
+        raise PreviewError(f"preview demo seed failed (exit {error.returncode}):\n{error.stdout or ''}") from error
+
+
 def tailnet_hosts(host: Host, environment: str) -> dict[str, str]:
     """The Tailscale Service DNS names for this preview (DES-HOR-590-06)."""
     # A new host joins the tailnet from its boot script; wait for that to finish
@@ -408,7 +422,10 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
         raise
     hosted_model(host, args.llm_base_url, args.model_id, os.environ["PREVIEW_LLM_API_KEY"])
     if args.admin_mode == "seeded":
-        seed_admin(host, args.admin_email, os.environ.get("PREVIEW_ADMIN_PASSWORD", ""))
+        password = os.environ.get("PREVIEW_ADMIN_PASSWORD", "")
+        seed_admin(host, args.admin_email, password)
+        # The demo's agent steps name the Model resource hosted_model creates.
+        seed_demo(host, hosts, args.admin_email, password, "preview-hosted")
     inference_smoke(host, hosts, args.model_id)
     return {**serve_on_tailnet(host, args.name, hosts), "chart_version": version,
             "admin_email": args.admin_email, "admin_mode": args.admin_mode}

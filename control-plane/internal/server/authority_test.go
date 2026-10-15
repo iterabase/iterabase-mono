@@ -30,6 +30,9 @@ var reviewedRouteClasses = map[string]server.RouteClass{
 	"GET /assets/*": {Kind: server.RouteProbe},
 	"GET /healthz":  {Kind: server.RouteProbe},
 	"GET /readyz":   {Kind: server.RouteProbe},
+	// Every unmatched request: browser deep links get the app document,
+	// unknown API paths a JSON 404 (DES-HOR-459-04).
+	server.FallbackRouteKey: {Kind: server.RouteProbe},
 
 	"POST /v1/auth/request-access":  {Kind: server.RoutePublic},
 	"POST /v1/auth/verify":          {Kind: server.RoutePublic},
@@ -80,6 +83,9 @@ var reviewedRouteClasses = map[string]server.RouteClass{
 	"GET /v1/work-dashboard":                        {Kind: server.RouteAction, Action: identity.ActionWorkRead},
 	"GET /v1/work-events":                           {Kind: server.RouteAction, Action: identity.ActionWorkRead},
 
+	"GET /v1/workflows":       {Kind: server.RouteAction, Action: identity.ActionWorkflowsRead},
+	"GET /v1/workflows/{key}": {Kind: server.RouteAction, Action: identity.ActionWorkflowsRead},
+
 	"POST /v1/artifacts":        {Kind: server.RouteAction, Action: identity.ActionArtifactsUpload},
 	"GET /v1/artifacts/{id}":    {Kind: server.RouteAction, Action: identity.ActionArtifactsRead},
 	"HEAD /v1/artifacts/{id}":   {Kind: server.RouteAction, Action: identity.ActionArtifactsRead},
@@ -98,6 +104,8 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		served = append(served, server.RouteKey(method, route))
 		return nil
 	}))
+	// The unmatched-request fallback is not a walkable route but is classified.
+	served = append(served, server.FallbackRouteKey)
 	sort.Strings(served)
 	for _, key := range served {
 		_, ok := classes[key]
@@ -486,7 +494,7 @@ func seedManualValueWorkflow(t *testing.T, ctx context.Context, pool *pgxpool.Po
 				}}},
 			}},
 			TerminalOutcomes: []workflow.CanonicalTerminalOutcome{{Node: "process", Outcome: "completed"}}},
-		Presentation: workflow.CanonicalPresentation{WorkflowTitle: "Quotation", PersonaName: "Marco", Locale: "en"},
+		Presentation: workflow.CanonicalPresentation{Title: workflow.CanonicalText{EN: "Quotation", PT: "Quotation"}, Coworker: workflow.CanonicalCoworker{Name: "Marco", Mark: workflow.CanonicalCoworkerMark{Shape: "round", Color: "blue"}, Role: workflow.CanonicalText{EN: "Coordinator", PT: "Coordenador"}, Summary: workflow.CanonicalText{EN: "Handles the work.", PT: "Trata do trabalho."}}},
 	}
 	specJSON, err := json.Marshal(spec)
 	require.NoError(t, err)

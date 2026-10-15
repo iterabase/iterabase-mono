@@ -275,7 +275,7 @@ func (s *Store) createAttemptTx(ctx context.Context, tx pgx.Tx, in createAttempt
 	return nil
 }
 
-const workItemSelect = `
+var workItemSelect = `
 	SELECT c.id, c.workflow_key, c.scope_identity_id, c.title, c.source, wi.source_presentation,
 	       a.presentation_snapshot, c.current_attempt_id, c.customer_state, c.runtime_state,
 	       c.created_at, c.updated_at, c.started_at, c.finished_at,
@@ -285,7 +285,8 @@ const workItemSelect = `
 	       step.node_key, step.business_label, step.state, step.started_at,
 	       blocker.id::text, blocker.kind, blocker.title,
 	       wt.completion, wt.expected_count, wt.received, wt.deadline_at,
-	       ps.cause, ps.paused_at
+	       ps.cause, ps.paused_at,
+	       ` + humanDisplayName("answered.responded_by") + `
 	FROM work.current_work_items c
 	JOIN work.work_items wi ON wi.id=c.id
 	JOIN work.attempts a ON a.id=c.current_attempt_id
@@ -308,7 +309,16 @@ const workItemSelect = `
 	LEFT JOIN LATERAL (
 		SELECT cause, paused_at FROM work.attempt_pauses
 		WHERE attempt_id=c.current_attempt_id AND resumed_at IS NULL
-	) ps ON true`
+	) ps ON true
+	LEFT JOIN LATERAL (
+		-- DES-HOR-459-10: who answered the most recent resolved approval or
+		-- decision gate across every attempt (reached through the attempt
+		-- indexes, one lateral per row).
+		SELECT b.responded_by FROM work.attempts ax
+		JOIN work.blockers b ON b.attempt_id=ax.id
+		WHERE ax.work_item_id=c.id AND b.state='resolved' AND b.kind IN ('approval','decision')
+		ORDER BY b.resolved_at DESC NULLS LAST, b.created_at DESC LIMIT 1
+	) answered ON true`
 
 // GetWorkItem returns the customer-safe current projection and value status.
 func (s *Store) GetWorkItem(ctx context.Context, id string) (WorkItem, error) {
@@ -330,7 +340,8 @@ func (s *Store) ListWorkItems(ctx context.Context, filter WorkItemFilter) ([]Wor
 		  AND ($2='' OR c.title ILIKE '%' || $2 || '%' OR wi.source_presentation::text ILIKE '%' || $2 || '%')
 		  AND (c.customer_state NOT IN ('done','failed') OR $3::timestamptz IS NULL OR COALESCE(c.finished_at,c.created_at) >= $3)
 		  AND (c.customer_state NOT IN ('done','failed') OR $4::timestamptz IS NULL OR COALESCE(c.finished_at,c.created_at) < $4)
-		ORDER BY c.created_at DESC, c.id DESC LIMIT $5`, filter.State, filter.Search, filter.From, filter.To, filter.Limit)
+		  AND ($6='' OR c.workflow_key=$6)
+		ORDER BY c.created_at DESC, c.id DESC LIMIT $5`, filter.State, filter.Search, filter.From, filter.To, filter.Limit, filter.WorkflowKey)
 	if err != nil {
 		return nil, err
 	}
@@ -355,13 +366,17 @@ func scanWorkItem(row pgx.Row) (WorkItem, error) {
 	var waitCompletion, pauseCause *string
 	var waitExpected, waitReceived *int
 	var waitDeadline, pausedAt *time.Time
+	var answeredBy *string
 	if err := row.Scan(&out.ID, &out.WorkflowKey, &out.ScopeIdentityID, &out.Title, &out.Source,
 		&sourcePresentation, &presentation, &out.CurrentAttemptID, &out.State, &out.RuntimeState,
 		&out.CreatedAt, &out.UpdatedAt, &out.StartedAt, &out.FinishedAt, &failure,
 		&out.ValueConfigured, &out.ValueModel, &out.EstimatedValue, &out.ValueCurrency, &out.ValueDisputed,
 		&stepKey, &stepLabel, &stepState, &stepStartedAt, &blockerID, &blockerKind, &blockerTitle,
-		&waitCompletion, &waitExpected, &waitReceived, &waitDeadline, &pauseCause, &pausedAt); err != nil {
+		&waitCompletion, &waitExpected, &waitReceived, &waitDeadline, &pauseCause, &pausedAt, &answeredBy); err != nil {
 		return WorkItem{}, err
+	}
+	if answeredBy != nil {
+		out.AnsweredBy = &AnsweredBy{DisplayName: *answeredBy}
 	}
 	if waitCompletion != nil && out.State == StateWaiting {
 		out.Wait = &WaitSummary{Completion: *waitCompletion, Expected: *waitExpected, Received: *waitReceived, DeadlineAt: *waitDeadline}
@@ -375,6 +390,7 @@ func scanWorkItem(row pgx.Row) (WorkItem, error) {
 	if err := json.Unmarshal(presentation, &out.Presentation); err != nil {
 		return WorkItem{}, err
 	}
+	out.Presentation = out.Presentation.Normalized()
 	if stepKey != nil {
 		step := BusinessStep{Key: *stepKey, State: *stepState, StartedAt: stepStartedAt}
 		if err := json.Unmarshal(stepLabel, &step.Label); err != nil {
@@ -466,11 +482,8 @@ func (s *Store) ListTimeline(ctx context.Context, itemID string, after int64, li
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT cursor, id, work_item_id, attempt_id, node_execution_id, code, params,
-		       artifact_refs, actor_identity_id, created_at
-		FROM work.timeline_events
-		WHERE work_item_id=$1 AND cursor>$2 ORDER BY cursor LIMIT $3`, itemID, after, limit)
+	rows, err := s.pool.Query(ctx, timelineSelect+`
+		WHERE t.work_item_id=$1 AND t.cursor>$2 ORDER BY t.cursor LIMIT $3`, itemID, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -482,10 +495,8 @@ func (s *Store) TimelineSince(ctx context.Context, after int64, limit int) ([]Ti
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT cursor, id, work_item_id, attempt_id, node_execution_id, code, params,
-		       artifact_refs, actor_identity_id, created_at
-		FROM work.timeline_events WHERE cursor>$1 ORDER BY cursor LIMIT $2`, after, limit)
+	rows, err := s.pool.Query(ctx, timelineSelect+`
+		WHERE t.cursor>$1 ORDER BY t.cursor LIMIT $2`, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -493,12 +504,18 @@ func (s *Store) TimelineSince(ctx context.Context, after int64, limit int) ([]Ti
 	return scanTimeline(rows)
 }
 
+// timelineSelect reads timeline events with the display name of a human
+// actor. Callers append the WHERE clause on alias t.
+var timelineSelect = `SELECT t.cursor, t.id, t.work_item_id, t.attempt_id, t.node_execution_id, t.code, t.params,
+		       t.artifact_refs, t.actor_identity_id, ` + humanDisplayName("t.actor_identity_id") + `, t.created_at
+		FROM work.timeline_events t`
+
 func scanTimeline(rows pgx.Rows) ([]TimelineEvent, error) {
 	out := make([]TimelineEvent, 0)
 	for rows.Next() {
 		var e TimelineEvent
 		if err := rows.Scan(&e.Cursor, &e.ID, &e.WorkItemID, &e.AttemptID, &e.NodeExecutionID,
-			&e.Code, &e.Params, &e.ArtifactRefs, &e.ActorIdentityID, &e.CreatedAt); err != nil {
+			&e.Code, &e.Params, &e.ArtifactRefs, &e.ActorIdentityID, &e.ActorDisplayName, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

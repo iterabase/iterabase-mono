@@ -56,7 +56,7 @@ func seedGraphWaitItem(t *testing.T, env *dispatchEnv) workstore.WorkItem {
 			},
 			TerminalOutcomes: []workflow.CanonicalTerminalOutcome{{Node: "decide", Outcome: "done"}},
 		},
-		Presentation: workflow.CanonicalPresentation{WorkflowTitle: "Quotes", PersonaName: "Marco", Locale: "en"},
+		Presentation: workflow.CanonicalPresentation{Title: workflow.CanonicalText{EN: "Quotes", PT: "Quotes"}, Coworker: workflow.CanonicalCoworker{Name: "Marco", Mark: workflow.CanonicalCoworkerMark{Shape: "round", Color: "blue"}, Role: workflow.CanonicalText{EN: "Coordinator", PT: "Coordenador"}, Summary: workflow.CanonicalText{EN: "Handles the work.", PT: "Trata do trabalho."}}},
 	}
 	require.NoError(t, workflow.ValidateGraph(spec))
 	specJSON, _ := json.Marshal(spec)

@@ -1316,7 +1316,12 @@ spec:
           outcomes: [{outcome: completed, summary: {en: Workspace proof completed, pt: Prova do workspace concluída}}]
           fields: [{path: [result], label: {en: Result, pt: Resultado}}]
     terminalOutcomes: [{node: execute, outcome: completed}]
-  presentation: {workflowTitle: Workspace behavior proof, personaName: E2E Operator, locale: en}
+  title: {en: Workspace behavior proof, pt: Workspace behavior proof}
+  coworker:
+    name: E2E Operator
+    mark: {shape: round, color: blue}
+    role: {en: E2E operator, pt: Operador E2E}
+    summary: {en: Runs end-to-end proofs., pt: Executa provas ponta a ponta.}
 `, name, key, prompt)
 }
 
@@ -1355,7 +1360,12 @@ spec:
           fields: []
     edges: [{from: execute, outcome: completed, to: hold}]
     terminalOutcomes: [{node: hold, outcome: continued}]
-  presentation: {workflowTitle: Workspace behavior proof, personaName: E2E Operator, locale: en}
+  title: {en: Workspace behavior proof, pt: Workspace behavior proof}
+  coworker:
+    name: E2E Operator
+    mark: {shape: round, color: blue}
+    role: {en: E2E operator, pt: Operador E2E}
+    summary: {en: Runs end-to-end proofs., pt: Executa provas ponta a ponta.}
 `, name, key, prompt)
 }
 
@@ -1414,7 +1424,12 @@ spec:
       - {from: hold, outcome: continued, to: resume}
       - {from: resume, outcome: completed, to: verified}
     terminalOutcomes: [{node: verified, outcome: continued}]
-  presentation: {workflowTitle: Workspace replacement recovery, personaName: E2E Operator, locale: en}
+  title: {en: Workspace replacement recovery, pt: Workspace replacement recovery}
+  coworker:
+    name: E2E Operator
+    mark: {shape: round, color: blue}
+    role: {en: E2E operator, pt: Operador E2E}
+    summary: {en: Runs end-to-end proofs., pt: Executa provas ponta a ponta.}
 `, "E2E_MODE:isolation E2E_BASH:"+base64.StdEncoding.EncodeToString([]byte(recovery)), "E2E_MODE:isolation E2E_BASH:"+base64.StdEncoding.EncodeToString([]byte(recovery)))
 }
 

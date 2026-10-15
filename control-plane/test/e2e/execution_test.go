@@ -347,7 +347,12 @@ spec:
           outcomes: [{outcome: completed, summary: {en: Execution completed, pt: Execução concluída}}]
           fields: [{path: [result], label: {en: Result, pt: Resultado}}]%s%s
     terminalOutcomes: [{node: execute, outcome: completed}]
-  presentation: {workflowTitle: Deterministic execution, personaName: E2E Operator, locale: en}
+  title: {en: Deterministic execution, pt: Deterministic execution}
+  coworker:
+    name: E2E Operator
+    mark: {shape: round, color: blue}
+    role: {en: E2E operator, pt: Operador E2E}
+    summary: {en: Runs end-to-end proofs., pt: Executa provas ponta a ponta.}
 `, resourceName, key, version, requestedBlock, prompt, workspaceTools, capBlock, extraNodes, edges)
 }
 
@@ -989,7 +994,12 @@ spec:
       - {from: collect, outcome: deadline, to: decide}
       - {from: collect, outcome: cancelled, to: decide}
     terminalOutcomes: [{node: decide, outcome: completed}]
-  presentation: {workflowTitle: Wait for replies, personaName: E2E Operator, locale: en}
+  title: {en: Wait for replies, pt: Wait for replies}
+  coworker:
+    name: E2E Operator
+    mark: {shape: round, color: blue}
+    role: {en: E2E operator, pt: Operador E2E}
+    summary: {en: Runs end-to-end proofs., pt: Executa provas ponta a ponta.}
 `
 }
 

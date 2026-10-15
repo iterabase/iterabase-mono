@@ -149,7 +149,10 @@ func (h *Handler) listWorkItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	filter := workstore.WorkItemFilter{State: r.URL.Query().Get("state"), Search: r.URL.Query().Get("search"), Limit: limit}
+	filter := workstore.WorkItemFilter{
+		State: r.URL.Query().Get("state"), Search: r.URL.Query().Get("search"),
+		WorkflowKey: r.URL.Query().Get("workflowKey"), Limit: limit,
+	}
 	for key, target := range map[string]**time.Time{"from": &filter.From, "to": &filter.To} {
 		if value := r.URL.Query().Get(key); value != "" {
 			parsed, err := time.Parse(time.RFC3339, value)
@@ -438,6 +441,8 @@ func (h *Handler) getWorkDashboard(w http.ResponseWriter, r *http.Request) {
 		writeWorkError(w, err)
 		return
 	}
+	// Money is Admin-only (value.read); timeBack carries no money and is
+	// returned to every role holding work.read (DES-HOR-459-02).
 	if !principal.Can(identity.ActionValueRead) {
 		summary.Value = workstore.ValueSummary{Totals: []workstore.CurrencyAmount{}, Models: []workstore.ValueModelSnapshot{}}
 		summary.Trend = []workstore.ValueTrendPoint{}

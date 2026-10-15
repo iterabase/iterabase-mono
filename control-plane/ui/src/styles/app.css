@@ -1,0 +1,270 @@
+/* Customer app styles (HOR-459): Design System tokens (ds.css), the
+   prototype's shared classes (prototype.css), the app frame (shell.css) and
+   one stylesheet per screen area. Tailwind lays out each ported board. */
+@import "tailwindcss";
+@import "./ds.css";
+@import "./prototype.css" layer(components);
+@import "./shell.css";
+@import "./auth.css";
+@import "./today.css";
+@import "./work.css";
+@import "./team.css";
+
+@theme {
+  --font-sans:
+    "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "IBM Plex Serif", Georgia, serif;
+  --font-mono:
+    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-paper: var(--paper-100);
+  --color-surface: var(--surface);
+  --color-sunken: var(--surface-sunken);
+  --color-quiet: var(--surface-quiet);
+  --color-line: var(--border);
+  --color-line-faint: var(--border-faint);
+  --color-ink: var(--text-primary);
+  --color-ink-2: var(--text-secondary);
+  --color-ink-3: var(--text-tertiary);
+  --color-accent: var(--accent);
+  --color-accent-quiet: var(--accent-quiet);
+  --color-warm: var(--warm);
+  --color-warm-quiet: var(--warm-quiet);
+  --color-warm-ink: var(--warm-ink);
+  --color-ok-ink: var(--ok-ink);
+  --color-crit-ink: var(--crit-ink);
+  --color-warn-ink: var(--warn-ink);
+
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+
+  --breakpoint-desk: 900px;
+}
+
+@layer base {
+  html,
+  body {
+    background: var(--bg);
+  }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--leading-normal);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+  a {
+    color: inherit;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+@layer components {
+  /* Radix overlays: the side sheet, dialogs and menus. */
+  .sheet-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(24, 32, 44, 0.3);
+  }
+  .sheet {
+    position: fixed;
+    z-index: 41;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    outline: none;
+  }
+  @media (min-width: 900px) {
+    .sheet {
+      inset: 0 0 0 auto;
+      width: min(560px, 100vw);
+      border-left: 1px solid var(--border);
+      box-shadow: -30px 0 60px -30px rgba(24, 32, 44, 0.45);
+    }
+  }
+  .dialog-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: rgba(24, 32, 44, 0.3);
+  }
+  .dialog {
+    position: fixed;
+    z-index: 61;
+    left: 50%;
+    top: 12vh;
+    width: min(560px, calc(100vw - 32px));
+    max-height: 76vh;
+    overflow-y: auto;
+    transform: translateX(-50%);
+    padding: 22px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-2xl);
+    background: var(--surface);
+    box-shadow: var(--shadow-lg);
+    outline: none;
+  }
+  .menu {
+    z-index: 50;
+    min-width: 220px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow-md);
+  }
+  .menu__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 40px;
+    padding: 0 12px;
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    cursor: pointer;
+    outline: none;
+    text-decoration: none;
+  }
+  .menu__item[data-highlighted] {
+    background: var(--surface-sunken);
+  }
+  .menu__sep {
+    height: 1px;
+    margin: 6px 4px;
+    background: var(--border-faint);
+  }
+  .menu__label {
+    padding: 8px 12px 4px;
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+  }
+
+  /* AI coworker marks take their colour from the DS coworker tokens. */
+  .cw-blue {
+    fill: var(--cw-blue);
+  }
+  .cw-green {
+    fill: var(--cw-green);
+  }
+  .cw-sun {
+    fill: var(--cw-sun);
+  }
+  .cw-violet {
+    fill: var(--cw-violet);
+  }
+  .cw-teal {
+    fill: var(--cw-teal);
+  }
+  /* Used by the DS coworker previews without a rule in bundle.css. */
+  .ib-status--done .ib-status__dot {
+    background: var(--ok);
+  }
+  .text-link {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    font: inherit;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    color: var(--text-link);
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .text-link:hover {
+    text-decoration: underline;
+  }
+  .row-link {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: var(--touch);
+    padding: 12px 16px;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .row-link:hover,
+  .row-link[aria-current="true"] {
+    background: var(--surface-sunken);
+  }
+}
+
+/* Keyboard hints mirror buttons; phones have no keyboard to hint at. */
+@media (max-width: 899px) {
+  .ib-kbd,
+  .xt kbd {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* No AI coworkers yet (Team and Today on a new installation). */
+.xt .no-coworkers {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px;
+  max-width: 560px;
+}
+.xt .no-coworkers--compact {
+  flex-direction: row;
+  align-items: center;
+  max-width: none;
+  padding: 14px 18px;
+  font-size: 14px;
+}
+.no-coworkers__marks {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.no-coworkers__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+/* A state that stands in for a whole screen keeps the screen's gutters;
+   inside a screen (Settings) it takes the screen's own. */
+.frame-main > .state-page {
+  padding: 16px;
+}
+@media (min-width: 900px) {
+  .frame-main > .state-page {
+    padding: 34px 40px 0;
+  }
+}

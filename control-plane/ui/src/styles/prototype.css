@@ -1,0 +1,284 @@
+/* The "Delight, trusted" prototype's shared stylesheet (V2 App Foundation
+   canvas, every XT* board), carried over so screens reproduce the approved
+   boards faithfully. Its variables are aliases of the Design System tokens in
+   ds.css (identical values), never new tokens. Screens port each board's
+   layout with these classes plus Tailwind for the board's inline values. */
+
+.xt {
+  --paper: var(--paper-100);
+  --paper2: var(--paper-300);
+  --card: var(--paper-50);
+  --sunk: var(--paper-200);
+  --ink: var(--ink-900);
+  --ink2: var(--ink-700);
+  --ink3: var(--ink-500);
+  --line: var(--line-200);
+  --line2: var(--line-100);
+  --blue: var(--blue-600);
+  --blue-h: var(--blue-700);
+  --blue2: var(--blue-100);
+  --sun: var(--sun-500);
+  --sun2: var(--sun-100);
+  --ok: var(--green-500);
+  --ok2: var(--green-100);
+  --ok-ink: var(--green-ink);
+  --warn: var(--amber-500);
+  --warn2: var(--amber-100);
+  --warn-ink: var(--amber-ink);
+  --crit: var(--red-500);
+  --crit2: var(--red-100);
+  --crit-ink: var(--red-ink);
+  --signal: var(--teal-500);
+  --signal2: var(--teal-100);
+  --serif: var(--font-serif);
+  --sans: var(--font-sans);
+  --mono: var(--font-mono);
+  font-family: var(--sans);
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  font-size: 15px;
+  line-height: 1.45;
+}
+.xt *,
+.xt *::before,
+.xt *::after {
+  box-sizing: border-box;
+}
+.xt a {
+  color: inherit;
+}
+.xt .mono {
+  font-family: var(--mono);
+}
+.xt .serif {
+  font-family: var(--serif);
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+.xt .eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  font-weight: 500;
+}
+.xt .muted {
+  color: var(--ink3);
+}
+.xt .card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow:
+    0 1px 2px rgba(24, 32, 44, 0.04),
+    0 10px 28px -20px rgba(24, 32, 44, 0.18);
+}
+.xt .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 46px;
+  padding: 0 20px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+.xt .btn:active {
+  transform: translateY(1px);
+}
+.xt .btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+.xt .btn[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+.xt .btn-sm {
+  height: 36px;
+  padding: 0 14px;
+  font-size: 14px;
+  border-radius: 10px;
+}
+.xt .btn-lg {
+  height: 54px;
+  padding: 0 24px;
+  font-size: 16px;
+}
+.xt .btn-full {
+  width: 100%;
+}
+.xt .btn-primary {
+  background: var(--blue);
+  color: #fff;
+  box-shadow: 0 8px 18px -12px rgba(22, 102, 224, 0.8);
+}
+.xt .btn-primary:hover {
+  background: var(--blue-h);
+}
+.xt .btn-ink {
+  background: var(--ink);
+  color: #fbf8f2;
+  box-shadow: 0 8px 18px -12px rgba(24, 32, 44, 0.8);
+}
+.xt .btn-secondary {
+  background: var(--card);
+  color: var(--ink);
+  border-color: var(--line);
+}
+.xt .btn-secondary:hover {
+  background: var(--sunk);
+}
+.xt .btn-ghost {
+  background: transparent;
+  color: var(--ink2);
+}
+.xt .btn-ghost:hover {
+  background: var(--sunk);
+}
+.xt kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  opacity: 0.6;
+  font-weight: 500;
+}
+.xt .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.xt .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  display: inline-block;
+  flex: none;
+}
+.xt .row {
+  display: flex;
+  align-items: center;
+}
+.xt .list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.xt .divide > * + * {
+  border-top: 1px solid var(--line2);
+}
+.xt .seg {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--paper2);
+  border: 1px solid var(--line2);
+}
+.xt .seg button {
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--ink2);
+  cursor: pointer;
+}
+.xt .seg button[aria-pressed="true"] {
+  background: var(--card);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(24, 32, 44, 0.08);
+}
+@keyframes xt-breathe {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+@keyframes xt-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(47, 169, 104, 0.45);
+  }
+  100% {
+    box-shadow: 0 0 0 7px rgba(47, 169, 104, 0);
+  }
+}
+@keyframes xt-settle {
+  0% {
+    transform: translateY(-18px) rotate(var(--r, 0deg));
+    opacity: 0;
+  }
+  75% {
+    transform: translateY(2px) rotate(var(--r, 0deg));
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(0) rotate(var(--r, 0deg));
+    opacity: 1;
+  }
+}
+@keyframes xt-in {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.xt .breathe {
+  animation: xt-breathe 5s ease-in-out infinite;
+}
+.xt .live {
+  animation: xt-pulse 2s ease-out infinite;
+}
+.xt .enter {
+  animation: xt-in 0.35s ease-out both;
+}
+.xt .settle {
+  animation: xt-settle 0.35s ease-out both;
+}
+/* The warm sun glow some boards draw behind the page. */
+.xt .glow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(
+    closest-side,
+    #fbebd8 0,
+    rgba(251, 235, 216, 0) 70%
+  );
+}
+@media (prefers-reduced-motion: reduce) {
+  .xt * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

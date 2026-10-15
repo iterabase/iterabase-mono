@@ -240,10 +240,12 @@ spec:
               - key: note
                 label: {en: Note, pt: Nota}
     terminalOutcomes: [{node: provide, outcome: provided}]
-  presentation:
-    workflowTitle: Browser evidence review
-    personaName: Operations reviewer
-    locale: en
+  title: {en: Browser evidence review, pt: Browser evidence review}
+  coworker:
+    name: Operations reviewer
+    mark: {shape: round, color: blue}
+    role: {en: Operations reviewer, pt: Revisor de operações}
+    summary: {en: Reviews deployed work., pt: Revê o trabalho implementado.}
 `
 	path := state.writeManifest(t, "browser-artifact-workflow.yaml", manifest)
 	state.kubectl(t, 30*time.Second, "apply", "-f", path)

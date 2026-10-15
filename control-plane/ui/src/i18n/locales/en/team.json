@@ -1,0 +1,126 @@
+{
+  "activity": {
+    "filterLabel": "Show",
+    "none": "Nothing in this period.",
+    "periodLabel": "Period",
+    "today": "Today · {{date}}"
+  },
+  "alwaysAsks": "Always asks you",
+  "asksBeforeCustomer": "They ask you before anything reaches a customer",
+  "asksNothing": "Nothing is set to ask you.",
+  "backShort": "back, est.",
+  "backTeam": "Team",
+  "backThisWeek": "back this week, est.",
+  "backToTeam": "Your team",
+  "can": {
+    "alwaysAsksFirst": "Always asks you first",
+    "anythingElse": "Anything not on these lists also waits for your OK.",
+    "connections": "Connections it uses",
+    "onItsOwn": "On its own",
+    "kind": {
+      "reads": "Reads",
+      "sends": "Sends",
+      "does": "Does"
+    },
+    "itemsLabel": "Values for: {{text}}"
+  },
+  "col": {
+    "after": "After",
+    "item": "Item",
+    "next": "Next step",
+    "request": "Request",
+    "status": "Status",
+    "time": "Time",
+    "when": "When",
+    "where": "Where it is",
+    "why": "Why it failed",
+    "confirmedBy": "Confirmed by",
+    "nobody": "No one yet"
+  },
+  "countWord": {
+    "1": "One",
+    "2": "Two",
+    "3": "Three",
+    "4": "Four",
+    "5": "Five",
+    "6": "Six",
+    "7": "Seven",
+    "8": "Eight",
+    "9": "Nine"
+  },
+  "done": "done",
+  "empty": "Iterabase sets up your first AI coworker with you. Each one shows here with what it does on its own and what it always asks you first.",
+  "failed": {
+    "notRestarted": "Not restarted",
+    "outcomeUnknown": "Outcome unknown",
+    "restart": "Restart",
+    "review": "Review",
+    "short_one": "{{period}} · {{count, number}} not restarted",
+    "short_other": "{{period}} · {{count, number}} not restarted",
+    "summary_one": "{{count, number}} failure, not restarted yet.",
+    "summary_other": "{{count, number}} failures, none restarted yet.",
+    "unknown_one": "{{count, number}} needs checking because its outcome is unknown.",
+    "unknown_other": "{{count, number}} need checking because their outcome is unknown."
+  },
+  "failedCount": "failed",
+  "failedTitle": "{{title}} couldn’t finish.",
+  "filter": {
+    "all": "All",
+    "done": "Done",
+    "failed": "Failed",
+    "needs": "Needs you"
+  },
+  "handled": "handled",
+  "handledThisWeek": "handled this week",
+  "hours": "≈ {{hours}} h",
+  "how": {
+    "change": "Want it to work differently? Tell Iterabase, and we’ll update how {{name}} works with you.",
+    "does": "{{name}} does it",
+    "flowLabel": "How {{name}} works, step by step",
+    "live": "Live now",
+    "waits": "Waits",
+    "you": "You",
+    "youDecide": "You decide"
+  },
+  "idle": "Nothing in progress",
+  "itsWork": "Its work",
+  "lead_one": "{{word}} AI coworker working in your mailbox and portals, by your rules. It asks you before anything reaches a customer.",
+  "lead_other": "{{word}} AI coworkers working in your mailbox and portals, by your rules. They ask you before anything reaches a customer.",
+  "leadShort_one": "{{word}} AI coworker, working by your rules.",
+  "leadShort_other": "{{word}} AI coworkers, working by your rules.",
+  "live": {
+    "needs_one": "{{count, number}} needs you",
+    "needs_other": "{{count, number}} need you",
+    "waiting_one": "{{count, number}} waiting",
+    "waiting_other": "{{count, number}} waiting",
+    "working_one": "{{count, number}} working",
+    "working_other": "{{count, number}} working"
+  },
+  "needsYou": "need you",
+  "noConnections": "No connections declared.",
+  "nothingOnItsOwn": "Nothing is set to run on its own.",
+  "onItsOwn": "On its own",
+  "open": "Open",
+  "period": {
+    "month": "This month",
+    "today": "Today",
+    "week": "This week"
+  },
+  "restart": "Restart with guidance",
+  "roleLine": "{{role}} · AI coworker",
+  "seeWork": "See its work",
+  "tabs": {
+    "activity": "Activity",
+    "can": "What it can do",
+    "failed": "Failed this month",
+    "how": "How it works"
+  },
+  "tabsLabel": "Coworker sections",
+  "thisWeek": "This week",
+  "thisWeekLead": "This week:",
+  "title": "Your team",
+  "whatHappened": "What happened",
+  "youAnswer": "You answer",
+  "youConfirm": "You confirm",
+  "emptyTitle": "No AI coworkers yet"
+}

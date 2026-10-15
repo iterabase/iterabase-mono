@@ -20,6 +20,7 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 	cpmetrics "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/metrics"
 	workstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/work"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
 	dashboardui "github.com/nunocgoncalves/iterabase-mono/control-plane/ui"
 )
 
@@ -28,15 +29,19 @@ type Services struct {
 	Pool      *pgxpool.Pool
 	Store     *identity.Store
 	Work      *workstore.Store
+	Workflows *workflow.Store
 	Artifacts *artifactstore.Service
 	Metrics   *cpmetrics.Metrics
 	Auth      *AuthServices
+	// UI serves the browser app; nil serves the app embedded in the binary.
+	UI http.Handler
 }
 
 // Handler holds the identity service dependencies used by the API handlers.
 type Handler struct {
 	store     *identity.Store
 	work      *workstore.Store
+	workflows *workflow.Store
 	artifacts *artifactstore.Service
 	authCfg   *AuthServices
 	classes   map[string]RouteClass
@@ -74,25 +79,59 @@ func NewClassified(svc Services) (chi.Router, map[string]RouteClass) {
 	h := &Handler{
 		store:     svc.Store,
 		work:      svc.Work,
+		workflows: svc.Workflows,
 		artifacts: svc.Artifacts,
 		authCfg:   svc.Auth,
 		classes:   map[string]RouteClass{},
 	}
 
 	// The same-origin product shell is static; it reaches work only through
-	// the browser session.
-	ui := dashboardui.Handler()
+	// the browser session. Browser deep links fall back to the app document
+	// (DES-HOR-459-04) while unknown API paths keep a JSON 404.
+	ui := svc.UI
+	if ui == nil {
+		ui = dashboardui.Handler()
+	}
 	h.route(r, http.MethodGet, "/", probe(), ui.ServeHTTP)
 	h.route(r, http.MethodGet, "/assets/*", probe(), ui.ServeHTTP)
 	h.route(r, http.MethodGet, "/healthz", probe(), healthz)
 	h.route(r, http.MethodGet, "/readyz", probe(), readyz(svc.Pool, svc.Artifacts))
+	h.fallback(r, probe(), appFallback(ui))
 
 	h.registerAuthRoutes(r)
 	h.registerPeopleRoutes(r)
 	h.registerWorkRoutes(r)
+	h.registerWorkflowRoutes(r)
 	h.registerArtifactRoutes(r)
 
 	return r, h.classes
+}
+
+// appFallback answers every request no route matches. Unknown API paths get
+// the API's JSON 404; a browser GET for any other path outside the asset and
+// health surfaces gets the app document so the client router can resolve it.
+// Machine endpoints that live elsewhere (/metrics on the metrics listener,
+// /.well-known/ documents) stay plain 404s so a misdirected client never
+// mistakes the app document for them.
+func appFallback(ui http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case hasPathPrefix(path, "/v1"):
+			writeJSON(w, http.StatusNotFound, errorBody{Error: "not found"})
+		case r.Method != http.MethodGet && r.Method != http.MethodHead,
+			hasPathPrefix(path, "/assets"), hasPathPrefix(path, "/healthz"), hasPathPrefix(path, "/readyz"),
+			hasPathPrefix(path, "/metrics"), hasPathPrefix(path, "/.well-known"):
+			http.NotFound(w, r)
+		default:
+			ui.ServeHTTP(w, r)
+		}
+	}
+}
+
+// hasPathPrefix reports whether path is prefix or a path below it.
+func hasPathPrefix(path, prefix string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
 func healthz(w http.ResponseWriter, _ *http.Request) {
