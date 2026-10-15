@@ -259,9 +259,10 @@ def _customs(model_id: str) -> dict:
             "responseSchema": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["reference", "incoterm", "packages"],
+                "required": ["reference", "container", "incoterm", "packages"],
                 "properties": {
                     "reference": {"type": "string"},
+                    "container": {"type": "string"},
                     "incoterm": {"enum": ["EXW", "FOB", "CIF", "DAP"]},
                     "packages": {"type": "integer"},
                     "grossWeightKg": {"type": "number"},
@@ -272,6 +273,7 @@ def _customs(model_id: str) -> dict:
                 "outcomes": [_text("Confirm details", "Confirmar dados")],
                 "fields": [
                     {"key": "reference", "label": _text("Booking reference", "Referência da reserva")},
+                    {"key": "container", "label": _text("Container number", "Número do contentor")},
                     {"key": "incoterm", "label": _text("Incoterm", "Incoterm"),
                      "options": [_text("EXW · ex works", "EXW · na fábrica"),
                                  _text("FOB · free on board", "FOB · franco a bordo"),
@@ -299,14 +301,20 @@ def _customs(model_id: str) -> dict:
             "presentation": {"outcomes": [_text("Upload invoice", "Enviar fatura")]},
         },
     }
+    # A fan-out wait: the broker's reply (by booking reference) and the
+    # shipping line's release (by container number) are both needed.
     broker = {
         "key": "broker",
-        "label": _text("Waits for the broker's reply", "Aguarda a resposta do despachante"),
+        "label": _text("Waits for the broker and the shipping line",
+                       "Aguarda o despachante e o armador"),
         "kind": "wait",
         "outcomes": ["received", "deadline", "cancelled"],
         "wait": {
-            "events": [{"source": "email_reply", "correlation": {"node": "details", "path": ["reference"]}}],
-            "completion": "any",
+            "events": [
+                {"source": "email_reply", "correlation": {"node": "details", "path": ["reference"]}},
+                {"source": "email_reply", "correlation": {"node": "details", "path": ["container"]}},
+            ],
+            "completion": "all",
             "deadline": {"after": "48h"},
         },
     }
@@ -317,14 +325,14 @@ def _customs(model_id: str) -> dict:
         "outcomes": ["retry", "file"],
         "humanGate": {
             "type": "decision",
-            "title": _text("The broker hasn't replied. What now?", "O despachante não respondeu. E agora?"),
+            "title": _text("Not everyone has replied. What now?", "Nem todos responderam. E agora?"),
             "description": _text(
-                "Customs can ask the broker again or prepare the declaration without them.",
-                "O Customs pode voltar a pedir ao despachante ou preparar a declaração sem ele.",
+                "Customs can ask the broker and the shipping line again, or prepare the declaration without them.",
+                "O Customs pode voltar a pedir ao despachante e ao armador, ou preparar a declaração sem eles.",
             ),
             "presentation": {"outcomes": [
-                _text("Ask the broker again", "Pedir de novo ao despachante"),
-                _text("Prepare it without the broker", "Preparar sem o despachante"),
+                _text("Ask them again", "Pedir de novo"),
+                _text("Prepare it without them", "Preparar sem eles"),
             ]},
         },
     }
@@ -352,7 +360,9 @@ def _customs(model_id: str) -> dict:
     }
     return {
         "key": "demo/customs",
-        "version": "1",
+        # Version 2 waits for two replies; work already seeded on a preview
+        # keeps version 1.
+        "version": "2",
         "poolRef": POOL,
         "defaultModelRef": model_id,
         "source": {"type": "manual_api"},
@@ -476,11 +486,12 @@ DOCS: dict[str, tuple[str, bytes]] = {
 # until the work passes maxTransitions and fails ("until_failed",).
 Step = tuple
 def _details(reference: str) -> Step:
-    """The shipment details answer. The booking reference is the broker wait's
-    correlation key, and an open wait's key must be unique in the installation,
-    so every item has its own."""
-    return ("answer", "submitted", {"reference": reference, "incoterm": "FOB", "packages": 12,
-                                    "grossWeightKg": 2340.5, "hazardous": False})
+    """The shipment details answer. The booking reference and the container
+    number are the wait's correlation keys, and an open wait's key must be
+    unique in the installation, so every item has its own."""
+    return ("answer", "submitted", {"reference": reference, "container": "MSCU" + reference[3:] + "40",
+                                    "incoterm": "FOB", "packages": 12, "grossWeightKg": 2340.5,
+                                    "hazardous": False})
 
 
 
@@ -517,6 +528,9 @@ WORK: list[tuple[str, str, str, dict, list[Step], list[str]]] = [
     ("demo-3101", "demo/customs", "Customs · Leixões export, ceramics", _BOOKING, [], []),
     ("demo-3102", "demo/customs", "Customs · Sines import, machinery", _BOOKING, [_details("BK-77102")], []),
     ("demo-3103", "demo/customs", "Customs · Lisbon export, cork", _BOOKING, [_details("BK-77103"), _INVOICE], []),
+    # The same wait on version 2 (two replies), for previews seeded on version 1.
+    ("demo-3110", "demo/customs", "Customs · Lisbon import, olive oil", _BOOKING,
+     [_details("BK-77110"), _INVOICE], []),
     # demo-3104 was seeded once with a reference another item already waited
     # on, so it failed; the decision item uses a new key and title.
     ("demo-3109", "demo/customs", "Customs · Porto import, yarn", _BOOKING,
