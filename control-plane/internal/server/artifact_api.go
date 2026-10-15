@@ -158,12 +158,18 @@ func canSeeUnregistered(p Principal, a artifactstore.Artifact) bool {
 	}
 }
 
-// visibleArtifact resolves an id or upload handle under the shared/registered
-// or pre-registration predicate. Invisible rows are indistinguishable from
-// missing ones.
+// artifactVisible is the one status visibility predicate (DES-HOR-460-10):
+// a registered artifact is shared; anything else only under the
+// pre-registration predicate. Every status projection applies it per row.
+func artifactVisible(p Principal, a artifactstore.Artifact) bool {
+	return a.StorageState != artifactstore.StorageUploading && (a.Registered() || canSeeUnregistered(p, a))
+}
+
+// visibleArtifact resolves an id or upload handle under artifactVisible.
+// Invisible rows are indistinguishable from missing ones.
 func (h *Handler) visibleArtifact(w http.ResponseWriter, r *http.Request, p Principal) (artifactstore.Artifact, bool) {
 	a, err := h.artifacts.Status(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || a.StorageState == artifactstore.StorageUploading || (!a.Registered() && !canSeeUnregistered(p, a)) {
+	if err != nil || !artifactVisible(p, a) {
 		if err != nil && !errors.Is(err, artifactstore.ErrNotFound) {
 			writeArtifactError(w, err)
 			return a, false
@@ -185,7 +191,7 @@ func (h *Handler) artifactStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	body := statusBody(a)
 	if a.ParentID != nil {
-		if parent, err := h.artifacts.Stat(r.Context(), *a.ParentID); err == nil {
+		if parent, err := h.artifacts.Stat(r.Context(), *a.ParentID); err == nil && artifactVisible(p, parent) {
 			body.ParentUpload = parent.UploadID
 		}
 	}
@@ -195,7 +201,9 @@ func (h *Handler) artifactStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, c := range children {
-		if c.StorageState != artifactstore.StorageUploading {
+		// A shared container never reveals a child the caller could not
+		// poll directly, including rejected and quarantined children.
+		if artifactVisible(p, c) {
 			body.Children = append(body.Children, statusBody(c))
 		}
 	}

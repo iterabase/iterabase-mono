@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	artifactstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact/artifacttest"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 )
@@ -40,7 +41,14 @@ func (h *authAPIHarness) rawUpload(name, key string, body []byte, headers map[st
 
 func (h *authAPIHarness) clearArtifacts() {
 	h.t.Helper()
-	require.NoError(h.t, artifacttest.Drain(context.Background(), artifacttest.NewCoordinator(h.pool, h.objects, &artifacttest.Scanner{})))
+	h.scanArtifacts(nil)
+}
+
+// scanArtifacts drives every pending artifact through a scripted scanner.
+func (h *authAPIHarness) scanArtifacts(decide func(artifactstore.ScanRequest, []byte) artifacttest.Verdict) {
+	h.t.Helper()
+	scanner := &artifacttest.Scanner{Decide: decide}
+	require.NoError(h.t, artifacttest.Drain(context.Background(), artifacttest.NewCoordinator(h.pool, h.objects, scanner)))
 }
 
 // TestArtifactRoutesEnforceQuarantineVisibility proves the section 13/14
@@ -122,4 +130,52 @@ func TestArtifactRoutesEnforceQuarantineVisibility(t *testing.T) {
 	assert.Equal(t, "unavailable", deleted.body["state"])
 	assert.Equal(t, http.StatusNotFound, h.do(http.MethodGet, "/v1/artifacts/"+artifactID, nil, bearer(bobReader)).status,
 		"deleting bytes are never served")
+}
+
+// TestArtifactContainerStatusAppliesChildVisibility proves DES-HOR-460-10
+// holds through a shared container: polling a registered parent reveals only
+// the children the caller could poll directly.
+func TestArtifactContainerStatusAppliesChildVisibility(t *testing.T) {
+	h := newAuthAPIHarness(t)
+	admin := h.provisionAdmin("admin@example.com", "admin-long-password")
+	alice := h.activeUser("alice@example.com", "operator", "alice-long-password")
+	aliceSession := h.signIn("alice@example.com", "alice-long-password", alice)
+	bob := h.activeUser("bob@example.com", "operator", "bob-long-password")
+	bobSession := h.signIn("bob@example.com", "bob-long-password", bob)
+	bobReader := h.personalKey(bob.ID, identity.ActionArtifactsRead)
+
+	uploaded := h.rawUpload("mail.eml", "k-mail", []byte("container"), aliceSession.unsafeHeaders())
+	require.Equal(t, http.StatusAccepted, uploaded.status, "%v", uploaded.body)
+	h.scanArtifacts(func(_ artifactstore.ScanRequest, data []byte) artifacttest.Verdict {
+		switch string(data) {
+		case "container":
+			return artifacttest.Verdict{CanonicalMIME: "message/rfc822", Children: []artifacttest.Child{
+				{Kind: artifactstore.ChildBody, Filename: "body.txt", ClaimedMIME: "text/plain", Data: []byte("body")},
+				{Kind: artifactstore.ChildAttachment, Filename: "good.txt", ClaimedMIME: "text/plain", Data: []byte("good")},
+				{Kind: artifactstore.ChildAttachment, Filename: "bad.txt", ClaimedMIME: "text/plain", Data: []byte("bad")},
+			}}
+		case "bad":
+			return artifacttest.Verdict{Malware: true}
+		}
+		return artifacttest.Verdict{}
+	})
+	status := "/v1/artifacts/" + uploaded.body["uploadId"].(string) + "/status"
+	children := func(headers map[string]string) []string {
+		t.Helper()
+		response := h.do(http.MethodGet, status, nil, headers)
+		require.Equal(t, http.StatusOK, response.status, "%v", response.body)
+		var names []string
+		raw, _ := response.body["children"].([]any)
+		for _, child := range raw {
+			names = append(names, child.(map[string]any)["displayName"].(string))
+		}
+		return names
+	}
+	assert.Equal(t, []string{"body.txt", "good.txt"}, children(bobSession.headers()),
+		"another Operator sees only registered children of a shared container")
+	assert.Equal(t, []string{"body.txt", "good.txt"}, children(map[string]string{"Authorization": "Bearer " + bobReader}))
+	assert.Equal(t, []string{"body.txt", "good.txt", "bad.txt"}, children(aliceSession.headers()),
+		"the uploader sees every child, including the rejected one")
+	assert.Equal(t, []string{"body.txt", "good.txt", "bad.txt"}, children(admin.headers()),
+		"a browser Admin holds the security-status path")
 }
