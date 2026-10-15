@@ -3,6 +3,9 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"strings"
+
+	"golang.org/x/mod/semver"
 
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/config"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/deployer"
@@ -34,7 +37,7 @@ func validateOverlayChart(cfg *config.Cluster, opts ApplyOpts) error {
 	if err != nil || !hasRunner {
 		return err
 	}
-	current, err := chartVersionAtLeast(cfg.Spec.Chart.Version, overlayToolsFirstVersion)
+	current, err := overlayToolsChart(cfg.Spec.Chart.Version)
 	if err != nil {
 		return err
 	}
@@ -44,10 +47,22 @@ func validateOverlayChart(cfg *config.Cluster, opts ApplyOpts) error {
 	return nil
 }
 
+// overlayToolsChart reports whether a platform chart reads the ConfigMap tools
+// source. Unlike the substrate gates, a prerelease of the boundary release counts:
+// a PR preview such as 0.6.0-pr.171.888 is built from 0.6.0's source.
+func overlayToolsChart(version string) (bool, error) {
+	canonical, err := canonicalChartVersion(version)
+	if err != nil {
+		return false, err
+	}
+	core, _, _ := strings.Cut(semver.Canonical(canonical), "-")
+	return semver.Compare(core, "v"+overlayToolsFirstVersion) >= 0, nil
+}
+
 // overlayToolsValues tells a tool-runner chart whether Forge delivers an
 // overlay tools archive.
 func overlayToolsValues(cfg *config.Cluster, opts ApplyOpts) []string {
-	if ok, err := chartVersionAtLeast(cfg.Spec.Chart.Version, overlayToolsFirstVersion); err != nil || !ok {
+	if ok, err := overlayToolsChart(cfg.Spec.Chart.Version); err != nil || !ok {
 		return nil
 	}
 	return []string{fmt.Sprintf("%s=%t", overlayToolsValue, deliversOverlay(opts))}

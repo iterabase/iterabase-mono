@@ -323,6 +323,7 @@ func TestValidateOverlayChart(t *testing.T) {
 		{version: "0.4.99", wantErr: "reads customer tools from Flux"},
 		{version: "0.3.0", skipChart: true},
 		{version: overlayToolsFirstVersion},
+		{version: overlayToolsFirstVersion + "-pr.171.888"},
 		{version: "9.0.0"},
 		{version: "not-a-version", wantErr: "invalid chart version"},
 	} {
