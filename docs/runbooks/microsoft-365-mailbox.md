@@ -42,6 +42,10 @@ Iterabase steps.
    Exchange Online PowerShell (`Connect-ExchangeOnline`):
 
    ```powershell
+   # Once per tenant: custom management scopes need organization customization.
+   # On a new tenant it can take a while to apply; retry the scope if it fails.
+   Enable-OrganizationCustomization
+
    # One mail-enabled security group holds every mailbox Iterabase may use.
    New-DistributionGroup -Name "Iterabase mailboxes" -Type Security
    Add-DistributionGroupMember -Identity "Iterabase mailboxes" -Member quotes@customer.pt
@@ -57,6 +61,12 @@ Iterabase steps.
    Test-ServicePrincipalAuthorization -Identity <client-id> -Resource quotes@customer.pt
    Test-ServicePrincipalAuthorization -Identity <client-id> -Resource ceo@customer.pt
    ```
+
+   Run each command on one line; PowerShell does not continue lines with `\`.
+   On a newly customized tenant, `New-ManagementRoleAssignment` can fail with
+   "You don't have access … delegating role assignment" for a while even for
+   a Global Administrator, after scopes and service principals already work.
+   Wait (hours, not minutes), reconnect and retry before changing anything.
 
    `Mail.ReadWrite` is needed because sends create a draft first
    (`DES-HOR-358-05`). Role assignments can take up to an hour to apply. To add a
