@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact/admission"
 )
 
 // Retry schedule for one trigger (DES-HOR-460-08): attempt 1 immediately,
@@ -157,7 +160,7 @@ func scheduleNextTx(ctx context.Context, tx pgx.Tx, artifactID, triggerID string
 
 // CompleteRejected commits a permanent malware/type verdict, withdraws any
 // visibility, and starts the immediate byte purge.
-func (s *Store) CompleteRejected(ctx context.Context, l SecurityLease, ev Evidence) (Artifact, error) {
+func (s *Store) CompleteRejected(ctx context.Context, l SecurityLease, ev Evidence, children ...ChildRecord) (Artifact, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Artifact{}, err
@@ -174,7 +177,19 @@ func (s *Store) CompleteRejected(ctx context.Context, l SecurityLease, ev Eviden
 		l.Artifact.ID, ev.Reason); err != nil {
 		return Artifact{}, fmt.Errorf("commit rejection: %w", err)
 	}
+	// An infected email container still yields its children: each enters
+	// quarantine with lineage and its own scan, so a malicious attachment
+	// never blocks its siblings while the container bytes are purged
+	// (DES-HOR-461-03).
+	for _, c := range children {
+		if err := commitChildTx(ctx, tx, l.Artifact, c); err != nil {
+			return Artifact{}, err
+		}
+	}
 	detail := map[string]any{}
+	if len(children) > 0 {
+		detail["children"] = len(children)
+	}
 	if ev.Signature != "" {
 		detail["signature"] = ev.Signature
 	}
@@ -211,6 +226,13 @@ type Promotion struct {
 // that already committed (a re-scan of a cleared container) is reported with
 // reused=true and must not be expanded again.
 func (s *Store) ReserveChild(ctx context.Context, parent Artifact, index int, kind, displayName, claimedMIME string) (id string, committed bool, err error) {
+	// The adapter already normalizes child names; the metadata boundary never
+	// trusts that, so an unsafe name becomes the generated attachment name.
+	if name, ok := admission.NormalizeFilename(displayName); ok {
+		displayName = name
+	} else {
+		displayName = "attachment-" + strconv.Itoa(index)
+	}
 	var state string
 	err = s.pool.QueryRow(ctx, `
 		SELECT id::text,storage_state FROM artifact.artifacts

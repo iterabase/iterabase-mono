@@ -188,26 +188,32 @@ func (a *Adapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	v := scanproto.Verdict{Version: scanproto.Version, RequestID: req.requestID, Digest: req.digest, Size: req.size,
 		EngineVersion: engineVer, SignatureVersion: st.Version, SignatureAgeSeconds: int64(st.Age(a.Now()).Seconds()),
 		PolicyVersion: PolicyVersion, Malware: scanproto.MalwareClean}
+	res := admission.Evaluate(admission.Input{Data: data, ClaimedMIME: req.claimedMIME, Filename: req.filename,
+		Generated: req.generated, ContainerDepth: req.depth})
 	var children []admission.Child
+	if res.Accepted {
+		for _, c := range res.Children {
+			if len(c.Data) > 0 {
+				children = append(children, c)
+			}
+		}
+	}
 	switch {
 	case infected:
+		// clamd's ScanMail flags a message whose attachment matches. The
+		// container stays rejected (its bytes are never cleared), but a
+		// structurally valid email still yields its children so each one is
+		// judged alone: the malicious part is rejected without its siblings
+		// (DES-HOR-461-03).
 		v.Malware, v.Signature, v.Reason = scanproto.MalwareInfected, signature, "malware"
+		v.Children = len(children)
 		a.count("infected")
+	case res.Accepted:
+		v.Accepted, v.CanonicalMIME, v.Children = true, res.CanonicalMIME, len(children)
+		a.count("clean")
 	default:
-		res := admission.Evaluate(admission.Input{Data: data, ClaimedMIME: req.claimedMIME, Filename: req.filename,
-			Generated: req.generated, ContainerDepth: req.depth})
-		v.Accepted, v.CanonicalMIME, v.Reason = res.Accepted, res.CanonicalMIME, res.Reason
-		if res.Accepted {
-			for _, c := range res.Children {
-				if len(c.Data) > 0 {
-					children = append(children, c)
-				}
-			}
-			v.Children = len(children)
-			a.count("clean")
-		} else {
-			a.count("rejected")
-		}
+		v.Reason, children = res.Reason, nil
+		a.count("rejected")
 	}
 	w.Header().Set("Content-Type", scanproto.ContentType)
 	w.WriteHeader(http.StatusOK)

@@ -39,7 +39,9 @@ const (
 )
 
 // fakeEngine stands in for clamd only: it reports the test marker (and the
-// EICAR self-test sample) as malware and can simulate an outage.
+// EICAR self-test sample) as malware and can simulate an outage. Like clamd's
+// ScanMail, it also finds the marker inside encoded MIME attachments, so an
+// email carrying a marked attachment is itself flagged.
 type fakeEngine struct {
 	mu        sync.Mutex
 	down      bool
@@ -59,7 +61,7 @@ func (e *fakeEngine) Scan(_ context.Context, data []byte) (bool, string, error) 
 	e.mu.Lock()
 	infectAll := e.infectAll
 	e.mu.Unlock()
-	if infectAll || bytes.Contains(data, []byte(admissiontest.MalwareMarker)) {
+	if infectAll || containsMarker(data) {
 		return true, "Iterabase.Test.Marker", nil
 	}
 	if bytes.Contains(data, []byte("EICAR-STANDARD-ANTIVIRUS-TEST-FILE")) {
@@ -72,22 +74,33 @@ func (e *fakeEngine) Scan(_ context.Context, data []byte) (bool, string, error) 
 // adapter, and admission policy to Postgres and to MinIO with the shipped
 // zone policies. Only the malware engine is fake.
 type harness struct {
-	t       *testing.T
-	pool    *pgxpool.Pool
-	minio   testutil.MinIOConfig
-	svc     *artifactstore.Service
-	coord   *artifactstore.Coordinator
-	store   *artifactstore.Store
-	engine  *fakeEngine
-	actorID string
+	t      *testing.T
+	pool   *pgxpool.Pool
+	minio  testutil.MinIOConfig
+	svc    *artifactstore.Service
+	coord  *artifactstore.Coordinator
+	store  *artifactstore.Store
+	engine *fakeEngine
+	// scanEngine is the engine behind the real adapter: engine by default,
+	// or real clamd.
+	scanEngine scanner.Engine
+	actorID    string
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	engine := &fakeEngine{}
+	h := newHarnessWithEngine(t, engine)
+	h.engine = engine
+	return h
+}
+
+func newHarnessWithEngine(t *testing.T, engine scanner.Engine) *harness {
+	t.Helper()
 	pool := testutil.NewPostgresPool(t)
 	m := testutil.NewMinIO(t)
 	ctx := context.Background()
-	h := &harness{t: t, pool: pool, minio: m, store: artifactstore.NewStore(pool), engine: &fakeEngine{}}
+	h := &harness{t: t, pool: pool, minio: m, store: artifactstore.NewStore(pool), scanEngine: engine}
 	require.NoError(t, pool.QueryRow(ctx, `
 		INSERT INTO identity.identities (key,kind,source,display_name)
 		VALUES ('artifact-user','user','local','Artifact User') RETURNING id::text`).Scan(&h.actorID))
@@ -121,7 +134,7 @@ func (h *harness) startScanner() artifactstore.Scanner {
 	dir := t.TempDir()
 	state := filepath.Join(dir, "state.json")
 	writeState(t, state, time.Now())
-	adapter := &scanner.Adapter{Engine: h.engine, StatePath: state, AllowedClient: coordinatorID}
+	adapter := &scanner.Adapter{Engine: h.scanEngine, StatePath: state, AllowedClient: coordinatorID}
 	adapter.Refresh(context.Background())
 	ready, cause := adapter.Ready()
 	require.True(t, ready, cause)
@@ -349,7 +362,9 @@ func TestCorpusThroughThePipeline(t *testing.T) {
 
 // Ticket acceptance: a received message with a PDF and an attached .msg
 // holding a further PDF yields body, PDF, .msg container, its body, and its
-// inner PDF, each with lineage; a malicious sibling is rejected alone.
+// inner PDF, each with lineage; a malicious sibling is rejected alone. The
+// engine flags the message itself (clamd ScanMail), so the container bytes
+// are rejected and never cleared while every child is still judged alone.
 func TestEmailContainersExpandWithLineage(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -365,7 +380,9 @@ func TestEmailContainersExpandWithLineage(t *testing.T) {
 		in.Attribution = artifactstore.Attribution{RequestActorID: h.actorID, Source: artifactstore.AuthSystem}
 	})
 	h.drain()
-	require.True(t, h.get(root.ID).Cleared())
+	rootState := h.get(root.ID)
+	require.Equal(t, artifactstore.SecurityRejected, rootState.SecurityState, "the infected message bytes are rejected")
+	require.False(t, rootState.Cleared())
 	children, err := h.store.Children(ctx, root.ID)
 	require.NoError(t, err)
 	require.Len(t, children, 4)

@@ -143,7 +143,11 @@ func (v Verdict) Validate(requestID, digest string, size int64) error {
 		return errors.New("scanproto: accepted verdict without canonical type")
 	case !v.Accepted && v.Reason == "":
 		return errors.New("scanproto: rejection without reason")
-	case v.Children < 0 || v.Children > MaxChildren || (!v.Accepted && v.Children != 0):
+	// An infected email container still expands (DES-HOR-461-03): its own
+	// bytes are rejected, and every child is scanned independently, so a
+	// malicious attachment never blocks its siblings. A policy rejection
+	// never carries children.
+	case v.Children < 0 || v.Children > MaxChildren || (!v.Accepted && v.Malware != MalwareInfected && v.Children != 0):
 		return fmt.Errorf("scanproto: invalid child count %d", v.Children)
 	case len(v.Signature) > maxSignatureLen || len(v.Reason) > 64:
 		return errors.New("scanproto: unbounded evidence")

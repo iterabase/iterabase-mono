@@ -158,7 +158,7 @@ func (c *Coordinator) ProcessOne(ctx context.Context) (bool, error) {
 }
 
 func (c *Coordinator) process(ctx context.Context, l SecurityLease) (string, error) {
-	resp, verify, err := c.scan(ctx, l)
+	resp, verify, release, err := c.scan(ctx, l)
 	if err != nil {
 		var te *TransientError
 		if !errors.As(err, &te) {
@@ -168,14 +168,31 @@ func (c *Coordinator) process(ctx context.Context, l SecurityLease) (string, err
 		_, cErr := c.store.CompleteTransient(ctx, l, Evidence{Reason: te.Reason})
 		return "transient", cErr
 	}
-	defer func() { _ = resp.Close(); _ = verify() }()
+	defer release()
 	v := resp.Verdict
 	ev := Evidence{EngineVersion: v.EngineVersion, SignatureVersion: v.SignatureVersion,
 		SignatureAgeSeconds: v.SignatureAgeSeconds, PolicyVersion: v.PolicyVersion,
 		CanonicalMIME: v.CanonicalMIME, Reason: v.Reason, Signature: v.Signature}
 	if v.Malware == scanproto.MalwareInfected {
 		ev.Reason, ev.CanonicalMIME = "malware", ""
-		_, err := c.store.CompleteRejected(ctx, l, ev)
+		if v.Children == 0 {
+			_, err := c.store.CompleteRejected(ctx, l, ev)
+			return "malware", err
+		}
+		// An infected email container: its own bytes are rejected, and its
+		// children are admitted with lineage for independent scans, so the
+		// malicious part cannot block its siblings (DES-HOR-461-03).
+		if err := verify(); err != nil {
+			_, cErr := c.store.CompleteTransient(ctx, l, Evidence{Reason: "input_mismatch"})
+			c.log.Error("artifact quarantine bytes do not match committed digest", "attempt", l.AttemptID)
+			return "transient", cErr
+		}
+		children, err := c.admitChildren(ctx, l, resp)
+		if err != nil {
+			_, cErr := c.store.CompleteTransient(ctx, l, Evidence{Reason: transientReason(err)})
+			return "transient", errors.Join(err, cErr)
+		}
+		_, err = c.store.CompleteRejected(ctx, l, ev, children...)
 		return "malware", err
 	}
 	if err := verify(); err != nil {
@@ -207,15 +224,17 @@ func (c *Coordinator) process(ctx context.Context, l SecurityLease) (string, err
 	return "cleared", nil
 }
 
-// scan streams the exact quarantine object and returns a verifier that proves
-// the bytes sent matched the committed digest once the request body is done.
-func (c *Coordinator) scan(ctx context.Context, l SecurityLease) (*ScanResponse, func() error, error) {
+// scan streams the exact quarantine object. It returns a verifier that
+// proves the bytes sent matched the committed digest once the request body is
+// done, and a release that ends the exchange. Verification never ends the
+// exchange: child frames keep streaming on the same response until release.
+func (c *Coordinator) scan(ctx context.Context, l SecurityLease) (*ScanResponse, func() error, func(), error) {
 	if l.Artifact.Digest == nil || l.Artifact.SizeBytes == nil {
-		return nil, nil, transient("input_mismatch", errors.New("artifact has no committed integrity"))
+		return nil, nil, nil, transient("input_mismatch", errors.New("artifact has no committed integrity"))
 	}
 	obj, err := c.objects.Get(ctx, l.InputKey)
 	if err != nil {
-		return nil, nil, transient("store_unavailable", err)
+		return nil, nil, nil, transient("store_unavailable", err)
 	}
 	h := sha256.New()
 	counter := &countWriter{}
@@ -229,21 +248,24 @@ func (c *Coordinator) scan(ctx context.Context, l SecurityLease) (*ScanResponse,
 	if err != nil {
 		cancel()
 		_ = obj.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var once sync.Once
 	var verr error
 	verify := func() error {
 		once.Do(func() {
-			defer cancel()
-			defer func() { _ = obj.Close() }()
 			if counter.n != *l.Artifact.SizeBytes || "sha256:"+hex.EncodeToString(h.Sum(nil)) != *l.Artifact.Digest {
 				verr = transient("input_mismatch", errors.New("streamed bytes differ from committed digest"))
 			}
 		})
 		return verr
 	}
-	return resp, verify, nil
+	release := func() {
+		_ = resp.Close()
+		cancel()
+		_ = obj.Close()
+	}
+	return resp, verify, release, nil
 }
 
 // admitChildren writes every container child into its own reserved
