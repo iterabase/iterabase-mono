@@ -166,6 +166,19 @@ hooks run can no longer leave the webhook with an empty CA that blocks the next
 upgrade: fix the cause and run the same upgrade again. Do not patch the CA
 manually or weaken `failurePolicy: Fail`.
 
+The one exception is an install whose first revision failed under an earlier
+chart that still used the certgen hook Jobs, leaving the webhook with an empty
+`caBundle`. Helm updates Ingresses before the webhook and its new
+Certificates, so that webhook rejects the first upgrade to this chart. Before
+upgrading, copy the existing admission Secret's CA into the webhook once, as the
+skipped patch hook would have (DES-HOR-677-03):
+
+```sh
+ca=$(kubectl get secret <release>-ingress-nginx-admission -n <namespace> -o jsonpath='{.data.ca}')
+kubectl patch validatingwebhookconfiguration <release>-ingress-nginx-admission --type=json \
+  -p "[{\"op\":\"add\",\"path\":\"/webhooks/0/clientConfig/caBundle\",\"value\":\"$ca\"}]"
+```
+
 A rollback to a revision before `0.3.19` restores that revision's legacy
 `RollingUpdate` gateway manifest. On a one-node deployment, make the downtime
 explicit by scaling the gateway to zero before rolling back the platform, then
