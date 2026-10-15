@@ -399,3 +399,31 @@ END;
 $$;
 CREATE TRIGGER artifact_lifecycle BEFORE UPDATE ON artifact.artifacts
     FOR EACH ROW EXECUTE FUNCTION artifact.enforce_lifecycle();
+
+-- ---------------------------------------------------------------------------
+-- Reference acquisition serializes with deletion (section 16)
+-- ---------------------------------------------------------------------------
+-- Deletion locks the artifact row FOR UPDATE, checks active references, and
+-- enters `deleting`. A reference insert that read the artifact before that
+-- commit would otherwise wait on the foreign-key lock and then succeed
+-- against bytes deletion has already authorized purging. Every link insert
+-- takes FOR SHARE on the artifact (which conflicts with deletion's lock) and
+-- re-reads the committed row after acquiring it. Security rejection purges
+-- regardless of references and leaves the row `rejected`, so a link to a
+-- rejected artifact stays legal: consumers fail closed on it.
+CREATE FUNCTION work.artifact_link_serialize() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    storage  text;
+    security text;
+BEGIN
+    SELECT a.storage_state, a.security_state INTO storage, security
+    FROM artifact.artifacts a WHERE a.id = NEW.artifact_id FOR SHARE;
+    IF storage IN ('deleting', 'deleted') AND security <> 'rejected' THEN
+        RAISE EXCEPTION 'artifact_unavailable: artifact % is being deleted', NEW.artifact_id
+            USING ERRCODE = 'object_not_in_prerequisite_state';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER artifact_link_serialize BEFORE INSERT ON work.artifact_links
+    FOR EACH ROW EXECUTE FUNCTION work.artifact_link_serialize();

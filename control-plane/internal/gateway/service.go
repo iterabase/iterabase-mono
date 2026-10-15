@@ -373,6 +373,12 @@ func (s *Service) InvokeTool(ctx context.Context, req *connect.Request[v1.Invoke
 		ToolVersionDigest: tv.Digest, IdempotencyKey: msg.IdempotencyKey,
 	}
 	inv, inserted, err := s.store.BeginInvocation(ctx, key, tv, &res.Pool.ID, msg.ArgumentsJson, marshalArtifactRefs(msg.ArtifactInputRefs), consequenceSummary, leaseExpiresAt, s.cfg.GatewayInstanceID)
+	if errors.Is(err, ErrArtifactUnavailable) {
+		return connect.NewResponse(&v1.InvokeResponse{
+			State: v1.InvokeState_INVOKE_STATE_FAILED,
+			Error: &v1.ErrorDetail{Code: "artifact_access_denied", Message: err.Error(), Retryability: v1.Retryability_RETRYABILITY_NON_RETRYABLE},
+		}), nil
+	}
 	if err != nil {
 		// ErrScopeDenied: the turn was settled (interrupted or aborted) after
 		// scope resolution; no ledger row and no effect.

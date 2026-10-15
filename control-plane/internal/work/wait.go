@@ -407,9 +407,17 @@ func (s *Store) completeWaitTx(ctx context.Context, tx pgx.Tx, itemID, attemptID
 		return "", err
 	}
 	for _, ref := range artifacts {
+		// Evidence that is no longer cleared is omitted, never linked.
+		cleared, err := lockClearedArtifactTx(ctx, tx, ref.ArtifactID)
+		if err != nil {
+			return "", err
+		}
+		if !cleared {
+			continue
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO work.artifact_links (artifact_id,work_item_id,attempt_id,node_execution_id,role,metadata)
-			SELECT id,$2,$3,$4,'evidence',$5 FROM artifact.artifacts WHERE id=$1 AND artifact.is_cleared(id)
+			VALUES ($1,$2,$3,$4,'evidence',$5)
 			ON CONFLICT (artifact_id,work_item_id,attempt_id,node_execution_id,role) DO NOTHING`,
 			ref.ArtifactID, itemID, attemptID, node.ID, jsonOrObject(ref.Metadata)); err != nil {
 			return "", err

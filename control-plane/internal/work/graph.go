@@ -325,6 +325,9 @@ func (s *Store) RecordCompletionReport(ctx context.Context, turnID string, repor
 			VALUES ($1,$2,$3,$4,$5,$6)
 			ON CONFLICT (artifact_id,work_item_id,attempt_id,node_execution_id,role) DO NOTHING`,
 			ref.ArtifactID, itemID, attemptID, nodeID, ref.Role, jsonOrObject(ref.Metadata)); err != nil {
+			if isArtifactUnavailable(err) {
+				return fmt.Errorf("%w: artifact %s is not available", ErrInvalidInput, ref.ArtifactID)
+			}
 			return err
 		}
 	}
@@ -795,14 +798,14 @@ const (
 )
 
 // inputArtifactGateTx classifies a node's source/input artifacts. A transient
-// security failure keeps waiting (a person can retry it); only rejection,
-// deletion, or quarantine expiry is permanent.
+// security failure or a security-advisory re-scan in any phase (withdrawn
+// while rescan_pending, scanning, pending a retry, or retryable_failed) keeps
+// waiting; only rejection, deletion, or quarantine expiry is permanent.
 func inputArtifactGateTx(ctx context.Context, tx pgx.Tx, nodeID string) (inputGate, error) {
 	var rejected, checking bool
 	err := tx.QueryRow(ctx, `
 		SELECT
-		  COALESCE(bool_or(a.security_state='rejected' OR a.storage_state IN ('deleting','deleted')
-		                   OR a.withdrawn_at IS NOT NULL AND a.security_state<>'rescan_pending'), false),
+		  COALESCE(bool_or(a.security_state='rejected' OR a.storage_state IN ('deleting','deleted')), false),
 		  COALESCE(bool_or(NOT artifact.is_cleared(a.id)), false)
 		FROM work.artifact_links l JOIN artifact.artifacts a ON a.id=l.artifact_id
 		WHERE l.node_execution_id=$1 AND l.role IN ('source','input')`, nodeID).Scan(&rejected, &checking)

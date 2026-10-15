@@ -14,6 +14,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact/admission"
 )
 
 // Config bounds admission. A zero default retention means indefinite
@@ -69,6 +71,11 @@ func (s *Service) Store() *Store { return s.store }
 // until the coordinator clears it. A replay of the same idempotency key with
 // the same payload returns the existing artifact; a changed payload conflicts.
 func (s *Service) Admit(ctx context.Context, in AdmitInput, body io.Reader) (Artifact, error) {
+	name, err := displayName(in.DisplayName)
+	if err != nil {
+		return Artifact{}, err
+	}
+	in.DisplayName = name
 	if err := validateAdmit(in); err != nil {
 		return Artifact{}, err
 	}
@@ -175,6 +182,22 @@ func (s *Service) replay(ctx context.Context, existing Artifact, fp string, in A
 		return Artifact{}, ErrConflict
 	}
 	return existing, nil
+}
+
+// displayName is the metadata-boundary form of a claimed filename (section 6):
+// path segments and controls are removed, and bidi overrides or executable
+// double extensions are rejected, so only the normalized name ever reaches
+// shared search, status, or download metadata. It is the same normalization
+// the admission adapter validates, applied for every source.
+func displayName(claimed string) (string, error) {
+	if claimed == "" {
+		return "", nil // validateAdmit reports the missing name
+	}
+	name, ok := admission.NormalizeFilename(claimed)
+	if !ok {
+		return "", fmt.Errorf("%w: unsafe filename", ErrInvalidInput)
+	}
+	return name, nil
 }
 
 // fingerprint binds an idempotency key to the request metadata.

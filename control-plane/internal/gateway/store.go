@@ -42,6 +42,9 @@ var (
 	// ErrScopeDenied is returned when the caller's durable scope cannot be
 	// resolved or does not match the supplied context (ARCH-004). Fail closed.
 	ErrScopeDenied = errors.New("gateway: caller scope not authorized")
+	// ErrArtifactUnavailable is returned when an artifact input stopped being
+	// cleared (deleted or withdrawn) between validation and the ledger commit.
+	ErrArtifactUnavailable = errors.New("gateway: artifact input is no longer available")
 )
 
 // EffectClass classifies a tool's external effect (ARCH-014). It drives the
@@ -1065,6 +1068,36 @@ func (s *Store) ResolveCredentialBindings(ctx context.Context, poolID, toolName 
 	return out, rows.Err()
 }
 
+// lockClearedInputsTx serializes an invocation's artifact inputs with
+// deletion (section 16): it share-locks each input row (deletion holds the
+// row FOR UPDATE while it checks active invocations) and only then re-checks
+// artifact.is_cleared in a fresh statement. An input deleted or withdrawn
+// after validation is refused with ErrArtifactUnavailable and no ledger row.
+func lockClearedInputsTx(ctx context.Context, tx pgx.Tx, refs []byte) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	var ids []string
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(array_agg(a.id::text ORDER BY a.id), '{}') FROM (
+			SELECT a.id FROM artifact.artifacts a
+			WHERE a.id IN (SELECT (r->>'artifact_id')::uuid FROM jsonb_array_elements($1::jsonb) r)
+			ORDER BY a.id FOR SHARE) a`, refs).Scan(&ids); err != nil {
+		return fmt.Errorf("begin invocation: lock artifact inputs: %w", err)
+	}
+	var want, cleared int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(DISTINCT r->>'artifact_id'),
+		       count(DISTINCT r->>'artifact_id') FILTER (WHERE artifact.is_cleared((r->>'artifact_id')::uuid))
+		FROM jsonb_array_elements($1::jsonb) r`, refs).Scan(&want, &cleared); err != nil {
+		return fmt.Errorf("begin invocation: recheck artifact inputs: %w", err)
+	}
+	if want != cleared {
+		return ErrArtifactUnavailable
+	}
+	return nil
+}
+
 // InvocationKey is the at-most-once uniqueness key (ARCH-014).
 type InvocationKey struct {
 	AttemptID         string
@@ -1103,6 +1136,9 @@ func (s *Store) BeginInvocation(ctx context.Context, key InvocationKey, tv ToolV
 		if state != "pending" && state != "running" {
 			return Invocation{}, false, ErrScopeDenied
 		}
+	}
+	if err := lockClearedInputsTx(ctx, tx, artifactInputRefs); err != nil {
+		return Invocation{}, false, err
 	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO toolgateway.invocations

@@ -7,6 +7,8 @@
 -- epoch is one-way; production rollback is roll-forward or catastrophic
 -- restore.
 
+DROP TRIGGER artifact_link_serialize ON work.artifact_links;
+DROP FUNCTION work.artifact_link_serialize();
 DROP TRIGGER artifact_lifecycle ON artifact.artifacts;
 DROP FUNCTION artifact.enforce_lifecycle();
 DROP FUNCTION artifact.is_cleared(uuid);

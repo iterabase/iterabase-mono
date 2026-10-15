@@ -256,17 +256,22 @@ func (s *Store) createAttemptTx(ctx context.Context, tx pgx.Tx, in createAttempt
 		if role == "" {
 			role = "source"
 		}
-		ct, err := tx.Exec(ctx, `
+		cleared, err := lockClearedArtifactTx(ctx, tx, ref.ArtifactID)
+		if err != nil {
+			return fmt.Errorf("lock source artifact: %w", err)
+		}
+		if !cleared {
+			return fmt.Errorf("%w: source artifact is not available", ErrInvalidInput)
+		}
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO work.artifact_links
 				(artifact_id, work_item_id, attempt_id, node_execution_id, role, metadata)
-			SELECT id,$2,$3,$4,$5,$6 FROM artifact.artifacts
-			WHERE id=$1 AND artifact.is_cleared(id)`,
-			ref.ArtifactID, in.WorkItemID, in.ID, execID, role, jsonOrObject(ref.Metadata))
-		if err != nil {
+			VALUES ($1,$2,$3,$4,$5,$6)`,
+			ref.ArtifactID, in.WorkItemID, in.ID, execID, role, jsonOrObject(ref.Metadata)); err != nil {
+			if isArtifactUnavailable(err) {
+				return fmt.Errorf("%w: source artifact is not available", ErrInvalidInput)
+			}
 			return fmt.Errorf("link source artifact: %w", err)
-		}
-		if ct.RowsAffected() != 1 {
-			return fmt.Errorf("%w: source artifact is not available", ErrInvalidInput)
 		}
 	}
 	if err := appendTimelineTx(ctx, tx, in.WorkItemID, in.ID, execID, "attempt_created",

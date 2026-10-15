@@ -579,7 +579,10 @@ func enterDeletingTx(ctx context.Context, tx pgx.Tx, id string, req DeleteReques
 }
 
 // RequestSecurityRetry creates one new three-attempt trigger for an artifact
-// whose previous trigger exhausted its transient attempts.
+// whose previous trigger exhausted its transient attempts. That is either a
+// first check over the quarantined original or a security-advisory re-scan
+// over the retained stored original; the advisory withdrawal stays in place
+// until a successful verdict re-registers the artifact.
 func (s *Store) RequestSecurityRetry(ctx context.Context, id, actorID, sessionID string) (Artifact, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -591,13 +594,22 @@ func (s *Store) RequestSecurityRetry(ctx context.Context, id, actorID, sessionID
 	if err != nil {
 		return Artifact{}, err
 	}
-	if a.SecurityState != SecurityRetryableFailed || a.StorageState != StorageQuarantined || a.Digest == nil {
+	if a.SecurityState != SecurityRetryableFailed || a.Digest == nil {
+		return Artifact{}, ErrNotRetryable
+	}
+	zone := ""
+	switch {
+	case a.StorageState == StorageQuarantined:
+		zone = "quarantine"
+	case a.StorageState == StorageStored && a.WithdrawnAt != nil:
+		zone = "original"
+	default:
 		return Artifact{}, ErrNotRetryable
 	}
 	var objectID string
 	if err := tx.QueryRow(ctx, `
 		SELECT id::text FROM artifact.objects
-		WHERE artifact_id=$1 AND zone='quarantine' AND kind='original' AND state='committed'`, id).Scan(&objectID); err != nil {
+		WHERE artifact_id=$1 AND zone=$2 AND kind='original' AND state='committed'`, id, zone).Scan(&objectID); err != nil {
 		return Artifact{}, ErrNotRetryable
 	}
 	a, err = scanArtifact(tx.QueryRow(ctx, `
