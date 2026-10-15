@@ -4,8 +4,10 @@ name: Bake
 # packages); the model cache is an EBS snapshot (C1). Both are baked by
 # aws_ci.py on the HOR-591 primitives with a pinned builder key
 # (DES-HOR-590-03), keyed by the content they carry, so a bake is a no-op when
-# this tree's generation already exists. E2E calls this before real-machine
-# scenarios, so a change to the pinned inputs bakes them on its own pull request.
+# this tree's generation already exists. E2E calls this once per capacity its
+# real-machine scenarios need, so a change to the pinned inputs bakes them on its
+# own pull request. A bake is incremental from the newest earlier fixture AMI of
+# its capacity when one exists (HOR-676); `cold` or `force` bakes from Ubuntu.
 on:
   push:
     branches: [master]
@@ -15,7 +17,11 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Rebake even when this generation exists
+        description: Rebake even when this generation exists (cold)
+        type: boolean
+        default: false
+      cold:
+        description: Bake from Ubuntu instead of the newest earlier fixture AMI
         type: boolean
         default: false
   workflow_call:
@@ -37,7 +43,8 @@ jobs:
   ami:
     name: bake ${{ matrix.capacity }} AMI
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # A cold GPU bake: seeding plus up to two hours for its first full snapshot.
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -58,9 +65,10 @@ jobs:
         run: |
           python3 .github/scripts/aws_ci.py bake-ami --phase build --region '${{ vars.AWS_CI_REGION }}' \
             --run-id "$BAKE_RUN_ID" --capacity '${{ matrix.capacity }}' --crane "$(command -v crane)" \
-            ${{ inputs.force && '--force' || '' }}
+            ${{ inputs.force && '--force' || '' }} ${{ inputs.cold && '--cold' || '' }}
       # The CI role's sessions last an hour; seeding the GPU cache can take most
-      # of one, so each later phase assumes the role afresh.
+      # of one and a cold snapshot up to two more, so each later phase assumes
+      # the role afresh and waits at most one session (HOR-676).
       - uses: ./.github/actions/setup-aws-ci
         if: steps.build.outputs.builder != ''
         with:
@@ -68,10 +76,37 @@ jobs:
           region: ${{ vars.AWS_CI_REGION }}
           session-name: iterabase-bake-${{ matrix.capacity }}-image-${{ github.run_id }}
       - name: Image the builder and start the regional copies
+        id: image
         if: steps.build.outputs.builder != ''
         run: |
           python3 .github/scripts/aws_ci.py bake-ami --phase image --region '${{ vars.AWS_CI_REGION }}' \
-            --run-id "$BAKE_RUN_ID" --capacity '${{ matrix.capacity }}' --builder '${{ steps.build.outputs.builder }}'
+            --run-id "$BAKE_RUN_ID" --capacity '${{ matrix.capacity }}' --builder '${{ steps.build.outputs.builder }}' \
+            --mode '${{ steps.build.outputs.mode }}'
+      - uses: ./.github/actions/setup-aws-ci
+        if: steps.build.outputs.pending == 'true' || steps.image.outputs.pending == 'true'
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-bake-${{ matrix.capacity }}-await-${{ github.run_id }}
+      - name: Keep waiting for the AMI in a fresh session
+        id: await
+        if: steps.build.outputs.pending == 'true' || steps.image.outputs.pending == 'true'
+        run: |
+          python3 .github/scripts/aws_ci.py bake-ami --phase await --region '${{ vars.AWS_CI_REGION }}' \
+            --run-id "$BAKE_RUN_ID" --capacity '${{ matrix.capacity }}' --mode '${{ steps.build.outputs.mode }}' \
+            --image '${{ steps.image.outputs.image || steps.build.outputs.image }}'
+      - uses: ./.github/actions/setup-aws-ci
+        if: steps.await.outputs.pending == 'true'
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-bake-${{ matrix.capacity }}-await-final-${{ github.run_id }}
+      - name: Finish waiting for the AMI in a last session
+        if: steps.await.outputs.pending == 'true'
+        run: |
+          python3 .github/scripts/aws_ci.py bake-ami --phase await --region '${{ vars.AWS_CI_REGION }}' \
+            --run-id "$BAKE_RUN_ID" --capacity '${{ matrix.capacity }}' --mode '${{ steps.build.outputs.mode }}' \
+            --image '${{ steps.await.outputs.image }}' --final
       - uses: ./.github/actions/setup-aws-ci
         if: always()
         with:

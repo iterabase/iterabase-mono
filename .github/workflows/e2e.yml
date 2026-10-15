@@ -52,9 +52,18 @@ jobs:
       stages: ${{ steps.select.outputs.stages }}
       build: ${{ steps.plan.outputs.build }}
       kind: ${{ steps.plan.outputs.kind }}
-      real: ${{ steps.plan.outputs.real }}
-      capacities: ${{ steps.plan.outputs.capacities }}
+      real_cpu: ${{ steps.plan.outputs.real_cpu }}
+      real_gpu: ${{ steps.plan.outputs.real_gpu }}
       pr_scenarios: ${{ steps.escapes.outputs.pr_scenarios }}
+      # One live preview per eligible pull request and staging on master (C6, C9,
+      # C12). Dependabot has no privileged preview secrets; use the PR author so a
+      # human rerun cannot enable its preview (DES-HOR-642-01).
+      preview: >-
+        ${{ steps.plan.outputs.build != '[]' && !inputs.all &&
+        (github.event_name == 'push' ||
+         (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.login != 'dependabot[bot]')) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,8 +90,8 @@ jobs:
             echo "source_sha=$source_sha"
             echo "build=$(jq -c .build <<<"$plan")"
             echo "kind=$(jq -c .kind <<<"$plan")"
-            echo "real=$(jq -c .real <<<"$plan")"
-            echo "capacities=$(jq -c '[.real[].capacity] | unique' <<<"$plan")"
+            echo "real_cpu=$(jq -c '[.real[] | select(.capacity == "cpu")]' <<<"$plan")"
+            echo "real_gpu=$(jq -c '[.real[] | select(.capacity == "gpu")]' <<<"$plan")"
           } >> "$GITHUB_OUTPUT"
       - name: Record what pull-request selection would have run
         id: escapes
@@ -272,22 +281,39 @@ jobs:
           retention-days: 14
 
   # Real-machine hosts boot from the AMI baked for this tree's pinned inputs; the
-  # bake is a no-op when that generation exists (DES-HOR-590-03).
-  bake:
-    name: fixture images
+  # bake is a no-op when that generation exists (DES-HOR-590-03). Each capacity
+  # bakes, and its scenarios wait, on its own: a CPU scenario never waits on the
+  # GPU bake, and the GPU bake runs only when a GPU scenario is selected
+  # (HOR-676). The two real-machine jobs are identical apart from their capacity
+  # (test_workflow_permissions.py holds them so).
+  # The preview host boots from the CPU fixture AMI too, so a preview also waits
+  # on the CPU bake; it never waits on the GPU bake.
+  bake-cpu:
+    name: fixture images (cpu)
     needs: select
-    if: needs.select.outputs.real != '[]'
+    if: needs.select.outputs.real_cpu != '[]' || needs.select.outputs.preview == 'true'
     permissions:
       contents: read
       id-token: write
     uses: ./.github/workflows/bake.yml
     with:
-      capacities: ${{ needs.select.outputs.capacities }}
+      capacities: '["cpu"]'
 
-  real-machine:
+  bake-gpu:
+    name: fixture images (gpu)
+    needs: select
+    if: needs.select.outputs.real_gpu != '[]'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/bake.yml
+    with:
+      capacities: '["gpu"]'
+
+  real-machine-cpu:
     name: ${{ matrix.id }}
-    needs: [select, images, bake]
-    if: needs.select.outputs.real != '[]'
+    needs: [select, images, bake-cpu]
+    if: needs.select.outputs.real_cpu != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.timeout }}
     permissions:
@@ -297,7 +323,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.select.outputs.real) }}
+        include: ${{ fromJSON(needs.select.outputs.real_cpu) }}
     env:
       FIXTURE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
     steps:
@@ -365,18 +391,93 @@ jobs:
         if: always()
         run: python3 .github/scripts/aws_ci.py cleanup-run --region '${{ vars.AWS_CI_REGION }}' --run-id "$FIXTURE_RUN_ID"
 
-  # One live preview per eligible pull request and staging on master (C6, C9,
-  # C12). Dependabot has no privileged preview secrets; use the PR author so a
-  # human rerun cannot enable its preview (DES-HOR-642-01). Not a merge gate.
+  real-machine-gpu:
+    name: ${{ matrix.id }}
+    needs: [select, images, bake-gpu]
+    if: needs.select.outputs.real_gpu != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout }}
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.real_gpu) }}
+    env:
+      FIXTURE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: ./.github/actions/docker-hub-login
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: e2e-selection
+          path: ${{ runner.temp }}/selection
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: 1.26.5
+          cache-dependency-path: ${{ env.GO_CACHE_DEPENDENCIES }}
+          cache-scope: e2e-forge
+      - uses: ./.github/actions/setup-kubernetes-tools
+      - uses: ./.github/actions/cache-helm
+        with:
+          cache-scope: e2e
+      - name: Add external chart repositories
+        run: .github/scripts/add_helm_repositories.sh
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/setup-aws-ci
+        with:
+          role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
+          region: ${{ vars.AWS_CI_REGION }}
+          session-name: iterabase-e2e-${{ matrix.name }}-${{ github.run_id }}
+      - name: Launch a fresh ${{ matrix.capacity }} host
+        run: |
+          python3 .github/scripts/aws_ci.py launch-fixture --region '${{ vars.AWS_CI_REGION }}' \
+            --run-id "$FIXTURE_RUN_ID" --scenario '${{ matrix.name }}' --capacity '${{ matrix.capacity }}' \
+            --max-age-minutes '${{ matrix.timeout }}'
+      - name: Prepare inputs from the build-once images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGES: ${{ needs.images.outputs.images }}
+          RELEASE_TARGETS: ${{ inputs.release_targets }}
+        run: |
+          python3 .github/scripts/e2e_inputs.py prepare --scenario '${{ matrix.id }}' \
+            --catalogue "$RUNNER_TEMP/selection/catalogue.json" --images "$IMAGES" \
+            --source-sha '${{ needs.select.outputs.source_sha }}' \
+            --optional-stages '${{ needs.select.outputs.stages }}' --workdir "$RUNNER_TEMP/inputs" \
+            --release-targets "$RELEASE_TARGETS"
+      - name: Run ${{ matrix.id }}
+        env:
+          ITERABASE_E2E_DIAGNOSTICS: ${{ runner.temp }}/diagnostics
+        run: make -C forge '${{ matrix.make_target }}'
+      - name: Keep the scenario's diagnostics
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diagnostics-${{ matrix.name }}
+          path: ${{ runner.temp }}/diagnostics
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove the host
+        if: always()
+        run: python3 .github/scripts/aws_ci.py cleanup-run --region '${{ vars.AWS_CI_REGION }}' --run-id "$FIXTURE_RUN_ID"
+
+  # The live preview (C6, C9, C12); `select` decides eligibility. It boots from
+  # this tree's CPU fixture AMI, so it waits on the CPU bake. Not a merge gate.
   preview:
     name: preview
-    needs: [select, images]
-    if: >-
-      needs.select.outputs.build != '[]' && !inputs.all &&
-      (github.event_name == 'push' ||
-       (github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        github.event.pull_request.user.login != 'dependabot[bot]'))
+    needs: [select, images, bake-cpu]
+    if: needs.select.outputs.preview == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     concurrency:
@@ -478,7 +579,7 @@ jobs:
   required:
     name: E2E / required
     if: always()
-    needs: [select, build, images, kind, bake, real-machine]
+    needs: [select, build, images, kind, bake-cpu, bake-gpu, real-machine-cpu, real-machine-gpu]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -489,7 +590,9 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           BUILD: ${{ needs.select.outputs.build }}
           KIND: ${{ needs.select.outputs.kind }}
-          REAL: ${{ needs.select.outputs.real }}
+          REAL_CPU: ${{ needs.select.outputs.real_cpu }}
+          REAL_GPU: ${{ needs.select.outputs.real_gpu }}
+          PREVIEW: ${{ needs.select.outputs.preview }}
         run: |
           set -euo pipefail
           has() { if [[ -n "$1" && "$1" != "[]" ]]; then echo true; else echo false; fi; }
@@ -507,8 +610,13 @@ jobs:
           expect build "$(has "$BUILD")" || status=1
           expect images "$(has "$BUILD")" || status=1
           expect kind "$(has "$KIND")" || status=1
-          expect bake "$(has "$REAL")" || status=1
-          expect real-machine "$(has "$REAL")" || status=1
+          # A CPU bake run only for the preview does not gate, like the preview.
+          if [[ "$(has "$REAL_CPU")" == true || "$PREVIEW" != true ]]; then
+            expect bake-cpu "$(has "$REAL_CPU")" || status=1
+          fi
+          expect bake-gpu "$(has "$REAL_GPU")" || status=1
+          expect real-machine-cpu "$(has "$REAL_CPU")" || status=1
+          expect real-machine-gpu "$(has "$REAL_GPU")" || status=1
           exit "$status"
       - name: Report selection escapes
         if: always() && github.event_name == 'merge_group'

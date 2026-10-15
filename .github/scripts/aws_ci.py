@@ -115,6 +115,24 @@ FIXTURE_ROOT_GIB = {"cpu": 40, "gpu": 160}  # the GPU image cache is ~46 GB plus
 # capped again (DES-HOR-590-05).
 FIXTURE_VOLUME_INITIALIZATION_MIBPS = 300
 FIXTURE_VOLUME_THROUGHPUT_MIBPS = 500
+# The bake builder pulls, unpacks and repacks every pinned image on its root, and
+# an incremental bake reads the previous generation back to verify it. At gp3's
+# 125 MiB/s and 3,000 IOPS default the GPU seed took 37 min (HOR-676), so the
+# builder root gets the fixture throughput and these IOPS: 500 MiB/s needs at
+# least 2,000 at 256 KiB per IO, unpacking many small layer files needs more,
+# and gp3 allows up to 16,000. It lasts only while the builder runs.
+BAKE_BUILDER_ROOT_IOPS = 8000
+# How long a baked AMI may take to become available, from its CreateImage. A
+# cold GPU bake's first full snapshot (~48 GB) ran past 50 min on PR #170
+# (HOR-676), so a cold bake gets two hours; an incremental bake snapshots only
+# the blocks it changed. A bake whose AMI another run is still creating waits
+# the cold bound, because it cannot tell which kind of bake made it.
+BAKE_IMAGE_WAIT_SECONDS = {"cold": 7200, "incremental": 3600}
+# The CI role's sessions last an hour, so bake.yml waits in fresh sessions: each
+# waits at most this long, leaving time for the create and copy calls, and
+# bake.yml runs this many waiting sessions after the build.
+BAKE_SESSION_WAIT_SECONDS = 2700
+BAKE_IMAGE_SESSIONS = 3
 DEFAULT_MAX_AGE_MINUTES = 180
 SSH_POLL_SECONDS = 15
 SSH_TIMEOUT_SECONDS = 900
@@ -618,24 +636,28 @@ def launch_command(
     snapshot_volumes: tuple[tuple[str, str], ...] = (),
     spot: bool = False,
     preload: bool = False,
+    root_iops: int | None = None,
 ) -> list[str]:
     """Build the exact approved-instance launch command (never with a profile).
 
     Fixtures add a larger data volume, a larger root for their image cache and,
     on GPU, the model cache restored from its snapshot (C1); previews run on
     spot capacity (C6). With preload, the volumes restored from a snapshot (the
-    root and the model cache) are initialized at a provisioned rate.
+    root and the model cache) are initialized at a provisioned rate. With
+    root_iops (the bake builder), the root gets those IOPS and the fixture
+    throughput whether or not it is preloaded.
     """
-    restored = (
-        f",Throughput={FIXTURE_VOLUME_THROUGHPUT_MIBPS},VolumeInitializationRate={FIXTURE_VOLUME_INITIALIZATION_MIBPS}"
-        if preload else ""
+    initialization = f",VolumeInitializationRate={FIXTURE_VOLUME_INITIALIZATION_MIBPS}" if preload else ""
+    restored = f",Throughput={FIXTURE_VOLUME_THROUGHPUT_MIBPS}{initialization}" if preload else ""
+    root = (
+        f",Iops={root_iops},Throughput={FIXTURE_VOLUME_THROUGHPUT_MIBPS}{initialization}" if root_iops else restored
     )
     block_devices = [
         f"DeviceName={DATA_VOLUME_DEVICE},"
         f"Ebs={{VolumeSize={data_gib},VolumeType=gp3,DeleteOnTermination=true}}"
     ]
     if root_gib:
-        block_devices.insert(0, f"DeviceName={ROOT_DEVICE},Ebs={{VolumeSize={root_gib},VolumeType=gp3,DeleteOnTermination=true{restored}}}")
+        block_devices.insert(0, f"DeviceName={ROOT_DEVICE},Ebs={{VolumeSize={root_gib},VolumeType=gp3,DeleteOnTermination=true{root}}}")
     for device, snapshot_id in snapshot_volumes:
         block_devices.append(f"DeviceName={device},Ebs={{SnapshotId={snapshot_id},VolumeType=gp3,DeleteOnTermination=true{restored}}}")
     market = (["--instance-market-options", SPOT_MARKET_OPTIONS] if spot else [])
@@ -1238,18 +1260,35 @@ def command_bootstrap_ami(args: argparse.Namespace) -> int:
     return 0
 
 
-def wait_for_image(region: str, image_id: str, timeout_seconds: int = 900) -> None:
+def describe_image(region: str, image_id: str) -> dict[str, Any]:
+    images = as_list(
+        aws_json(["ec2", "describe-images", "--region", region, "--image-ids", image_id])["Images"],
+        what="images",
+    )
+    if len(images) != 1:
+        raise AwsCiError(f"AMI {image_id} is not registered in {region}")
+    return images[0]
+
+
+def image_available(region: str, image_id: str, timeout_seconds: int) -> bool:
+    """Wait up to timeout_seconds for an AMI; a failed AMI fails at once."""
     deadline = time.monotonic() + timeout_seconds
     while True:
-        images = as_list(
-            aws_json(["ec2", "describe-images", "--region", region, "--image-ids", image_id])["Images"],
-            what="images",
-        )
-        if len(images) == 1 and images[0].get("State") == "available":
-            return
+        image = describe_image(region, image_id)
+        state = image.get("State")
+        if state == "available":
+            return True
+        if state in {"failed", "error", "invalid", "deregistered"}:
+            reason = (image.get("StateReason") or {}).get("Message", "")
+            raise AwsCiError(f"AMI {image_id} in {region} ended {state!r}: {reason}")
         if time.monotonic() > deadline:
-            raise AwsCiError(f"AMI {image_id} did not become available within {timeout_seconds}s")
+            return False
         time.sleep(15)
+
+
+def wait_for_image(region: str, image_id: str, timeout_seconds: int = 900) -> None:
+    if not image_available(region, image_id, timeout_seconds):
+        raise AwsCiError(f"AMI {image_id} did not become available within {timeout_seconds}s")
 
 
 def parse_ami_ids(value: str, primary: str = CI_REGION) -> dict[str, str]:
@@ -1739,40 +1778,138 @@ def product_tags(run_id: str, scenario: str, extra: dict[str, str]) -> list[dict
     return required_tags(run_id, scenario) + [{"Key": key, "Value": value} for key, value in sorted(extra.items())]
 
 
+def root_volume_gib(image: dict[str, Any]) -> int | None:
+    """The size of an AMI's root snapshot, or None when it has none."""
+    for mapping in image.get("BlockDeviceMappings") or []:
+        if mapping.get("DeviceName") == image.get("RootDeviceName"):
+            ebs = mapping.get("Ebs") or {}
+            if ebs.get("SnapshotId") and isinstance(ebs.get("VolumeSize"), int):
+                return int(ebs["VolumeSize"])
+    return None
+
+
+def select_previous_fixture_ami(images: list[dict[str, Any]], capacity: str, generation: str) -> dict[str, Any] | None:
+    """The base an incremental bake boots its builder from (HOR-676).
+
+    The newest available fixture AMI of this capacity that carries another
+    image-cache generation and whose root fits the builder's root. Which earlier
+    generation it holds only changes how much the seed reuses, never what the
+    new AMI contains: the seed reuses an archive only for the same reference and
+    digest and only after verifying it.
+    """
+    for image in sorted(images, key=lambda item: str(item.get("CreationDate")), reverse=True):
+        carried = tagged_value(image.get("Tags"), IMAGE_CACHE_TAG)
+        if (
+            image.get("State", "available") == "available"
+            and tagged_value(image.get("Tags"), AMI_ROLE_TAG) == f"fixture-{capacity}"
+            and carried
+            and carried != generation
+            and (root_volume_gib(image) or FIXTURE_ROOT_GIB[capacity] + 1) <= FIXTURE_ROOT_GIB[capacity]
+        ):
+            return image
+    return None
+
+
+def bake_builder_launch_options(capacity: str, *, incremental: bool) -> dict[str, Any]:
+    """The builder's root: the fixture size with provisioned IOPS and throughput.
+
+    An incremental builder's root is restored from the previous fixture AMI, so it
+    is also initialized at the provisioned rate: reading the previous generation
+    back is otherwise throttled to S3 lazy loading (DES-HOR-590-05).
+    """
+    return {"root_gib": FIXTURE_ROOT_GIB[capacity], "root_iops": BAKE_BUILDER_ROOT_IOPS, "preload": incremental}
+
+
+def image_wait_seconds(created: dt.datetime, now: dt.datetime, mode: str) -> tuple[int, bool]:
+    """How long this session waits for a baked AMI, and whether it is the last wait.
+
+    The bound runs from the AMI's creation, so it holds across the fresh OIDC
+    sessions bake.yml waits in.
+    """
+    if mode not in BAKE_IMAGE_WAIT_SECONDS:
+        raise AwsCiError(f"bake mode must be one of {sorted(BAKE_IMAGE_WAIT_SECONDS)}")
+    remaining = int(BAKE_IMAGE_WAIT_SECONDS[mode] - (now - created).total_seconds())
+    if remaining <= BAKE_SESSION_WAIT_SECONDS:
+        return max(remaining, 0), True
+    return BAKE_SESSION_WAIT_SECONDS, False
+
+
+def await_fixture_ami(primary: str, image_id: str, capacity: str, generation: str, marker: dict[str, str],
+                      mode: str, *, final: bool) -> bool:
+    """Wait one session for the primary AMI, then copy it to the regions lacking it.
+
+    Returns False when the AMI is still pending and a later session continues
+    the wait; fails when the bound for this kind of bake has passed.
+    """
+    created = parse_timestamp(str(describe_image(primary, image_id).get("CreationDate")))
+    seconds, last = image_wait_seconds(created, dt.datetime.now(dt.timezone.utc), mode)
+    if not image_available(primary, image_id, seconds):
+        if last or final:
+            raise AwsCiError(
+                f"AMI {image_id} did not become available within {BAKE_IMAGE_WAIT_SECONDS[mode]}s of its "
+                f"creation ({mode} bake)" if last else f"AMI {image_id} is still pending after bake.yml's last session"
+            )
+        write_outputs({"image": image_id, "pending": "true"})
+        return False
+    missing = tuple(region for region in region_order(primary)
+                    if region != primary and not tagged_ids(region, "image", marker, include_pending=True))
+    copies = copy_fixture_ami(primary, image_id, capacity, generation, marker, missing)
+    write_outputs({"image": image_id, "pending": "false"})
+    write_summary(
+        f"### {capacity.upper()} fixture AMI\n\n- image cache generation `{generation}` ({mode} bake)\n"
+        f"- `{primary}`: `{image_id}`\n"
+        + "".join(f"- `{region}`: `{copied}` (copying)\n" for region, copied in copies.items())
+    )
+    return True
+
+
 def command_bake_ami(args: argparse.Namespace) -> int:
     """Bake one capacity's fixture AMI for this tree's pinned images (C1, DES-HOR-590-03).
 
-    Two phases, each within one OIDC session (the CI role's sessions last an
-    hour and the GPU image cache alone can take most of one): `build` launches,
-    seeds and seals the builder; `image` images it, waits for the primary
-    region's AMI and starts the copies to the other regions. A fixture launch
-    only ever uses an available AMI, so the copies need no waiting here.
+    Each phase runs within one OIDC session (the CI role's sessions last an
+    hour): `build` launches, seeds and seals the builder; `image` images it and
+    waits; `await` continues the wait in a fresh session. Once the primary
+    region's AMI is available the copies to the other regions start; a fixture
+    launch only ever uses an available AMI, so the copies need no waiting here.
+
+    A build is incremental (HOR-676) when an earlier fixture AMI of this capacity
+    exists: the builder boots from it, the seed pulls only the changed images,
+    and the snapshot uploads only the changed blocks. `--cold` (and `--force`)
+    bakes from the Canonical image instead.
     """
     primary = require_region(args.region)
     regions = region_order(primary)
     manifest = image_cache_manifest(args.capacity)
     generation = str(manifest["generation"])
     marker = {AMI_ROLE_TAG: f"fixture-{args.capacity}", IMAGE_CACHE_TAG: generation}
+    if args.phase == "await":
+        await_fixture_ami(primary, args.image, args.capacity, generation, marker, args.mode, final=args.final)
+        return 0
     if args.phase == "build":
         present = {region for region in regions if tagged_ids(region, "image", marker, include_pending=True)}
         if present == set(regions) and not args.force:
-            write_outputs({"builder": ""})
+            write_outputs({"builder": "", "pending": "false"})
             write_summary(f"### {args.capacity.upper()} fixture AMI\n\n- generation `{generation}` already baked in every region\n")
             return 0
         if primary in present and not args.force:
-            # Only regional copies are missing: start them from the primary image.
+            # Only regional copies are missing, possibly behind another run's
+            # pending image: wait for it and start them from it.
             source_image = str(tagged_ids(primary, "image", marker, include_pending=True)[0]["ImageId"])
-            wait_for_image(primary, source_image, timeout_seconds=3000)
-            copy_fixture_ami(primary, source_image, args.capacity, generation, marker,
-                             tuple(region for region in regions if region not in present))
-            write_outputs({"builder": ""})
+            write_outputs({"builder": "", "mode": "cold"})
+            await_fixture_ami(primary, source_image, args.capacity, generation, marker, "cold", final=False)
             return 0
-        source = transient_source_ami(primary, args.run_id)
+        previous = None
+        if not (args.cold or args.force):
+            previous = select_previous_fixture_ami(
+                tagged_ids(primary, "image", {AMI_ROLE_TAG: f"fixture-{args.capacity}"}), args.capacity, generation)
+        mode = "incremental" if previous else "cold"
+        source = str(previous["ImageId"]) if previous else transient_source_ami(primary, args.run_id)
         host = launch_pinned_host(
             capacity="cpu", run_id=args.run_id, scenario=f"bake-{args.capacity}", ami_ids={primary: source},
-            regions=(primary,), deadline=dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=4),
-            launch_options={"root_gib": FIXTURE_ROOT_GIB[args.capacity]},
+            regions=(primary,), deadline=dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=5),
+            launch_options=bake_builder_launch_options(args.capacity, incremental=previous is not None),
         )
+        # Idempotent on an incremental builder, which already has the packages.
         host.ssh(BAKE_PACKAGES_SCRIPT)
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import fixture_image_cache  # noqa: PLC0415
@@ -1781,8 +1918,15 @@ def command_bake_ami(args: argparse.Namespace) -> int:
             manifest=manifest, address=host.public_ip, user=SSH_USER, key=host.ssh_key, host_key=host.known_hosts,
             crane=Path(args.crane),
         )
+        # The seal is the same from either source: a fixture AMI was sealed the
+        # same way and its launch installs a fresh per-run identity.
         host.ssh(BAKE_SEAL_SCRIPT)
-        write_outputs({"builder": host.instance_id})
+        write_outputs({"builder": host.instance_id, "mode": mode})
+        write_summary(
+            f"### {args.capacity.upper()} fixture builder\n\n- {mode} bake of generation `{generation}` from "
+            f"`{source}`" + (f" (generation `{tagged_value(previous.get('Tags'), IMAGE_CACHE_TAG)}`)" if previous else "")
+            + "\n"
+        )
         return 0
 
     if not args.builder:
@@ -1794,13 +1938,7 @@ def command_bake_ami(args: argparse.Namespace) -> int:
         "--description", f"iterabase CI {args.capacity} fixture, image cache {generation} (DES-HOR-590-03)",
         "--tag-specifications", tag_specifications("image", tags), tag_specifications("snapshot", tags),
     ])["ImageId"])
-    wait_for_image(primary, image_id, timeout_seconds=3000)
-    copies = copy_fixture_ami(primary, image_id, args.capacity, generation, marker,
-                              tuple(region for region in regions if region != primary))
-    write_summary(
-        f"### {args.capacity.upper()} fixture AMI\n\n- image cache generation `{generation}`\n- `{primary}`: `{image_id}`\n"
-        + "".join(f"- `{region}`: `{copied}` (copying)\n" for region, copied in copies.items())
-    )
+    await_fixture_ami(primary, image_id, args.capacity, generation, marker, args.mode, final=False)
     return 0
 
 
@@ -2467,10 +2605,15 @@ def build_parser() -> argparse.ArgumentParser:
     bake = subparsers.add_parser("bake-ami", help="bake one capacity's fixture AMI (DES-HOR-590-03)", parents=[common])
     bake.add_argument("--run-id", required=True)
     bake.add_argument("--capacity", required=True, choices=sorted(APPROVED_INSTANCE_TYPES))
-    bake.add_argument("--phase", required=True, choices=("build", "image"))
+    bake.add_argument("--phase", required=True, choices=("build", "image", "await"))
     bake.add_argument("--crane", default="", help="build phase: the reviewed crane binary used to pull the pinned images")
     bake.add_argument("--builder", default="", help="image phase: the sealed builder instance from the build phase")
-    bake.add_argument("--force", action="store_true")
+    bake.add_argument("--image", default="", help="await phase: the primary-region AMI still pending")
+    bake.add_argument("--mode", default="cold", choices=sorted(BAKE_IMAGE_WAIT_SECONDS),
+                      help="image and await phases: the build's kind, which bounds the wait")
+    bake.add_argument("--final", action="store_true", help="await phase: bake.yml's last session; pending fails")
+    bake.add_argument("--cold", action="store_true", help="build from the Canonical image even when an earlier AMI exists")
+    bake.add_argument("--force", action="store_true", help="rebake an existing generation (cold)")
     bake.set_defaults(handler=command_bake_ami)
 
     model = subparsers.add_parser("bake-model-cache", help="bake the GPU model-cache snapshot (DES-HOR-590-03)", parents=[common])

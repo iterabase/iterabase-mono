@@ -26,7 +26,7 @@ workflow is the executable proof that the account is still correct.
 | Unreachable by the role | `iam:*`, `organizations:*`, `s3:*`, `ssm:*`, and `sts:AssumeRole` (no `iam:PassRole`, so no instance profile can ever be attached). |
 | Region | Three allowed regions in preference order: `eu-west-1` (primary: default VPC, bootstrap AMI, CPU fixtures, cheapest `g5`), `eu-central-1`, `eu-north-1`. A GPU fixture walks regions, then approved types, then offered AZs, because `eu-west-1` offers `g5` without live capacity and does not offer the `g6`/L4 family at all. The policy's ARNs carry a wildcard region — listing three regions would exceed the 6,144-character managed-policy limit (9,136 expanded) — and the allowed set is enforced by an explicit `DenyOutsideCiRegions` on `aws:RequestedRegion`, so the boundary stays in the artifact AWS evaluates. |
 | Budget | `$350/month` cost budget (raised from $250 for fixtures and previews, C12) `iterabase-ci-monthly` on the member account, forecast alert at 80% and actual alert at 100%. The budget measures gross usage cost (`IncludeCredit=false`), so startup credits cannot hide runaway spend. |
-| Fixture volume loading | F3 fixture volumes restored from a snapshot (the baked AMI root and the GPU model cache) use EBS Provisioned Rate for Volume Initialization at 300 MiB/s with gp3 throughput 500 MiB/s (DES-HOR-590-05). Without it they read at 6–9 MiB/s until loaded and the GPU image-cache import takes ~1 h. Cost: $0.004 per GB of snapshot data initialized plus $0.044 per extra MiB/s-month of throughput while the host runs (eu-west-1), roughly $0.30–0.40 per GPU run. |
+| Fixture volume loading | F3 fixture volumes restored from a snapshot (the baked AMI root and the GPU model cache) use EBS Provisioned Rate for Volume Initialization at 300 MiB/s with gp3 throughput 500 MiB/s (DES-HOR-590-05). Without it they read at 6–9 MiB/s until loaded and the GPU image-cache import takes ~1 h. Cost: $0.004 per GB of snapshot data initialized plus $0.044 per extra MiB/s-month of throughput while the host runs (eu-west-1), roughly $0.30–0.40 per GPU run. The bake builder's root gets the same 500 MiB/s with 8,000 IOPS, and is preloaded when an incremental bake restores it from the previous fixture AMI (HOR-676). |
 
 `Describe*` actions cannot be resource-scoped by AWS design; the policy grants
 `ec2:Describe*` account-wide, read-only, as one wildcard so the single managed
@@ -842,7 +842,9 @@ pull request merges to `master`. Later dispatches may target a branch ref
   fresh per-run hosts here (C1). Fixture AMIs (`fixture-cpu`, `fixture-gpu`)
   and the model-cache snapshot are baked by `aws_ci.py bake-ami` and
   `bake-model-cache` from `bake.yml`, not by Packer (`DES-HOR-590-03`), and the
-  reaper's `images` job keeps the two newest generations. Fixture hosts carry an
+  reaper's `images` job keeps the two newest generations. Fixture AMI bakes are
+  incremental from the newest earlier AMI of the same capacity (HOR-676); a
+  `cold` dispatch of `bake.yml` bakes from Ubuntu instead. Fixture hosts carry an
   `iterabase-ci-deadline` at the scenario timeout plus 10 minutes and are
   removed by `cleanup-run` or, failing that, the reaper; no on-host shutdown
   timer is installed. Previews are spot hosts tagged `iterabase-ci-kind=preview`
