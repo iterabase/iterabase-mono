@@ -14,6 +14,12 @@ import (
 // tools archive, apply the platform chart, then apply the overlay objects
 // (DES-HOR-593-03/05). It then proves exactly what reached the installation.
 func runOverlayStage(t *testing.T, state *cpuFixtureState) {
+	runOverlayInstall(t, state, nil)
+}
+
+// runOverlayInstall is runOverlayStage with an optional step that runs on the
+// prepared host immediately before the platform apply that must succeed.
+func runOverlayInstall(t *testing.T, state *cpuFixtureState, beforeApply func(candidateOverlayPlan)) {
 	prepareCandidateChart(t, state.ip, state.privKeyPath)
 	plan := prepareCandidateOverlay(t)
 	candidateConfig := writeCurrentOverlayForgeConfig(
@@ -26,6 +32,9 @@ func runOverlayStage(t *testing.T, state *cpuFixtureState) {
 	}
 	state.runtimeImageDigests = prepareCandidateImages(t, state.ip, state.privKeyPath)
 	preparePinnedImageCache(t, &state.diagnostics, state.ip, state.privKeyPath, "cpu")
+	if beforeApply != nil {
+		beforeApply(plan)
+	}
 	out := applyOnce(t, state.forgeBin, state.forgeHome, candidateConfig)
 	assertApplyMarkers(t, out, "action:     skip", "node ready: true", "data storage: iterabase-data",
 		"LVM storage ready: true", "certificate substrate applied: true", "LVM storage substrate applied: true",

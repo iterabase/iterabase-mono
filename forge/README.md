@@ -49,6 +49,8 @@ forge destroy --config customers/acme/forge.yaml               # ordered teardow
 
 `apply` is **idempotent**: it reconciles from the live system — installs if absent, skips if in sync, refuses immutable changes (`cluster-cidr`/`service-cidr`/`dualStack` → `destroy` + `apply`), and routes version changes to `upgrade`.
 
+A Helm apply that fails part-way is recovered by fixing its cause and running `apply` again; no manual Kubernetes repair is needed. Helm computes an upgrade's deletions from the previous revision's manifest even when that revision failed, so objects a failed revision created can outlive every later successful revision. After each successful Helm apply, Forge therefore deletes the objects its failed revisions rendered that the release no longer renders, limited to objects whose live Helm ownership annotations still name the release and that do not carry `helm.sh/resource-policy: keep` (DES-HOR-677-02).
+
 ### Overlay (DES-HOR-593-03, -04, -05)
 
 `spec.overlay` is a local directory, normally `customers/<name>/` in the private

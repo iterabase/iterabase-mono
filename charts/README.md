@@ -158,13 +158,26 @@ the desired strategy remaining `Recreate`; an explicit `RollingUpdate` overlay
 is never migrated. The patch uses Helm's field-manager identity, so it does not
 create a competing owner that blocks the explicit rollback below.
 
-Ingress admission remains fail-closed. On first enablement, ingress-nginx's
-pre-hook creates a stable serving Secret and its post-hook patches the validating
-webhook CA. If Helm fails while waiting for workloads before that post-hook, run
-the exact same upgrade again: the platform detects the existing internal webhook
-and executes a pre-upgrade recovery hook after Secret creation, repairing the CA
-before normal resources are reapplied. Do not patch the CA manually or weaken
-`failurePolicy: Fail`.
+Ingress admission remains fail-closed. Both ingress controllers take their
+admission webhook serving certificate from the cert-manager substrate, and
+cert-manager's cainjector keeps each validating webhook's `caBundle` current
+(DES-HOR-677-01). No Helm hook is involved, so a revision that fails before its
+hooks run can no longer leave the webhook with an empty CA that blocks the next
+upgrade: fix the cause and run the same upgrade again. Do not patch the CA
+manually or weaken `failurePolicy: Fail`.
+
+The one exception is an install whose first revision failed under an earlier
+chart that still used the certgen hook Jobs, leaving the webhook with an empty
+`caBundle`. Helm updates Ingresses before the webhook and its new
+Certificates, so that webhook rejects the first upgrade to this chart. Before
+upgrading, copy the existing admission Secret's CA into the webhook once, as the
+skipped patch hook would have (DES-HOR-677-03):
+
+```sh
+ca=$(kubectl get secret <release>-ingress-nginx-admission -n <namespace> -o jsonpath='{.data.ca}')
+kubectl patch validatingwebhookconfiguration <release>-ingress-nginx-admission --type=json \
+  -p "[{\"op\":\"add\",\"path\":\"/webhooks/0/clientConfig/caBundle\",\"value\":\"$ca\"}]"
+```
 
 A rollback to a revision before `0.3.19` restores that revision's legacy
 `RollingUpdate` gateway manifest. On a one-node deployment, make the downtime

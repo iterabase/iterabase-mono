@@ -817,6 +817,8 @@ func TestDeployer_Apply(t *testing.T) {
 	var kubectlCalled bool
 	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
 		switch {
+		case strings.Contains(cmd, "'history'"):
+			return cleanHelmHistory, 0
 		case cmd == helmVerifyCommand:
 			return "/usr/local/bin/helm\n", 0
 		case strings.Contains(cmd, "'show' 'crds'"):
@@ -854,6 +856,8 @@ func TestDeployer_Apply_ReconcilesCRDsBeforeUpgrade(t *testing.T) {
 	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
 		commands = append(commands, cmd)
 		switch {
+		case strings.Contains(cmd, "'history'"):
+			return cleanHelmHistory, 0
 		case cmd == helmVerifyCommand:
 			return "/usr/local/bin/helm\n", 0
 		case strings.Contains(cmd, "'show' 'crds'"):
@@ -881,13 +885,14 @@ func TestDeployer_Apply_ReconcilesCRDsBeforeUpgrade(t *testing.T) {
 	// the pre-apply set so an operator-feature-enable upgrade can introduce new
 	// dependency CRDs (DES-HOR-511-03); only rendered MetalLB CRDs receive Helm
 	// ownership. A non-MetalLB crds/-dir CRD therefore still triggers apply/wait.
-	require.Len(t, commands, 6)
+	require.Len(t, commands, 7)
 	assert.Equal(t, helmVerifyCommand, commands[0])
 	assert.Contains(t, commands[1], "'show' 'crds'")
 	assert.Contains(t, commands[2], "'template'")
 	assert.Contains(t, commands[3], "'kubectl' 'apply'")
 	assert.Contains(t, commands[4], "'kubectl' 'wait'")
 	assert.Contains(t, commands[5], "'upgrade' '--install'")
+	assert.Contains(t, commands[6], "'history'", "a successful apply checks for failed-revision orphans")
 }
 
 func TestDeployer_Apply_ReconcilesRenderedTemplateCRDs(t *testing.T) {
@@ -896,6 +901,8 @@ func TestDeployer_Apply_ReconcilesRenderedTemplateCRDs(t *testing.T) {
 	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
 		commands = append(commands, cmd)
 		switch {
+		case strings.Contains(cmd, "'history'"):
+			return cleanHelmHistory, 0
 		case cmd == helmVerifyCommand:
 			return "/usr/local/bin/helm\n", 0
 		case strings.Contains(cmd, "'show' 'crds'"):
@@ -928,7 +935,7 @@ func TestDeployer_Apply_ReconcilesRenderedTemplateCRDs(t *testing.T) {
 		ValueFiles: []string{"/tmp/values.yaml"},
 		Values:     []string{"metallb.enabled=true"},
 	}))
-	require.Len(t, commands, 10)
+	require.Len(t, commands, 11)
 	assert.Contains(t, commands[2], "'template' 'oci://ghcr.io/nunocgoncalves/iterabase-platform' '--version' '0.3.19' '-n' 'iterabase-system' '-f' '/tmp/values.yaml' '--set' 'metallb.enabled=true'")
 	assert.Contains(t, commands[3], "'kubectl' 'apply' '--server-side' '--force-conflicts' '-f' '-'")
 	assert.Contains(t, commands[4], "'kubectl' 'wait' '--for=condition=Established'")
@@ -944,6 +951,8 @@ func TestDeployer_Apply_MetalLBBootstrapConverges(t *testing.T) {
 	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
 		commands = append(commands, cmd)
 		switch {
+		case strings.Contains(cmd, "'history'"):
+			return cleanHelmHistory, 0
 		case cmd == helmVerifyCommand:
 			return "/usr/local/bin/helm\n", 0
 		case strings.Contains(cmd, "'show' 'crds'"):
@@ -977,7 +986,7 @@ func TestDeployer_Apply_MetalLBBootstrapConverges(t *testing.T) {
 		Version: "0.3.19", Namespace: "iterabase-system",
 		Values: []string{"metallb.enabled=true"},
 	}))
-	require.Len(t, commands, 13)
+	require.Len(t, commands, 14)
 	assert.Contains(t, commands[6], "'status'")
 	assert.Contains(t, commands[7], "validatingwebhookconfiguration")
 	assert.Contains(t, commands[8], "'upgrade' '--install'")
@@ -1038,6 +1047,8 @@ func TestDeployer_Apply_MetalLBInterruptedBootstrapConverges(t *testing.T) {
 	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
 		commands = append(commands, cmd)
 		switch {
+		case strings.Contains(cmd, "'history'"):
+			return cleanHelmHistory, 0
 		case cmd == helmVerifyCommand:
 			return "/usr/local/bin/helm\n", 0
 		case strings.Contains(cmd, "'show' 'crds'"):
@@ -1074,7 +1085,7 @@ func TestDeployer_Apply_MetalLBInterruptedBootstrapConverges(t *testing.T) {
 	}))
 	// The Ignore bootstrap apply runs, then the backend wait, then the steady
 	// apply, then the final assertion probe.
-	require.Len(t, commands, 13)
+	require.Len(t, commands, 14)
 	assert.Contains(t, commands[8], "validationFailurePolicy=Ignore")
 	assert.Contains(t, commands[11], "'upgrade' '--install'")
 	assert.NotContains(t, commands[11], "validationFailurePolicy=Ignore")
@@ -1198,6 +1209,8 @@ func TestDeployer_Apply_InstallsHelmOnlyAfterArchiveAndExecutableVerification(t 
 	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
 		commands = append(commands, cmd)
 		switch {
+		case strings.Contains(cmd, "'history'"):
+			return cleanHelmHistory, 0
 		case cmd == helmVerifyCommand:
 			helmChecks++
 			if helmChecks == 1 {
@@ -2063,3 +2076,7 @@ func TestDeployer_ApplyManifest_Error(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kubectl apply -f -")
 }
+
+// cleanHelmHistory is a release history with no failed revision, so a
+// successful Apply has no failed-revision orphans to look for.
+const cleanHelmHistory = `[{"revision":1,"status":"superseded"},{"revision":2,"status":"deployed"}]`

@@ -121,21 +121,15 @@ ingress-nginx:
         memory: 128Mi
       limits:
         memory: 512Mi
+    # The cert-manager substrate issues the admission webhook's serving
+    # certificate and cainjector keeps the webhook caBundle current
+    # (DES-HOR-677-01). Unlike the upstream certgen hook Jobs, this never
+    # depends on a Helm post-install/post-upgrade hook running, so a failed
+    # revision cannot leave the fail-closed webhook with an empty caBundle.
     admissionWebhooks:
-      createSecretJob:
-        resources:
-          requests:
-            cpu: 10m
-            memory: 32Mi
-          limits:
-            memory: 128Mi
-      patchWebhookJob:
-        resources:
-          requests:
-            cpu: 10m
-            memory: 32Mi
-          limits:
-            memory: 128Mi
+      failurePolicy: Fail
+      certManager:
+        enabled: true
     service:
       enabled: true
       type: LoadBalancer
@@ -190,33 +184,13 @@ internal-ingress-nginx:
         - IPv4
     hostPort:
       enabled: false
-    # Keep validation fail-closed. The umbrella's lookup-gated recovery hook
-    # reuses this exact pinned certgen image and the upstream hook RBAC identity
-    # to repair an existing empty/stale CA before an interrupted upgrade is
-    # reapplied (DES-HOR-506-02). Recheck this coupling on ingress-nginx bumps.
+    # Fail-closed validation with a cert-manager-issued serving certificate and
+    # cainjector-maintained caBundle, as for the public controller
+    # (DES-HOR-677-01).
     admissionWebhooks:
       failurePolicy: Fail
-      createSecretJob:
-        resources:
-          requests:
-            cpu: 10m
-            memory: 32Mi
-          limits:
-            memory: 128Mi
-      # Also sizes the umbrella's lookup-gated admission recovery hook.
-      patchWebhookJob:
-        resources:
-          requests:
-            cpu: 10m
-            memory: 32Mi
-          limits:
-            memory: 128Mi
-      patch:
-        image:
-          registry: registry.k8s.io
-          image: ingress-nginx/kube-webhook-certgen
-          tag: v1.6.9
-          digest: sha256:01038e7de14b78d702d2849c3aad72fd25903c4765af63cf16aa3398f5d5f2dd
+      certManager:
+        enabled: true
     metrics:
       enabled: false
       serviceMonitor:

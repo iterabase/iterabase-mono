@@ -52,6 +52,48 @@ if grep -R -q 'helm.sh/hook' \
   exit 1
 fi
 
+# DES-HOR-677-01: the ingress-nginx admission webhook's CA never depends on a
+# Helm hook running. cert-manager issues its serving certificate and cainjector
+# maintains the fail-closed webhook's caBundle, so a failed revision that skips
+# post-install/post-upgrade hooks cannot leave the next apply blocked by an
+# empty caBundle. The certgen create/patch hook Jobs must not render.
+printf '%s\n' "$platform_render" > "$workdir/platform-default.yaml"
+python3 - "$workdir/platform-default.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+objects = [obj for obj in yaml.safe_load_all(Path(sys.argv[1]).read_text()) if obj]
+admission = "release-ingress-nginx-admission"
+
+
+def one(kind, name):
+    matches = [o for o in objects if o.get("kind") == kind and o["metadata"]["name"] == name]
+    if len(matches) != 1:
+        raise SystemExit(f"{kind}/{name}: got {len(matches)} objects, want 1")
+    return matches[0]
+
+
+webhook = one("ValidatingWebhookConfiguration", admission)
+if webhook["webhooks"][0]["failurePolicy"] != "Fail":
+    raise SystemExit("ingress-nginx admission webhook must stay fail-closed")
+inject = (webhook["metadata"].get("annotations") or {}).get("cert-manager.io/inject-ca-from")
+if inject != f"iterabase-system/{admission}":
+    raise SystemExit(f"ingress-nginx admission webhook must take its caBundle from cainjector, got {inject!r}")
+certificate = one("Certificate", admission)
+if certificate["spec"]["secretName"] != admission:
+    raise SystemExit("ingress-nginx admission Certificate must write the controller's webhook Secret")
+hooks = [
+    f"{o['kind']}/{o['metadata']['name']}"
+    for o in objects
+    if o["metadata"]["name"].startswith(admission)
+    and "helm.sh/hook" in (o["metadata"].get("annotations") or {})
+]
+if hooks:
+    raise SystemExit(f"ingress-nginx admission certificate must not depend on Helm hooks: {hooks}")
+PY
+
 # ---------------------------------------------------------------------------
 # HOR-528: one internal-CA identity for every writer.
 #

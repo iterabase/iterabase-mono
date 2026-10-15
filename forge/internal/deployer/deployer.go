@@ -44,6 +44,9 @@ type Deployer interface {
 	// waits for them to become Established, then installs or upgrades the Helm
 	// release (helm upgrade --install), applying -f value files (ValueFiles, in
 	// order) then --set values (Values). It ensures helm is present first.
+	// After a successful upgrade it deletes objects this release created in a
+	// failed revision and no longer renders, which Helm's previous-revision
+	// baseline never deletes (DES-HOR-677-02).
 	Apply(ctx context.Context, opts ApplyOpts) error
 	// EnsureRepo adds (or force-updates) a Helm repository on the host. Needed
 	// for repo-based charts (e.g. the NVIDIA GPU Operator); a no-op concern for

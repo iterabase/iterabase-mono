@@ -23,7 +23,6 @@ helm template demo "$script_dir/../charts/metallb-config" \
   -f "$additional_only_values" >"$additional_only_render"
 
 python3 - "$render" "$release" "$namespace" "$additional_only_render" \
-  "$script_dir/../charts/iterabase-platform/templates/internal-ingress-admission-recovery.yaml" \
   "$script_dir/../charts/iterabase-platform/templates/loki-gateway-rollout-recovery.yaml" \
   "$script_dir/../charts/iterabase-platform/values.yaml" <<'PY'
 from __future__ import annotations
@@ -38,7 +37,6 @@ import yaml
     release,
     namespace,
     additional_only_render,
-    admission_recovery_template,
     rollout_recovery_template,
     platform_values_path,
 ) = sys.argv[1:]
@@ -97,9 +95,9 @@ assert required_anti_affinity[0]["labelSelector"]["matchLabels"] == {
     "app.kubernetes.io/name": "loki",
 }
 
-# Admission stays fail-closed. The normal upstream create/post-patch hooks keep
-# their pinned identity, while the wrapper adds a lookup-gated pre-upgrade
-# recovery using the same Secret, webhook, RBAC identity, and certgen image.
+# Admission stays fail-closed, and its CA never depends on a Helm hook running:
+# cert-manager issues the serving certificate and cainjector maintains the
+# webhook caBundle (DES-HOR-677-01). No certgen hook Job renders.
 admission_name = f"{release}-internal-ingress-nginx-admission"
 webhook = object_("ValidatingWebhookConfiguration", admission_name)
 assert webhook["webhooks"][0]["failurePolicy"] == "Fail"
@@ -109,25 +107,16 @@ assert webhook["webhooks"][0]["clientConfig"]["service"] == {
     "port": 443,
     "path": "/networking/v1/ingresses",
 }
-create_job = object_("Job", f"{admission_name}-create")
-patch_job = object_("Job", f"{admission_name}-patch")
-assert annotations(create_job)["helm.sh/hook"] == "pre-install,pre-upgrade"
-assert annotations(patch_job)["helm.sh/hook"] == "post-install,post-upgrade"
-certgen_image = create_job["spec"]["template"]["spec"]["containers"][0]["image"]
-assert certgen_image == patch_job["spec"]["template"]["spec"]["containers"][0]["image"]
-assert certgen_image == (
-    "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.6.9@"
-    "sha256:01038e7de14b78d702d2849c3aad72fd25903c4765af63cf16aa3398f5d5f2dd"
-)
-recovery_source = Path(admission_recovery_template).read_text()
-for contract in (
-    'lookup "admissionregistration.k8s.io/v1" "ValidatingWebhookConfiguration"',
-    'helm.sh/hook-weight: "1"',
-    "--webhook-name={{ $admissionName }}",
-    "--secret-name={{ $admissionName }}",
-    "--patch-failure-policy={{ index $admission \"failurePolicy\" }}",
-):
-    assert contract in recovery_source, f"admission recovery lost {contract}"
+assert annotations(webhook)["cert-manager.io/inject-ca-from"] == f"{namespace}/{admission_name}"
+admission_cert = object_("Certificate", admission_name)
+assert admission_cert["spec"]["secretName"] == admission_name
+assert admission_cert["spec"]["issuerRef"]["name"] == f"{release}-internal-ingress-nginx-root-issuer"
+certgen_jobs = [
+    obj["metadata"]["name"]
+    for obj in objects
+    if obj.get("kind") == "Job" and obj["metadata"]["name"].startswith(admission_name)
+]
+assert not certgen_jobs, f"admission certgen/recovery hook Jobs still render: {certgen_jobs}"
 
 rollout_source = Path(rollout_recovery_template).read_text()
 for contract in (
