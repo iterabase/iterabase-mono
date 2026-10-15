@@ -45,19 +45,11 @@ postgresql:
   passwordSecret: "" # default: <release>-postgresql
   passwordKey: gateway-password
 
-# Redis connection. Defaults match the bundled redis subchart.
-redis:
-  host: "" # default: <release>-redis
-  port: 6379
-  passwordSecret: "" # default: <release>-redis (the redis chart's AUTH Secret)
-  passwordKey: redis-password
-
 # Internal TLS (opt-in; the umbrella's internalTLS.enabled fans this on). The
 # gateway is a TLS client only (no internal HTTPS server — its public edge is
 # via ingress-shim). When enabled: DATABASE_URL uses sslmode=verify-full + the
-# internal CA, REDIS_URL becomes rediss:// with the AUTH password, and
-# REDIS_TLS_CA_FILE points the gateway at the mounted CA. caSecretName is
-# required when enabled (the <release>-internal-ca-root Secret, set by umbrella).
+# internal CA. Rate limits live in the same Postgres (DES-HOR-661-07); there is
+# no Redis. caSecretName is required when enabled (the <release>-internal-ca-root Secret, set by umbrella).
 tls:
   enabled: false
   caSecretName: ""   # required when enabled: the internal CA root Secret
@@ -89,6 +81,22 @@ workload:
   clientCAKey: ca.crt
   certMountPath: /etc/iterabase/workload/tls
   clientCAMountPath: /etc/iterabase/workload/ca
+
+# Central Iterabase inference gateway (HOR-661, DES-HOR-661-03). When enabled,
+# ModelBackends of kind `managed` route to central over mTLS with this
+# installation's client certificate; external/vLLM/SGLang stay direct. A
+# `managed` model with central disabled fails closed (upstream_unavailable).
+central:
+  enabled: false
+  url: "" # required when enabled, e.g. https://central.iterabase.com
+  # kubernetes.io/tls Secret holding the installation key and certificate
+  # (tls.key/tls.crt), issued by `forge central issue`. Required when enabled.
+  tlsSecretName: ""
+  # PEM of the Iterabase central CA (public). Required when enabled; rendered
+  # into a ConfigMap and used to verify central's serving certificate.
+  caBundle: ""
+  certMountPath: /etc/iterabase/central/tls
+  caMountPath: /etc/iterabase/central/ca
 
 # Reviewed single-node sizing (HOR-602, charts/docs/sizing.md): CPU request,
 # memory request and memory limit; no CPU limit (CPU is compressible).

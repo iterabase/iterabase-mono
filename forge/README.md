@@ -132,6 +132,32 @@ The non-interactive explicit form is
 
 See `forge.example.yaml` for the full substrate config schema.
 
+## Central inference gateway
+
+`forge central` manages an installation on the central Iterabase inference
+gateway (HOR-661): its registry entry and entitlements, and its mTLS client
+certificate. Requests authenticate with the ambient AWS credentials (the Forge
+role, or the CI preview role for `internal` `pr-*`/`staging` installations)
+through a presigned `sts:GetCallerIdentity`; central's TLS certificate is
+verified only against `--ca-bundle`. Contract:
+[`../docs/architecture/v2-central-inference-gateway.md`](../docs/architecture/v2-central-inference-gateway.md).
+
+```sh
+export FORGE_CENTRAL_URL=https://central.iterabase.com FORGE_CENTRAL_CA_BUNDLE=central-ca.pem
+forge central register --installation acme --deployment hosted --plan trial --trial-days 7 --currency EUR
+forge central issue --installation acme --out ./acme-central     # key generated locally; tls.key/tls.crt/ca.crt, 0600
+forge central issue --installation acme --secret-manifest --namespace iterabase-system | kubectl apply -f -
+forge central plan --installation acme --plan starter            # convert or change plan
+forge central extend-trial --installation acme --days 7          # adds the pro-rated Starter credits
+forge central show --installation acme
+forge central revoke --installation acme --reason "customer offboarded"
+forge central export --period 2026-10 --format csv --out 2026-10.csv
+```
+
+`register` is idempotent: an identical existing entry succeeds (a revoked one is
+reactivated) and a different one is refused. The installation's private key is
+generated on this machine and never sent to central.
+
 ## Development
 
 ```sh
@@ -158,6 +184,7 @@ Architecture invariants and v1 boundaries are documented in `AGENTS.md`.
 - `internal/kubeconfig/` — kubeconfig fetch + server-URL rewrite
 - `internal/lifecycle/` — phase orchestration + reconcile
 - `internal/artifacts/` — local state dir (`~/.forge/<install>/`)
+- `internal/central/` — central inference gateway operator API client (HOR-661)
 - `internal/version/` — build version
 - `test/e2e/` — real-machine CPU/GPU runner on fresh per-run EC2 hosts (separate module; see `test/e2e/DESIGN.md`)
 

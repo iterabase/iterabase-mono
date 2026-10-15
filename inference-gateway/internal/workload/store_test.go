@@ -232,3 +232,27 @@ func TestResolveTurnScope_PoolInconsistentAssignmentDenied(t *testing.T) {
 	_, err = store.ResolveTurnScope(ctx, poolID, runID, turnID, "pod-abc", 1)
 	assert.ErrorIs(t, err, ErrScopeDenied)
 }
+
+// The turn scope carries the payload-free attribution the installation sends
+// to the central gateway (DES-HOR-661-03).
+func TestResolveTurnScope_Attribution(t *testing.T) {
+	ctx := context.Background()
+	store, pool := setupStore(t)
+	poolID, runID, turnID, _ := seed(t, ctx, pool, "spiffe://iterabase.local/pools/pool-1/", "qwen3-27b", "running")
+
+	ts, err := store.ResolveTurnScope(ctx, poolID, runID, turnID, "pod-abc", 1)
+	require.NoError(t, err)
+	assert.Equal(t, "", ts.WorkflowKey, "chat runs have no workflow")
+	assert.Equal(t, "", ts.WorkItemID)
+	assert.Equal(t, "unknown", ts.Channel, "a run without an authorization source")
+
+	_, err = pool.Exec(ctx, `UPDATE runtime.workflow_runs SET definition_key = 'invoices/intake', authorization_source = 'browser' WHERE id = $1::uuid`, runID)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO work.attempts (id, work_item_id) VALUES ($1::uuid, '7c0f6a26-5c5b-4f1d-9d56-0b8b36c1f5a1')`, runID)
+	require.NoError(t, err)
+	ts, err = store.ResolveTurnScope(ctx, poolID, runID, turnID, "pod-abc", 1)
+	require.NoError(t, err)
+	assert.Equal(t, "invoices/intake", ts.WorkflowKey)
+	assert.Equal(t, "7c0f6a26-5c5b-4f1d-9d56-0b8b36c1f5a1", ts.WorkItemID)
+	assert.Equal(t, "browser", ts.Channel)
+}

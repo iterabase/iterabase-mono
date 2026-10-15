@@ -144,6 +144,8 @@ func (r *ModelBackendReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.reconcileStub(ctx, &mb, "SGLang reconciler not yet implemented (HOR-323)")
 	case "external":
 		return r.reconcileExternal(ctx, &mb)
+	case "managed":
+		return r.reconcileManaged(ctx, &mb)
 	default:
 		return ctrl.Result{}, r.patchStatus(ctx, &mb, false, false, "", fmt.Sprintf("unknown kind %q", mb.Spec.Kind))
 	}
@@ -220,6 +222,9 @@ func (r *ModelBackendReconciler) reconcileExternal(ctx context.Context, mb *v1al
 	if mb.Spec.External == nil || mb.Spec.External.BaseURL == "" {
 		return ctrl.Result{}, r.patchStatus(ctx, mb, false, false, "", "spec.external.baseURL is required for kind external")
 	}
+	if mb.Spec.Managed != nil {
+		return ctrl.Result{}, r.patchStatus(ctx, mb, false, false, "", "spec.managed must not be set for kind external")
+	}
 	serviceURL := mb.Spec.External.BaseURL
 	if err := r.materialize(ctx, mb, serviceURL, true, true); err != nil {
 		return ctrl.Result{}, err
@@ -231,6 +236,31 @@ func (r *ModelBackendReconciler) reconcileExternal(ctx context.Context, mb *v1al
 	// Requeue on the health interval, mirroring vLLM: external status is static
 	// today, so this is the bounded self-heal fallback rather than an
 	// observation refresh.
+	return ctrl.Result{RequeueAfter: healthRequeueInterval}, nil
+}
+
+// reconcileManaged records a model served by the central Iterabase inference
+// gateway (HOR-661, DES-HOR-661-03). Nothing is deployed and the backend is
+// healthy: central availability surfaces as the gateway's retryable
+// upstream_unavailable, which pauses the step (HOR-649). The catalog row
+// carries the central model name and no URL; the inference gateway takes the
+// central endpoint and its client certificate from its own configuration.
+func (r *ModelBackendReconciler) reconcileManaged(ctx context.Context, mb *v1alpha1.ModelBackend) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	if mb.Spec.Managed == nil || mb.Spec.Managed.Model == "" {
+		return ctrl.Result{}, r.patchStatus(ctx, mb, false, false, "", "spec.managed.model is required for kind managed")
+	}
+	if mb.Spec.External != nil {
+		return ctrl.Result{}, r.patchStatus(ctx, mb, false, false, "", "spec.external must not be set for kind managed")
+	}
+	if err := r.materialize(ctx, mb, "", true, true); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.patchStatus(ctx, mb, true, true, "", ""); err != nil {
+		return ctrl.Result{}, err
+	}
+	logger.Info("recorded managed backend", "key", backendKey(mb), "model", mb.Spec.Managed.Model)
+	// Same bounded self-heal requeue as external.
 	return ctrl.Result{RequeueAfter: healthRequeueInterval}, nil
 }
 
@@ -250,7 +280,7 @@ func (r *ModelBackendReconciler) materialize(ctx context.Context, mb *v1alpha1.M
 		Name:       mb.Name,
 		Namespace:  mb.Namespace,
 		Kind:       mb.Spec.Kind,
-		Model:      mb.Spec.Model,
+		Model:      backendModel(mb),
 		ServiceURL: serviceURL,
 		Image:      mb.Spec.Image,
 		AuthRef:    authRef(mb),
@@ -260,6 +290,15 @@ func (r *ModelBackendReconciler) materialize(ctx context.Context, mb *v1alpha1.M
 		return fmt.Errorf("upsert backend: %w", err)
 	}
 	return nil
+}
+
+// backendModel is the model id the catalog routes to: the HuggingFace id for
+// deployed kinds, the central model name for managed.
+func backendModel(mb *v1alpha1.ModelBackend) string {
+	if mb.Spec.Kind == "managed" && mb.Spec.Managed != nil {
+		return mb.Spec.Managed.Model
+	}
+	return mb.Spec.Model
 }
 
 // authRef is the external backend's credential Secret name. Only the name is

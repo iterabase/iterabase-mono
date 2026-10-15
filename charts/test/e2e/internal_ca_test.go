@@ -51,7 +51,6 @@ func internalCABootstrapIssuerName() string {
 func coreInternalCALeafSecrets() []string {
 	return []string{
 		testRelease + "-postgresql-tls",
-		testRelease + "-redis-tls",
 		testRelease + "-control-plane-api-tls",
 	}
 }
@@ -325,7 +324,7 @@ func TestUnitInternalCAChainIdentityRejectsRotatedAuthority(t *testing.T) {
 func TestUnitInternalCAChainIdentityRejectsUnrelatedAuthority(t *testing.T) {
 	root := newTestCertificateAuthority(t, "iterabase-internal-ca")
 	other := newTestCertificateAuthority(t, "unrelated-ca")
-	leaf := other.issue(t, "iterabase-redis.iterabase-system.svc")
+	leaf := other.issue(t, "iterabase-minio.iterabase-system.svc")
 
 	if err := verifyLeafChainsToRoot(root.pem, leaf); err == nil {
 		t.Fatal("leaf signed by an unrelated authority must be rejected")

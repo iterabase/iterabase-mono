@@ -3,7 +3,6 @@ iterabase platform {{ .Chart.AppVersion }} installed as release "{{ .Release.Nam
 Components:
   inference-gateway: {{ (index .Values "inference-gateway").enabled }}
   control-plane:     {{ (index .Values "control-plane").enabled }} (provides the shared pgvector Postgres + the schemas the gateway reads)
-  redis:             {{ .Values.redis.enabled }}
   minio:             {{ .Values.minio.enabled }}
   ingress-nginx:     {{ (index .Values "ingress-nginx").enabled }}
   internal-ingress:  {{ (index .Values "internal-ingress-nginx").enabled }}

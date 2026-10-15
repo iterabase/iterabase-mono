@@ -46,8 +46,6 @@ tests:
         values: '1x8'
       - series: 'up{namespace="default",job="postgresql",component="postgresql"}'
         values: '1x8'
-      - series: 'up{namespace="default",job="redis",component="redis"}'
-        values: '1x8'
       - series: 'up{namespace="default",job="minio",component="minio"}'
         values: '1x8'
     alert_rule_test:
@@ -504,9 +502,9 @@ tests:
         values: '750000000x20'
       - series: 'kube_pod_container_resource_limits{namespace="default",pod="opo1-control-plane-api-0",container="api",resource="memory",unit="byte"}'
         values: '805306368x20'
-      - series: 'container_memory_working_set_bytes{namespace="default",pod="opo1-redis-0",container="redis",id="/b"}'
+      - series: 'container_memory_working_set_bytes{namespace="default",pod="opo1-minio-0",container="minio",id="/b"}'
         values: '100000000x20'
-      - series: 'kube_pod_container_resource_limits{namespace="default",pod="opo1-redis-0",container="redis",resource="memory",unit="byte"}'
+      - series: 'kube_pod_container_resource_limits{namespace="default",pod="opo1-minio-0",container="minio",resource="memory",unit="byte"}'
         values: '536870912x20'
     alert_rule_test:
       - eval_time: 10m

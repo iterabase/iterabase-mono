@@ -177,7 +177,7 @@ func TestUnitPrometheusNoSampleIsPendingReadiness(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	ready, observation, err := observePrometheusValue(server.Client(), server.URL, "redis_up", "1")
+	ready, observation, err := observePrometheusValue(server.Client(), server.URL, "pg_up", "1")
 	if err != nil {
 		t.Fatalf("empty successful query should remain pending: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestUnitPrometheusMalformedSuccessFailsImmediately(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 
-			if _, _, err := observePrometheusValue(server.Client(), server.URL, "redis_up", "1"); err == nil {
+			if _, _, err := observePrometheusValue(server.Client(), server.URL, "pg_up", "1"); err == nil {
 				t.Fatal("malformed successful query was treated as pending readiness")
 			}
 		})
@@ -221,7 +221,7 @@ func TestUnitPrometheusObservationErrorsFailImmediately(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	if _, _, err := observePrometheusValue(server.Client(), server.URL, "redis_up", "1"); err == nil {
+	if _, _, err := observePrometheusValue(server.Client(), server.URL, "pg_up", "1"); err == nil {
 		t.Fatal("malformed Prometheus response was treated as pending readiness")
 	}
 }

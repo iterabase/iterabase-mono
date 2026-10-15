@@ -281,7 +281,6 @@ func installControlPlanePlatformStage(t *testing.T, state *deployedState) {
 		"global":            map[string]any{"internalTLS": map[string]any{"enabled": true}},
 		"external-dns":      map[string]any{"enabled": false},
 		"inference-gateway": map[string]any{"enabled": false},
-		"redis":             map[string]any{"enabled": false},
 		"minio":             map[string]any{"enabled": true, "artifactService": map[string]any{"enabled": true}},
 		"ingress-nginx":     map[string]any{"enabled": false},
 		"metallb":           map[string]any{"enabled": false},

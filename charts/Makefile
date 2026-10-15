@@ -37,7 +37,7 @@ else
 E2E_BUILD_DEPS := build-deps
 endif
 
-.PHONY: template-aws-hosted kubeconform-aws-hosted test-build-dependency-retry build-deps lint template kubeconform template-controlplane kubeconform-controlplane template-tls kubeconform-tls template-observability kubeconform-observability template-observability-tls kubeconform-observability-tls template-internal-observability kubeconform-internal-observability check-internal-observability template-private-control-plane kubeconform-private-control-plane check-private-control-plane check-aws-hosted-edge check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-redis-exporter-auth check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-resource-limits check-version-links check-alerts test-alert-rules check-dashboards check-gateway-tls-client check-gateway-rbac check-observability-tls check check-tls check-observability test-e2e test-e2e-unit test-e2e-install test-e2e-n-1-upgrade test-e2e-observability test-e2e-observability-tls clean
+.PHONY: template-aws-hosted kubeconform-aws-hosted test-build-dependency-retry build-deps lint template kubeconform template-controlplane kubeconform-controlplane template-tls kubeconform-tls template-observability kubeconform-observability template-observability-tls kubeconform-observability-tls template-internal-observability kubeconform-internal-observability check-internal-observability template-private-control-plane kubeconform-private-control-plane check-private-control-plane check-aws-hosted-edge check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-resource-limits check-version-links check-alerts test-alert-rules check-dashboards check-gateway-tls-client check-gateway-rbac check-observability-tls check check-tls check-observability test-e2e test-e2e-unit test-e2e-install test-e2e-n-1-upgrade test-e2e-observability test-e2e-observability-tls clean
 
 # Compile the owner entrypoint and run hermetic mechanics plus intentional break
 # fixtures without provisioning infrastructure.
@@ -122,8 +122,6 @@ check-service-selectors:
 check-remote-image-digests: build-deps
 	./scripts/check-remote-image-digests.sh
 
-check-redis-exporter-auth:
-	./scripts/check-redis-exporter-auth.sh
 
 check-artifact-config:
 	./scripts/check-artifact-config.sh
@@ -161,17 +159,17 @@ test-alert-rules: build-deps
 check-dashboards: build-deps
 	./scripts/check-dashboards.sh
 
-# Internal-TLS inference gateway clients render verify-full PostgreSQL and
-# CA-backed rediss:// Redis against the mounted internal CA root.
+# Internal-TLS inference gateway clients render verify-full PostgreSQL against
+# the mounted internal CA root.
 check-gateway-tls-client: build-deps
 	./scripts/check-gateway-tls-client.sh
 
 check-gateway-rbac: build-deps
 	./scripts/check-gateway-rbac.sh
 
-check: test-build-dependency-retry lint kubeconform kubeconform-controlplane kubeconform-observability check-internal-observability check-private-control-plane check-aws-hosted-edge check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-redis-exporter-auth check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-resource-limits check-version-links check-alerts check-dashboards check-gateway-tls-client check-gateway-rbac
+check: test-build-dependency-retry lint kubeconform kubeconform-controlplane kubeconform-observability check-internal-observability check-private-control-plane check-aws-hosted-edge check-certificate-substrate check-lvm-storage-substrate check-service-selectors check-remote-image-digests check-artifact-config check-tool-runner check-manager-contract check-workload-ca check-auth-config check-dup-yaml-keys check-metrics-contract check-resource-limits check-version-links check-alerts check-dashboards check-gateway-tls-client check-gateway-rbac
 
-check-tls: kubeconform-tls kubeconform-observability-tls check-internal-observability check-private-control-plane check-redis-exporter-auth check-observability-tls
+check-tls: kubeconform-tls kubeconform-observability-tls check-internal-observability check-private-control-plane check-observability-tls
 
 # Static check with the observability stack + every component's metrics on
 # (values-observability.yaml). Catches conditional/render errors in the

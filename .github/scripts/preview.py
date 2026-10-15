@@ -9,7 +9,8 @@ charts re-versioned `<version>-pr.<N>.<run>` / `<version>-main.<run>` and
 published to the preview namespace; the CI-owned preview overlay is the
 versioned E2E fixture overlay plus the preview values, committed on the host as
 a file:// repository that Forge serves to Flux over read-only node SSH
-(DES-HOR-632-01). Inference routes to a hosted, capped OpenAI-compatible API.
+(DES-HOR-632-01). Managed inference routes through the production central
+gateway as an internal, company-funded installation (HOR-661, DES-HOR-661-09).
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ import time
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import central_preview  # noqa: E402
 import e2e_inputs  # noqa: E402
 import preview_inference  # noqa: E402
 
@@ -106,9 +108,10 @@ def package_charts(version: str, workdir: pathlib.Path) -> dict[str, pathlib.Pat
     return archives
 
 
-def preview_values(images: dict[str, dict[str, str]], model: str, hosts: dict[str, str], admin_email: str) -> str:
-    """The CI-owned preview overlay values (C9): build-once images, the hosted
-    model, and the always-on sign-in surface (HOR-582).
+def preview_values(images: dict[str, dict[str, str]], hosts: dict[str, str], admin_email: str,
+                   central: tuple[str, str] | None) -> str:
+    """The CI-owned preview overlay values (C9): build-once images, managed
+    inference through central (HOR-661), and the always-on sign-in surface (HOR-582).
 
     Block YAML, because it is appended to the overlay's own values.client.yaml;
     scalars are JSON-quoted so no value can break the document.
@@ -135,6 +138,11 @@ def preview_values(images: dict[str, dict[str, str]], model: str, hosts: dict[st
             "workload": {"enabled": True},
         },
     }
+    if central:
+        # DES-HOR-661-09: the preview is an internal installation of the
+        # production central gateway; its client Secret is issued per deploy.
+        values["inference-gateway"]["central"] = {"enabled": True, "url": central[0],
+                                                  "tlsSecretName": central_preview.SECRET_NAME, "caBundle": central[1]}
     return "# CI-owned preview values (HOR-590 C6/C9); appended to the fixture overlay's values.client.yaml.\n" + block_yaml(values)
 
 
@@ -233,26 +241,37 @@ def import_images(host: Host, images: dict[str, dict[str, str]], source_sha: str
             raise PreviewError(f"{name} imported as {observed}, expected {inputs[f'{prefix}_IMAGE_CONFIG_DIGEST']}")
 
 
-def hosted_model(host: Host, base_url: str, model_id: str, api_key: str) -> None:
-    """Route inference to the capped hosted API: an external ModelBackend and its credential (C6)."""
-    manifest = f"""apiVersion: v1
-kind: Secret
-metadata: {{name: preview-hosted-llm, namespace: {NAMESPACE}}}
-type: Opaque
-stringData: {{key: {json.dumps(api_key)}}}
----
-apiVersion: platform.iterabase.com/v1alpha1
+def central_identity(host: Host, central: central_preview.Central, name: str) -> None:
+    """Register the preview at central (idempotent) and install a freshly issued
+    client certificate before the platform applies (DES-HOR-661-09). The
+    manifest carries the private key: it is piped to kubectl, never printed."""
+    central.register(name)
+    host.ssh(f"sudo k3s kubectl create namespace {NAMESPACE} --dry-run=client -o yaml | sudo k3s kubectl apply -f - >/dev/null")
+    host.ssh("sudo k3s kubectl apply -f - >/dev/null", stdin=central.secret_manifest(name, NAMESPACE))
+    # An existing gateway reloads its client identity on restart.
+    host.ssh(f"if sudo k3s kubectl get deploy -n {NAMESPACE} {RELEASE}-gateway >/dev/null 2>&1; then "
+             f"sudo k3s kubectl rollout restart -n {NAMESPACE} deploy/{RELEASE}-gateway >/dev/null; fi")
+
+
+def managed_model(host: Host, model_id: str) -> None:
+    """Route the preview model to central as a managed backend (DES-HOR-661-03)."""
+    manifest = f"""apiVersion: platform.iterabase.com/v1alpha1
 kind: ModelBackend
 metadata: {{name: preview-hosted, namespace: {NAMESPACE}}}
 spec:
-  kind: external
-  external: {{baseURL: {json.dumps(base_url)}, authRef: preview-hosted-llm}}
+  kind: managed
+  managed: {{model: {json.dumps(model_id)}}}
 ---
 apiVersion: platform.iterabase.com/v1alpha1
 kind: Model
 metadata: {{name: preview-hosted, namespace: {NAMESPACE}}}
 spec: {{modelID: {json.dumps(model_id)}, displayName: Preview hosted model, backendRef: preview-hosted}}
 """
+    # A host deployed before HOR-661 holds a keyed external backend: replace it
+    # rather than patch its kind, and drop its provider key.
+    host.ssh(f"if [ \"$(sudo k3s kubectl get modelbackend -n {NAMESPACE} preview-hosted -o jsonpath='{{.spec.kind}}' "
+             f"2>/dev/null)\" = external ]; then sudo k3s kubectl delete modelbackend -n {NAMESPACE} preview-hosted >/dev/null; fi; "
+             f"sudo k3s kubectl delete secret -n {NAMESPACE} preview-hosted-llm --ignore-not-found >/dev/null")
     host.ssh("sudo k3s kubectl apply -f -", stdin=manifest)
 
 
@@ -378,6 +397,11 @@ def cluster_evidence(host: Host) -> str:
 
 def deploy(args: argparse.Namespace) -> dict[str, str]:
     workdir = pathlib.Path(tempfile.mkdtemp(prefix="iterabase-preview-"))
+    central = central_preview.settings() if central_preview.configured() else None
+    if not central:
+        print("::warning::central is not configured (CENTRAL_URL unset): this preview has no managed model, "
+              "so model steps pause until central is applied (docs/runbooks/central-gateway.md)", file=sys.stderr)
+    central_preview.require_name(args.name)
     images = json.loads(args.images)
     host = Host(args.address, args.host_key, args.ssh_key, workdir)
     base = e2e_inputs.chart_version("iterabase-platform")
@@ -389,7 +413,7 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if key != "FORGE_OVERLAY_TOKEN"}
     env["FORGE_HOME"] = str(workdir / "forge-home")
     hosts = tailnet_hosts(host, args.name)
-    host.ssh_bytes(overlay_script(), overlay_archive(preview_values(images, args.model_id, hosts, args.admin_email)))
+    host.ssh_bytes(overlay_script(), overlay_archive(preview_values(images, hosts, args.admin_email, central)))
     host.ssh(f"sudo install -d -o ubuntu {HOST_CHARTS}")
     for chart, archive in archives.items():
         host.copy(archive, f"/tmp/{archive.name}")
@@ -401,17 +425,22 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
         subprocess.run([str(forge), "apply", "--config", str(config), "--skip-chart", "--skip-gpu", "--skip-overlay",
                         "--skip-secrets", "--skip-flux"], env=env, check=True)
     import_images(host, images, args.source_sha, workdir)
+    if central:
+        central_identity(host, central_preview.Central.from_env(workdir, forge=[str(forge)]), args.name)
     try:
         subprocess.run([str(forge), "apply", "--config", str(config)], env=env, check=True)
     except subprocess.CalledProcessError:
         print(cluster_evidence(host), file=sys.stderr)
         raise
-    hosted_model(host, args.llm_base_url, args.model_id, os.environ["PREVIEW_LLM_API_KEY"])
+    if central:
+        managed_model(host, args.model_id)
     if args.admin_mode == "seeded":
         seed_admin(host, args.admin_email, os.environ.get("PREVIEW_ADMIN_PASSWORD", ""))
-    inference_smoke(host, hosts, args.model_id)
+    if central:
+        inference_smoke(host, hosts, args.model_id)
     return {**serve_on_tailnet(host, args.name, hosts), "chart_version": version,
-            "admin_email": args.admin_email, "admin_mode": args.admin_mode}
+            "admin_email": args.admin_email, "admin_mode": args.admin_mode,
+            "managed_inference": "via central" if central else "none (central not applied)"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -425,7 +454,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-device", required=True)
     parser.add_argument("--created", required=True, choices=("true", "false"))
     parser.add_argument("--ssh-key", required=True)
-    parser.add_argument("--llm-base-url", required=True)
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--admin-email", required=True)
     parser.add_argument("--admin-mode", choices=("seeded", "onboarding"), default="seeded",
@@ -433,7 +461,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result = deploy(args)
-    except (PreviewError, subprocess.CalledProcessError, e2e_inputs.InputsError) as error:
+    except (PreviewError, central_preview.CentralError, subprocess.CalledProcessError, e2e_inputs.InputsError) as error:
         print(f"preview: {error}\n{getattr(error, 'stderr', '') or ''}", file=sys.stderr)
         return 1
     if os.environ.get("GITHUB_OUTPUT"):

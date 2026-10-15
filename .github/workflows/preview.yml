@@ -27,6 +27,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: 1.26.5
+          cache-dependency-path: forge/go.sum
+          cache-scope: preview-cleanup
       - uses: ./.github/actions/setup-aws-ci
         with:
           role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
@@ -48,3 +53,12 @@ jobs:
           for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=$ENVIRONMENT&per_page=100" --jq '.[].id'); do
             gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=inactive >/dev/null
           done
+      # DES-HOR-661-09: the preview's internal installation at production
+      # central is revoked with its host; a never-registered one is fine.
+      - name: Revoke the preview's central installation
+        env:
+          CENTRAL_URL: ${{ vars.CENTRAL_URL }}
+          CENTRAL_CA_BUNDLE: ${{ vars.CENTRAL_CA_BUNDLE }}
+        run: |
+          python3 .github/scripts/central_preview.py revoke \
+            --installations 'pr-${{ github.event.pull_request.number }}' --reason 'pull request closed'

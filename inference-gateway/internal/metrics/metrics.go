@@ -7,7 +7,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
-	"github.com/redis/go-redis/v9"
 )
 
 // Metrics holds all Prometheus collectors for the gateway.
@@ -123,18 +122,6 @@ func (m *Metrics) RegisterDatabasePool(pool *pgxpool.Pool) {
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "inference_gateway_database_pool_connections", Help: "Current pgx pool connections."}, func() float64 { return float64(pool.Stat().TotalConns()) }),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "inference_gateway_database_pool_connections_in_use", Help: "Acquired pgx pool connections."}, func() float64 { return float64(pool.Stat().AcquiredConns()) }),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "inference_gateway_database_pool_max_connections", Help: "Configured maximum pgx pool connections."}, func() float64 { return float64(pool.Stat().MaxConns()) }),
-	)
-}
-
-// RegisterRedisPool exports go-redis in-memory statistics without issuing a command.
-func (m *Metrics) RegisterRedisPool(client *redis.Client) {
-	if client == nil {
-		return
-	}
-	m.Registry.MustRegister(
-		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "inference_gateway_redis_pool_connections", Help: "Current Redis pool connections."}, func() float64 { return float64(client.PoolStats().TotalConns) }),
-		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "inference_gateway_redis_pool_idle_connections", Help: "Idle Redis pool connections."}, func() float64 { return float64(client.PoolStats().IdleConns) }),
-		prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "inference_gateway_redis_pool_timeouts_total", Help: "Redis pool acquisition timeouts."}, func() float64 { return float64(client.PoolStats().Timeouts) }),
 	)
 }
 

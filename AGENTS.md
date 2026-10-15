@@ -16,7 +16,7 @@
 | `forge/` | Host/k3s bootstrap, substrate reconciliation, and Forge-owned E2E | [`forge/AGENTS.md`](forge/AGENTS.md) |
 | `charts/` | Helm packaging and declarative install/upgrade/rollback behavior | [`charts/AGENTS.md`](charts/AGENTS.md) |
 | `testkit/` | Shared deterministic E2E mechanics and compiled scenario catalogue | [`testkit/AGENTS.md`](testkit/AGENTS.md) |
-| `infra/` | Account-level Terraform: the hosted AWS account's shared baseline and its SSM consumer contract | [`infra/AGENTS.md`](infra/AGENTS.md) |
+| `infra/` | Account-level Terraform: the hosted AWS account's shared baseline and its SSM consumer contract, and the central inference gateway stack | [`infra/AGENTS.md`](infra/AGENTS.md) |
 | `docs/` | Monorepo-wide durable repository documentation | This file |
 
 The Go modules remain independently buildable. The root `go.work` is for atomic local development; do not merge component modules or introduce cross-module imports without an approved architectural decision.

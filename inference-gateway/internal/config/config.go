@@ -12,12 +12,12 @@ import (
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database DatabaseConfig `yaml:"database"`
-	Redis    RedisConfig    `yaml:"redis"`
 	Auth     AuthConfig     `yaml:"auth"`
 	Snapshot SnapshotConfig `yaml:"snapshot"`
 	Logging  LoggingConfig  `yaml:"logging"`
 	Workload WorkloadConfig `yaml:"workload"`
 	Metrics  MetricsConfig  `yaml:"metrics"`
+	Central  CentralConfig  `yaml:"central"`
 }
 
 type ServerConfig struct {
@@ -33,9 +33,16 @@ type DatabaseConfig struct {
 	MaxIdleConns int    `yaml:"max_idle_conns"`
 }
 
-type RedisConfig struct {
-	URL    string `yaml:"url"`
-	CAFile string `yaml:"ca_file"` // PEM CA cert to verify rediss:// (env REDIS_TLS_CA_FILE); empty = plaintext
+// CentralConfig routes managed models to the central Iterabase gateway over
+// mTLS (DES-HOR-661-03). Empty URL = central not configured: a managed model
+// then fails closed with upstream_unavailable. The certificate files are
+// re-read when they change, so a renewed installation certificate applies
+// without a restart.
+type CentralConfig struct {
+	URL            string `yaml:"url"`              // e.g. https://central.iterabase.com
+	ClientCertFile string `yaml:"client_cert_file"` // installation certificate (PEM)
+	ClientKeyFile  string `yaml:"client_key_file"`  // installation private key (PEM)
+	CAFile         string `yaml:"ca_file"`          // central CA bundle (PEM)
 }
 
 type AuthConfig struct {
@@ -43,8 +50,8 @@ type AuthConfig struct {
 }
 
 // SnapshotConfig configures the in-memory control-plane snapshot cache
-// (catalog/api keys/capabilities/rate-limits). Redis is used only for the
-// rate-limit counters.
+// (catalog/api keys/capabilities/rate-limits). Rate-limit counters live in
+// the same Postgres (ratelimit.counters, DES-HOR-661-07).
 type SnapshotConfig struct {
 	RefreshInterval    time.Duration `yaml:"refresh_interval"`    // poll fallback (LISTEN/NOTIFY drives prompt updates)
 	ReadinessStaleness time.Duration `yaml:"readiness_staleness"` // /readyz is unhealthy if the snapshot is older than this
@@ -144,12 +151,6 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("DATABASE_URL"); v != "" {
 		cfg.Database.URL = v
 	}
-	if v := os.Getenv("REDIS_URL"); v != "" {
-		cfg.Redis.URL = v
-	}
-	if v := os.Getenv("REDIS_TLS_CA_FILE"); v != "" {
-		cfg.Redis.CAFile = v
-	}
 	if v := os.Getenv("ADMIN_API_KEY"); v != "" {
 		cfg.Auth.AdminKey = v
 	}
@@ -175,6 +176,22 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.Logging.Format = v
 	}
 	applyWorkloadEnvOverrides(cfg)
+	applyCentralEnvOverrides(cfg)
+}
+
+// applyCentralEnvOverrides applies the central-gateway route env overrides
+// (DES-HOR-661-03).
+func applyCentralEnvOverrides(cfg *Config) {
+	for env, field := range map[string]*string{
+		"CENTRAL_URL":              &cfg.Central.URL,
+		"CENTRAL_CLIENT_CERT_FILE": &cfg.Central.ClientCertFile,
+		"CENTRAL_CLIENT_KEY_FILE":  &cfg.Central.ClientKeyFile,
+		"CENTRAL_CA_FILE":          &cfg.Central.CAFile,
+	} {
+		if v := os.Getenv(env); v != "" {
+			*field = v
+		}
+	}
 }
 
 // applyWorkloadEnvOverrides applies the supervisor mTLS listener env overrides
@@ -208,13 +225,13 @@ func validate(cfg *Config) error {
 	if cfg.Database.URL == "" {
 		return fmt.Errorf("database.url (or DATABASE_URL) is required")
 	}
-	if cfg.Redis.URL == "" {
-		return fmt.Errorf("redis.url (or REDIS_URL) is required")
-	}
 	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be between 1 and 65535")
 	}
 	if err := validateMetrics(cfg); err != nil {
+		return err
+	}
+	if err := validateCentral(cfg.Central); err != nil {
 		return err
 	}
 	if cfg.Workload.Enabled {
@@ -227,6 +244,13 @@ func validate(cfg *Config) error {
 		if cfg.Workload.Port == cfg.Server.Port {
 			return fmt.Errorf("workload.port must differ from server.port")
 		}
+	}
+	return nil
+}
+
+func validateCentral(c CentralConfig) error {
+	if c.URL != "" && (c.ClientCertFile == "" || c.ClientKeyFile == "" || c.CAFile == "") {
+		return fmt.Errorf("central.client_cert_file, client_key_file and ca_file are required when central.url is set")
 	}
 	return nil
 }

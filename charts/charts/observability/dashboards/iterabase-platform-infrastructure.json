@@ -79,7 +79,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(up{namespace=~\"$namespace\",job=~\"control-plane|inference-gateway|postgresql|redis|minio\"} == 0)",
+          "expr": "sum(up{namespace=~\"$namespace\",job=~\"control-plane|inference-gateway|postgresql|minio\"} == 0)",
           "legendFormat": "{{component}} {{model}} {{route}} {{result}} {{pod}}",
           "range": false,
           "instant": true
@@ -385,7 +385,7 @@
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(up{job=~\"control-plane|inference-gateway|postgresql|redis|minio|.*dcgm-exporter.*\"}, namespace)",
+          "query": "label_values(up{job=~\"control-plane|inference-gateway|postgresql|minio|.*dcgm-exporter.*\"}, namespace)",
           "refId": "VariableQuery"
         },
         "includeAll": true,

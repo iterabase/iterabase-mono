@@ -24,10 +24,6 @@ Confirm the component is intentionally enabled in the deployed values and listed
 
 Check PostgreSQL pod/volume health, Service endpoints, TLS certificate validity, authentication, and exporter logs. Stop write traffic before destructive recovery. Restore from the accepted backup procedure only with explicit authority.
 
-## IterabaseRedisUnavailable
-
-Check Redis pod, Service, AUTH/TLS Secret, and exporter. Redis is not durable authority; restore connectivity rather than reconstructing product state from Redis.
-
 ## IterabaseControlPlaneAPIHighErrorRate
 
 Use `10 — Control Plane` to identify normalized failing routes. Check API logs, readiness probes, Postgres pool saturation, MinIO, and recent migrations. Preserve idempotency keys and artifact metadata during rollback.
@@ -98,7 +94,7 @@ Inspect harness WAL files/logs and dispatch event persistence/ACK logs. Verify c
 
 ## IterabaseInferenceGatewayHighErrorRate
 
-Break down by listener/model. Check snapshot freshness, model/backend availability, Redis/Postgres pools, backend latency, and gateway logs. Keep API-key and workload authorization paths distinct during diagnosis.
+Break down by listener/model. Check snapshot freshness, model/backend availability, the Postgres pool, backend latency, and gateway logs. Keep API-key and workload authorization paths distinct during diagnosis.
 
 ## IterabaseInferenceSnapshotStale
 
@@ -127,10 +123,6 @@ Identify the component target, then correlate request/reconciliation load, acqui
 ## IterabaseInferenceDatabasePoolSaturated
 
 Inspect API/workload concurrency, snapshot refresh behavior, active queries, and Postgres capacity. Preserve the snapshot freshness gate while remediating.
-
-## IterabaseInferenceRedisPoolTimeouts
-
-Inspect Redis availability/latency, blocked clients, gateway concurrency, and pool sizing. Rate-limit checks currently fail open on infrastructure errors; treat sustained timeouts as degraded protection.
 
 ## IterabaseCertificateExpiringSoon
 

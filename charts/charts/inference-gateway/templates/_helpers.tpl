@@ -24,19 +24,11 @@
 {{- if .Values.postgresql.passwordSecret -}}{{- .Values.postgresql.passwordSecret -}}{{- else -}}{{- printf "%s-postgresql" .Release.Name -}}{{- end -}}
 {{- end -}}
 
-{{- define "inference-gateway.redisSecret" -}}
-{{- if .Values.redis.passwordSecret -}}{{- .Values.redis.passwordSecret -}}{{- else -}}{{- printf "%s-redis" .Release.Name -}}{{- end -}}
-{{- end -}}
-
 {{- /* The internal CA root Secret name. Local override -> global -> the
      <release>-internal-ca-root convention (what cert-issuers creates), so the
      overlay never hardcodes the release name. */ -}}
 {{- define "inference-gateway.tlsCASecretName" -}}
 {{- .Values.tls.caSecretName | default (dig "internalTLS" "caSecretName" "" (.Values.global | default (dict))) | default (printf "%s-internal-ca-root" .Release.Name) -}}
-{{- end -}}
-
-{{- define "inference-gateway.redisHost" -}}
-{{- if .Values.redis.host -}}{{- .Values.redis.host -}}{{- else -}}{{- printf "%s-redis" .Release.Name -}}{{- end -}}
 {{- end -}}
 
 {{- define "inference-gateway.databaseURL" -}}
@@ -45,12 +37,9 @@
 postgres://{{ .Values.postgresql.username }}:$(PGPASSWORD)@{{ include "inference-gateway.pgHost" . }}:{{ .Values.postgresql.port }}/{{ .Values.postgresql.database }}?sslmode={{ $ssl }}
 {{- end -}}
 
-{{- define "inference-gateway.redisURL" -}}
-{{- if (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) -}}
-rediss://:$(REDIS_PASSWORD)@{{ include "inference-gateway.redisHost" . }}:{{ .Values.redis.port }}/0
-{{- else -}}
-redis://{{ include "inference-gateway.redisHost" . }}:{{ .Values.redis.port }}/0
-{{- end -}}
+{{- /* The central CA bundle ConfigMap (HOR-661). */ -}}
+{{- define "inference-gateway.centralCAConfigMapName" -}}
+{{- printf "%s-gateway-central-ca" .Release.Name -}}
 {{- end -}}
 
 {{- define "inference-gateway.labels" -}}

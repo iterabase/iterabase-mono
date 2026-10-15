@@ -18,6 +18,7 @@ import unittest
 from unittest import mock
 
 from aws_ci import (
+    KIND_TAG,
     ALL_APPROVED_INSTANCE_TYPES,
     APPROVED_INSTANCE_TYPES,
     AUTHORIZED_KEY_DELIMITER,
@@ -776,6 +777,19 @@ class ReaperTests(unittest.TestCase):
         plan = reap_plan([instance], now=NOW, max_age_minutes=180)
         self.assertEqual([item["instance_id"] for item in plan["terminate"]], ["i-ci"])
         self.assertEqual(plan["terminate"][0]["reason"], "max age reached")
+
+    def test_plan_names_the_preview_whose_central_installation_is_revoked(self) -> None:
+        preview = ci_instance()
+        preview["InstanceId"] = "i-preview"
+        preview["Tags"] = preview["Tags"] + [
+            {"Key": DEADLINE_TAG, "Value": "2020-01-01T00:00:00Z"},
+            {"Key": KIND_TAG, "Value": "preview"},
+            {"Key": SCENARIO_TAG, "Value": "pr-42"},
+        ]
+        fixture = ci_instance()
+        fixture["Tags"] = fixture["Tags"] + [{"Key": DEADLINE_TAG, "Value": "2020-01-01T00:00:00Z"}]
+        plan = reap_plan([preview, fixture], now=NOW, max_age_minutes=180)
+        self.assertEqual([item.get("preview") for item in plan["terminate"]], ["pr-42", None])
 
     def test_plan_reports_instead_of_guessing_on_invalid_input(self) -> None:
         invalid = ci_instance()

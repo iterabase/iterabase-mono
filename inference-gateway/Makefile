@@ -12,6 +12,7 @@ LDFLAGS := -X github.com/nunocgoncalves/iterabase-mono/inference-gateway/interna
 
 build:
 	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/gateway
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/central ./cmd/central
 
 test:
 	$(GO) test -v -race -count=1 ./...

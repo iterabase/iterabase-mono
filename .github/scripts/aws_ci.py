@@ -841,6 +841,9 @@ def reap_plan(
             "name": tagged_value(instance.get("Tags"), NAME_TAG) or "-",
             "deadline": format_timestamp(deadline),
         }
+        # A preview's central installation is revoked with its host (HOR-661).
+        if tagged_value(instance.get("Tags"), KIND_TAG) == "preview":
+            decision["preview"] = tagged_value(instance.get("Tags"), SCENARIO_TAG) or ""
         if now >= deadline:
             decision["reason"] = (
                 f"{DEADLINE_TAG} passed" if tagged_value(instance.get("Tags"), DEADLINE_TAG) else "max age reached"
@@ -2546,6 +2549,7 @@ def command_reap(args: argparse.Namespace) -> int:
         raise AwsCiError("max age minutes must not be negative")
     now = dt.datetime.now(dt.timezone.utc)
     terminated: list[str] = []
+    reaped_previews: list[str] = []
     pending: list[dict[str, str]] = []
     foreign: list[dict[str, str]] = []
     errors: list[str] = []
@@ -2593,6 +2597,8 @@ def command_reap(args: argparse.Namespace) -> int:
                 continue
             aws(["ec2", "terminate-instances", "--region", region, "--instance-ids", decision["instance_id"]])
             terminated.append(f"{decision['instance_id']} ({region})")
+            if decision.get("preview"):
+                reaped_previews.append(decision["preview"])
     if args.control_instance_id and not args.dry_run and control_evidence == "-":
         raise AwsCiError(f"control instance {args.control_instance_id} was not found in any CI region")
 
@@ -2614,7 +2620,8 @@ def command_reap(args: argparse.Namespace) -> int:
         lines += ["", "| foreign instance | state | name |", "| --- | --- | --- |"]
         lines += [f"| `{item['instance_id']}` | {item['state']} | {item['name']} |" for item in foreign]
     write_summary("\n".join(lines) + "\n")
-    write_outputs({"terminated": str(len(terminated)), "foreign": str(len(foreign))})
+    write_outputs({"terminated": str(len(terminated)), "foreign": str(len(foreign)),
+                   "reaped_previews": ",".join(sorted(set(reaped_previews)))})
     if errors:
         raise AwsCiError("reaper could not evaluate: " + "; ".join(errors))
     return 0

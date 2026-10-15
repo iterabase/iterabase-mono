@@ -8,6 +8,7 @@ package workload
 const FixtureSchema = `
 CREATE SCHEMA IF NOT EXISTS toolgateway;
 CREATE SCHEMA IF NOT EXISTS runtime;
+CREATE SCHEMA IF NOT EXISTS work;
 
 CREATE TABLE toolgateway.pools (
     id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -31,7 +32,14 @@ CREATE TABLE runtime.workflow_runs (
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now(),
     started_at        timestamptz,
-    finished_at       timestamptz
+    finished_at       timestamptz,
+    authorization_source text CHECK (authorization_source IN ('browser', 'api', 'chat'))
+);
+
+-- One attempt is one workflow run and shares its UUID (control-plane 000016).
+CREATE TABLE work.attempts (
+    id           uuid PRIMARY KEY REFERENCES runtime.workflow_runs(id),
+    work_item_id uuid NOT NULL
 );
 
 CREATE TABLE runtime.turns (

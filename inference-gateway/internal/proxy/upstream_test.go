@@ -490,3 +490,83 @@ func TestImagePassThrough(t *testing.T) {
 		}
 	}
 }
+
+// A managed model with no central route configured fails closed and
+// retryably; nothing is sent anywhere (DES-HOR-661-03).
+func TestManaged_CentralUnconfiguredFailsClosed(t *testing.T) {
+	called := false
+	f := newUpstreamFixture(t, "", nil, func(w http.ResponseWriter, r *http.Request) { called = true })
+	entry := f.h.cache.(*fakeReader).catalog[testAlias]
+	entry.BackendKind = backendKindManaged
+	entry.BackendModelID = "central-model"
+	f.h.cache.(*fakeReader).catalog[testAlias] = entry
+
+	for _, stream := range []bool{false, true} {
+		rec := f.do(t, chatBody(stream))
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		assert.Equal(t, codeUpstreamUnavailable, decodeError(t, rec.Body.Bytes()).Error.Code)
+		assert.NotEmpty(t, rec.Header().Get("Retry-After"))
+	}
+	assert.False(t, called)
+}
+
+// A managed model goes to central's chat endpoint under its central name,
+// with attribution and without any bearer.
+func TestManaged_RoutesToCentralWithAttribution(t *testing.T) {
+	var got *http.Request
+	var gotModel string
+	central := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Clone(context.Background())
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotModel = body.Model
+		completion(w, r)
+	}))
+	t.Cleanup(central.Close)
+	f := newUpstreamFixture(t, "", nil, completion)
+	entry := f.h.cache.(*fakeReader).catalog[testAlias]
+	entry.BackendKind, entry.BackendModelID, entry.BackendURL = backendKindManaged, "central-model", ""
+	f.h.cache.(*fakeReader).catalog[testAlias] = entry
+	f.h.WithCentral(&Central{URL: central.URL + "/", Client: central.Client()})
+
+	rec := f.do(t, chatBody(false))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.NotNil(t, got)
+	assert.Equal(t, "/v1/chat/completions", got.URL.Path)
+	assert.Equal(t, "central-model", gotModel, "central receives its own model name")
+	assert.Empty(t, got.Header.Get("Authorization"))
+	assert.Equal(t, "identity-1", got.Header.Get("X-Iterabase-Identity-Id"))
+	assert.Equal(t, "api", got.Header.Get("X-Iterabase-Channel"))
+}
+
+// A failed Settle withholds a completed response (DES-HOR-661-08).
+func TestForward_SettleErrorWithholdsResponse(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(completion))
+	t.Cleanup(backend.Close)
+	fw := NewForwarder(nil, slog.Default())
+	target := &Target{URL: backend.URL + "/v1/chat/completions", ResponseModel: "m", MetricsModel: "m"}
+	failing := Hooks{Settle: func(context.Context, Outcome) error { return fmt.Errorf("database down") }}
+
+	for _, stream := range []bool{false, true} {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		rec := httptest.NewRecorder()
+		fw.Forward(rec, req, []byte(chatBody(stream)), stream, target, failing)
+		if stream {
+			assert.Contains(t, rec.Body.String(), `"code":"upstream_unavailable"`)
+			assert.NotContains(t, rec.Body.String(), "[DONE]")
+		} else {
+			assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			assert.NotContains(t, rec.Body.String(), "choices")
+		}
+	}
+
+	var outcome Outcome
+	rec := httptest.NewRecorder()
+	fw.Forward(rec, httptest.NewRequest(http.MethodPost, "/", nil), []byte(chatBody(true)), true, target,
+		Hooks{Settle: func(_ context.Context, o Outcome) error { outcome = o; return nil }})
+	assert.Equal(t, DispositionCompleted, outcome.Disposition)
+	require.NotNil(t, outcome.Usage)
+	assert.Equal(t, Usage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4}, *outcome.Usage)
+}

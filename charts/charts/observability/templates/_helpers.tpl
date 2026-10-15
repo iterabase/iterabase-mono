@@ -20,7 +20,7 @@ Whether internal TLS (global.internalTLS.enabled) is on. The observability
 chart reads this to render stack-component leaf Certificates and to switch the
 Grafana datasource URLs to HTTPS (see stack-internal-tls.yaml + the datasource
 templates). Mirrors the (or tls.enabled (dig internalTLS...)) pattern used by the
-postgresql/redis/control-plane charts.
+postgresql/control-plane charts.
 */}}
 {{/*
 Whether internal TLS (global.internalTLS.enabled) is on. Use dig directly in

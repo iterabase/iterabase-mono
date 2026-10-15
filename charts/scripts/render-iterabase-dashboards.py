@@ -9,12 +9,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "charts" / "observability" / "dashboards"
 DS = {"type": "prometheus", "uid": "prometheus"}
-NAMESPACE_JOBS = "control-plane|inference-gateway|postgresql|redis|minio|.*dcgm-exporter.*"
+NAMESPACE_JOBS = "control-plane|inference-gateway|postgresql|minio|.*dcgm-exporter.*"
 
 DASHBOARDS = [
     ("iterabase-platform-overview", "00 — Platform Overview", [
-        ("Healthy targets", 'sum(up{namespace=~"$namespace",job=~"control-plane|inference-gateway|postgresql|redis|minio"})', "short", "stat"),
-        ("Targets down", 'sum(up{namespace=~"$namespace",job=~"control-plane|inference-gateway|postgresql|redis|minio"} == 0)', "short", "stat"),
+        ("Healthy targets", 'sum(up{namespace=~"$namespace",job=~"control-plane|inference-gateway|postgresql|minio"})', "short", "stat"),
+        ("Targets down", 'sum(up{namespace=~"$namespace",job=~"control-plane|inference-gateway|postgresql|minio"} == 0)', "short", "stat"),
         ("Platform request rate", 'sum(rate(control_plane_http_requests_total{namespace=~"$namespace"}[$__rate_interval])) + sum(rate(gateway_requests_total{namespace=~"$namespace"}[$__rate_interval]))', "reqps", "timeseries"),
         ("Server error rate", 'sum(rate(control_plane_http_requests_total{namespace=~"$namespace",status_class="5xx"}[$__rate_interval])) + sum(rate(gateway_requests_total{namespace=~"$namespace",status_class="5xx"}[$__rate_interval]))', "reqps", "timeseries"),
         ("Pending execution", 'sum(control_plane_dispatch_pending_work{namespace=~"$namespace"})', "short", "stat"),
@@ -60,7 +60,6 @@ DASHBOARDS = [
     ]),
     ("iterabase-data-storage", "50 — Data and Storage", [
         ("PostgreSQL available", 'min(pg_up{namespace=~"$namespace"})', "short", "stat"),
-        ("Redis available", 'min(redis_up{namespace=~"$namespace"})', "short", "stat"),
         ("MinIO targets available", 'sum(up{namespace=~"$namespace",job="minio"})', "short", "stat"),
         ("AgentPool PVC free bytes", 'min by (pool) (control_plane_dispatch_workspace_free_bytes{namespace=~"$namespace"})', "bytes", "timeseries"),
         ("AgentPool PVC free ratio", 'min by (pool) (control_plane_dispatch_workspace_free_ratio{namespace=~"$namespace"})', "percentunit", "timeseries"),
@@ -70,12 +69,10 @@ DASHBOARDS = [
         ("iterabase-data free ratio", 'min(lvm_vg_free_size_bytes{namespace=~"$namespace",name="iterabase-data"} / lvm_vg_total_size_bytes{namespace=~"$namespace",name="iterabase-data"})', "percentunit", "stat"),
         ("Persistent volume utilization", 'max by (persistentvolumeclaim) (1 - kubelet_volume_stats_available_bytes{namespace=~"$namespace"} / kubelet_volume_stats_capacity_bytes{namespace=~"$namespace"})', "percentunit", "timeseries"),
         ("PostgreSQL connections", 'sum(pg_stat_activity_count{namespace=~"$namespace"})', "short", "timeseries"),
-        ("Redis memory", 'redis_memory_used_bytes{namespace=~"$namespace"}', "bytes", "timeseries"),
         ("Inference database pool utilization", 'inference_gateway_database_pool_connections{namespace=~"$namespace"} / clamp_min(inference_gateway_database_pool_max_connections{namespace=~"$namespace"}, 1)', "percentunit", "timeseries"),
-        ("Redis pool timeouts", 'sum(rate(inference_gateway_redis_pool_timeouts_total{namespace=~"$namespace"}[$__rate_interval]))', "ops", "timeseries"),
     ]),
     ("iterabase-platform-infrastructure", "60 — Platform Infrastructure", [
-        ("Platform targets down", 'sum(up{namespace=~"$namespace",job=~"control-plane|inference-gateway|postgresql|redis|minio"} == 0)', "short", "stat"),
+        ("Platform targets down", 'sum(up{namespace=~"$namespace",job=~"control-plane|inference-gateway|postgresql|minio"} == 0)', "short", "stat"),
         ("Pod restarts", 'sum by (pod,container) (increase(kube_pod_container_status_restarts_total{namespace=~"$namespace"}[$__rate_interval]))', "short", "timeseries"),
         ("Certificate minimum lifetime", 'min(certmanager_certificate_expiration_timestamp_seconds{namespace=~"$namespace"} - time())', "s", "stat"),
         ("Namespace CPU usage", 'sum(rate(container_cpu_usage_seconds_total{namespace=~"$namespace",container!=""}[$__rate_interval]))', "cores", "timeseries"),
@@ -91,9 +88,6 @@ AUXILIARY_DASHBOARDS = [
         ("PostgreSQL availability", 'min(pg_up{namespace=~"$namespace"})', "short", "stat"),
         ("PostgreSQL transaction rate", 'sum by (datname) (rate(pg_stat_database_xact_commit{namespace=~"$namespace"}[$__rate_interval]))', "ops", "timeseries"),
         ("PostgreSQL deadlocks", 'sum by (datname) (increase(pg_stat_database_deadlocks{namespace=~"$namespace"}[$__rate_interval]))', "short", "timeseries"),
-        ("Redis availability", 'min(redis_up{namespace=~"$namespace"})', "short", "stat"),
-        ("Redis connected clients", 'redis_connected_clients{namespace=~"$namespace"}', "short", "timeseries"),
-        ("Redis evictions", 'sum(rate(redis_evicted_keys_total{namespace=~"$namespace"}[$__rate_interval]))', "ops", "timeseries"),
         ("MinIO scrape availability", 'sum(up{namespace=~"$namespace",component="minio"})', "short", "stat"),
         ("Persistent volume utilization", 'max by (persistentvolumeclaim) (1 - kubelet_volume_stats_available_bytes{namespace=~"$namespace"} / kubelet_volume_stats_capacity_bytes{namespace=~"$namespace"})', "percentunit", "timeseries"),
         ("Ingress request rate", 'sum(rate(nginx_ingress_controller_requests{namespace=~"$namespace"}[$__rate_interval]))', "reqps", "timeseries"),

@@ -327,16 +327,35 @@ spec:
                 description: |-
                   kind is the backend kind. vLLM and SGLang deploy an internal GPU
                   workload; external records a base URL (reachability validation is
-                  deferred to HOR-307).
+                  deferred to HOR-307); managed routes to the central Iterabase inference
+                  gateway over the installation's mTLS identity (HOR-661, DES-HOR-661-03).
                 enum:
                 - vLLM
                 - SGLang
                 - external
+                - managed
                 type: string
+              managed:
+                description: |-
+                  managed configures a model served by the central Iterabase inference
+                  gateway. Required when kind is managed. The central URL and the
+                  installation's client certificate are installation-wide inference-gateway
+                  settings, never per backend.
+                properties:
+                  model:
+                    description: |-
+                      model is the central model name, as listed by the central gateway's
+                      price book (for example deepseek-v4-flash).
+                    minLength: 1
+                    type: string
+                required:
+                - model
+                type: object
               model:
                 description: |-
                   model is the HuggingFace model id the backend loads (vLLM/SGLang
-                  `--model`). Required for vLLM/SGLang; ignored for external.
+                  `--model`). Required for vLLM/SGLang; ignored for external and managed
+                  (managed names its central model in spec.managed.model).
                 type: string
               nodeSelector:
                 additionalProperties:
@@ -2794,6 +2813,12 @@ spec:
             required:
             - kind
             type: object
+            x-kubernetes-validations:
+            - message: spec.managed is required for kind managed and must not be set
+                for other kinds
+              rule: 'self.kind == ''managed'' ? has(self.managed) : !has(self.managed)'
+            - message: spec.external must not be set for kind managed
+              rule: self.kind != 'managed' || !has(self.external)
           status:
             description: ModelBackendStatus is the observed state reported by the
               reconciler.

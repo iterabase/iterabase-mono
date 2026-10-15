@@ -2,7 +2,7 @@
 #
 # Copy this file to gateway.yaml or gateway.local.yaml and adjust values.
 # Environment variables in ${...} syntax are expanded at load time.
-# Environment variable overrides (DATABASE_URL, REDIS_URL, etc.) take precedence.
+# Environment variable overrides (DATABASE_URL, CENTRAL_URL, etc.) take precedence.
 
 server:
   port: 8080
@@ -21,17 +21,14 @@ database:
   max_open_conns: 25
   max_idle_conns: 10
 
-redis:
-  url: "${REDIS_URL}"            # redis://host:6379/0 (plaintext) or rediss://host:6379/0 (TLS)
-  ca_file: "${REDIS_TLS_CA_FILE}"  # PEM CA cert to verify rediss:// (internal CA); empty for plaintext
-
 auth:
   admin_key: "${ADMIN_API_KEY}"
 
 # The snapshot cache is the gateway's in-memory view of control-plane state
 # (catalog, workload capabilities, rate-limit limits). Refreshed on start, on
 # LISTEN/NOTIFY (catalog_changed/permissions_changed), and on
-# the poll fallback. Redis is used only for the rate-limit counters.
+# the poll fallback. Rate-limit counters live in the same Postgres
+# (ratelimit.counters, DES-HOR-661-07).
 snapshot:
   refresh_interval: 30s     # Poll fallback (LISTEN/NOTIFY drives prompt updates)
   readiness_staleness: 60s  # /readyz is unhealthy if the snapshot is older than this
@@ -52,6 +49,15 @@ workload:
   read_timeout:  30s
   write_timeout: 300s       # Long timeout for streaming responses
   idle_timeout:  120s
+
+# Route to the central Iterabase gateway for `managed` models (HOR-661,
+# DES-HOR-661-03). Leave url empty when the installation has no managed
+# inference; a managed model then fails closed with upstream_unavailable.
+central:
+  url: "${CENTRAL_URL}"                            # https://central.iterabase.com
+  client_cert_file: "${CENTRAL_CLIENT_CERT_FILE}"  # installation certificate (PEM)
+  client_key_file:  "${CENTRAL_CLIENT_KEY_FILE}"   # installation key (PEM)
+  ca_file:          "${CENTRAL_CA_FILE}"           # central CA bundle (PEM)
 
 logging:
   level: info               # debug, info, warn, error

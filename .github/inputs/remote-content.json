@@ -142,10 +142,6 @@
       "digest": "sha256:60d3b00ac80b4ae77f94dae2f943685605585ad9e92fdccda3154d009ae317cc"
     },
     {
-      "reference": "oliver006/redis_exporter:v1.67.0",
-      "digest": "sha256:120f7ec77293459ccfdad66bb1db75ab72e8bfeab99f58b1cc2564cadcd7a9e7"
-    },
-    {
       "reference": "pgvector/pgvector:pg16",
       "digest": "sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b"
     },
@@ -216,10 +212,6 @@
     {
       "reference": "quay.io/prometheuscommunity/postgres-exporter:v0.15.0",
       "digest": "sha256:386b12d19eab2a37d7cd8ca8b4c7491cc7a830d9581f49af6c98a393da9605e6"
-    },
-    {
-      "reference": "redis:7-alpine",
-      "digest": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf"
     },
     {
       "reference": "testcontainers/ryuk:0.14.0",

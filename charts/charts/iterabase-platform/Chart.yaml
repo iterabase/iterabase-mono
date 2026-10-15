@@ -1,14 +1,10 @@
 apiVersion: v2
 name: iterabase-platform
-description: Iterabase platform umbrella chart — inference-gateway + control-plane + Postgres/Redis/MinIO + ingress-nginx + external-dns + hosted AWS load balancing + observability.
+description: Iterabase platform umbrella chart — inference-gateway + control-plane + Postgres/MinIO + ingress-nginx + external-dns + hosted AWS load balancing + observability.
 type: application
 version: 0.5.0
 appVersion: "0.5.0"
 dependencies:
-  - name: redis
-    version: 0.2.5
-    repository: file://../redis
-    condition: redis.enabled
   - name: minio
     version: 0.2.8
     repository: file://../minio

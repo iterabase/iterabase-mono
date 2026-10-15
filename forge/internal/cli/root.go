@@ -29,6 +29,7 @@ appliances.`,
 		newKubeconfigCmd(),
 		newStatusCmd(),
 		newVersionCmd(),
+		newCentralCmd(),
 	)
 
 	return root

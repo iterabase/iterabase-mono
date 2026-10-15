@@ -1,0 +1,45 @@
+# Central gateway configuration (docs/architecture/v2-central-inference-gateway.md).
+# Committed and reviewed; its SHA-256 is the price_version stamped on every usage
+# record (DES-HOR-661-04). Terraform fills only public_host and the provider
+# base_url at apply (templatefile).
+# Changing a price, tier or limit = PR + founder apply (DES-HOR-661-01).
+public_host: ${public_host}
+
+models:
+  # PROVISIONAL: workbook Inference sheet (tx_in/tx_cached/tx_out, "historical"
+  # USD per 1M tokens). Replace with TensorX's confirmed price list and billing
+  # currency before the first chargeable customer (V2 Accounting gate).
+  deepseek-v4-flash:
+    base_url: ${provider_base_url}
+    provider_model: deepseek-v4-flash
+    currency: USD
+    input_per_million: "0.50"
+    cached_input_per_million: "0.13"
+    output_per_million: "1.50"
+    effective_from: "2026-10-14"
+
+# DES-HOR-661-05: tier contents are configuration, not code constants. A trial
+# gets starter.monthly_credits x trial days / trial_days_basis.
+tiers:
+  starter:
+    workflow_limit: 2
+    monthly_credits: 5000
+  growth:
+    workflow_limit: 6
+    monthly_credits: 20000
+  scale:
+    workflow_limit: 15
+    monthly_credits: 60000
+trial:
+  tier: starter
+  days_basis: 30
+
+# DES-HOR-661-07: one-minute windows in central Postgres. PROVISIONAL values,
+# to be set from TensorX's account quota once confirmed.
+limits:
+  provider:
+    rpm: 600
+    tpm: 2000000
+  installation:
+    rpm: 120
+    tpm: 400000

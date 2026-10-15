@@ -1,53 +1,37 @@
 package proxy
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
-
-	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/ratelimit"
-	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/snapshot"
 )
 
-const tpmBatchInterval = 500 * time.Millisecond
-
-// handleStreaming proxies a streaming SSE response from the backend to the
-// client, flushing each chunk immediately. It injects continuous_usage_stats
-// for live per-identity TPM tracking and rewrites model names. Also records
-// TTFT, ITL, active_streams, backend_request_duration, and token metrics.
+// forwardStreaming proxies a streaming SSE response from the backend to the
+// client, flushing each chunk immediately. The caller injected stream options
+// so the provider reports usage. Model names are rewritten, and TTFT, ITL,
+// active_streams, backend_request_duration and token metrics are recorded.
 //
 //nolint:gocyclo // SSE streaming orchestration; extraction tracked separately.
-func (h *Handler) handleStreaming(
-	w http.ResponseWriter,
-	r *http.Request,
-	body []byte,
-	entry *snapshot.CatalogEntry,
-	identityID string,
-) {
-	body = injectStreamOptions(body)
-
-	proxyReq, ue := h.newUpstreamRequest(r.Context(), entry, body)
+func (f *Forwarder) forwardStreaming(w http.ResponseWriter, r *http.Request, body []byte, t *Target, hooks Hooks) {
+	proxyReq, ue := f.newRequest(r.Context(), t, body)
 	if ue != nil {
-		h.writeUpstreamError(w, entry, 0, ue, nil)
+		f.WriteUpstreamError(w, t, 0, ue, nil)
 		return
 	}
 
 	backendStart := time.Now()
-	resp, err := h.client.Do(proxyReq)
+	resp, err := f.client(t).Do(proxyReq)
 	if err != nil {
-		if ue := transportError(r.Context()); ue != nil {
-			h.writeUpstreamError(w, entry, 0, ue, err)
-		}
+		f.failRoundTrip(w, r, t, hooks, 0, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	if h.metrics != nil {
-		h.metrics.BackendRequestDuration.WithLabelValues(entry.ModelID, entry.BackendRef).
+	if f.metrics != nil {
+		f.metrics.BackendRequestDuration.WithLabelValues(t.MetricsModel, t.BackendRef).
 			Observe(time.Since(backendStart).Seconds())
 	}
 
@@ -55,12 +39,14 @@ func (h *Handler) handleStreaming(
 	// mapping as non-streaming (DES-HOR-597-02); any other non-200 is a client
 	// error forwarded as-is (not SSE).
 	if ue := classifyUpstreamStatus(resp.StatusCode, resp.Header); ue != nil {
-		h.writeUpstreamError(w, entry, resp.StatusCode, ue, nil)
+		_ = f.settle(r, hooks, Outcome{Disposition: DispositionFailed, ErrorCode: ue.code, UpstreamStatus: resp.StatusCode})
+		f.WriteUpstreamError(w, t, resp.StatusCode, ue, nil)
 		return
 	}
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		respBody = rewriteModelInResponse(respBody, entry.ModelID)
+		respBody = rewriteModelInResponse(respBody, t.ResponseModel)
+		_ = f.settle(r, hooks, Outcome{Disposition: DispositionFailed, ErrorCode: "upstream_client_error", UpstreamStatus: resp.StatusCode})
 		for k, vv := range resp.Header {
 			for _, v := range vv {
 				w.Header().Add(k, v)
@@ -68,14 +54,21 @@ func (h *Handler) handleStreaming(
 		}
 		w.WriteHeader(resp.StatusCode)
 		if _, err := w.Write(respBody); err != nil {
-			h.logger.Error("failed to write backend error response", "model", entry.ModelID, "error", err)
+			f.logger.Error("failed to write backend error response", "model", t.MetricsModel, "error", err)
 		}
 		return
 	}
 
-	if h.metrics != nil {
-		h.metrics.ActiveStreams.WithLabelValues(entry.ModelID).Inc()
-		defer h.metrics.ActiveStreams.WithLabelValues(entry.ModelID).Dec()
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		_ = f.settle(r, hooks, Outcome{Disposition: DispositionFailed, ErrorCode: "server_error", UpstreamStatus: resp.StatusCode})
+		writeError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
+		return
+	}
+
+	if f.metrics != nil {
+		f.metrics.ActiveStreams.WithLabelValues(t.MetricsModel).Inc()
+		defer f.metrics.ActiveStreams.WithLabelValues(t.MetricsModel).Dec()
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -83,26 +76,12 @@ func (h *Handler) handleStreaming(
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
-		return
-	}
-
-	// TPM batcher keyed by identity_id (shared across the identity's keys + pods).
-	var batcher *ratelimit.TPMBatcher
-	if h.limiter != nil && identityID != "" {
-		batcher = ratelimit.NewTPMBatcher(h.limiter, identityID, tpmBatchInterval)
-		batcher.Start()
-		defer batcher.Stop(context.Background())
-	}
-
 	var (
 		prevTotalTokens int
 		lastChunkAt     time.Time
 		firstContentAt  time.Time
 		gotFirstContent bool
-		finalUsage      *streamUsage
+		finalUsage      *Usage
 		sawDone         bool
 		providerError   bool
 	)
@@ -111,14 +90,8 @@ func (h *Handler) handleStreaming(
 
 	for {
 		ev, ok := events.next()
-		if !ok {
+		if !ok || r.Context().Err() != nil {
 			break
-		}
-
-		select {
-		case <-r.Context().Done():
-			return
-		default:
 		}
 
 		// Comments are keep-alives; their text is the provider's, so only
@@ -131,8 +104,6 @@ func (h *Handler) handleStreaming(
 
 		if ev.isMessage() && ev.data == "[DONE]" {
 			sawDone = true
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			flusher.Flush()
 			break
 		}
 
@@ -144,32 +115,30 @@ func (h *Handler) handleStreaming(
 			break
 		}
 		data := ev.data
-		chunk, rewritten := processStreamChunk(data, entry.ModelID)
+		chunk, rewritten := processStreamChunk(data, t.ResponseModel)
 
 		now := time.Now()
 		if chunk != nil && chunkHasContent(data) {
 			if !gotFirstContent {
 				gotFirstContent = true
 				firstContentAt = now
-				if h.metrics != nil {
-					h.metrics.TimeToFirstToken.WithLabelValues(entry.ModelID).
+				if f.metrics != nil {
+					f.metrics.TimeToFirstToken.WithLabelValues(t.MetricsModel).
 						Observe(now.Sub(backendStart).Seconds())
 				}
-			} else if h.metrics != nil && !lastChunkAt.IsZero() {
-				h.metrics.InterTokenLatency.WithLabelValues(entry.ModelID).
+			} else if f.metrics != nil && !lastChunkAt.IsZero() {
+				f.metrics.InterTokenLatency.WithLabelValues(t.MetricsModel).
 					Observe(now.Sub(lastChunkAt).Seconds())
 			}
 			lastChunkAt = now
 		}
 
 		if chunk != nil && chunk.Usage != nil {
-			finalUsage = chunk.Usage
-			if batcher != nil {
-				totalTokens := chunk.Usage.TotalTokens
-				delta := totalTokens - prevTotalTokens
-				if delta > 0 {
-					batcher.Add(delta)
-					prevTotalTokens = totalTokens
+			finalUsage = chunk.Usage.usage()
+			if hooks.OnStreamTokens != nil {
+				if delta := finalUsage.TotalTokens - prevTotalTokens; delta > 0 {
+					hooks.OnStreamTokens(delta)
+					prevTotalTokens = finalUsage.TotalTokens
 				}
 			}
 		}
@@ -178,57 +147,49 @@ func (h *Handler) handleStreaming(
 		flusher.Flush()
 	}
 
-	// The provider failed after the stream started: the status is already
-	// sent, so end with one classified error event and no [DONE].
-	if !sawDone && r.Context().Err() == nil {
+	switch {
+	case r.Context().Err() != nil:
+		// The client went away: not a provider outage, nothing more to write.
+		_ = f.settle(r, hooks, Outcome{Disposition: DispositionCanceled, UpstreamStatus: resp.StatusCode, Usage: finalUsage})
+		return
+	case sawDone:
+		if err := f.settle(r, hooks, Outcome{Disposition: DispositionCompleted, UpstreamStatus: resp.StatusCode, Usage: finalUsage}); err != nil {
+			// Accounting failed: the stream does not complete (DES-HOR-661-08).
+			ue := upstreamUnavailable("")
+			f.recordUpstreamError(t, 0, ue, err)
+			fmt.Fprint(w, streamErrorEvent(ue))
+			flusher.Flush()
+			return
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	default:
+		// The provider failed after the stream started: the status is already
+		// sent, so end with one classified error event and no [DONE].
 		ue := upstreamUnavailable("")
 		cause := events.err()
 		if providerError {
 			cause = errProviderStreamError
 		}
-		h.recordUpstreamError(entry, resp.StatusCode, ue, cause)
+		_ = f.settle(r, hooks, Outcome{Disposition: DispositionFailed, ErrorCode: ue.code, UpstreamStatus: resp.StatusCode, Usage: finalUsage})
+		f.recordUpstreamError(t, resp.StatusCode, ue, cause)
 		fmt.Fprint(w, streamErrorEvent(ue))
 		flusher.Flush()
 	}
 
-	if h.metrics != nil && finalUsage != nil {
-		streamEnd := time.Now()
-		streamDuration := streamEnd.Sub(backendStart).Seconds()
-		promptDuration := streamDuration
-		decodeDuration := streamDuration
+	if finalUsage != nil {
+		streamDuration := time.Since(backendStart).Seconds()
+		promptDuration, decodeDuration := streamDuration, streamDuration
 		if !firstContentAt.IsZero() {
 			promptDuration = firstContentAt.Sub(backendStart).Seconds()
-			decodeDuration = streamEnd.Sub(firstContentAt).Seconds()
+			decodeDuration = time.Since(firstContentAt).Seconds()
 		}
-		if finalUsage.PromptTokens > 0 {
-			h.metrics.PromptTokensTotal.WithLabelValues(entry.ModelID).Add(float64(finalUsage.PromptTokens))
-			h.metrics.TokensPerRequest.WithLabelValues(entry.ModelID, "prompt").Observe(float64(finalUsage.PromptTokens))
-		}
-		if finalUsage.CompletionTokens > 0 {
-			h.metrics.CompletionTokensTotal.WithLabelValues(entry.ModelID).Add(float64(finalUsage.CompletionTokens))
-			h.metrics.TokensPerRequest.WithLabelValues(entry.ModelID, "completion").Observe(float64(finalUsage.CompletionTokens))
-		}
-		if promptDuration > 0 && finalUsage.PromptTokens > 0 {
-			h.metrics.TokensPerSecond.WithLabelValues(entry.ModelID, "prompt").Observe(float64(finalUsage.PromptTokens) / promptDuration)
-		}
-		if decodeDuration > 0 && finalUsage.CompletionTokens > 0 {
-			completionTokensPerSecond := float64(finalUsage.CompletionTokens) / decodeDuration
-			h.metrics.TokensPerSecond.WithLabelValues(entry.ModelID, "completion").Observe(completionTokensPerSecond)
-			h.metrics.CompletionTokensPerSecondByPromptBucket.
-				WithLabelValues(entry.ModelID, promptTokensBucket(finalUsage.PromptTokens)).
-				Observe(completionTokensPerSecond)
-		}
+		f.recordUsageMetrics(t.MetricsModel, finalUsage, promptDuration, decodeDuration)
 	}
 }
 
 type streamChunk struct {
-	Usage *streamUsage `json:"usage,omitempty"`
-}
-
-type streamUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	Usage *wireUsage `json:"usage,omitempty"`
 }
 
 func processStreamChunk(data string, aliasName string) (*streamChunk, string) {
@@ -236,7 +197,7 @@ func processStreamChunk(data string, aliasName string) (*streamChunk, string) {
 	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
 		return nil, data
 	}
-	if _, ok := parsed["model"]; ok {
+	if _, ok := parsed["model"]; ok && aliasName != "" {
 		parsed["model"] = aliasName
 	}
 	rewritten, err := json.Marshal(parsed)
@@ -272,6 +233,8 @@ func chunkHasContent(data string) bool {
 	return false
 }
 
+// injectStreamOptions asks the provider to report usage on the stream, and
+// live usage where it supports it (vLLM continuous_usage_stats).
 func injectStreamOptions(body []byte) []byte {
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {

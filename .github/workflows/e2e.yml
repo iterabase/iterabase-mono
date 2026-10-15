@@ -550,7 +550,10 @@ jobs:
         id: deploy
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PREVIEW_LLM_API_KEY: ${{ secrets.PREVIEW_LLM_API_KEY }}
+          # DES-HOR-661-09: managed inference goes through production central
+          # as this preview's internal installation (no provider key here).
+          CENTRAL_URL: ${{ vars.CENTRAL_URL }}
+          CENTRAL_CA_BUNDLE: ${{ vars.CENTRAL_CA_BUNDLE }}
           # HOR-582: sign-in is always on. Until a mail relay exists (HOR-603),
           # the overlay-named Admin is seeded with this password; a pull
           # request labelled preview-onboarding keeps the real emailed flow.
@@ -563,7 +566,7 @@ jobs:
             --address '${{ steps.host.outputs.address }}' --host-key '${{ steps.host.outputs.host_key }}' \
             --data-device '${{ steps.host.outputs.data_device }}' --created '${{ steps.host.outputs.created }}' \
             --ssh-key "$RUNNER_TEMP/preview_ed25519" \
-            --llm-base-url '${{ vars.PREVIEW_LLM_BASE_URL }}' --model-id '${{ vars.PREVIEW_LLM_MODEL }}' \
+            --model-id '${{ vars.PREVIEW_LLM_MODEL }}' \
             --admin-email '${{ vars.PREVIEW_ADMIN_EMAIL || 'admin@preview.iterabase.test' }}' --admin-mode "$ADMIN_MODE"
       - name: Summary
         run: |
@@ -572,6 +575,7 @@ jobs:
             echo
             echo "- Dashboard and API (tailnet only): ${{ steps.deploy.outputs.url }}"
             echo "- OpenAI-compatible inference (tailnet only): ${{ steps.deploy.outputs.inference_url }}"
+            echo "- Managed inference: ${{ steps.deploy.outputs.managed_inference }}"
             echo "- Sign in as \`${{ steps.deploy.outputs.admin_email }}\` (${{ steps.deploy.outputs.admin_mode }}: seeded uses the PREVIEW_ADMIN_PASSWORD secret; onboarding waits for the emailed setup link)"
             echo "- chart \`${{ steps.deploy.outputs.chart_version }}\`, host \`${{ steps.host.outputs.instance_id }}\` (created: ${{ steps.host.outputs.created }}), deadline \`${{ steps.host.outputs.deadline }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

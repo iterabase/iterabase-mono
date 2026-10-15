@@ -40,12 +40,18 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: 1.26.5
+          cache-dependency-path: forge/go.sum
+          cache-scope: preview-cleanup
       - uses: ./.github/actions/setup-aws-ci
         with:
           role-arn: ${{ vars.AWS_CI_ROLE_ARN }}
           region: ${{ vars.AWS_CI_REGION }}
           session-name: iterabase-ci-reaper-${{ github.run_id }}
       - name: Terminate aged tagged CI instances
+        id: reap
         env:
           MAX_AGE_MINUTES: ${{ inputs.max_age_minutes || '180' }}
           DRY_RUN: ${{ inputs.dry_run }}
@@ -60,6 +66,15 @@ jobs:
             arguments+=(--control-instance-id "$CONTROL_INSTANCE_ID")
           fi
           python3 .github/scripts/aws_ci.py reap "${arguments[@]}"
+      # DES-HOR-661-09: a reaped preview's internal installation at production
+      # central is revoked with its host. A dry run terminates nothing.
+      - name: Revoke reaped previews' central installations
+        if: ${{ inputs.dry_run != true }}
+        env:
+          CENTRAL_URL: ${{ vars.CENTRAL_URL }}
+          CENTRAL_CA_BUNDLE: ${{ vars.CENTRAL_CA_BUNDLE }}
+          REAPED: ${{ steps.reap.outputs.reaped_previews }}
+        run: python3 .github/scripts/central_preview.py revoke --installations "$REAPED" --reason 'preview reaped'
       - name: Delete Tailscale Services of previews that no longer exist
         if: ${{ inputs.dry_run != true }}
         env:

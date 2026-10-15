@@ -283,6 +283,66 @@ func TestModelBackendReconcile(t *testing.T) {
 			"external backends must re-arm the health requeue like vLLM")
 	})
 
+	t.Run("managed records the central model with no workload or URL", func(t *testing.T) {
+		mb := &v1alpha1.ModelBackend{
+			ObjectMeta: metav1.ObjectMeta{Name: "central-flash", Namespace: "default"},
+			Spec: v1alpha1.ModelBackendSpec{
+				Kind:    "managed",
+				Managed: &v1alpha1.ManagedBackendSpec{Model: "deepseek-v4-flash"},
+			},
+		}
+		require.NoError(t, adminClient.Create(ctx, mb))
+		nn := types.NamespacedName{Name: "central-flash", Namespace: "default"}
+
+		require.Eventually(t, func() bool {
+			var got v1alpha1.ModelBackend
+			return adminClient.Get(ctx, nn, &got) == nil && got.Status.Deployed && got.Status.Healthy
+		}, 15*time.Second, 200*time.Millisecond, "managed backend should be deployed+healthy")
+
+		var dep appsv1.Deployment
+		assert.True(t, errors.IsNotFound(adminClient.Get(ctx, nn, &dep)), "managed must not deploy a workload")
+		var svc corev1.Service
+		assert.True(t, errors.IsNotFound(adminClient.Get(ctx, nn, &svc)), "managed must not create a Service")
+
+		b, err := store.GetBackendByKey(ctx, "default/central-flash")
+		require.NoError(t, err)
+		assert.Equal(t, "managed", b.Kind)
+		assert.Equal(t, "deepseek-v4-flash", b.Model, "the central model name is the catalog backend model id")
+		assert.Empty(t, b.ServiceURL, "the central endpoint is gateway configuration, never per backend")
+		assert.Empty(t, b.AuthRef, "managed backends never carry a provider credential")
+		assert.True(t, b.Deployed)
+		assert.True(t, b.Healthy)
+
+		res, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: nn})
+		require.NoError(t, err)
+		assert.Equal(t, healthRequeueInterval, res.RequeueAfter)
+	})
+
+	t.Run("managed spec is admitted only with kind managed", func(t *testing.T) {
+		for name, spec := range map[string]v1alpha1.ModelBackendSpec{
+			"managed-without-spec": {Kind: "managed"},
+			"managed-empty-model":  {Kind: "managed", Managed: &v1alpha1.ManagedBackendSpec{}},
+			"external-with-managed": {
+				Kind:     "external",
+				External: &v1alpha1.ExternalBackendSpec{BaseURL: "https://provider.example/v1"},
+				Managed:  &v1alpha1.ManagedBackendSpec{Model: "deepseek-v4-flash"},
+			},
+			"managed-with-external": {
+				Kind:     "managed",
+				Managed:  &v1alpha1.ManagedBackendSpec{Model: "deepseek-v4-flash"},
+				External: &v1alpha1.ExternalBackendSpec{BaseURL: "https://provider.example/v1"},
+			},
+			"vllm-with-managed": {
+				Kind: "vLLM", Model: "Qwen/Qwen3.5-0.8B",
+				Managed: &v1alpha1.ManagedBackendSpec{Model: "deepseek-v4-flash"},
+			},
+		} {
+			mb := &v1alpha1.ModelBackend{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}, Spec: spec}
+			err := adminClient.Create(ctx, mb)
+			assert.True(t, errors.IsInvalid(err), "%s must be rejected by CRD validation, got %v", name, err)
+		}
+	})
+
 	// HOR-559 regression: the ModelBackend reconciler had the same latent
 	// self-trigger shape as the Model reconciler (an unconditional
 	// status.lastReconciled write plus an unfiltered primary watch). A

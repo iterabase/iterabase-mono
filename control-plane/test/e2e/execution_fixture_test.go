@@ -160,7 +160,6 @@ func executionPlatformValues(state *deployedState, clientTools bool) map[string]
 	return map[string]any{
 		"global":         map[string]any{"internalTLS": map[string]any{"enabled": true}},
 		"external-dns":   map[string]any{"enabled": false},
-		"redis":          map[string]any{"enabled": true},
 		"minio":          map[string]any{"enabled": true, "artifactService": map[string]any{"enabled": true}},
 		"ingress-nginx":  map[string]any{"enabled": false},
 		"metallb":        map[string]any{"enabled": false},
@@ -199,7 +198,6 @@ func assertExecutionPlatformReadyStage(t *testing.T, state *deployedState) {
 		state.kubectl(t, 7*time.Minute, "rollout", "status", workload, "-n", controlPlaneNamespace, "--timeout=6m")
 	}
 	state.kubectl(t, 7*time.Minute, "rollout", "status", "statefulset/iterabase-postgresql", "-n", controlPlaneNamespace, "--timeout=6m")
-	state.kubectl(t, 7*time.Minute, "rollout", "status", "deployment/iterabase-redis", "-n", controlPlaneNamespace, "--timeout=6m")
 	state.kubectl(t, 7*time.Minute, "rollout", "status", "statefulset/iterabase-minio", "-n", controlPlaneNamespace, "--timeout=6m")
 	assertComponentImage(t, state, "app.kubernetes.io/name=control-plane", state.imageDigest, []string{"api", "manager", "dispatch", "gateway", "migrate", "bootstrap"})
 	assertComponentImage(t, state, "app.kubernetes.io/name=inference-gateway", state.inferenceImage.digest, []string{"gateway"})
