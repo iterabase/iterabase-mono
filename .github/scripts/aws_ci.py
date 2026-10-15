@@ -42,8 +42,15 @@ CI_REGION = CI_REGIONS[0]
 # inference stack requires; the launch loop tries each type and each offered AZ.
 APPROVED_INSTANCE_TYPES: dict[str, tuple[str, ...]] = {
     "cpu": ("m6i.xlarge",),
+    # Fixture AMI bake builders only (HOR-676, C14): ~625 MiB/s sustained EBS
+    # bandwidth, so the provisioned builder throughput is usable for a whole
+    # bake rather than an m6i.xlarge's ~30-minute burst. Bakes are short and rare.
+    "bake": ("m6i.4xlarge",),
     "gpu": ("g6.xlarge", "g5.xlarge", "g6.2xlarge", "g5.2xlarge", "g5.4xlarge"),
 }
+# Fixture capacities: a bake or launch targets one of these; "bake" is only the
+# builder's instance class.
+FIXTURE_CAPACITIES: tuple[str, ...] = ("cpu", "gpu")
 ALL_APPROVED_INSTANCE_TYPES: tuple[str, ...] = tuple(
     dict.fromkeys(instance_type for types in APPROVED_INSTANCE_TYPES.values() for instance_type in types)
 )
@@ -96,6 +103,11 @@ SPOT_MARKET_OPTIONS = "MarketType=spot,SpotOptions={SpotInstanceType=one-time,In
 # bake run's cleanup removes only the builder and its transient source image.
 AMI_ROLE_TAG = "iterabase-ci-ami"
 IMAGE_CACHE_TAG = "iterabase-ci-image-cache"
+# When the Ubuntu base under a fixture AMI was cold-baked (HOR-676): incremental
+# bakes inherit it, and a base older than BAKE_BASE_MAX_AGE forces a cold bake so
+# the OS under the image cache is refreshed.
+BASE_CREATED_TAG = "iterabase-ci-base-created"
+BAKE_BASE_MAX_AGE = dt.timedelta(days=30)
 MODEL_CACHE_TAG = "iterabase-ci-model-cache"
 MODEL_CACHE_UUID_TAG = "iterabase-ci-model-cache-uuid"
 KIND_TAG = "iterabase-ci-kind"
@@ -1788,7 +1800,20 @@ def root_volume_gib(image: dict[str, Any]) -> int | None:
     return None
 
 
-def select_previous_fixture_ami(images: list[dict[str, Any]], capacity: str, generation: str) -> dict[str, Any] | None:
+def fixture_base_created(image: dict[str, Any]) -> dt.datetime | None:
+    """When an AMI's Ubuntu base was cold-baked: its tag, or (for AMIs baked
+    before HOR-676, all of them cold) its own creation date."""
+    for value in (tagged_value(image.get("Tags"), BASE_CREATED_TAG), image.get("CreationDate")):
+        if value:
+            try:
+                return parse_timestamp(str(value))
+            except AwsCiError:
+                continue
+    return None
+
+
+def select_previous_fixture_ami(images: list[dict[str, Any]], capacity: str, generation: str,
+                                now: dt.datetime | None = None) -> dict[str, Any] | None:
     """The base an incremental bake boots its builder from (HOR-676).
 
     The newest available fixture AMI of this capacity that carries another
@@ -1797,9 +1822,14 @@ def select_previous_fixture_ami(images: list[dict[str, Any]], capacity: str, gen
     new AMI contains: the seed reuses an archive only for the same reference and
     digest and only after verifying it.
     """
+    now = now or dt.datetime.now(dt.timezone.utc)
     for image in sorted(images, key=lambda item: str(item.get("CreationDate")), reverse=True):
         carried = tagged_value(image.get("Tags"), IMAGE_CACHE_TAG)
+        base = fixture_base_created(image)
         if (
+            base is not None
+            and now - base <= BAKE_BASE_MAX_AGE
+            and
             image.get("State", "available") == "available"
             and tagged_value(image.get("Tags"), AMI_ROLE_TAG) == f"fixture-{capacity}"
             and carried
@@ -1904,8 +1934,9 @@ def command_bake_ami(args: argparse.Namespace) -> int:
                 tagged_ids(primary, "image", {AMI_ROLE_TAG: f"fixture-{args.capacity}"}), args.capacity, generation)
         mode = "incremental" if previous else "cold"
         source = str(previous["ImageId"]) if previous else transient_source_ami(primary, args.run_id)
+        base_created = fixture_base_created(previous) if previous else dt.datetime.now(dt.timezone.utc)
         host = launch_pinned_host(
-            capacity="cpu", run_id=args.run_id, scenario=f"bake-{args.capacity}", ami_ids={primary: source},
+            capacity="bake", run_id=args.run_id, scenario=f"bake-{args.capacity}", ami_ids={primary: source},
             regions=(primary,), deadline=dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=5),
             launch_options=bake_builder_launch_options(args.capacity, incremental=previous is not None),
         )
@@ -1921,7 +1952,8 @@ def command_bake_ami(args: argparse.Namespace) -> int:
         # The seal is the same from either source: a fixture AMI was sealed the
         # same way and its launch installs a fresh per-run identity.
         host.ssh(BAKE_SEAL_SCRIPT)
-        write_outputs({"builder": host.instance_id, "mode": mode})
+        write_outputs({"builder": host.instance_id, "mode": mode,
+                       "base_created": (base_created or dt.datetime.now(dt.timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")})
         write_summary(
             f"### {args.capacity.upper()} fixture builder\n\n- {mode} bake of generation `{generation}` from "
             f"`{source}`" + (f" (generation `{tagged_value(previous.get('Tags'), IMAGE_CACHE_TAG)}`)" if previous else "")
@@ -1931,7 +1963,8 @@ def command_bake_ami(args: argparse.Namespace) -> int:
 
     if not args.builder:
         return 0  # nothing was built: this generation already existed
-    tags = product_tags(f"fixture-ami-{generation}", f"fixture-{args.capacity}", marker)
+    base_tag = {BASE_CREATED_TAG: args.base_created} if args.base_created else {}
+    tags = product_tags(f"fixture-ami-{generation}", f"fixture-{args.capacity}", {**marker, **base_tag})
     name = f"{TAG_PREFIX}-fixture-{args.capacity}-{generation}"
     image_id = str(aws_json([
         "ec2", "create-image", "--region", primary, "--instance-id", args.builder, "--name", name,
@@ -1944,8 +1977,12 @@ def command_bake_ami(args: argparse.Namespace) -> int:
 
 def copy_fixture_ami(primary: str, image_id: str, capacity: str, generation: str, marker: dict[str, str],
                      regions: tuple[str, ...]) -> dict[str, str]:
-    """Start copying a baked fixture AMI to other regions; a launch uses each copy once it is available."""
-    tags = product_tags(f"fixture-ami-{generation}", f"fixture-{capacity}", marker)
+    """Start copying a baked fixture AMI to other regions; a launch uses each copy once it is available.
+
+    Copies carry the source's base date so every region ages its base alike."""
+    base = tagged_value(describe_image(primary, image_id).get("Tags"), BASE_CREATED_TAG)
+    tags = product_tags(f"fixture-ami-{generation}", f"fixture-{capacity}",
+                        {**marker, **({BASE_CREATED_TAG: base} if base else {})})
     name = f"{TAG_PREFIX}-fixture-{capacity}-{generation}"
     return {region: str(aws_json([
         "ec2", "copy-image", "--region", region, "--source-region", primary, "--source-image-id", image_id,
@@ -2125,7 +2162,7 @@ def command_prune_images(args: argparse.Namespace) -> int:
     primary = require_region(args.region)
     removed: list[str] = []
     for region in region_order(primary):
-        for capacity in sorted(APPROVED_INSTANCE_TYPES):
+        for capacity in FIXTURE_CAPACITIES:
             images = as_list(aws_json(["ec2", "describe-images", "--region", region, "--owners", "self", "--filters",
                                        f"Name=tag:{AMI_ROLE_TAG},Values=fixture-{capacity}"])["Images"], what="images")
             for image in prune_plan(images, IMAGE_CACHE_TAG):
@@ -2590,21 +2627,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     host = subparsers.add_parser("run-host", help="launch, prove, and terminate one smoke fixture", parents=[common])
     host.add_argument("--run-id", required=True)
-    host.add_argument("--capacity", required=True, choices=sorted(APPROVED_INSTANCE_TYPES))
+    host.add_argument("--capacity", required=True, choices=FIXTURE_CAPACITIES)
     host.add_argument("--ami-ids", required=True, help="region=ami-... map covering every CI region")
     host.set_defaults(handler=command_run_host)
 
     fixture = subparsers.add_parser("launch-fixture", help="launch one fresh F3 fixture host (C1)", parents=[common])
     fixture.add_argument("--run-id", required=True)
     fixture.add_argument("--scenario", required=True, help="scenario id, recorded in the scenario tag")
-    fixture.add_argument("--capacity", required=True, choices=sorted(APPROVED_INSTANCE_TYPES))
+    fixture.add_argument("--capacity", required=True, choices=FIXTURE_CAPACITIES)
     fixture.add_argument("--max-age-minutes", type=int, default=DEFAULT_MAX_AGE_MINUTES)
     fixture.add_argument("--env-output", default=os.environ.get("GITHUB_ENV", ""))
     fixture.set_defaults(handler=command_launch_fixture)
 
     bake = subparsers.add_parser("bake-ami", help="bake one capacity's fixture AMI (DES-HOR-590-03)", parents=[common])
     bake.add_argument("--run-id", required=True)
-    bake.add_argument("--capacity", required=True, choices=sorted(APPROVED_INSTANCE_TYPES))
+    bake.add_argument("--capacity", required=True, choices=FIXTURE_CAPACITIES)
     bake.add_argument("--phase", required=True, choices=("build", "image", "await"))
     bake.add_argument("--crane", default="", help="build phase: the reviewed crane binary used to pull the pinned images")
     bake.add_argument("--builder", default="", help="image phase: the sealed builder instance from the build phase")
@@ -2612,6 +2649,8 @@ def build_parser() -> argparse.ArgumentParser:
     bake.add_argument("--mode", default="cold", choices=sorted(BAKE_IMAGE_WAIT_SECONDS),
                       help="image and await phases: the build's kind, which bounds the wait")
     bake.add_argument("--final", action="store_true", help="await phase: bake.yml's last session; pending fails")
+    bake.add_argument("--base-created", default="",
+                      help="image phase: when the builder's Ubuntu base was cold-baked (the build phase's output)")
     bake.add_argument("--cold", action="store_true", help="build from the Canonical image even when an earlier AMI exists")
     bake.add_argument("--force", action="store_true", help="rebake an existing generation (cold)")
     bake.set_defaults(handler=command_bake_ami)

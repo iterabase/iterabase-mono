@@ -278,6 +278,12 @@ Fixture AMI bakes are incremental (HOR-676):
   one through the same atomic swap. Earlier generations, including archives no
   longer pinned, are pruned after the swap. Host packages are installed
   idempotently, and the builder is sealed the same way from either source.
+- **Base age.** Every fixture AMI carries `iterabase-ci-base-created`, the date
+  its Ubuntu base was cold-baked; incremental bakes inherit it. Once the base is
+  older than 30 days the next bake is cold, so the OS under the cache is
+  refreshed. AMIs from before HOR-676 count their own creation date.
+- **Builder.** Bake builders run on `m6i.4xlarge` (about 625 MiB/s sustained EBS
+  bandwidth), the approved `bake` instance class; fixtures stay on `m6i.xlarge`.
 - **Disk.** The builder root is gp3 at 500 MiB/s and 8,000 IOPS. An incremental
   builder's root is also preloaded at 300 MiB/s (`DES-HOR-590-05`), so reading
   the earlier generation back is not throttled to S3 lazy loading.
