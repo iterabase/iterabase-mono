@@ -269,7 +269,7 @@ def pull_request_base(merge_commit: str, cwd: pathlib.Path = ROOT) -> str | None
     base branch as it was when GitHub built the merge. Its first parent is that
     base, so diffing against it selects exactly the PR's changes on top of
     current master. `pull_request.base.sha` can be older, which attributed changes
-    merged to master since then to the PR (HOR-676). Anything but a two-parent
+    merged to master since then to the PR (DES-HOR-676-04). Anything but a two-parent
     merge commit returns None, and the caller selects everything.
     """
     parents = subprocess.run(["git", "rev-list", "--parents", "-n", "1", merge_commit], cwd=cwd, check=True,

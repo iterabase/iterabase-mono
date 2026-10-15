@@ -158,7 +158,7 @@ policy.
    is a no-op when this tree's generation of that AMI is already baked.
 6. **real-machine** runs one F3 scenario per job on its own fresh EC2 host, in
    `real-machine-cpu` and `real-machine-gpu`. Each waits only on its own
-   capacity's bake, so a CPU scenario never waits on the GPU bake (HOR-676). The
+   capacity's bake, so a CPU scenario never waits on the GPU bake (DES-HOR-676-03). The
    two jobs are identical apart from their capacity, which
    `test_workflow_permissions.py` enforces.
    `aws_ci.py launch-fixture` boots the baked AMI (and, for GPU, restores the
@@ -246,7 +246,7 @@ set into its generation:
   the ones no GPU scenario loads: the CPU LVM, workspace and inotify pods'
   `debian`, the hosted-only `aws-load-balancer-controller`, the production-only
   `external-dns`, and testcontainers' `ryuk`. A change to one of these rebakes
-  only the CPU AMI (HOR-676). A new shared image is cached on both AMIs until it
+  only the CPU AMI (DES-HOR-676-03). A new shared image is cached on both AMIs until it
   is listed there, which is the safe default.
 
 The model cache is a separate EBS snapshot of the model pinned in
@@ -261,7 +261,7 @@ Because `e2e.yml` calls the bake before real-machine scenarios, a pull request
 that changes pinned inputs bakes its own generation. A missing generation fails
 the launch; there is no fallback to an older one.
 
-Fixture AMI bakes are incremental (HOR-676):
+Fixture AMI bakes are incremental (DES-HOR-676-02):
 
 - **Source.** The builder boots from the newest available `fixture-<capacity>`
   AMI in the primary region that carries another generation and whose root fits
@@ -282,6 +282,13 @@ Fixture AMI bakes are incremental (HOR-676):
   its Ubuntu base was cold-baked; incremental bakes inherit it. Once the base is
   older than 30 days the next bake is cold, so the OS under the cache is
   refreshed. AMIs from before HOR-676 count their own creation date.
+- **Forced rebake.** Each bake's AMI is named by its run
+  (`iterabase-ci-fixture-<capacity>-<generation>-<run>`); the generation tag
+  stays its identity. `force` therefore replaces an existing generation instead
+  of colliding with its name: the new AMI is copied to every region whose newest
+  AMI of that generation predates it, launches use the newest available AMI per
+  region, and the reaper retires a superseded bake of a kept generation once a
+  newer one is available.
 - **Builder.** Bake builders run on `m6i.4xlarge` (about 625 MiB/s sustained EBS
   bandwidth), the approved `bake` instance class; fixtures stay on `m6i.xlarge`.
 - **Disk.** The builder root is gp3 at 500 MiB/s and 8,000 IOPS. An incremental

@@ -284,7 +284,7 @@ jobs:
   # bake is a no-op when that generation exists (DES-HOR-590-03). Each capacity
   # bakes, and its scenarios wait, on its own: a CPU scenario never waits on the
   # GPU bake, and the GPU bake runs only when a GPU scenario is selected
-  # (HOR-676). The two real-machine jobs are identical apart from their capacity
+  # (DES-HOR-676-03). The two real-machine jobs are identical apart from their capacity
   # (test_workflow_permissions.py holds them so).
   # The preview host boots from the CPU fixture AMI too, so a preview also waits
   # on the CPU bake; it never waits on the GPU bake.
