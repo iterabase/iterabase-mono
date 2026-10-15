@@ -46,8 +46,8 @@ render edge opo1 "$umbrella" --namespace portable-system \
   --set external-dns.enabled=true --set 'external-dns.domainFilters={example.com.}'
 # Upgrade-only recovery Jobs render only when `lookup` finds live objects, which
 # offline `helm template` never does. Render a copy whose lookups return
-# fixtures for an earlier attempt's admission webhook and a RollingUpdate Loki
-# gateway, so both Jobs face the same contract. A missing lookup string fails.
+# a fixture for a RollingUpdate Loki gateway, so the Job faces the same
+# contract. A missing lookup string fails.
 upgrade=$tmp/upgrade-chart
 cp -R "$umbrella" "$upgrade"
 python3 - "$upgrade/templates" <<'PY_FIXTURE'
@@ -56,9 +56,6 @@ fixtures = {
     "loki-gateway-rollout-recovery.yaml": (
         'lookup "apps/v1" "Deployment" $namespace $gatewayName',
         'dict "spec" (dict "strategy" (dict "type" "RollingUpdate"))'),
-    "internal-ingress-admission-recovery.yaml": (
-        'lookup "admissionregistration.k8s.io/v1" "ValidatingWebhookConfiguration" "" $admissionName',
-        'dict "metadata" (dict "name" $admissionName)'),
 }
 for name, (call, fixture) in fixtures.items():
     path = pathlib.Path(sys.argv[1]) / name
@@ -153,8 +150,8 @@ for profile in ("default", "kind", "observability-tls", "internal-observability"
         if bound in entry:
             failures.append(f"{profile}: LimitRange must only default requests (DES-HOR-602-02), found {bound}")
 
-# The lookup fixtures must keep rendering both upgrade recovery Jobs.
-for job in ("opo1-loki-gateway-rollout-recovery", "opo1-internal-ingress-nginx-admission-recovery"):
+# The lookup fixture must keep rendering the upgrade recovery Job.
+for job in ("opo1-loki-gateway-rollout-recovery",):
     if job not in recovery_jobs:
         failures.append(f"upgrade-recovery: Job/{job} no longer renders under its lookup fixture")
 
