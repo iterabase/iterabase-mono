@@ -217,7 +217,7 @@ artifact:
       customDatabaseFiles: []
       persistence:
         # Fixed (section 11): the explicit non-default OpenEBS LVM class.
-        storageClassName: iterabase-lvm-xfs
+        storageClassName: iterabase-signatures-lvm-xfs
         # One staged bundle + current + one validated rollback with headroom
         # (the official compressed bundle is ~110 MiB).
         size: 2Gi

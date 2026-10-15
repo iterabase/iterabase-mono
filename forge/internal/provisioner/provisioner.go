@@ -8,6 +8,9 @@ package provisioner
 import (
 	"context"
 	"fmt"
+	"strings"
+
+	"golang.org/x/mod/semver"
 )
 
 // InotifyMaxUserInstancesRequired is the durable fs.inotify.max_user_instances
@@ -19,11 +22,37 @@ import (
 // default of 128 with K3s, containerd shims, and root containers.
 const InotifyMaxUserInstancesRequired = 8192
 
+// ManagedStorageClass is one exact OpenEBS LVM class the substrate renders.
+type ManagedStorageClass struct {
+	Name   string
+	Shared bool
+}
+
+// SignatureStorageClassFirstVersion is the first platform/substrate version
+// that renders the artifact signature class (DES-HOR-461-05).
+const SignatureStorageClassFirstVersion = "v0.6.0"
+
+// ManagedStorageClasses returns the exact class set a substrate version
+// renders, so one Forge binary validates older and newer platforms. An
+// unparsable version is treated as current (fail closed on the larger set).
+func ManagedStorageClasses(substrateVersion string) []ManagedStorageClass {
+	classes := []ManagedStorageClass{{Name: AgentPoolStorageClass, Shared: true}, {Name: PlatformStorageClass, Shared: false}}
+	v := "v" + strings.TrimPrefix(substrateVersion, "v")
+	if !semver.IsValid(v) || semver.Compare(v, SignatureStorageClassFirstVersion) >= 0 {
+		classes = append(classes, ManagedStorageClass{Name: SignatureStorageClass, Shared: true})
+	}
+	return classes
+}
+
 // Fixed Platform V2 data-storage identities shared by Forge and its callers.
 const (
-	DataVolumeGroupName             = "iterabase-data"
-	AgentPoolStorageClass           = "iterabase-agentpool-lvm-xfs"
-	PlatformStorageClass            = "iterabase-lvm-xfs"
+	DataVolumeGroupName   = "iterabase-data"
+	AgentPoolStorageClass = "iterabase-agentpool-lvm-xfs"
+	PlatformStorageClass  = "iterabase-lvm-xfs"
+	// SignatureStorageClass is the shared class admitted only for the artifact
+	// signature PVC (DES-HOR-461-05).
+	SignatureStorageClass = "iterabase-signatures-lvm-xfs"
+
 	LVMStorageProvisioner           = "local.csi.openebs.io"
 	LVMStorageSubstrateChart        = "lvm-storage-substrate"
 	LVMStorageSubstrateFirstVersion = "0.4.0"
@@ -247,7 +276,9 @@ type Provisioner interface {
 	// surfaces, validates the inert LVMSnapshot CRD/read-only RBAC/deny-all/zero-
 	// instance boundary, and waits for exact volume CRDs, controller/node,
 	// CSI/classes, and VG discovery.
-	WaitForLVMStorageReady(ctx context.Context, namespace string, host *DataStorageState) (*LVMStorageReadiness, error)
+	// classes is the exact managed set for the installed substrate version
+	// (ManagedStorageClasses).
+	WaitForLVMStorageReady(ctx context.Context, namespace string, host *DataStorageState, classes []ManagedStorageClass) (*LVMStorageReadiness, error)
 	// ReadGPUReadiness returns one coherent ClusterPolicy/node observation,
 	// evaluated against the requested driver. Missing resources and transitional
 	// states return Ready=false; query/parse failures return an error. Polled as

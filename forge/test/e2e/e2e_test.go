@@ -179,10 +179,11 @@ test ! -e /etc/modules-load.d/iterabase-data.conf
 ! grep -q "^dm_snapshot " /proc/modules
 '`)
 	classes := strings.Fields(mustSSHOutput(t, sc, `sudo k3s kubectl get storageclass -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'`))
-	if len(classes) != 2 || !slices.Contains(classes, "iterabase-lvm-xfs") || !slices.Contains(classes, "iterabase-agentpool-lvm-xfs") {
-		t.Fatalf("managed StorageClass set = %v, want exactly the two OpenEBS LVM classes", classes)
+	if len(classes) != 3 || !slices.Contains(classes, "iterabase-lvm-xfs") || !slices.Contains(classes, "iterabase-agentpool-lvm-xfs") ||
+		!slices.Contains(classes, "iterabase-signatures-lvm-xfs") {
+		t.Fatalf("managed StorageClass set = %v, want exactly the three OpenEBS LVM classes", classes)
 	}
-	for class, shared := range map[string]string{"iterabase-lvm-xfs": "no", "iterabase-agentpool-lvm-xfs": "yes"} {
+	for class, shared := range map[string]string{"iterabase-lvm-xfs": "no", "iterabase-agentpool-lvm-xfs": "yes", "iterabase-signatures-lvm-xfs": "yes"} {
 		observed := strings.TrimSpace(mustSSHOutput(t, sc, fmt.Sprintf(`sudo k3s kubectl get storageclass %s -o jsonpath='{.provisioner}|{.reclaimPolicy}|{.volumeBindingMode}|{.allowVolumeExpansion}|{.parameters.storage}|{.parameters.vgpattern}|{.parameters.fsType}|{.parameters.thinProvision}|{.parameters.shared}|{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}'`, class)))
 		want := "local.csi.openebs.io|Delete|WaitForFirstConsumer|true|lvm|^iterabase-data$|xfs|no|" + shared + "|false"
 		if observed != want {

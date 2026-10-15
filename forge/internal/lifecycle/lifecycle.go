@@ -515,7 +515,7 @@ func applyLVMStorageSubstrate(ctx context.Context, cfg *config.Cluster, p provis
 		return fmt.Errorf("LVM storage substrate: %w", err)
 	}
 	res.LVMStorageSubstrateApplied = true
-	readiness, err := p.WaitForLVMStorageReady(ctx, ch.Namespace, res.DataStorage)
+	readiness, err := p.WaitForLVMStorageReady(ctx, ch.Namespace, res.DataStorage, provisioner.ManagedStorageClasses(ch.Version))
 	if err != nil {
 		auditFail(cfg, "wait-lvm-storage-substrate", err)
 		return err

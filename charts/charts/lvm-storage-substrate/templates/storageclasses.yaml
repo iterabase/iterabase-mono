@@ -37,3 +37,28 @@ parameters:
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
+---
+# DES-HOR-461-05: the ClamAV signature volume is written by the FreshClam
+# updater and mounted read-only by same-node scanner pods, which needs OpenEBS
+# shared mounting. This class admits exactly one chart-owned claim
+# (iterabase-signatures-claim-authority); it holds reconstructible signature
+# data only, never customer or backup data.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: iterabase-signatures-lvm-xfs
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+    storageclass.beta.kubernetes.io/is-default-class: "false"
+    iterabase.com/architecture-decision: DES-HOR-545-01,DES-HOR-461-05
+    iterabase.com/claim-authority: artifact-signatures-only
+provisioner: local.csi.openebs.io
+parameters:
+  storage: lvm
+  vgpattern: ^iterabase-data$
+  fsType: xfs
+  thinProvision: "no"
+  shared: "yes"
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true

@@ -146,7 +146,7 @@ DatabaseCustomURL file:///custom/{{ . }}
 {{- if or (lt $refresh 60) (gt $refresh 7200) }}{{ fail "artifact.processing.signatures.refreshInterval must be between 1m and 2h (DES-HOR-460-05)" }}{{- end }}
 {{- if or (lt $retry 60) (gt $retry $refresh) }}{{ fail "artifact.processing.signatures.retryInterval must be between 1m and refreshInterval" }}{{- end }}
 {{- if and (not $sig.official) (not $custom) }}{{ fail "artifact.processing.signatures.official=false requires at least one custom signature database" }}{{- end }}
-{{- if ne $sig.persistence.storageClassName "iterabase-lvm-xfs" }}{{ fail "artifact.processing.signatures.persistence.storageClassName is fixed to iterabase-lvm-xfs (section 11)" }}{{- end }}
+{{- if ne $sig.persistence.storageClassName "iterabase-signatures-lvm-xfs" }}{{ fail "artifact.processing.signatures.persistence.storageClassName is fixed to iterabase-signatures-lvm-xfs (DES-HOR-461-05)" }}{{- end }}
 # Dedicated signature volume: one RWO claim on the explicit non-default
 # OpenEBS LVM class. The updater is its only read-write mounter; scanners
 # mount it read-only. Contents are reconstructible non-customer data.
@@ -158,7 +158,9 @@ metadata:
     {{- include "control-plane.labels" . | nindent 4 }}
     app.kubernetes.io/component: artifact-signature-updater
 spec:
-  storageClassName: iterabase-lvm-xfs
+  # DES-HOR-461-05: the one shared same-node class that admits only this
+  # claim; the scanner's read-only mount needs OpenEBS shared mounting.
+  storageClassName: iterabase-signatures-lvm-xfs
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:

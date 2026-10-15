@@ -34,9 +34,11 @@ const testNamespace = "iterabase-system"
 const (
 	PlatformDataStorageClass       = "iterabase-lvm-xfs"
 	AgentPoolWorkspaceStorageClass = "iterabase-agentpool-lvm-xfs"
-	lvmProvisioner                 = "local.csi.openebs.io"
-	lvmDataVolumeGroupName         = "iterabase-data"
-	lvmNodeTopologyKey             = "openebs.io/nodename"
+	// SignatureStorageClass admits only the artifact signature PVC (DES-HOR-461-05).
+	SignatureStorageClass  = "iterabase-signatures-lvm-xfs"
+	lvmProvisioner         = "local.csi.openebs.io"
+	lvmDataVolumeGroupName = "iterabase-data"
+	lvmNodeTopologyKey     = "openebs.io/nodename"
 )
 
 func lvmStorageContract() kindcluster.LVMStorageContract {
@@ -47,6 +49,7 @@ func lvmStorageContract() kindcluster.LVMStorageContract {
 		StorageClasses: []kindcluster.StorageClassExpectation{
 			{Name: PlatformDataStorageClass, Shared: false},
 			{Name: AgentPoolWorkspaceStorageClass, Shared: true},
+			{Name: SignatureStorageClass, Shared: true},
 		},
 	}
 }

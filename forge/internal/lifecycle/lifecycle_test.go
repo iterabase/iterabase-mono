@@ -207,7 +207,7 @@ func (f *fakeProv) ReconcileDataStorage(_ context.Context, spec provisioner.Data
 	}
 	return &provisioner.DataStorageState{Devices: devices, VGName: provisioner.DataVolumeGroupName, VGUUID: "vg-uuid", SizeBytes: 200, FreeBytes: 200, State: "complete"}, nil
 }
-func (f *fakeProv) WaitForLVMStorageReady(_ context.Context, _ string, storage *provisioner.DataStorageState) (*provisioner.LVMStorageReadiness, error) {
+func (f *fakeProv) WaitForLVMStorageReady(_ context.Context, _ string, storage *provisioner.DataStorageState, _ []provisioner.ManagedStorageClass) (*provisioner.LVMStorageReadiness, error) {
 	f.lvmReadinessCalls++
 	if f.lvmReadinessErr != nil {
 		return nil, f.lvmReadinessErr

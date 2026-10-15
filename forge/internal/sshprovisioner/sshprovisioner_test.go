@@ -1871,6 +1871,10 @@ func TestWaitForLVMStorageReadyParsesBoundedVGIdentity(t *testing.T) {
 		assert.NotContains(t, cmd, "iterabase-lvm-snapshot")
 		assert.Contains(t, cmd, "openebs.io/nodename")
 		assert.Contains(t, cmd, "iterabase-agentpool-lvm-xfs")
+		assert.Contains(t, cmd, "iterabase-signatures-lvm-xfs", "DES-HOR-461-05: the signature class is part of the exact set")
+		// The whole script is shell-quoted again for sudo bash -ceu.
+		assert.Contains(t, cmd, `verify_class '\''iterabase-signatures-lvm-xfs'\'' yes`)
+		assert.Contains(t, cmd, `verify_class '\''iterabase-lvm-xfs'\'' no`)
 		assert.Contains(t, cmd, "local.csi.openebs.io|Delete|WaitForFirstConsumer|true|lvm|^iterabase-data$|xfs|no|$shared")
 		assert.Contains(t, cmd, "K3s local-path provisioner still exists")
 		return "FORGE_LVM_STORAGE_READY\tnode-a\titerabase-data\tvg-a\t300\t250\t2\t2\n", 0
@@ -1878,7 +1882,8 @@ func TestWaitForLVMStorageReadyParsesBoundedVGIdentity(t *testing.T) {
 	defer cleanup()
 	p := newProvisioner(t, addr, cfg)
 	defer p.Close()
-	ready, err := p.WaitForLVMStorageReady(context.Background(), "iterabase-system", &provisioner.DataStorageState{VGName: "iterabase-data", VGUUID: "vg-a"})
+	ready, err := p.WaitForLVMStorageReady(context.Background(), "iterabase-system", &provisioner.DataStorageState{VGName: "iterabase-data", VGUUID: "vg-a"},
+		provisioner.ManagedStorageClasses("0.6.0"))
 	require.NoError(t, err)
 	assert.True(t, ready.Ready)
 	assert.Equal(t, "node-a", ready.NodeName)

@@ -152,8 +152,8 @@ for doc in (coordinator, scanner, updater):
 # scanner mounts read-only at both the claim and every container mount.
 claim = f"{rel}-control-plane-artifact-signatures"
 pvc = find(cp, "PersistentVolumeClaim", claim)
-if pvc.get("spec", {}).get("storageClassName") != "iterabase-lvm-xfs" or pvc.get("spec", {}).get("accessModes") != ["ReadWriteOnce"]:
-    fail("signature PVC must be iterabase-lvm-xfs ReadWriteOnce")
+if pvc.get("spec", {}).get("storageClassName") != "iterabase-signatures-lvm-xfs" or pvc.get("spec", {}).get("accessModes") != ["ReadWriteOnce"]:
+    fail("signature PVC must be iterabase-signatures-lvm-xfs ReadWriteOnce (DES-HOR-461-05)")
 rw = []
 for doc in workloads(cp):
     vols = {v["name"]: v for v in pod(doc).get("volumes", []) if (v.get("persistentVolumeClaim") or {}).get("claimName") == claim}
