@@ -331,7 +331,14 @@ func assertUpgradeContractStage(t *testing.T, state *chartState) {
 	assertLifecycleHealth(t, state)
 	assertReleaseMechanics(t, state)
 	assertPersistedState(t, state)
-	assertRetainedState(t, state.snapshots["n-1"], captureLifecycleSnapshot(t, state), false)
+	before, after := state.snapshots["n-1"], captureLifecycleSnapshot(t, state)
+	if _, legacy := before.Secrets[legacyArtifactSecret]; legacy {
+		if err := artifactCredentialTransitionError(before, after); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	assertRetainedState(t, before, after, false)
 }
 
 func assertIdempotentReapplyStage(t *testing.T, state *chartState) {

@@ -143,11 +143,15 @@ func minioVolumeEvidence(state *chartState) string {
 func captureLifecycleSnapshot(t *testing.T, state *chartState) lifecycleSnapshot {
 	t.Helper()
 	snapshot := lifecycleSnapshot{Secrets: map[string]string{}, PVCs: map[string]string{}, Pods: map[string]string{}}
-	for _, name := range []string{
-		testRelease + "-postgresql", testRelease + "-minio", testRelease + "-minio-artifacts",
-		testRelease + "-gateway-admin",
-	} {
+	for _, name := range []string{testRelease + "-postgresql", testRelease + "-minio", testRelease + "-gateway-admin"} {
 		snapshot.Secrets[name] = secretDigest(t, state, name)
+	}
+	// The artifact credential set is version-dependent: N-1 renders the one
+	// legacy broad credential, head the three zone credentials (DES-HOR-460-02).
+	for _, name := range append([]string{legacyArtifactSecret}, artifactZoneSecrets...) {
+		if state.kubectl(t, 30*time.Second, "get", "secret", name, "-n", testNamespace, "--ignore-not-found", "-o", "name") != "" {
+			snapshot.Secrets[name] = secretDigest(t, state, name)
+		}
 	}
 	for _, name := range []string{"data-" + testRelease + "-postgresql-0", "data-" + testRelease + "-minio-0"} {
 		snapshot.PVCs[name] = state.kubectl(t, 30*time.Second, "get", "pvc/"+name, "-n", testNamespace,
@@ -238,6 +242,36 @@ func secretDigest(t *testing.T, state *chartState, name string) string {
 		t.Fatalf("Secret %s returned invalid digest %q", name, digest)
 	}
 	return digest
+}
+
+var (
+	legacyArtifactSecret = testRelease + "-minio-artifacts"
+	artifactZoneSecrets  = []string{testRelease + "-minio-artifact-ingest", testRelease + "-minio-artifact-serve", testRelease + "-minio-artifact-lifecycle"}
+)
+
+// artifactCredentialTransitionError proves the N-1 -> head artifact credential
+// split: every other generated Secret is retained byte-for-byte, the legacy
+// broad credential is gone, and exactly the three zone credentials exist.
+func artifactCredentialTransitionError(before, after lifecycleSnapshot) error {
+	if _, ok := after.Secrets[legacyArtifactSecret]; ok {
+		return fmt.Errorf("legacy artifact credential Secret %s survived the upgrade", legacyArtifactSecret)
+	}
+	for _, name := range artifactZoneSecrets {
+		if _, ok := after.Secrets[name]; !ok {
+			return fmt.Errorf("artifact zone credential Secret %s is missing after the upgrade", name)
+		}
+	}
+	retained := func(snapshot lifecycleSnapshot) lifecycleSnapshot {
+		secrets := map[string]string{}
+		for name, digest := range snapshot.Secrets {
+			if name != legacyArtifactSecret && !slices.Contains(artifactZoneSecrets, name) {
+				secrets[name] = digest
+			}
+		}
+		snapshot.Secrets = secrets
+		return snapshot
+	}
+	return retainedStateError(retained(before), retained(after), false)
 }
 
 func assertRetainedState(t *testing.T, before, after lifecycleSnapshot, includePods bool) {
@@ -930,5 +964,34 @@ func TestUnitStableWorkloadSnapshotIncludesEveryController(t *testing.T) {
 	}
 	if !slices.Equal(selectors, want) {
 		t.Fatalf("stable workload selectors=%v want=%v", selectors, want)
+	}
+}
+
+func TestUnitArtifactCredentialTransitionRequiresExactZoneSplit(t *testing.T) {
+	before := lifecycleSnapshot{
+		Secrets: map[string]string{testRelease + "-postgresql": "pg", legacyArtifactSecret: "legacy"},
+		PVCs:    map[string]string{"data": "uid/pv"},
+	}
+	head := func() lifecycleSnapshot {
+		after := lifecycleSnapshot{Secrets: map[string]string{testRelease + "-postgresql": "pg"}, PVCs: map[string]string{"data": "uid/pv"}}
+		for _, name := range artifactZoneSecrets {
+			after.Secrets[name] = name
+		}
+		return after
+	}
+	if err := artifactCredentialTransitionError(before, head()); err != nil {
+		t.Fatalf("exact zone split rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*lifecycleSnapshot){
+		"legacy survives":       func(s *lifecycleSnapshot) { s.Secrets[legacyArtifactSecret] = "legacy" },
+		"zone missing":          func(s *lifecycleSnapshot) { delete(s.Secrets, artifactZoneSecrets[1]) },
+		"other secret rotated":  func(s *lifecycleSnapshot) { s.Secrets[testRelease+"-postgresql"] = "rotated" },
+		"PVC identity replaced": func(s *lifecycleSnapshot) { s.PVCs["data"] = "other/pv" },
+	} {
+		after := head()
+		mutate(&after)
+		if err := artifactCredentialTransitionError(before, after); err == nil {
+			t.Errorf("%s accepted", name)
+		}
 	}
 }
