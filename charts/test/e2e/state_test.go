@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,17 +42,38 @@ const (
 	lvmNodeTopologyKey     = "openebs.io/nodename"
 )
 
-func lvmStorageContract() kindcluster.LVMStorageContract {
+// lvmStorageContract is the exact class set a substrate version renders: the
+// signature class exists from 0.6.0 (DES-HOR-461-05), so the n-1 install of
+// an older published substrate expects only the two original classes.
+func lvmStorageContract(substrateVersion string) kindcluster.LVMStorageContract {
+	classes := []kindcluster.StorageClassExpectation{
+		{Name: PlatformDataStorageClass, Shared: false},
+		{Name: AgentPoolWorkspaceStorageClass, Shared: true},
+	}
+	if !substrateBefore(substrateVersion, 0, 6) {
+		classes = append(classes, kindcluster.StorageClassExpectation{Name: SignatureStorageClass, Shared: true})
+	}
 	return kindcluster.LVMStorageContract{
 		DataVolumeGroupName: lvmDataVolumeGroupName,
 		Provisioner:         lvmProvisioner,
 		NodeTopologyKey:     lvmNodeTopologyKey,
-		StorageClasses: []kindcluster.StorageClassExpectation{
-			{Name: PlatformDataStorageClass, Shared: false},
-			{Name: AgentPoolWorkspaceStorageClass, Shared: true},
-			{Name: SignatureStorageClass, Shared: true},
-		},
+		StorageClasses:      classes,
 	}
+}
+
+// substrateBefore reports whether a MAJOR.MINOR.PATCH version precedes
+// major.minor. An unparsable version is treated as current.
+func substrateBefore(version string, major, minor int) bool {
+	parts := strings.SplitN(strings.TrimPrefix(version, "v"), ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	gotMajor, err1 := strconv.Atoi(parts[0])
+	gotMinor, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return gotMajor < major || (gotMajor == major && gotMinor < minor)
 }
 
 const (
@@ -502,7 +524,8 @@ func (state *chartState) installLVMStorage(t *testing.T) {
 // already-prepared VG) and re-verifies the storage and RBAC contract.
 func (state *chartState) applyLVMStorage(t *testing.T, chart kube.Chart) {
 	t.Helper()
-	if err := state.cluster.ConfigureLVMStorage(state.ctx, chart.LocalPath, testNamespace, testRelease+"-lvm-storage", lvmStorageContract()); err != nil {
+	contract := lvmStorageContract(currentChartVersion(t, state, chart))
+	if err := state.cluster.ConfigureLVMStorage(state.ctx, chart.LocalPath, testNamespace, testRelease+"-lvm-storage", contract); err != nil {
 		t.Fatalf("install exact Kind OpenEBS LVM storage substrate %s: %v", chart.LocalPath, err)
 	}
 	state.assertLVMSnapshotDependencyRBAC(t)

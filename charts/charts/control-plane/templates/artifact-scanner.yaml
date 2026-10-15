@@ -136,7 +136,11 @@ spec:
       hostIPC: false
       securityContext:
         runAsNonRoot: true
-        fsGroup: 65532
+        # The signature volume's group (the updater's), so the kubelet never
+        # re-owns it between the two pods; it is also a supplemental group of
+        # the adapter, which reads its 0440 TLS key through it.
+        fsGroup: {{ $s.runAsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -239,12 +243,12 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
-        # Read-only at the claim too, so the kubelet never applies fsGroup
-        # ownership to the updater's volume.
+        # The device is mounted read-write at the node like the updater's mount
+        # (Linux cannot mount one XFS device ro and rw at once, DES-HOR-461-05);
+        # every scanner container mount below is read-only.
         - name: signatures
           persistentVolumeClaim:
             claimName: {{ include "control-plane.artifactSignaturesClaimName" . }}
-            readOnly: true
         - name: clamd-tmp
           emptyDir:
             sizeLimit: 512Mi

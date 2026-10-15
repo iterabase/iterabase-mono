@@ -210,6 +210,14 @@ printf "%%s|%%s\n" "$pv" "$vg"
 
 	pvcClasses := strings.Fields(mustSSHOutput(t, sc, `sudo k3s kubectl get pvc -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}={.spec.storageClassName}{"\n"}{end}'`))
 	for _, claim := range pvcClasses {
+		// DES-HOR-461-05: only the artifact signature claim uses the shared
+		// signature class.
+		if strings.Contains(claim, "-control-plane-artifact-signatures=") {
+			if !strings.HasSuffix(claim, "=iterabase-signatures-lvm-xfs") {
+				t.Fatalf("artifact signature claim did not use the signature LVM class: %s", claim)
+			}
+			continue
+		}
 		if !strings.HasSuffix(claim, "=iterabase-lvm-xfs") {
 			t.Fatalf("chart-owned data claim did not use the general LVM class: %s", claim)
 		}

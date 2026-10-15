@@ -149,7 +149,8 @@ for doc in (coordinator, scanner, updater):
             fail(f"{name}: must not use {host}")
 
 # Signature volume: fixed class, RWO; one read-write mount (the updater);
-# scanner mounts read-only at both the claim and every container mount.
+# every scanner container mount is read-only (the node-level mount matches the
+# updater's, which Linux requires for one shared XFS device).
 claim = f"{rel}-control-plane-artifact-signatures"
 pvc = find(cp, "PersistentVolumeClaim", claim)
 if pvc.get("spec", {}).get("storageClassName") != "iterabase-signatures-lvm-xfs" or pvc.get("spec", {}).get("accessModes") != ["ReadWriteOnce"]:
@@ -162,8 +163,8 @@ for doc in workloads(cp):
             for m in c.get("volumeMounts", []):
                 if m["name"] == vname and not (m.get("readOnly") or vol["persistentVolumeClaim"].get("readOnly")):
                     rw.append(f"{doc['metadata']['name']}/{c['name']}")
-        if doc is scanner and not vol["persistentVolumeClaim"].get("readOnly"):
-            fail("scanner: signature claim must be readOnly")
+        if doc is scanner and vol["persistentVolumeClaim"].get("readOnly"):
+            fail("scanner: the signature claim must mount read-write at the node (one XFS device cannot be ro and rw at once); containers mount it read-only")
 if rw != [f"{rel}-control-plane-artifact-signature-updater/freshclam"]:
     fail(f"signature PVC must have exactly one read-write mount (the updater), got {rw}")
 for c in pod(scanner).get("containers", []):
