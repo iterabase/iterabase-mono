@@ -28,7 +28,7 @@ letsencrypt:
       name: cloudflare-api-token
       key: api-token
 
-# Internal CA — a private self-signed root for in-cluster TLS (Postgres, Redis,
+# Internal CA — a private self-signed root for in-cluster TLS (Postgres,
 # control-plane API). Rendered as a self-contained chain: a dedicated bootstrap
 # self-signed ClusterIssuer -> an isCA root Certificate (stored in the
 # <release>-internal-ca-root Secret) -> a CA-type ClusterIssuer (internal-ca)

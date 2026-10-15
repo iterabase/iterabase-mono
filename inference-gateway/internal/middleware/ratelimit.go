@@ -15,7 +15,7 @@ import (
 // RateLimit enforces the per-identity RPM/TPM limits from the control-plane
 // (permissions.effective_rate_limits). There are NO gateway-side defaults: an
 // identity with no rate-limit policy is unlimited (the control-plane's rule).
-// The counter is in Redis, keyed by identity_id (shared across the identity's
+// The counter is in Postgres (ratelimit.counters, DES-HOR-661-07), keyed by identity_id (shared across the identity's
 // keys and across pods). TPM is a pre-flight check; the actual TPM increment
 // happens after the response (in the proxy handler).
 func RateLimit(cache snapshot.Reader, limiter ratelimit.Limiter, m *metrics.Metrics, logger *slog.Logger) func(http.Handler) http.Handler {

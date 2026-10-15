@@ -18,13 +18,11 @@ func TestDefaults(t *testing.T) {
 
 func TestLoad_EnvOnly(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test")
-	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("ADMIN_API_KEY", "admin-secret")
 
 	cfg, err := Load("")
 	require.NoError(t, err)
 	assert.Equal(t, "postgres://localhost:5432/test", cfg.Database.URL)
-	assert.Equal(t, "redis://localhost:6379/0", cfg.Redis.URL)
 	assert.Equal(t, "admin-secret", cfg.Auth.AdminKey)
 }
 
@@ -35,8 +33,6 @@ server:
 database:
   url: "${DATABASE_URL}"
   max_open_conns: 50
-redis:
-  url: "${REDIS_URL}"
 logging:
   level: debug
   format: text
@@ -46,7 +42,6 @@ logging:
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test")
-	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 
 	cfg, err := Load(path)
 	require.NoError(t, err)
@@ -60,8 +55,6 @@ func TestLoad_EnvOverridesYAML(t *testing.T) {
 	content := `
 database:
   url: "postgres://yaml-host:5432/test"
-redis:
-  url: "redis://yaml-host:6379/0"
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gateway.yaml")
@@ -69,18 +62,15 @@ redis:
 
 	// Env vars should override YAML values.
 	t.Setenv("DATABASE_URL", "postgres://env-host:5432/test")
-	t.Setenv("REDIS_URL", "redis://env-host:6379/0")
 
 	cfg, err := Load(path)
 	require.NoError(t, err)
 	assert.Equal(t, "postgres://env-host:5432/test", cfg.Database.URL)
-	assert.Equal(t, "redis://env-host:6379/0", cfg.Redis.URL)
 }
 
 func TestLoad_MissingRequired(t *testing.T) {
-	// No DATABASE_URL or REDIS_URL set.
+	// No DATABASE_URL set.
 	t.Setenv("DATABASE_URL", "")
-	t.Setenv("REDIS_URL", "")
 
 	_, err := Load("")
 	require.Error(t, err)
@@ -89,7 +79,6 @@ func TestLoad_MissingRequired(t *testing.T) {
 
 func TestLoad_PortEnvOverride(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test")
-	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("PORT", "3000")
 
 	cfg, err := Load("")
@@ -97,20 +86,31 @@ func TestLoad_PortEnvOverride(t *testing.T) {
 	assert.Equal(t, 3000, cfg.Server.Port)
 }
 
-func TestLoad_RedisTLSEnvOverride(t *testing.T) {
+func TestLoad_CentralEnvOverride(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test")
-	t.Setenv("REDIS_URL", "rediss://redis:6379/0")
-	t.Setenv("REDIS_TLS_CA_FILE", "/etc/iterabase/internal-ca/ca.crt")
+	t.Setenv("CENTRAL_URL", "https://central.iterabase.com")
+	t.Setenv("CENTRAL_CLIENT_CERT_FILE", "/etc/iterabase/central/tls.crt")
+	t.Setenv("CENTRAL_CLIENT_KEY_FILE", "/etc/iterabase/central/tls.key")
+	t.Setenv("CENTRAL_CA_FILE", "/etc/iterabase/central/ca.crt")
 
 	cfg, err := Load("")
 	require.NoError(t, err)
-	assert.Equal(t, "/etc/iterabase/internal-ca/ca.crt", cfg.Redis.CAFile)
-	assert.Equal(t, "rediss://redis:6379/0", cfg.Redis.URL)
+	assert.Equal(t, CentralConfig{
+		URL: "https://central.iterabase.com", ClientCertFile: "/etc/iterabase/central/tls.crt",
+		ClientKeyFile: "/etc/iterabase/central/tls.key", CAFile: "/etc/iterabase/central/ca.crt",
+	}, cfg.Central)
+}
+
+func TestLoad_CentralRequiresCertificateFiles(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test")
+	t.Setenv("CENTRAL_URL", "https://central.iterabase.com")
+	_, err := Load("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "central.client_cert_file")
 }
 
 func TestLoad_MetricsDedicatedPort(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test")
-	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("METRICS_ENABLED", "true")
 	t.Setenv("METRICS_PORT", "9090")
 	cfg, err := Load("")
@@ -133,7 +133,6 @@ func TestDefaults_Workload(t *testing.T) {
 
 func TestLoad_WorkloadEnabledRequiresCerts(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test")
-	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("WORKLOAD_ENABLED", "true")
 	// No cert paths -> validation error.
 	_, err := Load("")
@@ -143,7 +142,6 @@ func TestLoad_WorkloadEnabledRequiresCerts(t *testing.T) {
 
 func TestLoad_WorkloadEnvOverride(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test")
-	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("WORKLOAD_ENABLED", "true")
 	t.Setenv("WORKLOAD_PORT", "9443")
 	t.Setenv("WORKLOAD_TRUST_DOMAIN", "cluster.example")
@@ -161,7 +159,6 @@ func TestLoad_WorkloadEnvOverride(t *testing.T) {
 
 func TestLoad_WorkloadPortMustDiffer(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test")
-	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("WORKLOAD_ENABLED", "true")
 	t.Setenv("WORKLOAD_PORT", "8080") // same as server.port
 	t.Setenv("WORKLOAD_SERVER_CERT_FILE", "/certs/srv.crt")

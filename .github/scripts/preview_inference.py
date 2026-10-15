@@ -4,7 +4,7 @@ The CI-only fixture mirrors the gateway's workload integration tests: a scoped
 identity, pool, running turn and worker/generation assignment. Nothing bypasses
 the gateway's certificate or live-assignment checks. A short-lived cert-manager
 leaf belongs only to that fixture; cleanup revokes its authority and removes it.
-Provider credentials remain in the gateway's Kubernetes Secret, never here.
+Managed inference reaches the provider through central with the preview's installation certificate (DES-HOR-661-09); no provider credential is ever here.
 """
 from __future__ import annotations
 

@@ -15,29 +15,16 @@ services:
       timeout: 3s
       retries: 5
 
-  redis:
-    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   gateway:
     build: .
     ports:
       - "8080:8080"
     environment:
       DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway?sslmode=disable
-      REDIS_URL: redis://redis:6379/0
       ADMIN_API_KEY: ${ADMIN_API_KEY:-admin-dev-key}
       LOG_FORMAT: text
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
 
 volumes:

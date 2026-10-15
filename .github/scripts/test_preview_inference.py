@@ -109,7 +109,8 @@ class PreviewInferenceTests(unittest.TestCase):
 
     def test_preview_enables_workload_listener(self) -> None:
         images = {name: {"repository": name, "tag": "sha-test"} for name in preview.PREVIEW_IMAGES}
-        values = preview.preview_values(images, "model", {"app": "app.test", "inference": "inference.test"}, "admin@test.test")
+        values = preview.preview_values(images, {"app": "app.test", "inference": "inference.test"}, "admin@test.test",
+                                        ("https://central.test", "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n"))
         self.assertIn("workload:\n    enabled: true", values)
 
     def run_smoke(self, mode: str) -> tuple[subprocess.CompletedProcess[str], list[list[str]], str]:

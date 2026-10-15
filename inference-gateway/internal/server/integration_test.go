@@ -13,12 +13,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/metrics"
@@ -28,7 +26,7 @@ import (
 )
 
 // TestServer_EndToEnd is the gateway-level E2E: a control-plane contract
-// fixture (PG) + Redis + an httptest vLLM backend, wired through the real
+// fixture (PG, including the rate-limit counters) + an httptest vLLM backend, wired through the real
 // snapshot cache + proxy + middleware. Proves: API key -> identity, capability
 // check, alias routing, model-field rewrite, per-identity rate limits, and the
 // /readyz + /admin/v1/snapshot endpoints. Requires Docker.
@@ -76,18 +74,6 @@ func TestServer_EndToEnd(t *testing.T) {
 		VALUES ('default/qwen3-27b', 'default', 'qwen3-27b', 'qwen', '{"rewrite_model_name":true}'::jsonb, true)`)
 	require.NoError(t, err)
 
-	// --- Redis ---
-	rC, err := tcredis.Run(ctx, "redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = rC.Terminate(ctx) })
-	redisURL, err := rC.ConnectionString(ctx)
-	require.NoError(t, err)
-	rOpts, err := redis.ParseURL(redisURL)
-	require.NoError(t, err)
-	rdb := redis.NewClient(rOpts)
-	t.Cleanup(func() { _ = rdb.Close() })
-	require.NoError(t, rdb.Ping(ctx).Err())
-
 	// --- Wire the real snapshot cache + proxy + middleware + router ---
 	store := snapshot.NewPGStore(pool)
 	cache := snapshot.NewCache(store, pgConn, logger, 30*time.Second)
@@ -95,7 +81,7 @@ func TestServer_EndToEnd(t *testing.T) {
 	t.Cleanup(cache.Stop)
 
 	m := metrics.New(prometheus.NewRegistry())
-	limiter := ratelimit.NewRedisLimiter(rdb)
+	limiter := ratelimit.NewPostgresLimiter(pool, ratelimit.Installation)
 	proxyHandler := proxy.NewHandler(cache, limiter, m, nil, logger)
 	deps := &Deps{
 		ProxyHandler:       proxyHandler,

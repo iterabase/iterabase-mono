@@ -36,6 +36,12 @@ type WorkloadContext struct {
 	TurnID            string
 	AssignedModel     string
 	EffectiveIdentity string
+	// Payload-free attribution forwarded to the central gateway
+	// (DES-HOR-661-03): workflow definition key (empty for chat), the work item
+	// driving the run, and the channel the run was authorized through.
+	WorkflowKey string
+	WorkItemID  string
+	Channel     string
 }
 
 // WithWorkloadContext stores the resolved workload scope in the context.
@@ -125,6 +131,9 @@ func WorkloadAuth(store workload.Store, trustDomain string, logger *slog.Logger)
 				TurnID:            ts.TurnID,
 				AssignedModel:     ts.AssignedModel,
 				EffectiveIdentity: ts.ScopeIdentityID,
+				WorkflowKey:       ts.WorkflowKey,
+				WorkItemID:        ts.WorkItemID,
+				Channel:           ts.Channel,
 			}
 			ctx := WithWorkloadContext(r.Context(), wc)
 			// Stamp the effective identity so the existing capability/usage/

@@ -13,16 +13,20 @@ import (
 // offering that references it. The reconciler materializes this into the
 // Postgres catalog.backends table (Git -> DB bridge).
 // +kubebuilder:object:generate=true
+// +kubebuilder:validation:XValidation:rule="self.kind == 'managed' ? has(self.managed) : !has(self.managed)",message="spec.managed is required for kind managed and must not be set for other kinds"
+// +kubebuilder:validation:XValidation:rule="self.kind != 'managed' || !has(self.external)",message="spec.external must not be set for kind managed"
 type ModelBackendSpec struct {
 	// kind is the backend kind. vLLM and SGLang deploy an internal GPU
 	// workload; external records a base URL (reachability validation is
-	// deferred to HOR-307).
-	// +kubebuilder:validation:Enum=vLLM;SGLang;external
+	// deferred to HOR-307); managed routes to the central Iterabase inference
+	// gateway over the installation's mTLS identity (HOR-661, DES-HOR-661-03).
+	// +kubebuilder:validation:Enum=vLLM;SGLang;external;managed
 	// +kubebuilder:validation:Required
 	Kind string `json:"kind"`
 
 	// model is the HuggingFace model id the backend loads (vLLM/SGLang
-	// `--model`). Required for vLLM/SGLang; ignored for external.
+	// `--model`). Required for vLLM/SGLang; ignored for external and managed
+	// (managed names its central model in spec.managed.model).
 	// +optional
 	Model string `json:"model,omitempty"`
 
@@ -159,6 +163,13 @@ type ModelBackendSpec struct {
 	// kind is external.
 	// +optional
 	External *ExternalBackendSpec `json:"external,omitempty"`
+
+	// managed configures a model served by the central Iterabase inference
+	// gateway. Required when kind is managed. The central URL and the
+	// installation's client certificate are installation-wide inference-gateway
+	// settings, never per backend.
+	// +optional
+	Managed *ManagedBackendSpec `json:"managed,omitempty"`
 }
 
 // ModelBackendPersistentVolumeSpec declares one controller-owned serving PVC.
@@ -218,6 +229,17 @@ type ExternalBackendSpec struct {
 	// credential (key API key/token).
 	// +optional
 	AuthRef string `json:"authRef,omitempty"`
+}
+
+// ManagedBackendSpec configures a model served by the central Iterabase
+// inference gateway (HOR-661).
+// +kubebuilder:object:generate=true
+type ManagedBackendSpec struct {
+	// model is the central model name, as listed by the central gateway's
+	// price book (for example deepseek-v4-flash).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Model string `json:"model"`
 }
 
 // ModelBackendStatus is the observed state reported by the reconciler.

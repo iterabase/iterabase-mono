@@ -71,4 +71,14 @@ CREATE VIEW catalog.effective_catalog AS
     FROM catalog.models m
     JOIN catalog.backends b ON b.name = m.backend_ref AND b.namespace = m.namespace AND b.deleted_at IS NULL
     WHERE m.deleted_at IS NULL;
+
+-- Rate-limit counters (control-plane ratelimit schema, DES-HOR-661-07).
+CREATE SCHEMA IF NOT EXISTS ratelimit;
+CREATE TABLE ratelimit.counters (
+    identity_id  text NOT NULL,
+    window_start timestamptz NOT NULL,
+    requests     integer NOT NULL DEFAULT 0,
+    tokens       bigint NOT NULL DEFAULT 0,
+    PRIMARY KEY (identity_id, window_start)
+);
 `

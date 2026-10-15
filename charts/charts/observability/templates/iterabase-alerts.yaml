@@ -37,7 +37,7 @@ spec:
     - name: iterabase-availability
       rules:
         - alert: IterabasePlatformTargetDown
-          expr: up{job=~"control-plane|inference-gateway|postgresql|redis|minio"} == 0
+          expr: up{job=~"control-plane|inference-gateway|postgresql|minio"} == 0
           for: 5m
           labels:
             severity: critical
@@ -69,15 +69,6 @@ spec:
             description: "The durable system of record is not reachable from its exporter."
             first_action: "Check the PostgreSQL pod, Service, TLS, credentials, and volume."
             runbook_url: {{ printf "%s#iterabasepostgresqlunavailable" $runbook | quote }}
-        - alert: IterabaseRedisUnavailable
-          expr: redis_up == 0
-          for: 5m
-          labels: {severity: warning, component: redis}
-          annotations:
-            summary: "Redis exporter reports the cache unavailable"
-            description: "Inference rate-limit state cannot use the shared Redis cache."
-            first_action: "Check the Redis pod, Service, AUTH/TLS, and exporter logs."
-            runbook_url: {{ printf "%s#iterabaseredisunavailable" $runbook | quote }}
 
     - name: iterabase-control-plane
       rules:
@@ -250,7 +241,7 @@ spec:
           annotations:
             summary: "Inference-gateway 5xx ratio is above 5%"
             description: "A sustained server-error ratio is affecting inference requests."
-            first_action: "Inspect gateway logs, snapshot freshness, backend availability, and Redis/Postgres health."
+            first_action: "Inspect gateway logs, snapshot freshness, backend availability, and Postgres health."
             runbook_url: {{ printf "%s#iterabaseinferencegatewayhigherrorrate" $runbook | quote }}
         - alert: IterabaseInferenceSnapshotStale
           expr: inference_gateway_snapshot_fresh == 0
@@ -335,15 +326,6 @@ spec:
             description: "The snapshot/workload authorization reader is close to exhausting its Postgres pool."
             first_action: "Inspect request concurrency, snapshot refresh, active queries, and Postgres capacity."
             runbook_url: {{ printf "%s#iterabaseinferencedatabasepoolsaturated" $runbook | quote }}
-        - alert: IterabaseInferenceRedisPoolTimeouts
-          expr: increase(inference_gateway_redis_pool_timeouts_total[10m]) > 0
-          for: 5m
-          labels: {severity: warning, component: inference-gateway}
-          annotations:
-            summary: "Inference-gateway Redis pool acquisition is timing out"
-            description: "Rate-limit operations are waiting beyond the Redis client pool bound."
-            first_action: "Inspect Redis health, request concurrency, client pool size, network latency, and blocked operations."
-            runbook_url: {{ printf "%s#iterabaseinferenceredispooltimeouts" $runbook | quote }}
         - alert: IterabaseCertificateExpiringSoon
           expr: (certmanager_certificate_renewal_timestamp_seconds < time()) or (certmanager_certificate_expiration_timestamp_seconds - time() < 3600)
           for: 10m

@@ -12,9 +12,8 @@ import (
 // Cache is the gateway's in-memory snapshot of control-plane routing and
 // workload state (catalog, workload capabilities, rate limits), refreshed from
 // the Store on start, on LISTEN/NOTIFY (catalog_changed, permissions_changed),
-// and on
-// a periodic poll (fallback). The request path reads from memory (no PG/Redis
-// round-trip); Redis remains for the rate-limit windows. This honors HOR-243's
+// and on a periodic poll (fallback). The request path reads from memory (no
+// Postgres round-trip). This honors HOR-243's
 // "consumers own their cache + freshness via LISTEN/NOTIFY" contract.
 type Cache struct {
 	store         Store
@@ -221,7 +220,7 @@ type Reader interface {
 	LastRefresh() time.Time
 }
 
-// --- Request-path reads (memory; no PG/Redis round-trip) ---
+// --- Request-path reads (memory; no Postgres round-trip) ---
 
 // ListenReady returns a channel that is closed once the LISTEN connection is
 // established. Callers that need to assert prompt NOTIFY propagation can wait

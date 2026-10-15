@@ -66,7 +66,8 @@ type Capability struct {
 }
 
 // IdentityRateLimits is a per-identity throughput limit (from
-// permissions.effective_rate_limits). The gateway enforces via Redis.
+// permissions.effective_rate_limits). The gateway enforces it with Postgres
+// counters (ratelimit.counters, DES-HOR-661-07).
 type IdentityRateLimits struct {
 	IdentityID string
 	RPM        int

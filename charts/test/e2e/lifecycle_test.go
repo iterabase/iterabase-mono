@@ -427,7 +427,6 @@ func assertLifecycleHealth(t *testing.T, state *chartState) {
 	for _, workload := range []string{
 		"statefulset/" + testRelease + "-postgresql",
 		"statefulset/" + testRelease + "-minio",
-		"deployment/" + testRelease + "-redis",
 		"deployment/" + testRelease + "-control-plane-api",
 		"deployment/" + testRelease + "-control-plane-manager",
 		"deployment/" + testRelease + "-gateway",

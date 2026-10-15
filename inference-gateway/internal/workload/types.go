@@ -34,4 +34,12 @@ type TurnScope struct {
 	TurnState       string
 	AssignedModel   string
 	ScopeIdentityID string
+	// Attribution for the central gateway (DES-HOR-661-03). WorkflowKey is
+	// runtime.workflow_runs.definition_key (empty for chat), WorkItemID is
+	// work.attempts.work_item_id for the run's attempt (empty when none), and
+	// Channel is runtime.workflow_runs.authorization_source (browser, api,
+	// chat) or "unknown" when the run records none.
+	WorkflowKey string
+	WorkItemID  string
+	Channel     string
 }

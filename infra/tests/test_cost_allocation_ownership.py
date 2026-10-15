@@ -14,7 +14,7 @@ HOSTED_AWS = Path(__file__).resolve().parents[1] / "hosted-aws"
 
 class CostAllocationOwnershipTests(unittest.TestCase):
     def assert_absent_from_hosted_stacks(self, symbol):
-        for stack in ("bootstrap", "baseline"):
+        for stack in ("bootstrap", "baseline", "central"):
             directory = HOSTED_AWS / stack
             files = sorted(directory.glob("*.tf")) + sorted(directory.glob("*.tf.json"))
             self.assertTrue(files, f"No Terraform configuration found in {directory}")

@@ -43,7 +43,7 @@
       "context": "inference-gateway",
       "dockerfile": "inference-gateway/Dockerfile",
       "paths": ["inference-gateway/**"],
-      "go_build": {"module": "inference-gateway", "main": ["./cmd/gateway"], "inputs": ["inference-gateway/Dockerfile", "inference-gateway/go.mod", "inference-gateway/go.sum"]},
+      "go_build": {"module": "inference-gateway", "main": ["./cmd/gateway", "./cmd/central"], "inputs": ["inference-gateway/Dockerfile", "inference-gateway/go.mod", "inference-gateway/go.sum"]},
       "build_args": ["VERSION={version}", "COMMIT={source_sha}"],
       "labels": ["org.opencontainers.image.version={version}", "org.opencontainers.image.revision={source_sha}", "org.opencontainers.image.source=https://github.com/{repository}"]
     },

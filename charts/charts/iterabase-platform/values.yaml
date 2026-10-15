@@ -2,7 +2,7 @@
 
 # --- Internal TLS (opt-in; the prod overlay flips this one switch) ---
 # When true, supported in-cluster service links use the Iterabase internal CA:
-# Postgres (ssl=on + hostssl), Redis (TLS + AUTH), control-plane API (HTTPS),
+# Postgres (ssl=on + hostssl), control-plane API (HTTPS),
 # verified gateway clients, and observability HTTPS. AgentPool workspace storage
 # is chart-provisioned OpenEBS LVM LocalPV/XFS on Forge's data VG and does not introduce another service
 # transport. Propagated via `global.internalTLS`; default false keeps dev/kind
@@ -32,13 +32,6 @@ global:
 # --- Data deps (self-contained; every generated PVC uses fixed iterabase-lvm-xfs) ---
 # Postgres is provided by the control-plane chart (pgvector); the gateway reads
 # the control-plane's schemas (catalog/identity/permissions) from it.
-redis:
-  enabled: true
-  # metrics.enabled (default false): deploy a redis-exporter sidecar... no — a
-  # standalone redis-exporter Deployment + ServiceMonitor owned by the redis
-  # subchart. Flip on with observability (see values-observability.yaml).
-  metrics:
-    enabled: false
 minio:
   enabled: true
   artifactService:
@@ -306,7 +299,7 @@ cert-issuers:
 
 # --- Stakater Reloader (cert reload for internal TLS) ---
 # When internalTLS is on, cert-manager renews the mounted cert Secrets (90d,
-# renewBefore 15d) but the TLS servers (Postgres/Redis/control-plane API) do not
+# renewBefore 15d) but the TLS servers (Postgres/control-plane API) do not
 # hot-reload TLS material. Reloader watches the mounted Secrets and triggers a
 # rollout when one updates, so a renewed leaf is picked up without a manual
 # restart. The TLS-serving workloads carry reloader.stakater.com/auto only while

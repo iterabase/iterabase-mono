@@ -26,7 +26,7 @@ type Backend struct {
 	Key        string // stable natural key: "<namespace>/<name>"
 	Name       string // ModelBackend name (Service name)
 	Namespace  string
-	Kind       string // vLLM | SGLang | external
+	Kind       string // vLLM | SGLang | external | managed
 	Model      string // HuggingFace id (vLLM/SGLang --model)
 	ServiceURL string // in-cluster Service URL / external baseURL
 	Image      string

@@ -385,7 +385,7 @@
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(up{job=~\"control-plane|inference-gateway|postgresql|redis|minio|.*dcgm-exporter.*\"}, namespace)",
+          "query": "label_values(up{job=~\"control-plane|inference-gateway|postgresql|minio|.*dcgm-exporter.*\"}, namespace)",
           "refId": "VariableQuery"
         },
         "includeAll": true,

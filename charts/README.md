@@ -14,7 +14,6 @@ Helm charts for the [iterabase](https://iterabase.com) platform. The `cert-manag
 | `inference-gateway` | Model-access service | ✅ |
 | `control-plane` | Durable workflow/control APIs, operator, and immutable artifact service | ✅ |
 | `postgresql` | Self-contained Postgres on the official image | bundled only |
-| `redis` | Self-contained Redis (hot-path cache) | bundled only |
 | `minio` | Self-contained MinIO object storage | bundled only |
 | `cert-issuers` | cert-manager ClusterIssuers (Let's Encrypt DNS-01/Cloudflare + self-signed) | bundled only |
 | `metallb-config` | MetalLB IPAddressPool + L2Advertisement (L2 edge for bare-metal/kind/OPO1) | bundled only |
@@ -516,6 +515,31 @@ kubelet `system-reserved`, and the per-instance concurrency budget are in
 size AgentPools and ModelBackends explicitly through their `spec.resources` in
 the overlay.
 
+## Central inference gateway (HOR-661)
+
+Managed models (`ModelBackend` kind `managed`) route to the central Iterabase
+inference gateway over mTLS with the installation's own client certificate;
+external (BYO-key), vLLM and SGLang backends stay direct. Enable it per
+installation:
+
+```yaml
+inference-gateway:
+  central:
+    enabled: true
+    url: https://central.iterabase.com
+    tlsSecretName: iterabase-central-client   # kubernetes.io/tls, from `forge central issue`
+    caBundle: |                               # public Iterabase central CA
+      -----BEGIN CERTIFICATE-----
+      ...
+      -----END CERTIFICATE-----
+```
+
+The chart renders the CA into a ConfigMap, mounts the key, certificate and CA,
+and sets `CENTRAL_URL`, `CENTRAL_CLIENT_CERT_FILE`, `CENTRAL_CLIENT_KEY_FILE` and
+`CENTRAL_CA_FILE`. With `central.enabled=false` a `managed` model fails closed.
+Rate limits use the control-plane Postgres; the platform has no Redis
+(`DES-HOR-661-07`). See `docs/architecture/v2-central-inference-gateway.md`.
+
 ## Flux-backed gateway tool runner
 
 The control-plane chart can deploy the HOR-397 Node 24 runner as a two-container
@@ -607,7 +631,7 @@ helm install iterabase charts/iterabase-platform -n iterabase-system --create-na
 The preset flips the stack on **and** every component's `metrics.enabled` knob,
 so Prometheus scrapes inference-gateway; control-plane API, manager, gateway,
 dispatch, harness workers, tool runner, and materializer; vLLM model-backend
-pods; Postgres/Redis exporters; MinIO; and enabled upstream substrate targets.
+pods; the Postgres exporter; MinIO; and enabled upstream substrate targets.
 Dedicated metrics listeners keep customer ingress and mandatory-mTLS workload
 listeners isolated.
 GPU metrics: set `observability.dcgmExporter.enabled=true` (gpu-operator must be

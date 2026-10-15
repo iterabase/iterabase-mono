@@ -3,6 +3,7 @@ package database_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,26 +107,47 @@ func TestMigrations(t *testing.T) {
 	assert.Equal(t, "NO", storageAuthorizedNullable)
 	assert.Equal(t, "false", storageAuthorizedDefault, "fresh pools must start unauthorized for dispatch")
 
+	// HOR-661: managed backends, the Postgres rate-limit windows and the
+	// gateway's work-item attribution read; reversed exactly by its down.
+	assertCentralManagedRateLimit(t, ctx, pool, true)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO catalog.backends (key, name, namespace, kind, model, service_url, deployed, healthy)
+		VALUES ('ns/central', 'central', 'ns', 'managed', 'deepseek-v4-flash', '', true, true)`)
+	require.NoError(t, err)
+	require.NoError(t, database.MigrateDown(connStr, 1))
+	assertCentralManagedRateLimit(t, ctx, pool, false)
+	var managedRows int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM catalog.backends WHERE kind='managed'`).Scan(&managedRows))
+	assert.Equal(t, 1, managedRows, "a rollback keeps managed catalog history")
+	_, err = pool.Exec(ctx, `
+		INSERT INTO catalog.backends (key, name, namespace, kind, service_url)
+		VALUES ('ns/other', 'other', 'ns', 'managed', '')`)
+	assert.Error(t, err, "after rollback new managed rows are refused")
+	_, err = pool.Exec(ctx, `DELETE FROM catalog.backends WHERE key='ns/central'`)
+	require.NoError(t, err)
+	require.NoError(t, database.MigrateUp(connStr))
+	assertCentralManagedRateLimit(t, ctx, pool, true)
+
 	// HOR-489: fresh installs grant only the durable workload-authorization
 	// reads. A migration-22 OPO1 database already has this exact ACL, so moving
-	// down migrations 32 through 23 intentionally preserves it; reapplying
+	// down migrations 33 through 23 intentionally preserves it; reapplying
 	// them must be an idempotent metadata advance with no manual role update.
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
-	require.NoError(t, database.MigrateDown(connStr, 10))
+	require.NoError(t, database.MigrateDown(connStr, 11))
 	var migrationVersion int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
 	assert.Equal(t, 22, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 	require.NoError(t, database.MigrateUp(connStr))
 	require.NoError(t, pool.QueryRow(ctx, `SELECT version FROM schema_migrations`).Scan(&migrationVersion))
-	assert.Equal(t, 32, migrationVersion)
+	assert.Equal(t, 33, migrationVersion)
 	assertGatewayWorkloadPrivileges(t, ctx, pool)
 
 	// HOR-254 must migrate an existing gateway ledger without requiring an
-	// unavailable customer-safe summary backfill. Step back from 32 (HOR-670),
-	// through 31 (HOR-582), 30 (HOR-597) and the earlier migrations to the
-	// pre-HOR-254 schema; seed a historical write, then apply all seventeen again.
-	require.NoError(t, database.MigrateDown(connStr, 17))
+	// unavailable customer-safe summary backfill. Step back from 33 (HOR-661),
+	// through 32 (HOR-670), 31 (HOR-582), 30 (HOR-597) and the earlier migrations
+	// to the pre-HOR-254 schema; seed a historical write, then apply all eighteen again.
+	require.NoError(t, database.MigrateDown(connStr, 18))
 	_, err = pool.Exec(ctx, `
 		INSERT INTO toolgateway.tool_versions
 		    (name,version,digest,description,input_schema,effect_class,credential_slots,artifact_capabilities,timeout_ms)
@@ -212,6 +234,42 @@ func TestMigrations(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, exists, "schema %q should be dropped after MigrateDown", schema)
 	}
+}
+
+// assertCentralManagedRateLimit checks migration 33 (HOR-661) is applied or
+// fully reversed.
+func assertCentralManagedRateLimit(t *testing.T, ctx context.Context, pool *pgxpool.Pool, applied bool) {
+	t.Helper()
+	var def string
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid='catalog.backends'::regclass AND conname='backends_kind_check'`).Scan(&def))
+	assert.Equal(t, applied, strings.Contains(def, "'managed'"), "backends_kind_check: %s", def)
+
+	var counters bool
+	require.NoError(t, pool.QueryRow(ctx, `SELECT to_regclass('ratelimit.counters') IS NOT NULL`).Scan(&counters))
+	assert.Equal(t, applied, counters, "ratelimit.counters")
+	if applied {
+		for _, privilege := range []string{"SELECT", "INSERT", "UPDATE", "DELETE"} {
+			var allowed bool
+			require.NoError(t, pool.QueryRow(ctx,
+				`SELECT has_table_privilege('gateway', 'ratelimit.counters', $1)`, privilege).Scan(&allowed))
+			assert.True(t, allowed, "gateway should have %s on ratelimit.counters", privilege)
+		}
+	}
+
+	var workUsage bool
+	require.NoError(t, pool.QueryRow(ctx, `SELECT has_schema_privilege('gateway', 'work', 'USAGE')`).Scan(&workUsage))
+	assert.Equal(t, applied, workUsage, "gateway USAGE on work")
+	for column, want := range map[string]bool{"id": applied, "work_item_id": applied, "graph_snapshot": false} {
+		var allowed bool
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT has_column_privilege('gateway', 'work.attempts', $1, 'SELECT')`, column).Scan(&allowed))
+		assert.Equal(t, want, allowed, "gateway SELECT on work.attempts.%s", column)
+	}
+	var tableRead bool
+	require.NoError(t, pool.QueryRow(ctx, `SELECT has_table_privilege('gateway', 'work.attempts', 'SELECT')`).Scan(&tableRead))
+	assert.False(t, tableRead, "gateway must not read whole work.attempts rows")
 }
 
 func assertGatewayWorkloadPrivileges(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
@@ -359,9 +417,9 @@ func TestV2OnlyAuthorityMigrationUpgradesALegacyInstallation(t *testing.T) {
 
 	// Step back to the pre-HOR-453 schema (migration 25) and seed a legacy
 	// install shaped like OPO1. The combined tree has 29 (wait/pause),
-	// 30 (backend auth_ref), 31 (V2-only authority) and 32 (locale preference),
-	// so step down seven.
-	require.NoError(t, database.MigrateDown(connStr, 7))
+	// 30 (backend auth_ref), 31 (V2-only authority), 32 (locale preference) and
+	// 33 (central managed backends + Postgres rate limits), so step down eight.
+	require.NoError(t, database.MigrateDown(connStr, 8))
 	version, dirty, err := database.MigrateVersion(connStr)
 	require.NoError(t, err)
 	require.False(t, dirty)

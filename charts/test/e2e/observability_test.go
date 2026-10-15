@@ -289,7 +289,6 @@ func stackReadinessSelectors(includeHarness, includeToolRunner bool) []string {
 		"app.kubernetes.io/name=alertmanager",
 		"app.kubernetes.io/name=promtail",
 		"app.kubernetes.io/name=postgresql,app.kubernetes.io/component=exporter",
-		"app.kubernetes.io/name=redis,app.kubernetes.io/component=exporter",
 		"app.kubernetes.io/name=control-plane,app.kubernetes.io/component=api",
 		"app.kubernetes.io/name=control-plane,app.kubernetes.io/component=manager",
 		"app.kubernetes.io/name=control-plane,app.kubernetes.io/component=gateway",
@@ -374,7 +373,7 @@ func assertMonitorDiscoveryStage(t *testing.T, state *chartState) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, metric := range []string{"pg_up", "redis_up"} {
+	for _, metric := range []string{"pg_up"} {
 		if err := waitPrometheusValue(state.ctx, client, forward.URL, metric, "1", 5*time.Minute); err != nil {
 			t.Fatalf("%s did not become 1: %v", metric, err)
 		}
@@ -412,7 +411,7 @@ func assertMonitorDiscoveryStage(t *testing.T, state *chartState) {
 		os.Getenv("TOOL_RUNNER_IMAGE_REPO") != "" && os.Getenv("TOOL_RUNNER_IMAGE_TAG") != "",
 	)
 	body := requireHTTP(t, client, http.MethodGet, forward.URL+"/api/v1/targets?state=active", nil, http.StatusOK)
-	targets := []string{"postgresql", "redis", "nvidia-dcgm-exporter"}
+	targets := []string{"postgresql", "nvidia-dcgm-exporter"}
 	if os.Getenv("CONTROL_PLANE_IMAGE_REPO") != "" && os.Getenv("CONTROL_PLANE_IMAGE_TAG") != "" {
 		targets = append(targets, "control-plane")
 	}

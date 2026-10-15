@@ -26,7 +26,6 @@ alerts:
     toolRunner: {enabled: true, job: control-plane, component: tool-runner}
     inferenceGateway: {enabled: true, job: inference-gateway, component: inference-gateway}
     postgresql: {enabled: true, job: postgresql, component: postgresql}
-    redis: {enabled: true, job: redis, component: redis}
     minio: {enabled: true, job: minio, component: minio}
     harness: {enabled: false, job: control-plane, component: harness}
     modelBackend: {enabled: false, job: control-plane, component: model-backend}
@@ -51,7 +50,7 @@ certManager:
 # (infrastructure/cluster metrics for free), and the kubernetes-mixin default
 # rules. Prometheus discovers ALL ServiceMonitors / PodMonitors / PrometheusRules
 # cluster-wide (nil selectors) so the per-component ServiceMonitors owned by the
-# other iterabase subcharts (postgresql/redis/minio/inference-gateway/control-
+# other iterabase subcharts (postgresql/minio/inference-gateway/control-
 # plane) and the upstream charts' own ServiceMonitors are picked up regardless of
 # label. Alertmanager email routing is NOT baked in — it is overlay-owned
 # (HOR-408: OPO1 overlay carries the email receiver config via

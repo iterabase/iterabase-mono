@@ -2,12 +2,20 @@
 
 > Canonical source: [`iterabase-mono/inference-gateway`](https://github.com/nunocgoncalves/iterabase-mono/tree/master/inference-gateway). The former standalone repository is historical and read-only.
 
-The Horizonshift/Iterabase inference gateway: an OpenAI-compatible Go service
-that routes client requests to vLLM/SGLang backends. It consumes the model
-catalog, workload capabilities, and rate limits from the **control-plane**
-(directly from the shared Postgres, LISTEN/NOTIFY-synced) and enforces
-per-identity rate limits via Redis. Per-customer, self-hosted; pairs with the
-control-plane operator, which owns the catalog/auth/policy CRDs.
+This module builds two binaries into one image (`ghcr.io/iterabase/inference-gateway`):
+
+- **`gateway`** — the installation's OpenAI-compatible gateway. It routes
+  requests to vLLM/SGLang backends, keyed external (BYO-key) providers, or the
+  central Iterabase gateway for `managed` models. It consumes the model catalog,
+  workload capabilities and rate limits from the **control-plane** (directly
+  from the shared Postgres, LISTEN/NOTIFY-synced) and enforces per-identity rate
+  limits with Postgres counters. Per installation; pairs with the control-plane
+  operator, which owns the catalog/auth/policy CRDs.
+- **`central`** — the central Iterabase inference gateway (HOR-661). It holds
+  the provider keys, authenticates installations by mTLS certificate, meters
+  credits authoritatively, and is the hosted entitlement and billing
+  authority. See [Central gateway](#central-gateway-cmdcentral) and the
+  contract in [`docs/architecture/v2-central-inference-gateway.md`](../docs/architecture/v2-central-inference-gateway.md).
 
 See the Platform Direction doc (Obsidian: *Horizonshift Platform Direction*)
 for the full architecture; this monorepo directory is the source of truth for
@@ -38,11 +46,11 @@ Direct callers (customer bearer)
 
 Supervisor (workload mTLS, HOR-398)            │
   ──> [ mTLS h2 + SPIFFE ] ──> [ WorkloadAuth: pool + active turn scope ]
-      ──> [ RateLimit: effective identity (Redis) ] ──> same proxy pipeline ──┘
+      ──> [ RateLimit: effective identity (Postgres) ] ──> same proxy pipeline ──┘
                                 │
                   snapshot cache (catalog / capabilities / rate limits)
                                 │
-            shared Postgres (control-plane schemas)        Redis (rate-limit counters)
+            shared Postgres (control-plane schemas, incl. ratelimit.counters)
 ```
 
 - **Catalog / workload capability / rate-limits:** read-only from the
@@ -72,9 +80,19 @@ Supervisor (workload mTLS, HOR-398)            │
   version path (`https://provider/v1`); requests go to
   `<baseURL>/chat/completions` (DES-HOR-597-04). In-cluster backends keep
   `<service URL>/v1/chat/completions`.
-- **Rate limits:** per-identity RPM/TPM (from the snapshot) enforced via a Redis
-  sliding window — the only shared state. TPM incremented from response usage.
-- **Redis:** rate-limit counters only.
+- **Managed models (HOR-661, DES-HOR-661-03):** a `managed` `ModelBackend`
+  carries only the central model name. The gateway sends it to
+  `CENTRAL_URL/v1/chat/completions` over mTLS with the installation's
+  central-issued certificate (re-read when the Secret is renewed), never a
+  bearer, and with payload-free attribution headers (identity, run, turn,
+  workflow key, work item, channel). Without a central route a managed model
+  fails closed with `upstream_unavailable`. vLLM/SGLang and `external`
+  (BYO-key) backends never touch central and consume no managed credits.
+- **Rate limits (DES-HOR-661-07):** per-identity RPM/TPM (from the snapshot)
+  enforced with exact one-minute counters in the control-plane Postgres
+  (`ratelimit.counters`), shared by every replica. TPM is incremented from
+  response usage. Rate limiting fails open on database errors. Windows older
+  than ten minutes are pruned every minute. There is no Redis.
 - **Supervisor workload path (HOR-398; ARCH-010/011):** a second HTTP/2 mTLS
   listener (`workload.enabled`) accepts the trusted harness supervisor using
   its SPIFFE-bound workload identity. `WorkloadAuth` resolves the pool from the
@@ -95,7 +113,6 @@ from control-plane `Model` CRs.
 
 ```bash
 export DATABASE_URL="postgres://..."   # shared Postgres (control-plane schemas)
-export REDIS_URL="redis://..."          # rate-limit counters
 export ADMIN_API_KEY="..."              # for /admin/v1/snapshot
 go run ./cmd/gateway serve
 ```
@@ -114,7 +131,7 @@ YAML and/or env vars (env wins). Key sections:
 ```yaml
 server:       {port: 8080, read_timeout: 30s, write_timeout: 300s, idle_timeout: 120s}
 database:     {url: "${DATABASE_URL}", max_open_conns: 25, max_idle_conns: 10}
-redis:        {url: "${REDIS_URL}"}
+central:      {url: "${CENTRAL_URL}", client_cert_file: ..., client_key_file: ..., ca_file: ...}
 auth:         {admin_key: "${ADMIN_API_KEY}"}        # /admin/v1/snapshot only
 snapshot:
   refresh_interval: 30s       # poll fallback (LISTEN/NOTIFY drives prompt updates)
@@ -125,7 +142,8 @@ logging:      {level: info, format: json}
 | Env var | Config | |
 |---|---|---|
 | `DATABASE_URL` | `database.url` | shared Postgres (required) |
-| `REDIS_URL` | `redis.url` | rate-limit counters (required) |
+| `CENTRAL_URL` | `central.url` | central gateway for `managed` models (optional) |
+| `CENTRAL_CLIENT_CERT_FILE` / `CENTRAL_CLIENT_KEY_FILE` / `CENTRAL_CA_FILE` | `central.*` | installation certificate, key and central CA (required with `CENTRAL_URL`) |
 | `ADMIN_API_KEY` | `auth.admin_key` | debug endpoint |
 | `PORT` | `server.port` | |
 | `METRICS_ENABLED` / `METRICS_PORT` | `metrics.*` | Dedicated in-cluster listener |
@@ -172,22 +190,67 @@ the alias; the response `model` is rewritten back to the alias.
 ## Development
 
 ```bash
-make build          # bin/gateway
-make test           # requires Docker (testcontainers: PG + Redis)
+make build          # bin/gateway and bin/central
+make test           # requires Docker (testcontainers: Postgres)
 make lint           # golangci-lint
 ```
 
 ```
 cmd/gateway/main.go        serve
+cmd/central/main.go        serve | migrate up | ca init
 internal/
+  attribution/             payload-free installation -> central attribution headers
+  centrallink/             installation mTLS client to central (certificate reload)
+  central/                 the central gateway (see below)
   config/                  configuration
   database/                PG connection pool (no migrations — gateway owns no tables)
   snapshot/                control-plane views reader + in-memory LISTEN/NOTIFY cache
-  proxy/                   routing + model rewrite + transforms + SSE streaming
+  proxy/                   routing + model rewrite + transforms; the shared Forwarder (round trip, SSE, classification, usage)
   middleware/              customer auth (denied until HOR-513), workload mTLS auth, rate limit, logging, metrics, request ID
-  ratelimit/               Redis sliding window (RPM/TPM counters)
+  ratelimit/               Postgres one-minute counters (RPM/TPM) + stream TPM batcher
+  testpg/                  testcontainers Postgres for integration tests
   server/                  HTTP server + routes (/v1, /readyz, /admin/v1/snapshot); workload mTLS listener
   spiffe/                  SPIFFE workload-identity parse + mTLS server TLS config (+ testca)
   workload/                live durable-state resolution (pool + active turn scope)
   metrics/                 Prometheus definitions
 ```
+
+## Central gateway (`cmd/central`)
+
+Runs on ECS Fargate in the hosted account (`infra/hosted-aws/central`,
+DES-HOR-661-01): two tasks behind an NLB in TCP passthrough, RDS PostgreSQL
+Multi-AZ. The container runs `central migrate up && exec central serve`.
+
+| Listener | Purpose |
+|---|---|
+| `:8443` TLS 1.3 | `POST /v1/chat/completions`, `GET /v1/models`, `GET /v1/installation` (installation certificate required); `/operator/v1/*` (presigned STS proof) |
+| `:8081` HTTP | `/healthz`, `/readyz` (database, registry freshness, serving certificate) |
+| `:9090` HTTP | Prometheus |
+
+| Env var | |
+|---|---|
+| `CENTRAL_CONFIG` | Price book and policy YAML (`infra/hosted-aws/central/central.yaml`, rendered); its SHA-256 is the price version |
+| `CENTRAL_PUBLIC_HOST` | Serving certificate name and operator audience |
+| `CENTRAL_DATABASE_HOST` / `_PORT` / `_NAME` / `_USER` / `_PASSWORD` / `_SSLMODE` | RDS connection (or `CENTRAL_DATABASE_URL`) |
+| `CENTRAL_KMS_KEY_ID` | KMS ECC_NIST_P256 key that signs as the installation CA |
+| `CENTRAL_PROVIDER_KEY` | Provider API key (Secrets Manager) |
+| `CENTRAL_OPERATORS` | JSON allow-list `[{"role_arn", "scope": "admin"\|"preview"}]` |
+| `CENTRAL_ALERT_TOPIC_ARN` | SNS billing-alerts topic (credit and FX alerts) |
+| `AWS_REGION` | KMS/SNS region |
+
+- **Commands:** `central ca init` creates the CA certificate from the KMS key
+  once (idempotent) and prints its PEM, which is published as the installations'
+  trust bundle. `central migrate up` applies the embedded schema under an
+  advisory lock.
+- **Identity and revocation:** installation certificates carry
+  `spiffe://central.iterabase.com/installations/<id>`. Every request is checked
+  against an in-memory registry refreshed by `NOTIFY central_registry_changed`
+  and a 30 s poll. A registry staler than two minutes refuses everything with
+  retryable `upstream_unavailable`.
+- **Metering:** one transaction per request writes the usage record, period
+  rollup, rate-counter tokens and alert evaluation. If it fails, the response
+  is withheld. Credits are exact decimals: 0.01 of the installation's billing
+  currency. FX uses the ECB rate locked per calendar month; a missing rate logs
+  `fx_rate_unavailable` and refuses retryably.
+- **Never stored or logged:** prompts, responses, provider error bodies and the
+  provider key.

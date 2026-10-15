@@ -4,7 +4,7 @@ SHELL := /usr/bin/env bash
 TERRAFORM ?= terraform
 TFLINT ?= tflint
 PYTHON ?= python3
-STACKS := hosted-aws/bootstrap hosted-aws/baseline
+STACKS := hosted-aws/bootstrap hosted-aws/baseline hosted-aws/central
 
 .PHONY: check fmt-check validate test lint
 
@@ -24,7 +24,12 @@ validate:
 # Source-contract guards and mocked plans: no state or cloud credentials.
 test: validate
 	$(PYTHON) -B -m unittest discover -s tests -v
-	$(TERRAFORM) -chdir=hosted-aws/baseline test -no-color
+	@for stack in $(STACKS); do \
+		if [ -d "$$stack/tests" ]; then \
+			echo ":: terraform test $$stack"; \
+			$(TERRAFORM) -chdir="$$stack" test -no-color; \
+		fi; \
+	done
 
 lint:
 	@for stack in $(STACKS); do \

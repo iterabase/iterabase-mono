@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars (ignored by Git) and fill in. Account-identifying
+# values stay out of committed code (DES-HOR-603-01). The image digest is
+# committed separately in release.auto.tfvars.json.
+provider_base_url = "https://<provider-host>/v1"
+
+# The CI preview role (CI account) may register/issue/revoke internal pr-*
+# and staging installations only (DES-HOR-661-09).
+preview_operator_role_arns = [
+  "arn:aws:iam::<ci-account-id>:role/<ci-preview-role>",
+]
+
+ops_alert_email     = "<ops@example.com>"
+billing_alert_email = "<billing@example.com>"

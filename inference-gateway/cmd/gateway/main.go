@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/centrallink"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/config"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/database"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/metrics"
@@ -85,20 +85,23 @@ func runServe() error {
 	defer pool.Close()
 	logger.Info("connected to database")
 
-	// --- Connect to Redis ---
-	redisOpts, err := redisOptions(cfg.Redis)
-	if err != nil {
-		return err
-	}
-	rdb := redis.NewClient(redisOpts)
-	defer rdb.Close()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		return fmt.Errorf("failed to connect to redis: %w", err)
-	}
-	logger.Info("connected to redis")
+	// --- Rate limiter: exact one-minute counters in the control-plane
+	// Postgres (ratelimit.counters, DES-HOR-661-07). Fails open on errors. ---
+	limiter := ratelimit.NewPostgresLimiter(pool, ratelimit.Installation)
+	pruneCtx, stopPruner := context.WithCancel(ctx)
+	defer stopPruner()
+	go limiter.RunPruner(pruneCtx, time.Minute, func(err error) {
+		logger.Warn("rate-limit window prune failed", "error", err)
+	})
 
-	// --- Create rate limiter (Redis — the only shared state, for rate-limit counters) ---
-	limiter := ratelimit.NewRedisLimiter(rdb)
+	// --- Central gateway route for managed models (DES-HOR-661-03) ---
+	central, err := centrallink.New(cfg.Central)
+	if err != nil {
+		return fmt.Errorf("central gateway route: %w", err)
+	}
+	if central != nil {
+		logger.Info("managed models route to the central gateway", "url", cfg.Central.URL)
+	}
 
 	// --- Create snapshot cache (in-memory, per-pod; LISTEN/NOTIFY-synced) ---
 	cache := snapshot.NewCache(snapshot.NewPGStore(pool), cfg.Database.URL, logger, cfg.Snapshot.RefreshInterval)
@@ -115,10 +118,9 @@ func runServe() error {
 	// --- Create metrics ---
 	m := metrics.NewWithBuild(prometheus.NewRegistry(), version.Version(), version.Commit())
 	m.RegisterDatabasePool(pool)
-	m.RegisterRedisPool(rdb)
 
 	// --- Create handlers ---
-	proxyHandler := proxy.NewHandler(cache, limiter, m, creds, logger)
+	proxyHandler := proxy.NewHandler(cache, limiter, m, creds, logger).WithCentral(central)
 
 	deps := &server.Deps{
 		ProxyHandler:       proxyHandler,
@@ -187,32 +189,6 @@ func buildWorkloadTLSConfig(cfg config.WorkloadConfig, logger *slog.Logger) (*tl
 		return nil, fmt.Errorf("workload client CA %q contains no certificate", cfg.ClientCAFile)
 	}
 	return spiffe.ServerTLSConfig(serverCert, clientCAs), nil
-}
-
-// redisOptions parses cfg.Redis.URL into go-redis options and, when a CA file
-// is configured (env REDIS_TLS_CA_FILE), installs it as the TLS root pool so a
-// rediss:// URL verifies against the internal CA. Without a CA file, TLS is
-// left to go-redis's ParseURL default (nil for redis://) — i.e. plaintext for
-// kind/E2E. The chart sets REDIS_TLS_CA_FILE + a rediss:// URL together (and
-// leaves both unset for plaintext), so the two never desync.
-func redisOptions(cfg config.RedisConfig) (*redis.Options, error) {
-	opts, err := redis.ParseURL(cfg.URL)
-	if err != nil {
-		return nil, fmt.Errorf("parse redis URL: %w", err)
-	}
-	if cfg.CAFile == "" {
-		return opts, nil
-	}
-	pemBytes, err := os.ReadFile(cfg.CAFile)
-	if err != nil {
-		return nil, fmt.Errorf("read redis TLS CA file: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pemBytes) {
-		return nil, fmt.Errorf("redis TLS CA file %q contains no certificate", cfg.CAFile)
-	}
-	opts.TLSConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
-	return opts, nil
 }
 
 // runMigrate is removed — the gateway owns no tables; the control-plane's

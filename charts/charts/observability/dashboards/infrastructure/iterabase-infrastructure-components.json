@@ -174,7 +174,7 @@
     },
     {
       "id": 4,
-      "title": "Redis availability",
+      "title": "MinIO scrape availability",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -205,126 +205,6 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "min(redis_up{namespace=~\"$namespace\"})",
-          "legendFormat": "{{component}} {{model}} {{route}} {{result}} {{pod}}",
-          "range": false,
-          "instant": true
-        }
-      ]
-    },
-    {
-      "id": 5,
-      "title": "Redis connected clients",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 14
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "redis_connected_clients{namespace=~\"$namespace\"}",
-          "legendFormat": "{{component}} {{model}} {{route}} {{result}} {{pod}}",
-          "range": true,
-          "instant": false
-        }
-      ]
-    },
-    {
-      "id": 6,
-      "title": "Redis evictions",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 14
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(rate(redis_evicted_keys_total{namespace=~\"$namespace\"}[$__rate_interval]))",
-          "legendFormat": "{{component}} {{model}} {{route}} {{result}} {{pod}}",
-          "range": true,
-          "instant": false
-        }
-      ]
-    },
-    {
-      "id": 7,
-      "title": "MinIO scrape availability",
-      "type": "stat",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 21
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": false
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
           "expr": "sum(up{namespace=~\"$namespace\",component=\"minio\"})",
           "legendFormat": "{{component}} {{model}} {{route}} {{result}} {{pod}}",
           "range": false,
@@ -333,7 +213,7 @@
       ]
     },
     {
-      "id": 8,
+      "id": 5,
       "title": "Persistent volume utilization",
       "type": "timeseries",
       "datasource": {
@@ -343,8 +223,8 @@
       "gridPos": {
         "h": 7,
         "w": 12,
-        "x": 12,
-        "y": 21
+        "x": 0,
+        "y": 14
       },
       "fieldConfig": {
         "defaults": {
@@ -373,7 +253,7 @@
       ]
     },
     {
-      "id": 9,
+      "id": 6,
       "title": "Ingress request rate",
       "type": "timeseries",
       "datasource": {
@@ -383,8 +263,8 @@
       "gridPos": {
         "h": 7,
         "w": 12,
-        "x": 0,
-        "y": 28
+        "x": 12,
+        "y": 14
       },
       "fieldConfig": {
         "defaults": {
@@ -413,7 +293,7 @@
       ]
     },
     {
-      "id": 10,
+      "id": 7,
       "title": "Certificate lifetime",
       "type": "timeseries",
       "datasource": {
@@ -423,8 +303,8 @@
       "gridPos": {
         "h": 7,
         "w": 12,
-        "x": 12,
-        "y": 28
+        "x": 0,
+        "y": 21
       },
       "fieldConfig": {
         "defaults": {
@@ -453,7 +333,7 @@
       ]
     },
     {
-      "id": 11,
+      "id": 8,
       "title": "GPU utilization",
       "type": "timeseries",
       "datasource": {
@@ -463,8 +343,8 @@
       "gridPos": {
         "h": 7,
         "w": 12,
-        "x": 0,
-        "y": 35
+        "x": 12,
+        "y": 21
       },
       "fieldConfig": {
         "defaults": {
@@ -493,7 +373,7 @@
       ]
     },
     {
-      "id": 12,
+      "id": 9,
       "title": "GPU memory used",
       "type": "timeseries",
       "datasource": {
@@ -503,8 +383,8 @@
       "gridPos": {
         "h": 7,
         "w": 12,
-        "x": 12,
-        "y": 35
+        "x": 0,
+        "y": 28
       },
       "fieldConfig": {
         "defaults": {
@@ -551,7 +431,7 @@
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(up{job=~\"control-plane|inference-gateway|postgresql|redis|minio|.*dcgm-exporter.*\"}, namespace)",
+          "query": "label_values(up{job=~\"control-plane|inference-gateway|postgresql|minio|.*dcgm-exporter.*\"}, namespace)",
           "refId": "VariableQuery"
         },
         "includeAll": true,

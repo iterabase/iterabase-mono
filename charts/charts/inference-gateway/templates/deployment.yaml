@@ -20,11 +20,16 @@ spec:
     spec:
       serviceAccountName: {{ include "inference-gateway.name" . }}
       {{- $internalTLS := (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) -}}
-      {{- if (or $internalTLS .Values.workload.enabled) }}
+      {{- if .Values.central.enabled }}
+      {{- $_ := required "inference-gateway.central.url is required when central.enabled" .Values.central.url }}
+      {{- $_ := required "inference-gateway.central.tlsSecretName is required when central.enabled" .Values.central.tlsSecretName }}
+      {{- $_ := required "inference-gateway.central.caBundle is required when central.enabled" .Values.central.caBundle }}
+      {{- end }}
+      {{- if (or $internalTLS .Values.workload.enabled .Values.central.enabled) }}
       volumes:
         {{- if $internalTLS }}
         # Internal CA root — ca.crt only (never tls.key, the CA private key) for
-        # client-side verify (Postgres verify-full + Redis RootCAs).
+        # client-side verify (Postgres verify-full).
         - name: internal-ca
           secret:
             secretName: {{ required "inference-gateway.tls.caSecretName is required when tls.enabled" (include "inference-gateway.tlsCASecretName" .) | quote }}
@@ -44,6 +49,21 @@ spec:
             items:
               - key: {{ .Values.workload.clientCAKey }}
                 path: ca.crt
+        {{- end }}
+        {{- if .Values.central.enabled }}
+        # HOR-661 central gateway client identity (installation key + cert) and
+        # the public central CA that verifies central's serving certificate.
+        - name: central-tls
+          secret:
+            secretName: {{ .Values.central.tlsSecretName | quote }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: central-ca
+          configMap:
+            name: {{ include "inference-gateway.centralCAConfigMapName" . }}
         {{- end }}
       {{- end }}
       containers:
@@ -75,21 +95,16 @@ spec:
                   key: {{ .Values.postgresql.passwordKey }}
             - name: DATABASE_URL
               value: {{ include "inference-gateway.databaseURL" . | quote }}
-            {{- if (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) }}
-            # REDIS_PASSWORD must precede REDIS_URL: k8s expands $(REDIS_PASSWORD)
-            # from previously-defined env vars only (like PGPASSWORD/DATABASE_URL).
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "inference-gateway.redisSecret" . }}
-                  key: {{ .Values.redis.passwordKey }}
-            {{- end }}
-            - name: REDIS_URL
-              value: {{ include "inference-gateway.redisURL" . | quote }}
-            {{- if (or .Values.tls.enabled (dig "internalTLS" "enabled" false (.Values.global | default (dict)))) }}
-            # Points the gateway's redisOptions at the internal CA for rediss:// verify.
-            - name: REDIS_TLS_CA_FILE
-              value: {{ .Values.tls.caMountPath | quote }}
+            {{- if .Values.central.enabled }}
+            # HOR-661: managed models route to the central gateway over mTLS.
+            - name: CENTRAL_URL
+              value: {{ .Values.central.url | quote }}
+            - name: CENTRAL_CLIENT_CERT_FILE
+              value: {{ printf "%s/tls.crt" .Values.central.certMountPath | quote }}
+            - name: CENTRAL_CLIENT_KEY_FILE
+              value: {{ printf "%s/tls.key" .Values.central.certMountPath | quote }}
+            - name: CENTRAL_CA_FILE
+              value: {{ printf "%s/ca.crt" .Values.central.caMountPath | quote }}
             {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: METRICS_ENABLED
@@ -117,7 +132,7 @@ spec:
             - name: WORKLOAD_CLIENT_CA_FILE
               value: {{ printf "%s/ca.crt" .Values.workload.clientCAMountPath | quote }}
             {{- end }}
-          {{- if (or $internalTLS .Values.workload.enabled) }}
+          {{- if (or $internalTLS .Values.workload.enabled .Values.central.enabled) }}
           volumeMounts:
             {{- if $internalTLS }}
             - name: internal-ca
@@ -130,6 +145,14 @@ spec:
               readOnly: true
             - name: workload-client-ca
               mountPath: {{ .Values.workload.clientCAMountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.central.enabled }}
+            - name: central-tls
+              mountPath: {{ .Values.central.certMountPath }}
+              readOnly: true
+            - name: central-ca
+              mountPath: {{ .Values.central.caMountPath }}
               readOnly: true
             {{- end }}
           {{- end }}

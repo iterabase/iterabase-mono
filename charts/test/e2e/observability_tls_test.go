@@ -28,7 +28,7 @@ func observabilityTLSScenario() sharede2e.Definition {
 	return sharede2e.Define(sharede2e.Scenario[*chartState]{
 		Metadata: chartScenarioMetadata(
 			"observability-tls",
-			"Installs the internal-TLS observability composition on the ordered internal CA and proves a single adopted root authority whose issued stack, datastore, and control-plane leaves chain to the mounted root; verified HTTPS for the stack, exporters, self-monitors, Grafana datasources/sidecars, Loki gateway, Promtail, and Alertmanager; distinct verified control-plane edge/backend TLS; gateway dependency readiness; rejected plaintext Redis/PostgreSQL transport; and root-key stability across a reconcile.",
+			"Installs the internal-TLS observability composition on the ordered internal CA and proves a single adopted root authority whose issued stack, datastore, and control-plane leaves chain to the mounted root; verified HTTPS for the stack, exporters, self-monitors, Grafana datasources/sidecars, Loki gateway, Promtail, and Alertmanager; distinct verified control-plane edge/backend TLS; gateway dependency readiness; rejected plaintext PostgreSQL transport; and root-key stability across a reconcile.",
 			"test-e2e-observability-tls", 50,
 			[]string{"HOR-371", "HOR-408", "HOR-414", "HOR-418", "HOR-420", "HOR-416", "HOR-475", "HOR-507", "HOR-528", "HOR-545", "HOR-590", "DES-HOR-545-01"},
 			append(substrateRenders("opo1", "values-tls.yaml"), observabilityCandidateValues(observabilityTLSPlatform, true, true).render()),
@@ -56,12 +56,11 @@ func observabilityTLSScenario() sharede2e.Definition {
 			{Name: "assert-gateway-mounted-ca", DependsOn: []string{"assert-gateway-dependencies"}, Run: assertGatewayMountedCAStage},
 			{Name: "assert-control-plane-verified-https", DependsOn: []string{"assert-internal-identities"}, Run: assertControlPlaneVerifiedHTTPSStage},
 			{Name: "assert-control-plane-ingress-verified-tls", DependsOn: []string{"assert-control-plane-verified-https"}, Run: assertControlPlaneIngressVerifiedTLSStage},
-			{Name: "assert-redis-transport", DependsOn: []string{"assert-internal-identities"}, Run: assertRedisTransportStage},
 			{Name: "assert-postgresql-transport", DependsOn: []string{"assert-internal-identities"}, Run: assertPostgreSQLTransportStage},
 			{Name: "reconcile-internal-tls-authority", DependsOn: []string{
 				"assert-exporter-client-paths", "assert-verified-self-monitors", "assert-grafana-datasources-sidecars",
 				"assert-loki-gateway", "assert-promtail-loki", "assert-prometheus-alertmanager", "assert-gateway-mounted-ca",
-				"assert-control-plane-ingress-verified-tls", "assert-redis-transport", "assert-postgresql-transport",
+				"assert-control-plane-ingress-verified-tls", "assert-postgresql-transport",
 			}, Run: reconcileInternalTLSAuthorityStage},
 		},
 		Diagnostics: diagnostics,
@@ -142,7 +141,7 @@ func assertGatewayDependenciesStage(t *testing.T, state *chartState) {
 }
 
 // assertGatewayMountedCAStage proves the inference gateway mounts the exact
-// issued root at the CA path its rendered verify-full/rediss client
+// issued root at the CA path its rendered verify-full client
 // configuration names (scripts/check-gateway-tls-client.sh proves that config).
 func assertGatewayMountedCAStage(t *testing.T, state *chartState) {
 	t.Helper()
@@ -199,51 +198,6 @@ func assertControlPlaneIngressVerifiedTLSStage(t *testing.T, state *chartState) 
 	requireHTTP(t, client, http.MethodGet, "https://"+host+"/healthz", nil, http.StatusOK)
 	requireHTTP(t, client, http.MethodGet, "https://"+host+"/", nil, http.StatusOK)
 	state.stopForward(t, forward)
-}
-
-// assertRedisTransportStage proves the Redis server rejects authenticated
-// plaintext and accepts only CA-verified TLS with AUTH.
-func assertRedisTransportStage(t *testing.T, state *chartState) {
-	t.Helper()
-	manifest := fmt.Sprintf(`apiVersion: v1
-kind: Pod
-metadata:
-  name: redis-transport-probe
-  namespace: %[1]s
-spec:
-  restartPolicy: Never
-  containers:
-    - name: probe
-      image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
-      env:
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: %[2]s-redis
-              key: redis-password
-      command: ["/bin/sh", "-c"]
-      args:
-        - |
-          if redis-cli -h %[2]s-redis -p 6379 -a "$REDIS_PASSWORD" PING 2>/dev/null | grep -q PONG; then
-            echo "authenticated plaintext unexpectedly succeeded" >&2
-            exit 1
-          fi
-          test "$(redis-cli --tls --cacert /ca/ca.crt -h %[2]s-redis -p 6379 PING 2>/dev/null)" = "NOAUTH Authentication required."
-          test "$(redis-cli --tls --cacert /ca/ca.crt -h %[2]s-redis -p 6379 -a "$REDIS_PASSWORD" PING 2>/dev/null)" = PONG
-      volumeMounts:
-        - name: ca
-          mountPath: /ca
-          readOnly: true
-  volumes:
-    - name: ca
-      secret:
-        secretName: %[3]s
-        items:
-          - key: ca.crt
-            path: ca.crt
-`, testNamespace, testRelease, internalCARootSecretName())
-	state.kubectl(t, 30*time.Second, "apply", "-f", state.writeManifest(t, "redis-transport.yaml", manifest))
-	state.kubectl(t, 3*time.Minute, "wait", "--for=jsonpath={.status.phase}=Succeeded", "pod/redis-transport-probe", "-n", testNamespace, "--timeout=2m")
 }
 
 // assertPostgreSQLTransportStage proves PostgreSQL rejects authenticated
@@ -344,7 +298,7 @@ func assertTLSExporterPaths(t *testing.T, state *chartState, includeHarness, inc
 	prometheusService := kubePrometheusStackComponentName("prometheus")
 	forward := state.forward(t, "svc/"+prometheusService, 9090, "https")
 	client := verifiedClient(t, ca, prometheusService+"."+testNamespace+".svc")
-	for _, metric := range []string{"pg_up", "redis_up"} {
+	for _, metric := range []string{"pg_up"} {
 		if err := waitPrometheusValue(state.ctx, client, forward.URL, metric, "1", 5*time.Minute); err != nil {
 			t.Fatalf("%s did not become 1 over verified Prometheus HTTPS: %v", metric, err)
 		}

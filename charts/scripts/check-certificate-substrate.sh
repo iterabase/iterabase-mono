@@ -46,8 +46,7 @@ if grep -R -q 'helm.sh/hook' \
   charts/control-plane/templates/certificate.yaml \
   charts/control-plane/templates/tool-runner.yaml \
   charts/observability/templates/stack-internal-tls.yaml \
-  charts/postgresql/templates/certificate.yaml \
-  charts/redis/templates/certificate.yaml; then
+  charts/postgresql/templates/certificate.yaml; then
   echo "error: cert-manager consumers must be normal resources in the ordered platform release" >&2
   exit 1
 fi

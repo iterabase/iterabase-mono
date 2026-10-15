@@ -16,12 +16,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/metrics"
@@ -57,19 +55,6 @@ func startPG(t *testing.T, ctx context.Context) (testcontainers.Container, *pgxp
 	pool, err := pgxpool.New(ctx, pgConn)
 	require.NoError(t, err)
 	return pgC, pool, pgConn
-}
-
-// setupRedis starts a testcontainers Redis and returns a connected client.
-func setupRedis(t *testing.T, ctx context.Context) *redis.Client {
-	t.Helper()
-	rC, err := tcredis.Run(ctx, "redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = rC.Terminate(ctx) })
-	url, err := rC.ConnectionString(ctx)
-	require.NoError(t, err)
-	opts, err := redis.ParseURL(url)
-	require.NoError(t, err)
-	return redis.NewClient(opts)
 }
 
 const (
@@ -131,18 +116,13 @@ func startWorkloadServer(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	t.Helper()
 	logger := slog.Default()
 
-	// Redis (rate-limit counters).
-	rdb := setupRedis(t, ctx)
-	t.Cleanup(func() { _ = rdb.Close() })
-	require.NoError(t, rdb.Ping(ctx).Err())
-
 	store := snapshot.NewPGStore(pool)
 	cache := snapshot.NewCache(store, pgConn, logger, 30*time.Second)
 	require.NoError(t, cache.Start(ctx))
 	t.Cleanup(cache.Stop)
 
 	m := metrics.New(prometheus.NewRegistry())
-	limiter := ratelimit.NewRedisLimiter(rdb)
+	limiter := ratelimit.NewPostgresLimiter(pool, ratelimit.Installation)
 	proxyHandler := proxy.NewHandler(cache, limiter, m, nil, logger)
 	deps := &Deps{
 		ProxyHandler:       proxyHandler,
@@ -435,7 +415,7 @@ func TestWorkloadMTLS_CustomerListenerDeniesBearer(t *testing.T) {
 	require.NoError(t, cache.Start(ctx))
 	t.Cleanup(cache.Stop)
 	m := metrics.New(prometheus.NewRegistry())
-	limiter := ratelimit.NewRedisLimiter(setupRedis(t, ctx))
+	limiter := ratelimit.NewPostgresLimiter(pool, ratelimit.Installation)
 	proxyHandler := proxy.NewHandler(cache, limiter, m, nil, logger)
 	deps := &Deps{ProxyHandler: proxyHandler, Cache: cache, Limiter: limiter, ReadinessStaleness: 60 * time.Second}
 	srv := httptest.NewServer(newRouter(logger, m, deps))
@@ -453,7 +433,7 @@ func TestWorkloadMTLS_CustomerListenerDeniesBearer(t *testing.T) {
 
 // The workload listener must be HTTP/2-only (ARCH-006): an mTLS client that
 // offers only HTTP/1.1 (no h2 ALPN) must be rejected. This does not need
-// Postgres/Redis — it only exercises the TLS + protocol configuration.
+// Postgres — it only exercises the TLS + protocol configuration.
 func TestWorkloadMTLS_HTTP1_1Rejected(t *testing.T) {
 	ca, err := testca.New()
 	require.NoError(t, err)

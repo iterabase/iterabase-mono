@@ -617,7 +617,7 @@ sequenceDiagram
   end
 ```
 
-The implementation may retain the repository's existing Redis limiter substrate solely for rate counters. Per `DES-HOR-451-14`, Redis is not customer authorization authority: credential and catalogue state are read live from PostgreSQL on every customer request, and failed reads or accepted-event inserts deny before backend invocation. A future Redis authorization-cache worker is explicitly deferred; adopting one requires a separate architecture decision and proof that revocation, disablement, demotion, expiry, and suspension still take effect on the next request. Any other datastore/transport/isolation change likewise requires separate approval.
+Rate counters live in the control-plane PostgreSQL (`ratelimit.counters`); Redis was removed from the platform by `DES-HOR-661-07`. Per `DES-HOR-451-14`, rate counters are not customer authorization authority: credential and catalogue state are read live from PostgreSQL on every customer request, and failed reads or accepted-event inserts deny before backend invocation. A future Redis authorization-cache worker is explicitly deferred; adopting one requires a separate architecture decision and proof that revocation, disablement, demotion, expiry, and suspension still take effect on the next request. Any other datastore/transport/isolation change likewise requires separate approval.
 
 ## 10. Role, account, and credential transitions
 

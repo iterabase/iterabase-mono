@@ -7,8 +7,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/attribution"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/metrics"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/middleware"
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/ratelimit"
@@ -16,18 +18,31 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/upstreamauth"
 )
 
-// Handler is the main proxy handler for OpenAI-compatible endpoints. It routes
-// by alias (from the control-plane catalog snapshot) to a single backend_url,
-// rewrites the model field to the backend's HF id, applies per-alias transforms,
-// and proxies. No weighted LB / health checker — the catalog's `available` flag
-// is the health signal (set by the control-plane ModelBackend reconciler).
+// tpmBatchInterval is how often a stream's tokens are flushed to the limiter.
+const tpmBatchInterval = 500 * time.Millisecond
+
+// Central is an installation's route to the central Iterabase gateway
+// (DES-HOR-661-03): its base URL and an mTLS client carrying the
+// installation certificate.
+type Central struct {
+	URL    string
+	Client *http.Client
+}
+
+// Handler is the installation gateway's proxy handler for OpenAI-compatible
+// endpoints. It routes by alias (from the control-plane catalog snapshot) to a
+// single backend, rewrites the model field to the backend's id, applies
+// per-alias transforms, and forwards through the shared Forwarder. No weighted
+// LB / health checker — the catalog's `available` flag is the health signal
+// (set by the control-plane ModelBackend reconciler).
 type Handler struct {
-	cache   snapshot.Reader
-	limiter ratelimit.Limiter
-	metrics *metrics.Metrics
-	creds   upstreamauth.Resolver
-	client  *http.Client
-	logger  *slog.Logger
+	cache     snapshot.Reader
+	limiter   ratelimit.Limiter
+	creds     upstreamauth.Resolver
+	client    *http.Client
+	central   *Central
+	forwarder *Forwarder
+	logger    *slog.Logger
 }
 
 // NewHandler creates a new proxy handler. creds resolves keyed external
@@ -35,18 +50,20 @@ type Handler struct {
 // with upstream_auth_failed.
 func NewHandler(cache snapshot.Reader, limiter ratelimit.Limiter, m *metrics.Metrics, creds upstreamauth.Resolver, logger *slog.Logger) *Handler {
 	return &Handler{
-		cache:   cache,
-		limiter: limiter,
-		metrics: m,
-		creds:   creds,
-		client: &http.Client{
-			Timeout: 300 * time.Second, // Long timeout for inference
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-		logger: logger,
+		cache:     cache,
+		limiter:   limiter,
+		creds:     creds,
+		client:    NewUpstreamClient(nil),
+		forwarder: NewForwarder(m, logger),
+		logger:    logger,
 	}
+}
+
+// WithCentral routes managed models to the central gateway. Without it, a
+// managed model fails closed with upstream_unavailable.
+func (h *Handler) WithCentral(c *Central) *Handler {
+	h.central = c
+	return h
 }
 
 // ChatCompletions handles POST /v1/chat/completions.
@@ -111,18 +128,105 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	md.BackendURL = entry.BackendURL
+	target, ue := h.target(r.Context(), &entry, identityID)
+	if ue != nil {
+		h.forwarder.WriteUpstreamError(w, target, 0, ue, nil)
+		return
+	}
+	md.BackendURL = target.URL
 
 	body = ApplyRequestTransforms(body, &entry)
-	if entry.Transforms.RewriteModelName && entry.BackendModelID != "" {
+	// A managed model always reaches central under its central name.
+	if (entry.Transforms.RewriteModelName || entry.BackendKind == backendKindManaged) && entry.BackendModelID != "" {
 		body = rewriteModelInRequest(body, entry.BackendModelID)
 	}
 
-	if req.Stream {
-		h.handleStreaming(w, r, body, &entry, identityID)
-	} else {
-		h.handleNonStreaming(w, r, body, &entry, identityID)
+	h.forwarder.Forward(w, r, body, req.Stream, target, h.hooks(identityID, req.Stream))
+}
+
+// target resolves the upstream for a catalog entry. A keyed external backend
+// gets its credential as the bearer token; a managed backend goes to central
+// over mTLS with payload-free attribution and no bearer; nothing from the
+// client's own Authorization header is ever forwarded. On error the returned
+// target still labels the failure.
+func (h *Handler) target(ctx context.Context, entry *snapshot.CatalogEntry, identityID string) (*Target, *upstreamError) {
+	t := &Target{
+		URL:           chatCompletionsURL(entry),
+		Client:        h.client,
+		Header:        http.Header{},
+		ResponseModel: entry.ModelID,
+		MetricsModel:  entry.ModelID,
+		BackendRef:    entry.BackendRef,
 	}
+	switch {
+	case entry.BackendKind == backendKindManaged:
+		if h.central == nil || h.central.URL == "" || h.central.Client == nil {
+			h.logger.Error("managed model requested but the central gateway is not configured",
+				"model", entry.ModelID, "backend", entry.BackendRef)
+			return t, upstreamUnavailable("")
+		}
+		t.URL = strings.TrimRight(h.central.URL, "/") + "/v1/chat/completions"
+		t.Client = h.central.Client
+		t.Header = requestAttribution(ctx, identityID).Header()
+	case entry.BackendAuthRef != "":
+		if h.creds == nil {
+			h.logger.Error("upstream credential unavailable: no Kubernetes credential resolver",
+				"model", entry.ModelID, "backend", entry.BackendRef)
+			return t, upstreamAuthFailed("model provider credential is unavailable")
+		}
+		key, err := h.creds.Credential(ctx, entry.Namespace, entry.BackendAuthRef)
+		if err != nil {
+			// The error names the Secret, never its value.
+			h.logger.Error("upstream credential unavailable", "model", entry.ModelID, "backend", entry.BackendRef, "error", err)
+			return t, upstreamAuthFailed("model provider credential is unavailable")
+		}
+		t.Header.Set("Authorization", "Bearer "+key)
+	}
+	return t, nil
+}
+
+// requestAttribution is the payload-free attribution sent to central.
+func requestAttribution(ctx context.Context, identityID string) attribution.Attribution {
+	a := attribution.Attribution{
+		RequestID:  middleware.RequestIDFromContext(ctx),
+		IdentityID: identityID,
+		Channel:    attribution.ChannelAPI,
+	}
+	if wc, ok := middleware.WorkloadContextFromContext(ctx); ok {
+		a.RunID = wc.RunID
+		a.TurnID = wc.TurnID
+		a.WorkflowKey = wc.WorkflowKey
+		a.WorkItemID = wc.WorkItemID
+		a.Channel = attribution.Channel(wc.Channel)
+	}
+	return a
+}
+
+// hooks wires per-identity TPM accounting. The installation gateway's own
+// accounting never fails a request (rate limits fail open).
+func (h *Handler) hooks(identityID string, stream bool) Hooks {
+	if h.limiter == nil || identityID == "" {
+		return Hooks{}
+	}
+	if stream {
+		batcher := ratelimit.NewTPMBatcher(h.limiter, identityID, tpmBatchInterval)
+		batcher.Start()
+		return Hooks{
+			OnStreamTokens: batcher.Add,
+			Settle: func(ctx context.Context, _ Outcome) error {
+				batcher.Stop(ctx)
+				return nil
+			},
+		}
+	}
+	return Hooks{Settle: func(ctx context.Context, o Outcome) error {
+		if o.Usage != nil && o.Usage.TotalTokens > 0 {
+			if err := h.limiter.IncrementTPM(ctx, identityID, o.Usage.TotalTokens); err != nil {
+				h.logger.Error("failed to increment TPM", "identity_id", identityID, "error", err)
+			}
+		}
+		return nil
+	}}
 }
 
 // allowsModel reports whether the identity's capabilities grant access to the
@@ -137,113 +241,6 @@ func (h *Handler) allowsModel(identityID, model string) bool {
 		}
 	}
 	return false
-}
-
-func (h *Handler) handleNonStreaming(
-	w http.ResponseWriter,
-	r *http.Request,
-	body []byte,
-	entry *snapshot.CatalogEntry,
-	identityID string,
-) {
-	proxyReq, ue := h.newUpstreamRequest(r.Context(), entry, body)
-	if ue != nil {
-		h.writeUpstreamError(w, entry, 0, ue, nil)
-		return
-	}
-
-	backendStart := time.Now()
-	resp, err := h.client.Do(proxyReq)
-	if err != nil {
-		if ue := transportError(r.Context()); ue != nil {
-			h.writeUpstreamError(w, entry, 0, ue, err)
-		}
-		return
-	}
-	defer resp.Body.Close()
-
-	// The status decides a classified failure; its body is discarded unread,
-	// so a truncated or stalled error body cannot reclassify it.
-	if ue := classifyUpstreamStatus(resp.StatusCode, resp.Header); ue != nil {
-		h.writeUpstreamError(w, entry, resp.StatusCode, ue, nil)
-		return
-	}
-
-	respBody, err := io.ReadAll(resp.Body)
-	backendDuration := time.Since(backendStart).Seconds()
-	if err != nil {
-		if ue := transportError(r.Context()); ue != nil {
-			h.writeUpstreamError(w, entry, resp.StatusCode, ue, err)
-		}
-		return
-	}
-	if h.metrics != nil {
-		h.metrics.BackendRequestDuration.WithLabelValues(entry.ModelID, entry.BackendRef).Observe(backendDuration)
-	}
-
-	// Rewrite the response model field back to the alias.
-	respBody = rewriteModelInResponse(respBody, entry.ModelID)
-	h.trackUsage(r.Context(), respBody, entry.ModelID, backendDuration, identityID)
-
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	// The response body may have been rewritten above (model-name alias),
-	// which can change its length. Discard the backend's Content-Length so
-	// Go recomputes it from the actual bytes we write — a stale value would
-	// make ingress-nginx read past EOF and return 502 to the client.
-	w.Header().Del("Content-Length")
-	w.WriteHeader(resp.StatusCode)
-	if _, err := w.Write(respBody); err != nil {
-		h.logger.Error("failed to write backend response", "model", entry.ModelID, "error", err)
-	}
-}
-
-// trackUsage extracts token usage from a non-streaming response, increments the
-// per-identity TPM counter, and records Prometheus token metrics.
-func (h *Handler) trackUsage(ctx context.Context, respBody []byte, modelName string, durationSec float64, identityID string) {
-	var resp struct {
-		Usage *struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(respBody, &resp); err != nil || resp.Usage == nil {
-		return
-	}
-
-	if h.limiter != nil && resp.Usage.TotalTokens > 0 && identityID != "" {
-		if err := h.limiter.IncrementTPM(ctx, identityID, resp.Usage.TotalTokens); err != nil {
-			h.logger.Error("failed to increment TPM", "model", modelName, "error", err)
-		}
-	}
-
-	if h.metrics != nil {
-		if resp.Usage.PromptTokens > 0 {
-			h.metrics.PromptTokensTotal.WithLabelValues(modelName).Add(float64(resp.Usage.PromptTokens))
-			h.metrics.TokensPerRequest.WithLabelValues(modelName, "prompt").Observe(float64(resp.Usage.PromptTokens))
-		}
-		if resp.Usage.CompletionTokens > 0 {
-			h.metrics.CompletionTokensTotal.WithLabelValues(modelName).Add(float64(resp.Usage.CompletionTokens))
-			h.metrics.TokensPerRequest.WithLabelValues(modelName, "completion").Observe(float64(resp.Usage.CompletionTokens))
-		}
-		if durationSec > 0 {
-			if resp.Usage.PromptTokens > 0 {
-				h.metrics.TokensPerSecond.WithLabelValues(modelName, "prompt").Observe(float64(resp.Usage.PromptTokens) / durationSec)
-			}
-			if resp.Usage.CompletionTokens > 0 {
-				completionTokensPerSecond := float64(resp.Usage.CompletionTokens) / durationSec
-				h.metrics.TokensPerSecond.WithLabelValues(modelName, "completion").Observe(completionTokensPerSecond)
-				h.metrics.CompletionTokensPerSecondByPromptBucket.
-					WithLabelValues(modelName, promptTokensBucket(resp.Usage.PromptTokens)).
-					Observe(completionTokensPerSecond)
-			}
-		}
-	}
 }
 
 // ListModels handles GET /v1/models — returns available aliases from the snapshot.
@@ -276,6 +273,20 @@ type chatCompletionRequest struct {
 	Stream bool   `json:"stream"`
 }
 
+// ParseChatRequest extracts the model and stream flag from a chat request.
+func ParseChatRequest(body []byte) (model string, stream bool, err error) {
+	var req chatCompletionRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return "", false, err
+	}
+	return req.Model, req.Stream, nil
+}
+
+// RewriteModelInRequest replaces the request's "model" field.
+func RewriteModelInRequest(body []byte, modelID string) []byte {
+	return rewriteModelInRequest(body, modelID)
+}
+
 // rewriteModelInRequest replaces the "model" field with the backend's HF id.
 func rewriteModelInRequest(body []byte, modelID string) []byte {
 	var parsed map[string]any
@@ -293,6 +304,9 @@ func rewriteModelInRequest(body []byte, modelID string) []byte {
 // rewriteModelInResponse replaces the "model" field with the alias so the client
 // sees a consistent name.
 func rewriteModelInResponse(body []byte, aliasName string) []byte {
+	if aliasName == "" {
+		return body
+	}
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return body
@@ -305,6 +319,11 @@ func rewriteModelInResponse(body []byte, aliasName string) []byte {
 		return body
 	}
 	return rewritten
+}
+
+// WriteError writes an OpenAI-compatible error envelope.
+func WriteError(w http.ResponseWriter, status int, errType, message, code string) {
+	writeTypedError(w, status, errType, message, code)
 }
 
 func writeError(w http.ResponseWriter, status int, message string, code string) {

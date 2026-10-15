@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Global internal TLS must make the inference gateway a verifying client of
-# its datastores: PostgreSQL with sslmode=verify-full against the mounted
-# internal CA root, and Redis over CA-backed rediss://. The live observability-tls
+# its datastore: PostgreSQL with sslmode=verify-full against the mounted
+# internal CA root. The live observability-tls
 # E2E proves the mounted bytes match the issued root and that the servers reject
 # plaintext; this render proves the client configuration that relies on them.
 release=gateway-tls
@@ -34,9 +34,9 @@ assert_equal() {
 
 database_url=$(env_value DATABASE_URL)
 assert_equal 'DATABASE_URL TLS parameters' "sslmode=verify-full&sslrootcert=$ca_path" "${database_url##*\?}"
-redis_url=$(env_value REDIS_URL)
-assert_equal 'REDIS_URL scheme' 'rediss' "${redis_url%%://*}"
-assert_equal 'REDIS_TLS_CA_FILE' "$ca_path" "$(env_value REDIS_TLS_CA_FILE)"
+for name in REDIS_URL REDIS_TLS_CA_FILE; do
+  assert_equal "$name (Redis was removed, DES-HOR-661-07)" '' "$(env_value "$name")"
+done
 
 mount=$(yq eval '.spec.template.spec.containers[0].volumeMounts[] | select(.mountPath == "'"${ca_path%/*}"'") | .name' - <<<"$deployment")
 assert_equal 'internal CA mount volume' 'internal-ca' "$mount"
@@ -45,4 +45,4 @@ assert_equal 'internal CA Secret' "$release-internal-ca-root" "$secret"
 items=$(yq eval -o=json -I=0 '.spec.template.spec.volumes[] | select(.name == "internal-ca") | .secret.items' - <<<"$deployment")
 assert_equal 'internal CA Secret items (never the CA private key)' '[{"key":"ca.crt","path":"ca.crt"}]' "$items"
 
-echo 'OK: global internal TLS renders verify-full PostgreSQL and CA-backed rediss:// Redis clients against the mounted internal CA root'
+echo 'OK: global internal TLS renders a verify-full PostgreSQL client against the mounted internal CA root'

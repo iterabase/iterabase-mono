@@ -2,74 +2,92 @@
 
 Read the root [`AGENTS.md`](../AGENTS.md) first. Its context, Git, ticket, validation, and architecture-approval rules apply here.
 
-Stay inside `inference-gateway/` for OpenAI-compatible inference routing, snapshot consumption, customer/workload authentication, Redis rate limiting, and backend proxy behavior. Inspect `control-plane/` only for an explicitly named shared database or workload contract; deployment packaging remains owned by `charts/`.
+Stay inside `inference-gateway/` for OpenAI-compatible inference routing, snapshot consumption, customer/workload authentication, Postgres rate limiting, backend proxy behavior, and the central gateway (`cmd/central`). Inspect `control-plane/` only for an explicitly named shared database or workload contract; deployment packaging remains owned by `charts/`.
 
 ## Project Overview
 
-Go (1.26) OpenAI-compatible API gateway for vLLM inference backends. Routes
-`/v1/chat/completions` and `/v1/models` through a load balancer with auth,
-rate limiting, streaming (SSE), request transforms, and an admin CRUD API.
+Go (1.26) module with two binaries in one image:
 
-Key stack: Go stdlib + chi v5 router, PostgreSQL (pgx v5), Redis (go-redis v9),
-Prometheus metrics, golang-migrate, testcontainers-go for integration tests.
+- `cmd/gateway`: the installation's OpenAI-compatible gateway. It routes
+  `/v1/chat/completions` and `/v1/models` from the control-plane catalog
+  snapshot to vLLM/SGLang, keyed external (BYO-key) providers, or the central
+  gateway for `managed` models. It covers workload mTLS auth, Postgres rate
+  limits and SSE streaming.
+- `cmd/central`: the central Iterabase gateway (HOR-661). It provides
+  installation mTLS, the KMS-backed installation CA, the registry and
+  entitlements, authoritative credit metering, FX, alerts, the operator API and
+  the invoicing export. Its contract is
+  [`docs/architecture/v2-central-inference-gateway.md`](../docs/architecture/v2-central-inference-gateway.md).
+
+Key stack: Go stdlib + chi v5, PostgreSQL (pgx v5), Prometheus, aws-sdk-go-v2
+(KMS, SNS) for central, and testcontainers-go for integration tests. There is
+no Redis (DES-HOR-661-07).
 
 ## Build / Lint / Test Commands
 
 ```bash
-# Build
-make build                          # -> bin/gateway
-
-# Lint (requires golangci-lint)
+make build                          # -> bin/gateway, bin/central
 make lint                           # golangci-lint run ./...
-
-# Format / formatting check (goimports auto-detected if installed)
 make fmt                            # go fmt ./... (+ goimports -w if installed)
 make fmt-check                      # fail if gofmt/goimports would change files
-
-# Wire local git hooks (gofmt/goimports/vet/lint/build pre-commit)
 make install-hooks                  # git config core.hooksPath .githooks
-
-# Run all tests (with race detector)
 make test                           # go test -v -race -count=1 ./...
 
-# Run a single test by name
-go test -v -race -count=1 -run TestChatCompletions_NonStreaming ./internal/proxy/
+# One test / one package
+go test -v -race -count=1 -run TestCentral_FailsClosed ./internal/central/server/
+go test -v -race -count=1 ./internal/central/billing/
 
-# Run all tests in one package
-go test -v -race -count=1 ./internal/loadbalancer/
-
-# Clear test cache
-go clean -testcache
-
-# Database migrations
-make migrate-up                     # bin/gateway migrate up
-make migrate-down                   # bin/gateway migrate down
-
-# Run with Docker Compose (postgres + redis + gateway)
-docker compose up --build
+docker compose up --build           # postgres + installation gateway
 ```
 
-**Important**: Integration tests use testcontainers-go and require Docker to
-be running. They spin up real PostgreSQL and Redis containers — no mocks for
-infrastructure. Tests may take 10-30s on first run while pulling images.
+**Important:** integration tests use testcontainers-go (`internal/testpg`) and
+need Docker. They run real PostgreSQL, with no mocks for infrastructure.
+`-short` skips them.
 
 ## Project Structure
 
 ```
-cmd/gateway/main.go          Entry point — subcommands: serve, migrate
+cmd/gateway/main.go          Installation gateway: serve
+cmd/central/main.go          Central gateway: serve | migrate up | ca init
 internal/
-  admin/                     Admin REST API handlers + request/response types
-  auth/                      API key generation (ml- prefix), SHA-256 hashing, store
-  config/                    YAML + env var config loading and validation
-  database/                  PostgreSQL pool + embedded SQL migrations
-  loadbalancer/              Smooth weighted round-robin (Nginx algo) + health checks
+  attribution/               Payload-free installation -> central attribution headers
+  centrallink/               Installation mTLS client to central (certificate reload)
+  central/
+    billing/                 Credit policy as pure functions (amounts, FX, periods, alerts)
+    config/                  Central config (CENTRAL_CONFIG YAML + env)
+    fx/                      ECB reference-rate fetcher
+    notify/                  SNS alert publisher + retry loop
+    opauth/                  Operator auth: presigned sts:GetCallerIdentity + allow-list
+    pki/                     KMS signer, CA, installation + serving certificates
+    registry/                In-memory registry (LISTEN/NOTIFY, fail closed when stale)
+    server/                  Central HTTP: inference, installation read, operator API, health
+    store/                   Central Postgres (schema central, embedded migrations)
+  config/                    Installation gateway YAML + env config
+  database/                  pgx pool (the installation gateway owns no tables)
   metrics/                   Prometheus metric definitions
-  middleware/                Auth, logging, metrics, rate limiting, request-id
-  proxy/                     Main proxy handler, SSE streaming, request transforms
-  ratelimit/                 Redis sliding-window rate limiter (Lua scripts)
-  registry/                  Model/Backend types, PostgreSQL CRUD store, Redis cache
-  server/                    HTTP server setup + chi route wiring
+  middleware/                Auth, workload mTLS auth, logging, metrics, rate limit, request-id
+  proxy/                     Installation handler + the shared Forwarder (round trip, SSE,
+                             error classification, usage extraction) used by both binaries
+  ratelimit/                 Postgres one-minute counters + stream TPM batcher
+  server/                    Installation gateway HTTP server + chi route wiring
+  snapshot/                  Control-plane catalog/permissions views + LISTEN/NOTIFY cache
+  spiffe/                    Workload SPIFFE identity parsing (+ testca)
+  testpg/                    Testcontainers Postgres helper (tests only)
+  upstreamauth/              Kubernetes Secret resolver for keyed external backends
+  workload/                  Live durable turn-scope resolution
 ```
+
+## Invariants
+
+- **No payload anywhere.** Prompts, responses and provider error bodies are
+  never logged, stored, put in metrics or forwarded to central's records.
+  `TestCentral_NoPayloadLeaks` enforces this.
+- **Central never serves unmetered inference.** A failed usage write withholds
+  the response (`proxy.Hooks.Settle`). Limits, registry and FX checks fail
+  closed (DES-HOR-661-08).
+- **One Forwarder.** Both binaries forward through `proxy.Forwarder`; do not
+  fork the round trip, SSE handling or error classification.
+- **Credits are exact.** Use `math/big.Rat` (`central/billing`), never floats.
 
 ## Code Style Guidelines
 
@@ -83,7 +101,7 @@ internal/
 
 Three groups separated by blank lines, in this order:
 1. Standard library (`fmt`, `net/http`, `log/slog`, etc.)
-2. Third-party (`github.com/go-chi/chi/v5`, `github.com/redis/go-redis/v9`, etc.)
+2. Third-party (`github.com/go-chi/chi/v5`, `github.com/jackc/pgx/v5`, etc.)
 3. Internal (`github.com/nunocgoncalves/iterabase-mono/inference-gateway/internal/...`)
 
 When aliasing imports, use short descriptive names:
@@ -134,8 +152,7 @@ Log with key-value pairs: `logger.Error("backend request failed", "backend", url
 
 - Use `github.com/stretchr/testify` for assertions (`assert`, `require`).
 - `require` for fatal checks (setup, nil errors), `assert` for non-fatal.
-- Integration tests: use `testcontainers-go` for real PostgreSQL and Redis.
-  Test files contain helper functions like `setupTestDB(t)`, `setupTestRedis(t)`.
+- Integration tests: use `testcontainers-go` for real PostgreSQL (`testpg.Start(t)`).
 - Unit tests: use `httptest.NewServer` for mock HTTP backends.
 - Test function naming: `TestMethodName_Scenario` (e.g., `TestChatCompletions_NonStreaming`).
 - Use `t.Setenv()` for env vars, `t.TempDir()` for temp files.
@@ -149,13 +166,14 @@ Constructor-based DI. The `server.Deps` struct aggregates all dependencies.
 ### Configuration
 
 - YAML config file (`gateway.yaml`) with `os.ExpandEnv` for variable substitution.
-- Env vars override YAML values (e.g., `GATEWAY_DATABASE_URL` overrides `database.url`).
+- Env vars override YAML values (e.g., `DATABASE_URL` overrides `database.url`). Central reads only the environment (`CENTRAL_*`).
 - Validation in `config.Validate()` — required fields, sensible defaults.
 
 ### Database
 
 - PostgreSQL via pgx v5 connection pool.
-- Migrations via golang-migrate with embedded SQL files in `internal/database/migrations/`.
+- The installation gateway owns no tables; the control-plane migrations create what it reads and writes.
+- Central owns schema `central`: embedded SQL in `internal/central/store/migrations/`, applied by `central migrate up` under an advisory lock.
 - JSONB columns for flexible nested config (DefaultParams, ReasoningConfig, etc.)
   with custom `Scan` methods.
 

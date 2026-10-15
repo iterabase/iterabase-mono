@@ -284,6 +284,15 @@ gated models. See
 B12X/SM120 example (DeepSeek-V4-Flash NVFP4, TP=2, MTP, 256k context, patch
 overlays). Multi-replica TP/PP and SGLang are deferred (HOR-323 / deepen).
 
+`kind: external` records a keyed OpenAI-compatible provider (`spec.external.baseURL`
+plus an optional `authRef` Secret name; HOR-597). `kind: managed` (HOR-661,
+`DES-HOR-661-03`) names a model served by the central Iterabase inference gateway
+in `spec.managed.model`: nothing is deployed, the catalog row carries the central
+model name and no URL, and the inference gateway routes it over the
+installation's mTLS identity configured in its chart. Managed calls are metered
+centrally; external and in-cluster backends are never metered as managed credits.
+See `docs/architecture/v2-central-inference-gateway.md`.
+
 ## Agent pools (HOR-245)
 
 An `AgentPool` is the deployable workflow security/integration boundary

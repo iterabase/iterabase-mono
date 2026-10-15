@@ -42,10 +42,6 @@ control-plane:
     metrics:
       enabled: true
 
-redis:
-  metrics:
-    enabled: true
-
 minio:
   metrics:
     enabled: true

@@ -116,11 +116,14 @@ func (s *PGStore) ResolveTurnScope(ctx context.Context, poolID, runID, turnID, w
 	// yield no row -> ErrScopeDenied.
 	var ts TurnScope
 	err := s.pool.QueryRow(ctx, `
-		SELECT t.run_id::text, t.id::text, t.state, COALESCE(t.model, ''), wr.scope_identity_id::text
+		SELECT t.run_id::text, t.id::text, t.state, COALESCE(t.model, ''), wr.scope_identity_id::text,
+		       COALESCE(wr.definition_key, ''), COALESCE(wr.authorization_source, 'unknown'),
+		       COALESCE(wa.work_item_id::text, '')
 		FROM runtime.turns t
 		JOIN runtime.run_pool_assignments a ON a.run_id = t.run_id
 		JOIN runtime.workflow_runs wr ON wr.id = t.run_id
 		JOIN runtime.turn_assignments ta ON ta.turn_id = t.id
+		LEFT JOIN work.attempts wa ON wa.id = wr.id
 		WHERE t.id = $1::uuid AND t.state = 'running'
 		  AND t.run_id::text = $2
 		  AND a.pool_id = $3::uuid
@@ -130,7 +133,8 @@ func (s *PGStore) ResolveTurnScope(ctx context.Context, poolID, runID, turnID, w
 		  AND ta.worker_id = $4
 		  AND ta.fencing_generation = $5`,
 		turnID, runID, poolID, workerID, fencingGeneration).
-		Scan(&ts.RunID, &ts.TurnID, &ts.TurnState, &ts.AssignedModel, &ts.ScopeIdentityID)
+		Scan(&ts.RunID, &ts.TurnID, &ts.TurnState, &ts.AssignedModel, &ts.ScopeIdentityID,
+			&ts.WorkflowKey, &ts.Channel, &ts.WorkItemID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return TurnScope{}, ErrScopeDenied
