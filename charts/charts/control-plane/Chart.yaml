@@ -2,8 +2,8 @@ apiVersion: v2
 name: control-plane
 description: Iterabase control-plane service — operator, durable work runtime, and V2-authorized product API.
 type: application
-version: 0.6.0
-appVersion: "0.0.44"
+version: 0.6.1
+appVersion: "0.0.45"
 dependencies:
   # Bundled pgvector Postgres. Disabled/BYO via postgresql.enabled. The image is
   # overridden to pgvector because the control-plane's first migration creates
