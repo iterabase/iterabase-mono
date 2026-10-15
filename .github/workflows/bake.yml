@@ -81,7 +81,7 @@ jobs:
         run: |
           python3 .github/scripts/aws_ci.py bake-ami --phase image --region '${{ vars.AWS_CI_REGION }}' \
             --run-id "$BAKE_RUN_ID" --capacity '${{ matrix.capacity }}' --builder '${{ steps.build.outputs.builder }}' \
-            --mode '${{ steps.build.outputs.mode }}'
+            --mode '${{ steps.build.outputs.mode }}' --base-created '${{ steps.build.outputs.base_created }}'
       - uses: ./.github/actions/setup-aws-ci
         if: steps.build.outputs.pending == 'true' || steps.image.outputs.pending == 'true'
         with:

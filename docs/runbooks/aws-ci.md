@@ -19,7 +19,7 @@ workflow is the executable proof that the account is still correct.
 | Surface | Contract |
 | --- | --- |
 | Credentials | GitHub OIDC only, no static keys anywhere, no GitHub environment. Trust covers `aud=sts.amazonaws.com` and `sub=repo:iterabase@338844113/iterabase-mono@1330311216:*` — the immutable subject form GitHub issues for repositories created after 2026-07-15, which pins the owner and repository IDs so a rename or a recreated repository cannot inherit trust; fork pull requests cannot request OIDC tokens. |
-| Launch | `RunInstances` only for `m6i.xlarge` (CPU) and `g6.xlarge`, `g5.xlarge`, `g6.2xlarge`, `g5.2xlarge`, `g5.4xlarge` (GPU; all 24 GiB and at least sm_86), only from AMIs owned by the CI account, and only with no instance profile — each enforced twice, as an allow condition and as an explicit deny. The mandatory tags are required on the instance and volume resources of the launch statement itself and again at tag-on-create (`ec2:CreateTags`); `aws:RequestTag` is absent only from the plumbing resources' contexts (subnet, network interface, key pair, spot request), which is why the conditions are split per resource. A launch may restore a volume from a CI-owned snapshot (the GPU model cache) and may run on spot capacity (previews) (DES-HOR-590-04). |
+| Launch | `RunInstances` only for `m6i.xlarge` (CPU), `m6i.4xlarge` (fixture AMI bake builders only, HOR-676/C14), and `g6.xlarge`, `g5.xlarge`, `g6.2xlarge`, `g5.2xlarge`, `g5.4xlarge` (GPU; all 24 GiB and at least sm_86), only from AMIs owned by the CI account, and only with no instance profile — each enforced twice, as an allow condition and as an explicit deny. The mandatory tags are required on the instance and volume resources of the launch statement itself and again at tag-on-create (`ec2:CreateTags`); `aws:RequestTag` is absent only from the plumbing resources' contexts (subnet, network interface, key pair, spot request), which is why the conditions are split per resource. A launch may restore a volume from a CI-owned snapshot (the GPU model cache) and may run on spot capacity (previews) (DES-HOR-590-04). |
 | Tags | `iterabase-ci=true` (marker, mandatory), `iterabase-ci-run=<github run id>` (mandatory), `iterabase-ci-scenario=<identity>` (mandatory), optional `iterabase-ci-deadline=<RFC3339 UTC>`, `Name=iterabase-ci-<run>-<scenario>`. The marker is the IAM condition key and the reaper's only selection criterion. |
 | Lifecycle | Terminate, volume, snapshot, and AMI actions are scoped to resources carrying `iterabase-ci=true`; tag-on-create is bound to the creating action. The bake images a CI-marked builder instance and copies CI-marked model-cache snapshots into tagged copies; an existing CI instance may change only its `iterabase-ci-deadline` tag, which previews renew on each deploy (DES-HOR-590-03, DES-HOR-590-04). |
 | Reaper | `iterabase-ci-deadline` when present, otherwise `LaunchTime + 180 minutes`. Untagged or foreign instances are reported and never touched; the role cannot terminate them. |
@@ -843,8 +843,10 @@ pull request merges to `master`. Later dispatches may target a branch ref
   and the model-cache snapshot are baked by `aws_ci.py bake-ami` and
   `bake-model-cache` from `bake.yml`, not by Packer (`DES-HOR-590-03`), and the
   reaper's `images` job keeps the two newest generations. Fixture AMI bakes are
-  incremental from the newest earlier AMI of the same capacity (HOR-676); a
-  `cold` dispatch of `bake.yml` bakes from Ubuntu instead. Fixture hosts carry an
+  incremental from the newest earlier AMI of the same capacity (HOR-676) on an
+  `m6i.4xlarge` builder; a `cold` dispatch of `bake.yml` bakes from Ubuntu
+  instead, and a bake is cold automatically once the AMI's
+  `iterabase-ci-base-created` Ubuntu base is older than 30 days. Fixture hosts carry an
   `iterabase-ci-deadline` at the scenario timeout plus 10 minutes and are
   removed by `cleanup-run` or, failing that, the reaper; no on-host shutdown
   timer is installed. Previews are spot hosts tagged `iterabase-ci-kind=preview`

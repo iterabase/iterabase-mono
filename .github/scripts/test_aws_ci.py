@@ -1087,11 +1087,45 @@ class FixtureLaunchTests(unittest.TestCase):
             image("ami-big", "fixture-gpu", "g4", "2026-10-08T00:00:00.000Z", root_gib=200),
             image("ami-untagged", "fixture-gpu", None, "2026-10-07T00:00:00.000Z"),
         ]
-        chosen = aws_ci.select_previous_fixture_ami(images, "gpu", "g3")
+        now = dt.datetime(2026, 10, 15, tzinfo=dt.timezone.utc)
+        chosen = aws_ci.select_previous_fixture_ami(images, "gpu", "g3", now=now)
         self.assertEqual(chosen["ImageId"] if chosen else None, "ami-new")
-        self.assertIsNone(aws_ci.select_previous_fixture_ami(images[2:3], "gpu", "g3"))
-        self.assertIsNone(aws_ci.select_previous_fixture_ami([], "cpu", "c2"))
-        self.assertEqual(aws_ci.select_previous_fixture_ami(images, "cpu", "c2")["ImageId"], "ami-cpu")
+        self.assertIsNone(aws_ci.select_previous_fixture_ami(images[2:3], "gpu", "g3", now=now))
+        self.assertIsNone(aws_ci.select_previous_fixture_ami([], "cpu", "c2", now=now))
+        self.assertEqual(aws_ci.select_previous_fixture_ami(images, "cpu", "c2", now=now)["ImageId"], "ami-cpu")
+
+    def test_incremental_bake_refuses_a_base_older_than_thirty_days(self) -> None:
+        import aws_ci
+
+        def image(image_id: str, created: str, base: str | None) -> dict:
+            tags = [{"Key": aws_ci.AMI_ROLE_TAG, "Value": "fixture-gpu"}, {"Key": aws_ci.IMAGE_CACHE_TAG, "Value": "g1"}]
+            if base:
+                tags.append({"Key": aws_ci.BASE_CREATED_TAG, "Value": base})
+            return {"ImageId": image_id, "CreationDate": created, "State": "available", "Tags": tags,
+                    "RootDeviceName": "/dev/sda1",
+                    "BlockDeviceMappings": [{"DeviceName": "/dev/sda1", "Ebs": {"SnapshotId": "snap", "VolumeSize": 160}}]}
+
+        now = dt.datetime(2026, 11, 20, tzinfo=dt.timezone.utc)
+        # An incremental chain inherits its base: a fresh AMI on a stale base forces a cold bake.
+        stale = image("ami-stale", "2026-11-19T00:00:00Z", "2026-10-15T00:00:00Z")
+        self.assertIsNone(aws_ci.select_previous_fixture_ami([stale], "gpu", "g2", now=now))
+        fresh = image("ami-fresh", "2026-11-19T00:00:00Z", "2026-11-01T00:00:00Z")
+        self.assertEqual(aws_ci.select_previous_fixture_ami([stale, fresh], "gpu", "g2", now=now)["ImageId"], "ami-fresh")
+        # AMIs baked before HOR-676 were all cold: their creation date is their base.
+        legacy = image("ami-legacy", "2026-11-10T00:00:00Z", None)
+        self.assertEqual(aws_ci.fixture_base_created(legacy), dt.datetime(2026, 11, 10, tzinfo=dt.timezone.utc))
+        self.assertEqual(aws_ci.select_previous_fixture_ami([legacy], "gpu", "g2", now=now)["ImageId"], "ami-legacy")
+
+    def test_bake_builders_use_the_approved_bake_class_only(self) -> None:
+        import aws_ci
+
+        self.assertEqual(aws_ci.approved_instance_types("bake"), ("m6i.4xlarge",))
+        self.assertIn("m6i.4xlarge", aws_ci.ALL_APPROVED_INSTANCE_TYPES)
+        self.assertEqual(aws_ci.FIXTURE_CAPACITIES, ("cpu", "gpu"))
+        parser = aws_ci.build_parser() if hasattr(aws_ci, "build_parser") else None
+        if parser is not None:
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["bake-ami", "--run-id", "r", "--capacity", "bake", "--phase", "build"])
 
     def test_image_wait_is_bounded_from_creation_across_sessions(self) -> None:
         import aws_ci
