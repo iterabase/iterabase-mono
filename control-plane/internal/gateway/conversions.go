@@ -224,6 +224,10 @@ func invokeResultToDispatch(r *v1.InvokeResult) dispatchResult {
 	case v1.InvokeState_INVOKE_STATE_FAILED:
 		out.state = InvocationFailed
 		out.errorDetail = mustMarshalError(r.Error)
+	case v1.InvokeState_INVOKE_STATE_OUTCOME_UNKNOWN:
+		// The tool itself cannot tell whether its effect happened (HOR-358).
+		out.state = InvocationOutcomeUnknown
+		out.errorDetail = mustMarshalError(r.Error)
 	default:
 		// The runner reported a non-terminal state as a result; treat as failed
 		// with an ambiguous error rather than hanging the dispatcher.

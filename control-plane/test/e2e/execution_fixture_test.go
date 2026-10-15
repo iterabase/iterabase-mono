@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -360,6 +361,32 @@ export async function invoke(context,args){
 // (HOR-651). It ships inside the tool-runner image under test, never in the
 // overlay fixture, so its digest comes from the same source tree.
 const productDiagnosticTool = "platform.diagnostic"
+
+// productToolNames lists every tool in the source tree's product layer, sorted:
+// exactly what the tool-runner image under test ships (HOR-651, HOR-358).
+func productToolNames(t *testing.T) []string {
+	t.Helper()
+	manifests, err := filepath.Glob(filepath.Join("..", "..", "tool-runner", "tools", "product", "*", "manifest.json"))
+	if err != nil || len(manifests) == 0 {
+		t.Fatalf("list product tool manifests: %v (%d found)", err, len(manifests))
+	}
+	names := make([]string, 0, len(manifests))
+	for _, path := range manifests {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read product tool manifest %s: %v", path, err)
+		}
+		var manifest struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &manifest); err != nil || manifest.Name == "" {
+			t.Fatalf("parse product tool manifest %s: %v", path, err)
+		}
+		names = append(names, manifest.Name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 func productToolDigest(t *testing.T, short string) string {
 	t.Helper()

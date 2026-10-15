@@ -382,11 +382,17 @@ export class ToolRunner {
       const typed = typedToolError(error);
       const detail = typed ?? (timedOut ? { code: "timeout", message: "tool invocation timed out" } :
         { code: abort.signal.aborted ? "canceled" : "internal", message: abort.signal.aborted ? "tool invocation canceled" : "trusted tool failed" });
-      observedResult = typed ? "tool_error" : timedOut ? "timeout" : abort.signal.aborted ? "canceled" : "internal";
+      // A tool that cannot tell whether its external effect happened reports
+      // the reserved `outcome_unknown` code. It is carried as its own terminal
+      // state, never as a failure, so the gateway never treats a possible
+      // effect as not having happened (ARCH-014, REQ-039).
+      const unknown = typed?.code === OUTCOME_UNKNOWN;
+      observedResult = unknown ? "outcome_unknown" : typed ? "tool_error" : timedOut ? "timeout" : abort.signal.aborted ? "canceled" : "internal";
       this.metrics?.invocations.labels(observedResult).inc();
       this.send(create(RunnerMessageSchema, { kind: { case: "invokeResult", value: {
-        invocationId: invoke.invocationId, state: InvokeState.FAILED, resultJson: new Uint8Array(), artifactOutputRefs: [],
-        error: { code: detail.code, message: detail.message, retryability: detail.retryable ? Retryability.RETRYABLE : Retryability.NON_RETRYABLE,
+        invocationId: invoke.invocationId, state: unknown ? InvokeState.OUTCOME_UNKNOWN : InvokeState.FAILED, resultJson: new Uint8Array(), artifactOutputRefs: [],
+        error: { code: detail.code, message: detail.message,
+          retryability: unknown ? Retryability.UNKNOWN : detail.retryable ? Retryability.RETRYABLE : Retryability.NON_RETRYABLE,
           detailsJson: detail.details === undefined ? "" : safeJSON(detail.details) }, timestampMs: BigInt(Date.now()),
       } } }));
     } finally {
@@ -468,6 +474,9 @@ function deepFreeze<T>(value: T): T {
   }
   return value;
 }
+/** Reserved tool error code for an effect whose outcome cannot be known. */
+export const OUTCOME_UNKNOWN = "outcome_unknown";
+
 function typedToolError(error: unknown): ToolErrorShape | undefined {
   if (error instanceof ToolError) return error.detail;
   if (!(error instanceof Error) || error.name !== "ToolError") return undefined;

@@ -1,0 +1,33 @@
+{
+  "apiVersion": "iterabase.io/tool/v1",
+  "name": "platform.mailbox.send",
+  "version": "1.0.1",
+  "digest": "sha256:db5099fa143f75d566813bb2ab9b002d26f1072f6a703cf6a4b63d0a51443f8b",
+  "description": "Send one email, or one reply to a received message, as a bound Microsoft 365 mailbox. Returns the sent message's internetMessageId and conversationId for reply matching.",
+  "bundle": "index.mjs",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["mailbox", "to", "subject", "body"],
+    "properties": {
+      "mailbox": { "type": "string", "minLength": 3, "maxLength": 320 },
+      "to": { "type": "string", "minLength": 3, "maxLength": 320, "pattern": "^[^@\\s,;<>]+@[^@\\s,;<>]+$" },
+      "subject": { "type": "string", "minLength": 1, "maxLength": 255 },
+      "body": { "type": "string", "maxLength": 32768 },
+      "bodyType": { "type": "string", "enum": ["text", "html"] },
+      "replyToMessageId": { "type": "string", "minLength": 1, "maxLength": 1024 }
+    }
+  },
+  "effectClass": "non_idempotent_write",
+  "credentialSlots": [
+    { "name": "microsoft365", "scheme": "oauth_client_credentials", "required": true }
+  ],
+  "timeoutMs": 30000,
+  "consequenceSummaryTemplate": {
+    "localizedTemplates": {
+      "en": "Send the email \"{{subject}}\" from {{mailbox}} to {{to}}",
+      "pt": "Enviar o email \"{{subject}}\" de {{mailbox}} para {{to}}"
+    },
+    "argumentPaths": { "subject": "/subject", "mailbox": "/mailbox", "to": "/to" }
+  }
+}

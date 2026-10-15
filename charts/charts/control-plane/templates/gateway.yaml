@@ -121,6 +121,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: GATEWAY_MAILBOX_ENABLED
+              value: {{ .Values.gateway.mailbox.enabled | quote }}
             {{- include "control-plane.artifactEnv" . | nindent 12 }}
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | default "info" | quote }}

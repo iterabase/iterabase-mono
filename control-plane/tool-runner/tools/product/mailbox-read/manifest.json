@@ -1,0 +1,25 @@
+{
+  "apiVersion": "iterabase.io/tool/v1",
+  "name": "platform.mailbox.read",
+  "version": "1.0.1",
+  "digest": "sha256:500234d9025b071a9149e1c94dfa9319c1bd6559b04e46744c5dd4ec91b9c822",
+  "description": "Read one message, its attachment list, or one attachment from a bound Microsoft 365 mailbox. Text bodies are bounded inline; HTML bodies and attachment bytes are written as artifacts.",
+  "bundle": "index.mjs",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["mailbox", "operation", "messageId"],
+    "properties": {
+      "mailbox": { "type": "string", "minLength": 3, "maxLength": 320 },
+      "operation": { "type": "string", "enum": ["get_message", "list_attachments", "get_attachment"] },
+      "messageId": { "type": "string", "minLength": 1, "maxLength": 1024 },
+      "attachmentId": { "type": "string", "minLength": 1, "maxLength": 1024 }
+    }
+  },
+  "effectClass": "read_only",
+  "credentialSlots": [
+    { "name": "microsoft365", "scheme": "oauth_client_credentials", "required": true }
+  ],
+  "artifactCapabilities": { "writesArtifacts": true },
+  "timeoutMs": 60000
+}

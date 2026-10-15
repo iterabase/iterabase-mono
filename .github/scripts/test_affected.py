@@ -188,6 +188,14 @@ class RealDiffTests(unittest.TestCase):
         self.assertEqual(selection.jobs, ["tool-runner", "ui"])
         self.assertEqual(selection.artifacts, ["control-plane-image", "tool-runner-image"])
 
+    def test_mailbox_connector_selects_the_live_microsoft_365_checks(self) -> None:
+        # HOR-358 (DES-HOR-358-04): mailbox paths add the live tenant job to
+        # their component job; other control-plane and tool-runner paths do not.
+        selection = run(["control-plane/internal/mailbox/intake.go", "control-plane/tool-runner/tools/product/mailbox-send/index.mjs"])
+        self.assertEqual(selection.jobs, ["control-plane", "m365-live", "tool-runner"])
+        self.assertNotIn("m365-live", run(["control-plane/internal/gateway/service.go"]).jobs)
+        self.assertNotIn("m365-live", run(["control-plane/tool-runner/tools/product/diagnostic/index.mjs"]).jobs)
+
     def test_owner_test_change_selects_that_suite_only(self) -> None:
         # PR 120: Forge E2E module only.
         selection = run(["forge/test/e2e/internal/remotecluster/cluster.go", "forge/test/e2e/workspace_behavior_test.go"])

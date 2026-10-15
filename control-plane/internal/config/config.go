@@ -57,6 +57,20 @@ type GatewayConfig struct {
 	KubeNamespace   string                 `yaml:"kube_namespace"`
 	InlineLimit     int                    `yaml:"inline_limit"`
 	ApprovedRunners []ApprovedRunnerConfig `yaml:"approved_runners"`
+	// Mailbox configures mailbox intake and the platform mailbox tools
+	// (HOR-358). The gateway is the only process that holds mailbox
+	// credentials (DES-HOR-358-02).
+	Mailbox MailboxConfig `yaml:"mailbox"`
+}
+
+// MailboxConfig configures gateway mailbox intake.
+type MailboxConfig struct {
+	// Enabled starts intake for every active mailbox and allows the
+	// platform mailbox tools. Off by default.
+	Enabled bool `yaml:"enabled"`
+	// GraphBaseURL and LoginBaseURL override the Microsoft endpoints (tests).
+	GraphBaseURL string `yaml:"graph_base_url"`
+	LoginBaseURL string `yaml:"login_base_url"`
 }
 
 // ApprovedRunnerConfig is one exact, deployment-owned runner identity. Empty
@@ -269,6 +283,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("GATEWAY_KUBE_NAMESPACE"); v != "" {
 		cfg.Gateway.KubeNamespace = v
+	}
+	if v := os.Getenv("GATEWAY_MAILBOX_ENABLED"); v != "" {
+		cfg.Gateway.Mailbox.Enabled, _ = strconv.ParseBool(v)
 	}
 	if v := os.Getenv("DISPATCH_ADDR"); v != "" {
 		cfg.Dispatch.Addr = v

@@ -30,6 +30,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion, &Model{}, &ModelList{})
 	scheme.AddKnownTypes(GroupVersion, &AgentPool{}, &AgentPoolList{})
 	scheme.AddKnownTypes(GroupVersion, &Workflow{}, &WorkflowList{})
+	scheme.AddKnownTypes(GroupVersion, &Mailbox{}, &MailboxList{})
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil
 }

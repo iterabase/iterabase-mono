@@ -183,7 +183,11 @@ The durable at-most-once ledger (`toolgateway.invocations`) is uniquely keyed by
 attempt + caller scope + tool-call id + exact version digest + idempotency key.
 Duplicates of a completed invocation return the committed result; duplicates in
 progress report the existing invocation; a possible effect with no committed
-result becomes `outcome_unknown` and is never automatically repeated. Retry is
+result becomes `outcome_unknown` and is never automatically repeated. A tool
+that cannot confirm its own effect reports the reserved `outcome_unknown`
+error code; the runner returns it as `INVOKE_STATE_OUTCOME_UNKNOWN`, the
+ledger records `outcome_unknown` (a read-only tool fails instead), and the
+caller receives the tool's receipt in `ErrorDetail.details_json` (HOR-358). Retry is
 classified by effect class: `read_only` may bounded-retry; `idempotent_write`
 only when the descriptor proves a stable strategy; `non_idempotent_write` never
 auto-retries after execution begins (ARCH-014).
@@ -248,6 +252,49 @@ Use `make tool-runner-lint tool-runner-test tool-runner-build` locally;
 version immutability against `master`. The image provides `digest
 <tool-directory>` and `validate [overlay-directory]` authoring commands. Concrete Graph tools remain owned
 by HOR-358; the supervisor IPC client is HOR-395.
+
+## Mailboxes (HOR-358)
+
+The tool gateway watches Microsoft 365 mailboxes and is the only process that
+holds their credentials (DES-HOR-358-02). `internal/mailbox` is the
+provider-neutral boundary: the `Source` interface (Microsoft Graph in
+`internal/mailbox/graph`; Google Workspace in HOR-653), the intake loop, and the
+`mailbox` schema.
+
+- `mailbox.sources` is the authoritative mailbox list, read by intake, the
+  gateway and mailbox start binding (HOR-595). Each row has one owner
+  (DES-HOR-593-03): the overlay `Mailbox` CRD writes `owner=overlay` rows
+  through the manager's Mailbox reconciler; Admin-added mailboxes are
+  installation-owned (HOR-674) and never overwritten. Changing a mailbox's
+  provider, address or credential slot creates a new source.
+- A mailbox names a credential **slot**, never a Secret. The gateway resolves
+  slot `<name>` to the installation-owned Secret `iterabase-credential-<name>`
+  (`tenant_id`, `client_id`, `client_secret`), which HOR-652's write-only API
+  also writes.
+- Intake claims due mailboxes under a lease, runs Graph delta per folder from
+  the persisted cursor (mail received before the folder's baseline is history),
+  records each new message once in `mailbox.messages` keyed by its immutable
+  provider id, and only then advances the cursor. Delta pages are unordered,
+  so only a completed round proves earlier mail was seen: completing a round
+  moves the folder's `synced_through` checkpoint to the round's start minus
+  15 minutes, and an expired cursor restarts from that checkpoint. With a notification URL
+  it also keeps a Graph subscription per folder; only a hash of its
+  `clientState` is stored. Credential failures are recorded per slot with a
+  customer-safe reason in `mailbox.credential_status`.
+- Consumers use `mailbox.Events` (`ClaimEvents` / `AckEvent`, at-least-once,
+  `pg_notify` channel `mailbox_messages`). Events carry identity and reply
+  metadata (`internetMessageId`, `conversationId`, `In-Reply-To`,
+  `References`), never bodies.
+- The product tools `platform.mailbox.read` and `platform.mailbox.send` read
+  and send through the runner with the gateway-acquired token. The gateway
+  permits them only for an active mailbox whose slot is the one the tool's
+  OAuth binding references (`Secret iterabase-credential-<slot>`). Sends are
+  draft-then-send, so identifiers are known before the send (DES-HOR-358-05).
+- Configuration: `gateway.mailbox.enabled` (`GATEWAY_MAILBOX_ENABLED`, chart
+  default on).
+
+Onboarding, the tenant scoping model and the live CI checks are in
+[`docs/runbooks/microsoft-365-mailbox.md`](../docs/runbooks/microsoft-365-mailbox.md).
 
 ## Model backends (HOR-306/388)
 

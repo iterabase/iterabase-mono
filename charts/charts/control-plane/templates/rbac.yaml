@@ -80,6 +80,7 @@ rules:
   - platform.iterabase.com
   resources:
   - agentpools
+  - mailboxes
   - modelbackends
   - models
   - workflows
@@ -95,6 +96,7 @@ rules:
   - platform.iterabase.com
   resources:
   - agentpools/finalizers
+  - mailboxes/finalizers
   - modelbackends/finalizers
   - models/finalizers
   - workflows/finalizers
@@ -104,6 +106,7 @@ rules:
   - platform.iterabase.com
   resources:
   - agentpools/status
+  - mailboxes/status
   - modelbackends/status
   - models/status
   - workflows/status

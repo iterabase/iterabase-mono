@@ -4,9 +4,9 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create } from "@bufbuild/protobuf";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  CredentialSchema, CredentialScheme, InvokeSchema, InvokeState, RunnerMessageSchema, ToolDescriptorSchema, ToolVersionRefSchema,
+  CredentialSchema, CredentialScheme, InvokeSchema, InvokeState, Retryability, RunnerMessageSchema, ToolDescriptorSchema, ToolVersionRefSchema,
   type Credential, type ToolVersionRef,
 } from "./gen/iterabase/gateway/v1/gateway_pb.js";
 import type { LoadedGeneration, ToolManifest } from "./manifest.js";
@@ -270,5 +270,24 @@ describe("trusted tool execution", () => {
     if (unknown.kind.case !== "invokeResult") throw new Error("missing unknown result");
     expect(unknown.kind.value.error?.code).toBe("internal");
     expect(unknown.kind.value.error?.message).toBe("trusted tool failed");
+  });
+
+  it("reports a tool's outcome_unknown as its own terminal state with the receipt (HOR-358)", async () => {
+    // The released mailbox send bundle, with Graph answering the draft and then
+    // failing the send ambiguously.
+    const send = await import("../tools/product/mailbox-send/index.mjs") as unknown as ToolModule;
+    vi.stubGlobal("fetch", async (url: string) => url.endsWith("/send")
+      ? new Response(null, { status: 503 })
+      : new Response(JSON.stringify({ id: "draft-1", internetMessageId: "<d1@c.pt>", conversationId: "conv-1" }), { status: 201 }));
+    try {
+      const message = await invoke(send, { microsoft365: create(CredentialSchema, { scheme: CredentialScheme.OAUTH_CLIENT_CREDENTIALS, bearerValue: "token" }) });
+      if (message.kind.case !== "invokeResult") throw new Error("missing result");
+      expect(message.kind.value.state).toBe(InvokeState.OUTCOME_UNKNOWN);
+      expect(message.kind.value.error?.code).toBe("outcome_unknown");
+      expect(message.kind.value.error?.retryability).toBe(Retryability.UNKNOWN);
+      expect(JSON.parse(message.kind.value.error?.detailsJson ?? "{}")).toEqual({ providerMessageId: "draft-1", internetMessageId: "<d1@c.pt>", conversationId: "conv-1" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

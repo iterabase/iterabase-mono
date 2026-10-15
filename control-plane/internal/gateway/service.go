@@ -16,6 +16,7 @@ import (
 	connect "connectrpc.com/connect"
 	artifactstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact"
 	v1 "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gatewayrpc/iterabase/gateway/v1"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/mailbox"
 	cpmetrics "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/metrics"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/spiffe"
 )
@@ -83,6 +84,7 @@ type Service struct {
 	log       *slog.Logger
 	artifacts *artifactstore.Service
 	metrics   *cpmetrics.Metrics
+	mailboxes MailboxScope
 }
 
 // NewService builds a gateway Service. store/secrets/oauth are required; cfg is
@@ -105,6 +107,17 @@ func NewService(store *Store, secrets SecretResolver, oauth OAuthAcquirer, cfg C
 // SetArtifactService attaches HOR-399's shared artifact domain without changing
 // the constructor used by tool-gateway-only tests.
 func (s *Service) SetArtifactService(artifacts *artifactstore.Service) { s.artifacts = artifacts }
+
+// MailboxScope reports whether a mailbox is an active mailbox of the provider
+// using the given credential slot (DES-HOR-358-03). *mailbox.Store implements
+// it.
+type MailboxScope interface {
+	Permitted(ctx context.Context, provider, address, slot string) (bool, error)
+}
+
+// SetMailboxScope enables the platform mailbox tools. Without it every
+// `platform.mailbox.*` invocation is denied.
+func (s *Service) SetMailboxScope(scope MailboxScope) { s.mailboxes = scope }
 
 // SetMetrics attaches bounded process-local instrumentation. It is optional so
 // isolated service tests do not need a Prometheus registry.
@@ -347,6 +360,19 @@ func (s *Service) InvokeTool(ctx context.Context, req *connect.Request[v1.Invoke
 		}), nil
 	}
 
+	// 4b'. Mailbox scope (DES-HOR-358-03): a platform mailbox tool may only name
+	//      an active mailbox whose credential slot is the one bound to the tool.
+	if strings.HasPrefix(tv.Name, mailboxToolPrefix) {
+		if err := s.assertMailboxScope(ctx, res.Pool.ID, tv.Name, msg.ArgumentsJson); err != nil {
+			s.log.Warn("tool invocation denied: mailbox scope", "tool", tv.Name, "pool", res.Pool.ID,
+				"attempt", res.AttemptID, "caller", id.SPIFFEID, "reason", err)
+			return connect.NewResponse(&v1.InvokeResponse{
+				State: v1.InvokeState_INVOKE_STATE_FAILED,
+				Error: &v1.ErrorDetail{Code: "permission_denied", Message: err.Error(), Retryability: v1.Retryability_RETRYABILITY_NON_RETRYABLE},
+			}), nil
+		}
+	}
+
 	// 4c. Render the trusted customer-safe consequence summary from the pinned
 	//     descriptor and validated arguments. Writes fail closed if required
 	//     fields are absent/non-scalar; raw arguments/results are never copied to
@@ -519,6 +545,20 @@ func (s *Service) classifyAmbiguous(ctx context.Context, inv Invocation, tv Tool
 	return resp, nil
 }
 
+// outcomeUnknownDetail is the caller-facing error for a tool-reported unknown
+// outcome: always code outcome_unknown and unknown retryability, with the
+// tool's message and receipt details.
+func outcomeUnknownDetail(stored []byte) *v1.ErrorDetail {
+	out := &v1.ErrorDetail{Code: "outcome_unknown", Message: "the tool could not confirm whether its effect happened", Retryability: v1.Retryability_RETRYABILITY_UNKNOWN}
+	if e := parseError(stored); e != nil {
+		if e.Message != "" {
+			out.Message = e.Message
+		}
+		out.DetailsJson = e.DetailsJson
+	}
+	return out
+}
+
 func (s *Service) finishFailed(ctx context.Context, inv Invocation, err *v1.ErrorDetail) (*v1.InvokeResponse, error) {
 	errJSON, _ := marshalJSON(err)
 	commitCtx, cancel := s.detachedCtx(ctx)
@@ -537,6 +577,10 @@ func (s *Service) finishFailed(ctx context.Context, inv Invocation, err *v1.Erro
 func (s *Service) finishFromResult(ctx context.Context, inv Invocation, tv ToolVersion, res dispatchResult) (*v1.InvokeResponse, error) {
 	state := res.state
 	resultJSON := res.resultJSON
+	// A read-only tool has no effect to be uncertain about.
+	if state == InvocationOutcomeUnknown && tv.EffectClass == EffectReadOnly {
+		state = InvocationFailed
+	}
 	// Bound + validate runner output before committing.
 	if state == InvocationSucceeded {
 		if err := s.validateArtifactOutputs(ctx, inv, parseArtifactRefs(res.artifactRefs)); err != nil {
@@ -559,10 +603,17 @@ func (s *Service) finishFromResult(ctx context.Context, inv Invocation, tv ToolV
 		return nil, fmt.Errorf("commit result: %w", ferr)
 	}
 	resp := &v1.InvokeResponse{InvocationId: inv.ID}
-	if state == InvocationSucceeded {
+	switch state {
+	case InvocationSucceeded:
 		resp.State = v1.InvokeState_INVOKE_STATE_SUCCEEDED
 		resp.ResultJson = resultJSON
-	} else {
+	case InvocationOutcomeUnknown:
+		// Never automatically repeated (ARCH-014). The tool's receipt (for a
+		// send, the draft identity) travels with it so the caller can check
+		// what happened (REQ-039, DES-HOR-358-05).
+		resp.State = v1.InvokeState_INVOKE_STATE_OUTCOME_UNKNOWN
+		resp.Error = outcomeUnknownDetail(res.errorDetail)
+	default:
 		resp.State = v1.InvokeState_INVOKE_STATE_FAILED
 		resp.Error = &v1.ErrorDetail{Code: "tool_failed", Message: "tool execution failed", Retryability: v1.Retryability_RETRYABILITY_UNKNOWN}
 	}
@@ -1096,6 +1147,57 @@ func (s *Service) assertResourcePolicy(ctx context.Context, poolID, toolName str
 		}
 	}
 	return nil
+}
+
+// mailboxToolPrefix names the platform mailbox product tools.
+const mailboxToolPrefix = "platform.mailbox."
+
+// assertMailboxScope enforces the gateway side of mailbox scoping (HOR-358):
+// the `mailbox` argument must be an active Microsoft 365 mailbox in
+// mailbox.sources whose credential slot is the slot the tool's OAuth binding
+// resolves (Secret `iterabase-credential-<slot>`). Installation-owned mailboxes
+// (HOR-674) are covered without editing the AgentPool; binding
+// resource_constraints still narrow further in assertResourcePolicy.
+func (s *Service) assertMailboxScope(ctx context.Context, poolID, toolName string, argsJSON []byte) error {
+	if s.mailboxes == nil {
+		return fmt.Errorf("mailbox tools are not enabled on this gateway")
+	}
+	var args struct {
+		Mailbox string `json:"mailbox"`
+	}
+	if err := json.Unmarshal(argsJSON, &args); err != nil || strings.TrimSpace(args.Mailbox) == "" {
+		return fmt.Errorf("mailbox tools require a mailbox argument")
+	}
+	bindings, err := s.store.ResolveCredentialBindings(ctx, poolID, toolName)
+	if err != nil {
+		return fmt.Errorf("resolve mailbox credential binding: %w", err)
+	}
+	slots := map[string]bool{}
+	for _, b := range bindings {
+		if b.Scheme != CredOAuthClientCredentials {
+			continue
+		}
+		var spec OAuthSpec
+		if err := unmarshalJSON(b.SecretRef, &spec); err != nil {
+			return fmt.Errorf("parse mailbox credential binding %s: %w", b.SlotName, err)
+		}
+		if slot, ok := mailbox.SlotFromCredentialSecretName(spec.ClientSecretRef.Name); ok {
+			slots[slot] = true
+		}
+	}
+	if len(slots) == 0 {
+		return fmt.Errorf("tool %s has no credential-slot binding (Secret %s<slot>)", toolName, mailbox.CredentialSecretName(""))
+	}
+	for slot := range slots {
+		ok, err := s.mailboxes.Permitted(ctx, mailbox.ProviderMicrosoft365, args.Mailbox, slot)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("mailbox %q is not an active mailbox for this credential", args.Mailbox)
 }
 
 // resourceAllowed reports whether val is within the allowed scope value (a

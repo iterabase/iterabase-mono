@@ -232,6 +232,51 @@ jobs:
         run: make tool-runner-build
         working-directory: control-plane
 
+  # Live Microsoft 365 mailbox checks (HOR-358, DES-HOR-358-04): the connector
+  # and the mailbox product tools against the dedicated test tenant. Entra
+  # workload identity federation trusts this job's GitHub OIDC token in the
+  # `m365-test` environment, so no tenant secret is stored. Runs serialise on
+  # the shared tenant. Fork pull requests cannot obtain the token.
+  m365-live:
+    name: m365-live
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.jobs), 'm365-live')
+    runs-on: ubuntu-latest
+    environment: m365-test
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: m365-test-tenant
+      cancel-in-progress: false
+    env:
+      M365_TEST_TENANT_ID: ${{ vars.M365_TEST_TENANT_ID }}
+      M365_TEST_CLIENT_ID: ${{ vars.M365_TEST_CLIENT_ID }}
+      M365_TEST_MAILBOX: ${{ vars.M365_TEST_MAILBOX }}
+      M365_TEST_OTHER_MAILBOX: ${{ vars.M365_TEST_OTHER_MAILBOX }}
+      M365_TEST_REPLIER_CLIENT_ID: ${{ vars.M365_TEST_REPLIER_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: ./.github/actions/docker-hub-login
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: 1.26.5
+          cache-dependency-path: ${{ env.GO_CACHE_DEPENDENCIES }}
+          cache-scope: control-plane
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.19.0
+          cache-dependency-path: control-plane/tool-runner/package-lock.json
+          cache-scope: tool-runner
+      - name: Live Microsoft 365 mailbox checks
+        run: make m365-live-test
+        working-directory: control-plane
+
   proto:
     name: protobuf
     needs: select
@@ -474,6 +519,7 @@ jobs:
       - ui
       - harness
       - tool-runner
+      - m365-live
       - proto
       - inference-gateway
       - forge
