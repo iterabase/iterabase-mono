@@ -689,6 +689,13 @@ a:hover {
   font-size: 12px;
   text-align: center;
 }
+.form-status {
+  padding: 9px 11px;
+  border-radius: 5px;
+  background: var(--g50);
+  color: var(--g500);
+  font-size: 12px;
+}
 .page-error,
 .form-error {
   padding: 9px 11px;

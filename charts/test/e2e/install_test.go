@@ -152,7 +152,8 @@ func installMinimalPlatformEdgeStage(t *testing.T, state *chartState) {
 func assertOpenEBSLVMClaimsStage(t *testing.T, state *chartState) {
 	t.Helper()
 	classes := strings.Fields(state.kubectl(t, 30*time.Second, "get", "storageclass", "-o", `jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`))
-	if len(classes) != 2 || !slices.Contains(classes, PlatformDataStorageClass) || !slices.Contains(classes, AgentPoolWorkspaceStorageClass) {
+	if len(classes) != 3 || !slices.Contains(classes, PlatformDataStorageClass) || !slices.Contains(classes, AgentPoolWorkspaceStorageClass) ||
+		!slices.Contains(classes, SignatureStorageClass) {
 		t.Fatalf("managed StorageClass set=%v", classes)
 	}
 	for _, class := range classes {
@@ -166,8 +167,14 @@ func assertOpenEBSLVMClaimsStage(t *testing.T, state *chartState) {
 	}
 	for _, claim := range claims {
 		parts := strings.Split(claim, "|")
-		if len(parts) != 4 || parts[1] != PlatformDataStorageClass || parts[2] != "Bound" || parts[3] == "" {
-			t.Fatalf("chart data claim is not explicitly Bound through the general LVM class: %s", claim)
+		// DES-HOR-461-05: the artifact signature claim is the one claim on the
+		// shared signature class; every other chart data claim is general.
+		wantClass := PlatformDataStorageClass
+		if strings.HasSuffix(parts[0], "-control-plane-artifact-signatures") {
+			wantClass = SignatureStorageClass
+		}
+		if len(parts) != 4 || parts[1] != wantClass || parts[2] != "Bound" || parts[3] == "" {
+			t.Fatalf("chart data claim is not explicitly Bound through its managed LVM class: %s", claim)
 		}
 		pv := state.kubectl(t, 30*time.Second, "get", "pv/"+parts[3], "-o", `jsonpath={.spec.csi.driver}|{.spec.csi.fsType}|{.spec.csi.volumeAttributes.openebs\.io/volgroup}|{.spec.hostPath.path}`)
 		if pv != "local.csi.openebs.io|xfs|iterabase-data|" {

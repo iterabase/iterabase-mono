@@ -118,11 +118,13 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 ##@ Build
 
 .PHONY: build
-build: ui-build vet ## Build Dashboard, manager, api, gateway, and dispatch binaries.
+build: ui-build vet ## Build Dashboard, manager, api, gateway, dispatch, artifact-coordinator, and artifact-scanner binaries.
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/manager ./cmd/manager
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/api ./cmd/api
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/gateway ./cmd/gateway
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/dispatch ./cmd/dispatch
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/artifact-coordinator ./cmd/artifact-coordinator
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/artifact-scanner ./cmd/artifact-scanner
 
 .PHONY: run-manager
 run-manager: ## Run the operator from your host.

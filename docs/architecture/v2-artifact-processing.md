@@ -1,6 +1,6 @@
 # V2 artifact quarantine, extraction/OCR, and derived-artifact contract
 
-- **Status:** Approved design, amended by the founder design review of 2026-10-11/12 (section 1.1); implementation is owned by follow-on tickets.
+- **Status:** Approved design, amended by the founder design review of 2026-10-11/12 (section 1.1) and the HOR-461 implementation decisions of 2026-10-14 (section 1.2); implementation is owned by follow-on tickets.
 - **Approval date:** 2026-08-23; amended 2026-10-12 ([HOR-663](https://linear.app/horizonshift/issue/HOR-663/docs-amend-the-v2-architecture-docs-to-the-2026-10-design-review))
 - **Architecture ticket:** [HOR-460](https://linear.app/horizonshift/issue/HOR-460/v2-approve-artifact-quarantine-extractionocr-and-derived-artifact)
 - **Product contract:** Obsidian `Platform V2 — Product Requirements` (2026-10-12), especially `REQ-028`–`REQ-033`, `REQ-038`, `REQ-044`, and `SCN-005`–`SCN-007`. The 2026-08-10 PRD is history.
@@ -136,6 +136,30 @@ The founder design review of 2026-10-11/12 amended this record. Each amendment's
 | `DES-HOR-460-03`, section 2 | **One quarantine path for every source.** Artifacts are admitted from user uploads, mailboxes (system actor plus mailbox/message lineage), customer-network runners and tool output (tool-invocation lineage), workflows, and Teams attachments. Every source goes through the same quarantine, scan, and type policy. | [HOR-461](https://linear.app/horizonshift/issue/HOR-461), [HOR-595](https://linear.app/horizonshift/issue/HOR-595), [HOR-596](https://linear.app/horizonshift/issue/HOR-596), [HOR-659](https://linear.app/horizonshift/issue/HOR-659) |
 | `DES-HOR-460-12` | **Teardown is not deletion.** Trial and installation teardown destroys the whole environment (HOR-593) and does not use this deletion path. The Admin-key deletion path is for in-product deletion only. | [HOR-461](https://linear.app/horizonshift/issue/HOR-461) |
 | Section 11 sizing | **Memory sizing.** ClamAV needs 1.5–3 GiB; HOR-602 accounts for it on the 16 GiB hosted instance. | [HOR-461](https://linear.app/horizonshift/issue/HOR-461) |
+
+## 1.2 HOR-461 implementation decisions (2026-10-14)
+
+Approved by Nuno Gonçalves during HOR-461 implementation. The canonical records, with scope, consequences, and evidence, are in the [HOR-461](https://linear.app/horizonshift/issue/HOR-461) ticket's "Approved design decisions" section.
+
+| Decision | Amends | Summary |
+| --- | --- | --- |
+| `DES-HOR-461-01` | `DES-HOR-460-06` (detection only), section 9 step 5, section 10 | Type detection, bounded structural validation, email HTML-body sanitisation, and `.eml` / `.msg` expansion run in a project-owned Go **admission adapter** inside the credentialless, zero-egress, mTLS-only scanner pod, after the ClamAV verdict. Tika is not the detection authority and no JVM ships for security admission. Whether HOR-462 keeps Tika for extraction is decided separately. |
+| `DES-HOR-461-02` | Section 15 (workflow output) | Workload outputs are **accepted when produced, gated when consumed**: the write returns the immutable ref with state `checking_security`; the producer may cite it (`complete_step`, tool-output validation), but node assignment, materialization, download, work start, blocker response, and tool input require clearance. A node whose input is still being checked is not assigned; a rejected or deleted input fails it with `input_artifact_rejected`. |
+| `DES-HOR-461-03` | Section 6 email rows | Children are the sanitised body plus every real attachment; `cid:`-referenced inline images stay in the quarantined HTML source. At most 50 children (`container_too_many_parts` otherwise, never partial). A received mailbox message is the depth-0 root; one container level is expanded below it, so an uploaded `.eml` / `.msg` expands, and a container inside an expanded container is kept unexpanded. |
+| `DES-HOR-461-04` | Section 11 coordinator "exact database role" | The coordinator uses the shared control-plane database credential; per-process least-privilege roles for every process are [HOR-673](https://linear.app/horizonshift/issue/HOR-673). |
+| `DES-HOR-461-05` | `DES-HOR-460-07`, `DES-HOR-545-01` signature claim class | The signature PVC uses a dedicated `iterabase-signatures-lvm-xfs` class (`shared: "yes"`, thick, `iterabase-data`) admitted for exactly that one claim. `iterabase-lvm-xfs` is `shared: "no"`, and OpenEBS refuses the scanner's second mount (`verifyMount: device already mounted`), as PR #170's deployed E2E proved. Wherever this record names `iterabase-lvm-xfs` for the signature claim, read `iterabase-signatures-lvm-xfs`. |
+
+### Implementation notes binding on HOR-462 and later work
+
+- **Epoch.** Migration `000033` drops the v1 `state`, `mime_type`, `available_at`, and `storage_key` columns. That is the epoch boundary: an older binary fails on its first artifact query instead of reading `available` as safe. Every legacy row became unscanned quarantine with security attempt 1 queued; none was grandfathered.
+- **Security states.** One adapter call performs malware scan and type validation, so the `validating_type` state is folded into `scanning`; attempt evidence records engine, signature, and policy versions together.
+- **Clearance predicate.** `artifact.is_cleared(id)` (stored, cleared, registered, not withdrawn) is the database authority every consumer joins on immediately before use; `artifact.is_admissible_output(id)` is the narrower producer-citation predicate of `DES-HOR-461-02`.
+- **Zones.** Zones are prefixes in the one artifact bucket (`quarantine/`, `originals/`, `derived/`; legacy `artifacts/` is lifecycle-only). The chart-shipped MinIO policies grant ingest `PutObject` on `quarantine/*` only, serve `GetObject` on `originals/*` and `derived/*` only, and lifecycle read/write/delete on every zone. Quarantine writes are create-only (`If-None-Match: *`) so the ingest credential needs no read right.
+- **Email HTML source.** The original HTML body is kept as an `artifact.objects` row of kind `html_source` in the quarantine zone of the body child. It is never promoted, served, or rendered, and is purged with the body.
+- **Provisional handle.** `POST /v1/artifacts` returns `{uploadId, state}`; `uploadId` is a separate UUID with no ref semantics. Status resolves either the handle or the artifact id under the section 14 predicate; the canonical ref appears only once cleared.
+- **Scanner protocol.** `internal/artifact/scanproto` is the versioned HTTP/2 mTLS wire contract: one bounded request stream; a response of one verdict frame followed by bounded child frames. The coordinator validates request id, digest, size, and every bound before trusting a frame.
+- **Signature freshness.** The FreshClam updater writes `/signatures/state.json` (`version`, `checkedAt`) after every successful check; the adapter measures the 24-hour limit from `checkedAt`, reloads clamd when the version changes, and proves detection with the EICAR self-test before reporting ready.
+- **Scanner sizing.** The adapter container limit is 768 MiB, above the 256 MiB starting point in section 11, because full validation of a 50-megapixel image needs about 400 MB.
 
 ## 2. Scope, non-goals, and invariants
 
@@ -569,7 +593,7 @@ A repeated request with the same upload idempotency key and exact committed payl
 2. Recheck artifact/storage/object digest/lifecycle and scanner readiness/signature age.
 3. Stream the exact quarantine object over mTLS to the scanner adapter. The adapter enforces request size and sends the bounded stream to local ClamAV `INSTREAM`.
 4. A malware verdict commits permanent `rejected`, withdraws any visibility, schedules immediate byte purge, and records only bounded signature/verdict evidence. No type extraction runs.
-5. A clean verdict is not yet clearance. Stream the same immutable digest to the detector/validator mode in the extractor pod; require the allow-list, claim/extension compatibility, and structural policy in section 6.
+5. A clean verdict is not yet clearance. In the same adapter call, the Go admission policy (`DES-HOR-461-01`) requires the allow-list, claim/extension compatibility, and structural policy in section 6, and expands email containers into children.
 6. A deterministic policy violation commits permanent `rejected` and immediate purge. Service/transport/timeout failure commits or schedules retryable failure without a clean customer verdict.
 7. After both checks pass, create the unique safe-zone object by exact server-side copy or coordinator stream, verify source and destination digest/size, and enter `promoting`.
 8. One transaction commits the original object, `storage_state='stored'`, canonical MIME, `security_state='cleared'`, successful-attempt pointer, library registration, metadata search row, and extraction attempt 1.
@@ -617,7 +641,7 @@ A future proposal may add a separate, immutable, non-canonical semantic derivati
 
 | Component | Selected version/reference | Purpose | License and boundary |
 | --- | --- | --- | --- |
-| ClamAV | Engine **1.4.6 LTS**; upstream base `clamav/clamav:1.4.6_base@sha256:1b6920e8c32cca47ea33b1e2611d9a4740ccc622cf13b30b29f8283d60175e39` reviewed 2026-08-23 | Malware verdict over the exact original stream | GPL-2.0; runs as an isolated unmodified process/image and is not linked into Iterabase. Any redistributed derived image must retain license/source obligations. |
+| ClamAV | Engine **1.4.6 LTS**; upstream base `clamav/clamav:1.4.6_base@sha256:1b6920e8c32cca47ea33b1e2611d9a4740ccc622cf13b30b29f8283d60175e39` reviewed 2026-08-23; HOR-461 pins the rebuilt `sha256:1b483c3988220dae0e107911e2788c2a671ccd4ec01901777f8ac02e518d3af2` (engine 1.4.6 verified 2026-10-14) | Malware verdict over the exact original stream | GPL-2.0; runs as an isolated unmodified process/image and is not linked into Iterabase. Any redistributed derived image must retain license/source obligations. |
 | Apache Tika | **3.3.1**, upstream full image `apache/tika:3.3.1.0-full@sha256:d8e6ed96260ad89307a93195a1b856102987a818ac648502f8efbaf313d32470` reviewed 2026-08-23 | Deterministic content detection, structural parser substrate, text/table extraction | Apache-2.0; deployed in a separate credentialless extractor image/pod. |
 | Tesseract OCR | **5.5.0** as verified in the selected Tika image, plus pinned `eng`, `por`, and `osd` trained data | OCR for supported images and scanned PDF pages | Apache-2.0 engine; language-data license/checksum must be included in the image SBOM and notice inventory. |
 | PostgreSQL full-text | Existing PostgreSQL 16-compatible database, `simple` text-search configuration and GIN | Metadata and extracted-content search | Existing repository dependency; no new external service. |

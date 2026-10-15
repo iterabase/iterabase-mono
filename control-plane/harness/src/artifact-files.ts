@@ -24,7 +24,7 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import type { ArtifactMaterialization } from "./gen/iterabase/harness/v1/harness_pb.js";
 import type { ArtifactMetadata } from "./gen/iterabase/gateway/v1/gateway_pb.js";
 import type { AssignmentScope, GatewayClient } from "./gateway-client.js";
@@ -141,6 +141,7 @@ export async function publishWorkspaceArtifact(
     const stream = createReadStream(path, { fd, autoClose: false, start: 0 });
     const metadata = await client.putArtifact!(scope, {
       mimeType,
+      filename: basename(relativePath),
       expectedSizeBytes: stat.size,
       expectedDigest: digest,
       chunks: stream as AsyncIterable<Uint8Array>,

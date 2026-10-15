@@ -84,6 +84,55 @@ spec:
         operations: ["CREATE", "UPDATE"]
         resources: ["persistentvolumeclaims"]
 ---
+{{- $sig := .Values.signatures.authorizedClaim }}
+{{- if or (not $sig.namespace) (not $sig.name) }}{{ fail "signatures.authorizedClaim.namespace and .name must name the artifact signature PVC (fail closed)" }}{{- end }}
+# DES-HOR-461-05: the shared signature class admits exactly one claim, the
+# platform's artifact signature PVC, in every namespace. Its class, access
+# mode, and volume mode are immutable; capacity may only grow.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: iterabase-signatures-claim-authority
+  annotations:
+    iterabase.com/architecture-decision: DES-HOR-461-05
+    iterabase.com/claim-authority: artifact-signatures-only
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["persistentvolumeclaims"]
+  matchConditions:
+    - name: selects-signatures-class
+      expression: "object.spec.storageClassName == 'iterabase-signatures-lvm-xfs'"
+  validations:
+    - expression: "object.metadata.namespace == '{{ $sig.namespace }}' && object.metadata.name == '{{ $sig.name }}'"
+      message: "Only the artifact signature PVC {{ $sig.namespace }}/{{ $sig.name }} may use the iterabase-signatures-lvm-xfs class"
+    - expression: "object.spec.accessModes == ['ReadWriteOnce'] && (!has(object.spec.volumeMode) || object.spec.volumeMode == 'Filesystem')"
+      message: "The artifact signature PVC must be a ReadWriteOnce filesystem claim"
+    - expression: "request.operation != 'UPDATE' || (object.spec.storageClassName == oldObject.spec.storageClassName && object.spec.accessModes == oldObject.spec.accessModes)"
+      message: "The class and access mode of the artifact signature PVC are immutable"
+    - expression: "request.operation != 'UPDATE' || object.spec.resources.requests.storage == oldObject.spec.resources.requests.storage || quantity(object.spec.resources.requests.storage).isGreaterThan(quantity(oldObject.spec.resources.requests.storage))"
+      message: "The artifact signature PVC storage request may only increase"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: iterabase-signatures-claim-authority
+  annotations:
+    iterabase.com/architecture-decision: DES-HOR-461-05
+spec:
+  policyName: iterabase-signatures-claim-authority
+  validationActions: [Deny]
+  matchResources:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["persistentvolumeclaims"]
+---
 # DES-HOR-545-05: OpenEBS 1.10.0 requires the LVMSnapshot schema and
 # list/watch-only driver access for its ordinary volume-deletion safety check.
 # The provider resource is inert: no caller may create an instance, and

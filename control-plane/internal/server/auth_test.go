@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	artifactstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact/artifacttest"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/identity"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/server"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/testutil"
@@ -23,11 +24,12 @@ import (
 const authTestOrigin = "https://app.example.com"
 
 type authAPIHarness struct {
-	t      *testing.T
-	router http.Handler
-	store  *identity.Store
-	pool   *pgxpool.Pool
-	now    time.Time
+	t       *testing.T
+	router  http.Handler
+	store   *identity.Store
+	pool    *pgxpool.Pool
+	now     time.Time
+	objects *artifacttest.MemoryObjects
 }
 
 func newAuthAPIHarness(t *testing.T) *authAPIHarness {
@@ -40,11 +42,13 @@ func newAuthAPIHarness(t *testing.T) *authAPIHarness {
 		pool:  pool,
 		now:   time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC),
 	}
+	objects := artifacttest.NewMemoryObjects()
+	harness.objects = objects
 	harness.router = server.New(server.Services{
 		Pool:      pool,
 		Store:     store,
 		Work:      workstore.NewStore(pool),
-		Artifacts: artifactstore.NewService(artifactstore.NewStore(pool), newMemoryObjects(), artifactstore.Config{MaxSize: 1 << 20}, nil),
+		Artifacts: artifactstore.NewService(artifactstore.NewStore(pool), objects, objects, artifactstore.Config{}, nil),
 		Auth: &server.AuthServices{
 			PublicOrigin: authTestOrigin,
 			Store:        store,

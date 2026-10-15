@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	connect "connectrpc.com/connect"
 	artifactstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact"
@@ -13,9 +14,11 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/spiffe"
 )
 
-// PutArtifact streams one immutable object. The first message must be init;
-// later messages must be chunks. Authorization is resolved before MinIO sees a
-// byte and the artifact remains pending until the complete stream verifies.
+// PutArtifact streams one immutable object into quarantine. The first message
+// must be init; later messages must be chunks. Authorization is resolved
+// before MinIO sees a byte. The returned ref is the immutable identity of a
+// still-unusable output (DES-HOR-461-02): the caller may cite it, but every
+// consumer waits for security clearance.
 func (s *Service) PutArtifact(ctx context.Context, st *connect.ClientStream[v1.PutArtifactRequest]) (*connect.Response[v1.PutArtifactResponse], error) {
 	if s.artifacts == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("artifact service not configured"))
@@ -39,12 +42,19 @@ func (s *Service) PutArtifact(ctx context.Context, st *connect.ClientStream[v1.P
 	if err != nil {
 		return nil, mapArtifactErr(err)
 	}
-	expectedSize := init.ExpectedSizeBytes
-	a, err := s.artifacts.Upload(ctx, artifactstore.UploadInput{
+	name := init.GetFilename()
+	if name == "" {
+		name = derivedFilename(init.MimeType)
+	}
+	a, err := s.artifacts.Admit(ctx, artifactstore.AdmitInput{
 		SourceType: auth.sourceType, SourceRef: auth.sourceRef,
-		CreatedByIdentityID: auth.creatorIdentityID, MIMEType: init.MimeType,
-		ExpectedSize: expectedSize, ExpectedDigest: init.ExpectedDigest,
-		Scope: &auth.scope,
+		Attribution: artifactstore.Attribution{
+			InitiatingHumanID: auth.initiatingHumanID, RequestActorID: auth.creatorIdentityID,
+			ExecutingID: auth.creatorIdentityID, Source: artifactstore.AuthWorkload,
+		},
+		DisplayName: name, ClaimedMIME: init.MimeType,
+		ExpectedSize: init.ExpectedSizeBytes, ExpectedDigest: init.ExpectedDigest,
+		Scope: &auth.scope, ContainerDepth: 1,
 	}, &artifactChunkReader{stream: st})
 	if err != nil {
 		return nil, mapArtifactErr(err)
@@ -116,6 +126,7 @@ func (s *Service) StatArtifact(ctx context.Context, req *connect.Request[v1.Stat
 type artifactAuthorization struct {
 	scope             artifactstore.Scope
 	creatorIdentityID string
+	initiatingHumanID string
 	sourceType        string
 	sourceRef         string
 }
@@ -154,7 +165,12 @@ func (s *Service) authorizeArtifactCaller(ctx context.Context, id spiffe.Identit
 			}
 		}
 		scope.Role = "output"
-		return artifactAuthorization{scope: scope, creatorIdentityID: creator, sourceType: artifactstore.SourceToolOutput, sourceRef: inv.ID}, nil
+		human, err := s.artifacts.Store().InitiatingHuman(ctx, scope.WorkItemID)
+		if err != nil {
+			return auth, err
+		}
+		return artifactAuthorization{scope: scope, creatorIdentityID: creator, initiatingHumanID: human,
+			sourceType: artifactstore.SourceTool, sourceRef: inv.ID}, nil
 	}
 
 	res, err := s.resolveCallerScope(ctx, id, &v1.DiscoverRequest{
@@ -177,9 +193,14 @@ func (s *Service) authorizeArtifactCaller(ctx context.Context, id spiffe.Identit
 	scope.Role = "output"
 	source := artifactstore.SourceWorkflow
 	if id.Kind == spiffe.KindSupervisor {
-		source = artifactstore.SourceSandboxPublish
+		source = artifactstore.SourceSandbox
 	}
-	return artifactAuthorization{scope: scope, creatorIdentityID: creator, sourceType: source, sourceRef: res.CallerScopeID}, nil
+	human, err := s.artifacts.Store().InitiatingHuman(ctx, scope.WorkItemID)
+	if err != nil {
+		return auth, err
+	}
+	return artifactAuthorization{scope: scope, creatorIdentityID: creator, initiatingHumanID: human,
+		sourceType: source, sourceRef: res.CallerScopeID}, nil
 }
 
 func toolWritesArtifacts(tv ToolVersion) bool {
@@ -205,9 +226,9 @@ func containsArtifactRef(raw []byte, id string) bool {
 }
 
 func artifactMetadata(a artifactstore.Artifact) *v1.ArtifactMetadata {
-	m := &v1.ArtifactMetadata{Source: a.SourceType, State: a.State, CreatedAtUnixMs: a.CreatedAt.UnixMilli()}
-	if a.SizeBytes != nil && a.Digest != nil {
-		m.Ref = &v1.ArtifactRef{ArtifactId: a.ID, MimeType: a.MIMEType, SizeBytes: *a.SizeBytes, Digest: *a.Digest}
+	m := &v1.ArtifactMetadata{Source: a.SourceType, State: a.Status(), CreatedAtUnixMs: a.CreatedAt.UnixMilli()}
+	if ref, err := a.Ref(); err == nil {
+		m.Ref = &v1.ArtifactRef{ArtifactId: ref.ArtifactID, MimeType: ref.MIMEType, SizeBytes: ref.SizeBytes, Digest: ref.Digest}
 	}
 	if a.RetentionUntil != nil {
 		v := a.RetentionUntil.UnixMilli()
@@ -230,7 +251,7 @@ func mapArtifactErr(err error) error {
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, artifactstore.ErrInvalidInput), errors.Is(err, artifactstore.ErrDigest), errors.Is(err, artifactstore.ErrSize):
 		return connect.NewError(connect.CodeInvalidArgument, err)
-	case errors.Is(err, artifactstore.ErrTooLarge):
+	case errors.Is(err, artifactstore.ErrTooLarge), errors.Is(err, artifactstore.ErrCapacity):
 		return connect.NewError(connect.CodeResourceExhausted, err)
 	default:
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("artifact operation: %w", err))
@@ -265,4 +286,19 @@ func (r *artifactChunkReader) Read(p []byte) (int, error) {
 	n := copy(p, r.buf)
 	r.buf = r.buf[n:]
 	return n, nil
+}
+
+// derivedExtensions names workload outputs that carry no filename, so the
+// admission policy can check the extension against the detected type.
+var derivedExtensions = map[string]string{
+	"application/pdf": ".pdf", "text/csv": ".csv", "text/plain": ".txt",
+	"image/jpeg": ".jpg", "image/png": ".png", "image/tiff": ".tiff",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":       ".xlsx",
+	"message/rfc822": ".eml", "application/vnd.ms-outlook": ".msg",
+}
+
+func derivedFilename(mimeType string) string {
+	base, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(mimeType)), ";")
+	return "artifact" + derivedExtensions[strings.TrimSpace(base)]
 }

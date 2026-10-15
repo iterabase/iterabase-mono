@@ -412,6 +412,7 @@ export class ToolRunner {
       async write(input: Parameters<ToolArtifactAPI["write"]>[0]): Promise<ArtifactRef> {
         async function* requests() {
           yield { kind: { case: "init" as const, value: { context, mimeType: input.mimeType,
+            ...(input.filename === undefined ? {} : { filename: input.filename }),
             ...(input.expectedSizeBytes === undefined ? {} : { expectedSizeBytes: input.expectedSizeBytes }), expectedDigest: input.expectedDigest ?? "" } } };
           for await (const chunk of input.bytes) yield { kind: { case: "chunk" as const, value: chunk } };
         }

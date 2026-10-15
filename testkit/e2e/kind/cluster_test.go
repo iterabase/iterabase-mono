@@ -54,6 +54,10 @@ func TestLVMStorageHelmArgsUseTheKindKubeletRegistrationPath(t *testing.T) {
 	if !slices.Contains(args, "lvm-localpv.global.kubeletDir=/var/lib/kubelet") {
 		t.Fatalf("LVM storage Helm args do not override the K3s kubelet path for Kind: %v", args)
 	}
+	if !slices.Contains(args, "signatures.authorizedClaim.name=storage-control-plane-artifact-signatures") ||
+		!slices.Contains(args, "signatures.authorizedClaim.namespace=iterabase-system") {
+		t.Fatalf("substrate args do not authorize the release's signature claim: %v", args)
+	}
 	if !slices.Contains(args, "agentpool.authorizedManagerIdentity=system:serviceaccount:iterabase-system:storage-control-plane-manager") {
 		t.Fatalf("LVM storage Helm args do not carry the exact control-plane manager SA identity for admission (DES-HOR-545-01): %v", args)
 	}

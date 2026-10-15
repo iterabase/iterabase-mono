@@ -47,20 +47,26 @@ for image in \
   grep -Fq "image: \"$image\"" <<<"$render" || { echo "missing exact image $image" >&2; exit 1; }
 done
 
-[[ $(grep -c '^kind: StorageClass$' <<<"$render") -eq 2 ]]
-for class in iterabase-lvm-xfs iterabase-agentpool-lvm-xfs; do
+[[ $(grep -c '^kind: StorageClass$' <<<"$render") -eq 3 ]]
+for class in iterabase-lvm-xfs iterabase-agentpool-lvm-xfs iterabase-signatures-lvm-xfs; do
   grep -Fq "name: $class" <<<"$render"
 done
-[[ $(grep -c 'provisioner: local.csi.openebs.io' <<<"$render") -eq 2 ]]
-[[ $(grep -c 'vgpattern: \^iterabase-data\$' <<<"$render") -eq 2 ]]
-[[ $(grep -c 'fsType: xfs' <<<"$render") -eq 2 ]]
-[[ $(grep -c 'thinProvision: "no"' <<<"$render") -eq 2 ]]
-[[ $(grep -c 'volumeBindingMode: WaitForFirstConsumer' <<<"$render") -eq 2 ]]
-[[ $(grep -c 'reclaimPolicy: Delete' <<<"$render") -eq 2 ]]
-[[ $(grep -c 'allowVolumeExpansion: true' <<<"$render") -eq 2 ]]
-[[ $(grep -c 'storageclass.kubernetes.io/is-default-class: "false"' <<<"$render") -eq 2 ]]
+[[ $(grep -c 'provisioner: local.csi.openebs.io' <<<"$render") -eq 3 ]]
+[[ $(grep -c 'vgpattern: \^iterabase-data\$' <<<"$render") -eq 3 ]]
+[[ $(grep -c 'fsType: xfs' <<<"$render") -eq 3 ]]
+[[ $(grep -c 'thinProvision: "no"' <<<"$render") -eq 3 ]]
+[[ $(grep -c 'volumeBindingMode: WaitForFirstConsumer' <<<"$render") -eq 3 ]]
+[[ $(grep -c 'reclaimPolicy: Delete' <<<"$render") -eq 3 ]]
+[[ $(grep -c 'allowVolumeExpansion: true' <<<"$render") -eq 3 ]]
+[[ $(grep -c 'storageclass.kubernetes.io/is-default-class: "false"' <<<"$render") -eq 3 ]]
 grep -A14 'name: iterabase-lvm-xfs' <<<"$render" | grep -Fq 'shared: "no"'
 grep -A15 'name: iterabase-agentpool-lvm-xfs' <<<"$render" | grep -Fq 'shared: "yes"'
+# DES-HOR-461-05: the signature class is shared and admits exactly one claim.
+grep -A16 'name: iterabase-signatures-lvm-xfs' <<<"$render" | grep -Fq 'shared: "yes"'
+grep -Fq "expression: \"object.metadata.namespace == 'iterabase-system' && object.metadata.name == 'iterabase-control-plane-artifact-signatures'\"" <<<"$render" || {
+  echo "error: the signature class must admit exactly the artifact signature claim" >&2
+  exit 1
+}
 
 # The generated dependency itself must be the deterministic bounded derivative,
 # not the untouched upstream archive with CSI snapshot files or broad authority.
@@ -123,9 +129,21 @@ grep -Fq 'policyName: iterabase-lvmsnapshot-create-deny' <<<"$render"
 
 for values in "" "-f values-observability.yaml"; do
   platform_render=$(helm template release "$platform" -f values-auth.yaml $values)
-  explicit_classes=$(awk '$1 == "storageClassName:" && NF > 1 {gsub(/"/, "", $2); print $2}' <<<"$platform_render" | sort -u)
+  # DES-HOR-461-05: the artifact signature PVC is the only claim on the
+  # shared signature class; every other platform data claim stays on
+  # iterabase-lvm-xfs.
+  explicit_classes=$(awk '$1 == "storageClassName:" && NF > 1 {gsub(/"/, "", $2); print $2}' <<<"$platform_render" | grep -vx iterabase-signatures-lvm-xfs | sort -u)
   [[ "$explicit_classes" == iterabase-lvm-xfs ]] || {
     echo "error: every rendered platform data claim must explicitly use iterabase-lvm-xfs: $explicit_classes" >&2
+    exit 1
+  }
+  signature_claims=$(python3 -c '
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+print("\n".join(d["metadata"]["name"] for d in docs
+    if d.get("kind") == "PersistentVolumeClaim" and d["spec"].get("storageClassName") == "iterabase-signatures-lvm-xfs"))' <<<"$platform_render")
+  [[ "$signature_claims" == release-control-plane-artifact-signatures ]] || {
+    echo "error: only the artifact signature PVC may use iterabase-signatures-lvm-xfs: $signature_claims" >&2
     exit 1
   }
 done

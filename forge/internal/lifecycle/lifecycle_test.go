@@ -207,7 +207,7 @@ func (f *fakeProv) ReconcileDataStorage(_ context.Context, spec provisioner.Data
 	}
 	return &provisioner.DataStorageState{Devices: devices, VGName: provisioner.DataVolumeGroupName, VGUUID: "vg-uuid", SizeBytes: 200, FreeBytes: 200, State: "complete"}, nil
 }
-func (f *fakeProv) WaitForLVMStorageReady(_ context.Context, _ string, storage *provisioner.DataStorageState) (*provisioner.LVMStorageReadiness, error) {
+func (f *fakeProv) WaitForLVMStorageReady(_ context.Context, _ string, storage *provisioner.DataStorageState, _ []provisioner.ManagedStorageClass) (*provisioner.LVMStorageReadiness, error) {
 	f.lvmReadinessCalls++
 	if f.lvmReadinessErr != nil {
 		return nil, f.lvmReadinessErr
@@ -712,7 +712,11 @@ func TestApplyChartOrdersBothSubstratesBeforePlatform(t *testing.T) {
 	assert.Equal(t, "oci://ghcr.io/nunocgoncalves/iterabase-charts/lvm-storage-substrate", d.applyCalls[1].repository)
 	// DES-HOR-545-01: the substrate install carries the exact manager SA identity
 	// so admission fails closed unless the request is the control-plane manager.
-	assert.Equal(t, []string{"agentpool.authorizedManagerIdentity=system:serviceaccount:iterabase-system:opo1-control-plane-manager"}, d.applyCalls[1].values)
+	assert.Equal(t, []string{
+		"agentpool.authorizedManagerIdentity=system:serviceaccount:iterabase-system:opo1-control-plane-manager",
+		"signatures.authorizedClaim.namespace=iterabase-system",
+		"signatures.authorizedClaim.name=opo1-control-plane-artifact-signatures",
+	}, d.applyCalls[1].values)
 	assert.Equal(t, "opo1", d.applyCalls[2].release)
 	assert.Equal(t, 1, p.lvmReadinessCalls)
 }

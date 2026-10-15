@@ -1,0 +1,262 @@
+{{- define "control-plane.artifactClamdConf" -}}
+Foreground yes
+TCPSocket 3310
+TCPAddr 127.0.0.1
+DatabaseDirectory /signatures/current
+TemporaryDirectory /tmp
+LogTime yes
+LogVerbose no
+StreamMaxLength 26M
+MaxFileSize 26M
+MaxScanSize 256M
+MaxRecursion 16
+MaxFiles 10000
+SelfCheck 0
+ConcurrentDatabaseReload no
+MaxThreads 2
+ReadTimeout 120
+CommandReadTimeout 30
+ScanArchive yes
+ScanMail yes
+ScanOLE2 yes
+ScanPDF yes
+AlertBrokenExecutables yes
+{{- end -}}
+{{- if include "control-plane.artifactProcessingEnabled" . }}
+{{- $name := include "control-plane.artifactScannerName" . }}
+{{- $s := .Values.artifact.processing.scanner }}
+{{- $img := printf "%s:%s@%s" $s.image.repository $s.image.tag (required "artifact.processing.scanner.image.digest is required" $s.image.digest) }}
+# Isolated scanner (DES-HOR-460-07): an mTLS adapter in front of a pod-local
+# clamd. No data, database, or Kubernetes credential; zero egress; the
+# signature volume is mounted read-only.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-scanner
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-clamd
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-scanner
+data:
+  # Option names verified against ClamAV 1.4.6 `clamconf`. Logging goes to
+  # stdout (no LogFile/PidFile on the read-only root). Signature reloads are
+  # driven by the adapter (RELOAD after a validated version switch), so the
+  # periodic SelfCheck is disabled.
+  clamd.conf: |
+    {{- include "control-plane.artifactClamdConf" . | nindent 4 }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-scanner
+spec:
+  secretName: {{ $name }}-tls
+  duration: 24h
+  renewBefore: 8h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages: ["server auth"]
+  uris:
+    - {{ include "control-plane.artifactScannerSPIFFEID" . | quote }}
+  dnsNames:
+    - {{ $name }}
+    - {{ printf "%s.%s" $name .Release.Namespace }}
+    - {{ printf "%s.%s.svc" $name .Release.Namespace }}
+    - {{ printf "%s.%s.svc.cluster.local" $name .Release.Namespace }}
+  issuerRef:
+    name: platform-spiffe-ca
+    kind: ClusterIssuer
+---
+# ClusterIP only; no Ingress. clamd itself stays on pod-local loopback.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-scanner
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: control-plane
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: artifact-scanner
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+    {{- if .Values.metrics.enabled }}
+    - name: http-metrics
+      port: 9090
+      targetPort: http
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-scanner
+spec:
+  replicas: {{ $s.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: artifact-scanner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: control-plane
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: artifact-scanner
+      annotations:
+        checksum/clamd-config: {{ include "control-plane.artifactClamdConf" . | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      shareProcessNamespace: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      securityContext:
+        runAsNonRoot: true
+        # The signature volume's group (the updater's), so the kubelet never
+        # re-owns it between the two pods; it is also a supplemental group of
+        # the adapter, which reads its 0440 TLS key through it.
+        fsGroup: {{ $s.runAsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: clamd
+          image: {{ $img | quote }}
+          imagePullPolicy: {{ $s.image.pullPolicy }}
+          # clamd starts only once the updater has published a complete,
+          # validated bundle and switched /signatures/current atomically.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until [ -d /signatures/current ]; do echo "waiting for a validated signature bundle"; sleep 10; done
+              exec clamd --foreground=true --config-file=/etc/clamav-scanner/clamd.conf
+          volumeMounts:
+            - name: signatures
+              mountPath: /signatures
+              readOnly: true
+            - name: clamd-tmp
+              mountPath: /tmp
+            - name: clamd-config
+              mountPath: /etc/clamav-scanner
+              readOnly: true
+          # clamd listens on loopback only, so the kubelet probes it from
+          # inside the container. Database load takes about a minute; the
+          # wait for a first bundle is tolerated without restarts.
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "[ ! -d /signatures/current ] || clamdscan --config-file=/etc/clamav-scanner/clamd.conf --ping 3:5"]
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 25
+            failureThreshold: 10
+          securityContext:
+            runAsUser: {{ $s.runAsUser }}
+            runAsGroup: {{ $s.runAsGroup }}
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          {{- with $s.clamdResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        - name: adapter
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/artifact-scanner"]
+          env:
+            - name: SCANNER_ADDR
+              value: ":8443"
+            - name: SCANNER_METRICS_ADDR
+              value: ":9090"
+            - name: SCANNER_TLS_CERT_FILE
+              value: /etc/artifact-scanner/tls/tls.crt
+            - name: SCANNER_TLS_KEY_FILE
+              value: /etc/artifact-scanner/tls/tls.key
+            - name: SCANNER_CLIENT_CA_FILE
+              value: /etc/artifact-scanner/tls/ca.crt
+            - name: SCANNER_ALLOWED_CLIENT
+              value: {{ include "control-plane.artifactCoordinatorSPIFFEID" . | quote }}
+            - name: SCANNER_CLAMD_ADDR
+              value: 127.0.0.1:3310
+            - name: SCANNER_SIGNATURE_STATE
+              value: /signatures/state.json
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | default "info" | quote }}
+          ports:
+            - name: https
+              containerPort: 8443
+            - name: http
+              containerPort: 9090
+          # Ready only while clamd passes the EICAR self-test on a signature
+          # bundle no older than 24h (DES-HOR-460-05).
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          volumeMounts:
+            - name: signatures
+              mountPath: /signatures
+              readOnly: true
+            - name: scanner-tls
+              mountPath: /etc/artifact-scanner/tls
+              readOnly: true
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          {{- with $s.adapterResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        # The device is mounted read-write at the node like the updater's mount
+        # (Linux cannot mount one XFS device ro and rw at once, DES-HOR-461-05);
+        # every scanner container mount below is read-only.
+        - name: signatures
+          persistentVolumeClaim:
+            claimName: {{ include "control-plane.artifactSignaturesClaimName" . }}
+        - name: clamd-tmp
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: clamd-config
+          configMap:
+            name: {{ $name }}-clamd
+        - name: scanner-tls
+          secret:
+            secretName: {{ $name }}-tls
+            defaultMode: 0440
+{{- end }}

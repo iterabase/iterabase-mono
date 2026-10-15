@@ -521,7 +521,7 @@ printf 'FORGE_DATA_STORAGE_RESULT\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\n' "$final_state
 
 // WaitForLVMStorageReady validates the chart-owned substrate and exact VG
 // discovery after the companion release is applied.
-func (p *SSHProvisioner) WaitForLVMStorageReady(ctx context.Context, namespace string, host *provisioner.DataStorageState) (*provisioner.LVMStorageReadiness, error) {
+func (p *SSHProvisioner) WaitForLVMStorageReady(ctx context.Context, namespace string, host *provisioner.DataStorageState, classes []provisioner.ManagedStorageClass) (*provisioner.LVMStorageReadiness, error) {
 	if host == nil || host.VGName != provisioner.DataVolumeGroupName || host.VGUUID == "" {
 		return nil, fmt.Errorf("host data-storage identity is incomplete")
 	}
@@ -645,7 +645,7 @@ for attempt in $(seq 1 150); do
   sleep 2
 done
 classes=$(k3s kubectl get storageclass -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort)
-test "$classes" = %s || fail "managed StorageClass set is not exactly the two approved classes: $classes"
+test "$classes" = %s || fail "managed StorageClass set is not exactly the approved classes for this substrate version: $classes"
 test -z "$(k3s kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\\.kubernetes\\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}')" || fail "a default StorageClass exists"
 if k3s kubectl get deployment local-path-provisioner -n kube-system >/dev/null 2>&1 || k3s kubectl get configmap local-path-config -n kube-system >/dev/null 2>&1; then fail "K3s local-path provisioner still exists"; fi
 verify_class() {
@@ -653,11 +653,10 @@ verify_class() {
   observed=$(k3s kubectl get storageclass "$name" -o jsonpath='{.provisioner}|{.reclaimPolicy}|{.volumeBindingMode}|{.allowVolumeExpansion}|{.parameters.storage}|{.parameters.vgpattern}|{.parameters.fsType}|{.parameters.thinProvision}|{.parameters.shared}')
   test "$observed" = "local.csi.openebs.io|Delete|WaitForFirstConsumer|true|lvm|^iterabase-data$|xfs|no|$shared" || fail "StorageClass $name contract drift: $observed"
 }
-verify_class %s no
-verify_class %s yes
+%s
 test -n "$observed_node" || fail "LVMNode identity is missing"
 printf 'FORGE_LVM_STORAGE_READY\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\t%%s\n' "$observed_node" "$expected_vg" "$expected_uuid" "$observed_size" "$observed_free" "$observed_lv_count" "$observed_pv_count"
-`, shellQuote(namespace), shellQuote(host.VGName), shellQuote(host.VGUUID), shellQuote(strconv.FormatUint(host.SizeBytes, 10)), shellQuote(strconv.FormatUint(host.FreeBytes, 10)), shellQuote(strconv.Itoa(len(host.Devices))), shellQuote(provisioner.AgentPoolStorageClass+"\n"+provisioner.PlatformStorageClass), shellQuote(provisioner.PlatformStorageClass), shellQuote(provisioner.AgentPoolStorageClass))
+`, shellQuote(namespace), shellQuote(host.VGName), shellQuote(host.VGUUID), shellQuote(strconv.FormatUint(host.SizeBytes, 10)), shellQuote(strconv.FormatUint(host.FreeBytes, 10)), shellQuote(strconv.Itoa(len(host.Devices))), shellQuote(expectedClassSet(classes)), verifyClassLines(classes))
 	out, err := p.run(ctx, "sudo bash -ceu "+shellQuote(script))
 	if err != nil {
 		return nil, fmt.Errorf("wait for LVM storage substrate: %w", err)
@@ -807,4 +806,28 @@ if test -e "$receipt"; then
   done
 fi
 `
+}
+
+// expectedClassSet is the sorted newline-joined class names the substrate
+// version must render exactly.
+func expectedClassSet(classes []provisioner.ManagedStorageClass) string {
+	names := make([]string, 0, len(classes))
+	for _, c := range classes {
+		names = append(names, c.Name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, "\n")
+}
+
+// verifyClassLines renders one contract check per managed class.
+func verifyClassLines(classes []provisioner.ManagedStorageClass) string {
+	lines := make([]string, 0, len(classes))
+	for _, c := range classes {
+		shared := "no"
+		if c.Shared {
+			shared = "yes"
+		}
+		lines = append(lines, "verify_class "+shellQuote(c.Name)+" "+shared)
+	}
+	return strings.Join(lines, "\n")
 }

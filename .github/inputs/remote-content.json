@@ -106,6 +106,10 @@
       "digest": "sha256:786c852164a4fab14fd194fdbe6b4ed6f34934fcf6e4556aa9368432081719e9"
     },
     {
+      "reference": "clamav/clamav:1.4.6_base",
+      "digest": "sha256:1b483c3988220dae0e107911e2788c2a671ccd4ec01901777f8ac02e518d3af2"
+    },
+    {
       "reference": "nvidia/cuda:12.4.1-base-ubuntu22.04",
       "digest": "sha256:0f6bfcbf267e65123bcc2287e2153dedfc0f24772fb5ce84afe16ac4b2fada95"
     },

@@ -1,7 +1,7 @@
 {{- /* The shared platform workload CA + ClusterIssuer (ARCH: the gateway,
      dispatch Work server, and tool-runner workload-identity substrate).
-     Provisioned when either the gateway or the dispatch Work server (or both)
-     is enabled; each mTLS service also signs its own serving leaf from this
+     Provisioned when the gateway, the dispatch Work server, or the artifact
+     processing pipeline (coordinator/scanner mTLS, HOR-461) is enabled; each mTLS service also signs its own serving leaf from this
      CA. AgentPool worker leaves are issued from the same CA (the controller's
      CSI volume references the platform-spiffe-ca ClusterIssuer name), so the
      CA private key remains in Kubernetes and warm workers verify the server
@@ -14,7 +14,7 @@
 {{- if $existingCA }}
 {{- $ca = buildCustomCert (index $existingCA.data "tls.crt") (index $existingCA.data "tls.key") }}
 {{- end }}
-{{- if and .Values.enabled (or .Values.gateway.enabled .Values.dispatch.enabled) }}
+{{- if and .Values.enabled (or .Values.gateway.enabled .Values.dispatch.enabled (include "control-plane.artifactProcessingEnabled" .)) }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -80,7 +80,7 @@ data:
   tls.key: {{ $gatewayCert.Key | b64enc | quote }}
 {{- end }}
 {{- end }}
-{{- if and .Values.enabled (or .Values.gateway.enabled .Values.dispatch.enabled) }}
+{{- if and .Values.enabled (or .Values.gateway.enabled .Values.dispatch.enabled (include "control-plane.artifactProcessingEnabled" .)) }}
 ---
 # AgentPool worker leaves are issued from the same CA the gateway/dispatch
 # trust for client authentication. The controller's CSI volume intentionally

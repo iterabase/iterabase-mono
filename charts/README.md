@@ -203,9 +203,12 @@ root, and creates exactly:
   platform data PVC;
 - `iterabase-agentpool-lvm-xfs`: `shared: yes`, authorized only for one
   Filesystem/RWO claim per AgentPool so multiple same-pool workers can mount it
-  on the one supported node.
+  on the one supported node;
+- `iterabase-signatures-lvm-xfs`: `shared: yes`, authorized only for the
+  artifact signature PVC so the FreshClam updater (read-write) and same-node
+  scanners (read-only) share it (DES-HOR-461-05; `signatures.authorizedClaim`).
 
-Both classes use `local.csi.openebs.io`, `storage: lvm`,
+All three classes use `local.csi.openebs.io`, `storage: lvm`,
 `vgpattern: ^iterabase-data$`, XFS, explicit thick `thinProvision: no`,
 `ReadWriteOnce`, `WaitForFirstConsumer`, `Delete`, grow-only expansion enabled,
 and false default annotations. PostgreSQL, MinIO, persistent observability components,

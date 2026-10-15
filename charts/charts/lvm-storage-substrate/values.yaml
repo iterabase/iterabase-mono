@@ -11,6 +11,13 @@
 # than emitting a broken admission gate.
 agentpool:
   authorizedManagerIdentity: ""
+# DES-HOR-461-05: the only claim admitted to iterabase-signatures-lvm-xfs, the
+# platform release's artifact signature PVC
+# (<platform-release>-control-plane-artifact-signatures in its namespace).
+signatures:
+  authorizedClaim:
+    namespace: iterabase-system
+    name: iterabase-control-plane-artifact-signatures
 lvm-localpv:
   enabled: true
   global:

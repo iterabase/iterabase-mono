@@ -26,14 +26,19 @@ ENV LDFLAGS="-X github.com/nunocgoncalves/iterabase-mono/control-plane/internal/
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "$LDFLAGS" -o /out/manager ./cmd/manager && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "$LDFLAGS" -o /out/api ./cmd/api && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "$LDFLAGS" -o /out/gateway ./cmd/gateway && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "$LDFLAGS" -o /out/dispatch ./cmd/dispatch
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "$LDFLAGS" -o /out/dispatch ./cmd/dispatch && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "$LDFLAGS" -o /out/artifact-coordinator ./cmd/artifact-coordinator && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "$LDFLAGS" -o /out/artifact-scanner ./cmd/artifact-scanner
 
-# Runtime stage: one image, four binaries. Each Deployment selects its binary
-# via `command` (manager: ["/manager"]; api: ["/api", "serve"]; gateway: ["/gateway", "serve"]; dispatch: ["/dispatch", "serve"]).
+# Runtime stage: one image, six binaries. Each Deployment selects its binary
+# via `command` (manager: ["/manager"]; api: ["/api", "serve"]; gateway: ["/gateway", "serve"]; dispatch: ["/dispatch", "serve"];
+# artifact-coordinator: ["/artifact-coordinator", "serve"]; artifact-scanner: ["/artifact-scanner"]).
 FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=builder /out/manager /manager
 COPY --from=builder /out/api /api
 COPY --from=builder /out/gateway /gateway
 COPY --from=builder /out/dispatch /dispatch
+COPY --from=builder /out/artifact-coordinator /artifact-coordinator
+COPY --from=builder /out/artifact-scanner /artifact-scanner
 USER 65532:65532

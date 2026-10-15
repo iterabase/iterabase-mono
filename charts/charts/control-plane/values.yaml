@@ -128,19 +128,123 @@ toolRunner:
     limits:
       memory: 256Mi
 
-# Immutable artifact service (HOR-399). The umbrella's MinIO subchart creates
-# the bucket + dedicated credential. For standalone/BYO MinIO, override endpoint
-# and credentialSecret with an equivalent bucket-scoped credential.
+# V2 artifact service (HOR-399, HOR-461; docs/architecture/v2-artifact-processing.md).
+# The umbrella's MinIO subchart creates the bucket and one credential per byte
+# zone (DES-HOR-460-02). The API and gateway receive only ingest (quarantine
+# write) and serve (cleared read); only the artifact coordinator receives
+# lifecycle. For standalone/BYO MinIO, override endpoint and credentialSecrets
+# with equivalent zone-scoped credentials (policies in charts/minio/files/).
+# The 25 MiB per-file limit is fixed by the product, not configurable here.
 artifact:
-  enabled: false # umbrella enables; standalone/BYO must configure endpoint + Secret
+  enabled: false # umbrella enables; standalone/BYO must configure endpoint + Secrets
   endpoint: "" # default: <release>-minio:9000
   bucket: iterabase-artifacts
-  credentialSecret: "" # default: <release>-minio-artifacts
+  credentialSecrets:
+    ingest: "" # default: <release>-minio-artifact-ingest (API + gateway)
+    serve: "" # default: <release>-minio-artifact-serve (API + gateway)
+    lifecycle: "" # default: <release>-minio-artifact-lifecycle (coordinator only)
   secure: false
-  maxSizeBytes: 1073741824
   defaultRetention: "" # empty = indefinite
-  pendingTTL: 1h
-  sweepInterval: 1m
+  # Committed quarantine bytes above which new uploads fail closed with
+  # 503 processing_capacity_unavailable (section 11).
+  quarantineMaxBytes: 2147483648
+  # Concurrent upload streams per API/gateway process.
+  maxConcurrentUploads: 4
+
+  # Isolated processing pipeline (HOR-461, DES-HOR-460-05/07): the trusted
+  # coordinator, the credentialless ClamAV scanner, and the FreshClam
+  # signature updater. Uploads stay quarantined until the coordinator records
+  # a clean verdict, so disabling this leaves every new artifact unavailable.
+  processing:
+    enabled: true
+    coordinator:
+      replicas: 1
+      # In-flight security scans per coordinator (1-8).
+      scanConcurrency: 1
+      sweepInterval: 30s
+      # HOR-460 section 11 reference profile; no CPU limit (chart rule).
+      resources:
+        requests:
+          cpu: 250m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
+    scanner:
+      replicas: 1
+      # ClamAV 1.4.6 LTS (DES-HOR-460-05), pinned by OCI index digest. The
+      # index publishes linux/amd64 only.
+      image:
+        repository: clamav/clamav
+        tag: 1.4.6_base
+        digest: sha256:1b483c3988220dae0e107911e2788c2a671ccd4ec01901777f8ac02e518d3af2
+        pullPolicy: IfNotPresent
+      # The image's clamav user/group.
+      runAsUser: 100
+      runAsGroup: 101
+      clamdResources:
+        requests:
+          cpu: 500m
+          memory: 1536Mi
+        limits:
+          memory: 3Gi
+      # Sizing deviation from the section 11 starting point (256Mi limit):
+      # the admission policy decodes image headers/pixels to bound
+      # decompression, and a 50-megapixel image decode measured ~400 MB.
+      adapterResources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          memory: 768Mi
+    signatures:
+      # FreshClam check cadence. DES-HOR-460-05 requires at most 2h.
+      refreshInterval: 2h
+      # Retry delay after a failed check. The previous bundle keeps serving
+      # until its 24h freshness bound; the scanner is unready after that.
+      retryInterval: 10m
+      # Official Cisco/ClamAV databases (main, daily, bytecode). false
+      # excludes all three, leaving only customDatabases (offline E2E).
+      official: true
+      # Operator-controlled exact mirror (FreshClam PrivateMirror), e.g.
+      # https://clamav-mirror.example.com. Empty uses database.clamav.net.
+      mirrorURL: ""
+      # Extra signature databases published with every bundle, delivered via
+      # FreshClam DatabaseCustomURL file:// from a ConfigMap mounted at
+      # /custom. Either inline content (the chart renders the ConfigMap) ...
+      customDatabases: {} # {"iterabase-e2e.hdb": "<md5>:<size>:<name>\n"}
+      # ... or an existing ConfigMap plus the exact keys to publish.
+      customDatabasesConfigMap: ""
+      customDatabaseFiles: []
+      persistence:
+        # Fixed (section 11): the explicit non-default OpenEBS LVM class.
+        storageClassName: iterabase-signatures-lvm-xfs
+        # One staged bundle + current + one validated rollback with headroom
+        # (the official compressed bundle is ~110 MiB).
+        size: 2Gi
+      updater:
+        # One sigtool --info header/digital-signature check per database,
+        # not a full engine load, so memory stays at the section 11 profile.
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 256Mi
+    networkPolicy:
+      enabled: true
+      # Signature updater HTTPS/HTTP egress is open to the internet except
+      # these ranges (private, link-local/metadata, and therefore every
+      # cluster Service/Pod CIDR in those ranges).
+      updaterDeniedCIDRs: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+      updaterDeniedIPv6CIDRs: ["fc00::/7", "fe80::/10"]
+      # Explicit mirror address ranges admitted on 80/443 even when they are
+      # private (use with signatures.mirrorURL).
+      updaterMirrorCIDRs: []
+      # Coordinator egress for an external PostgreSQL / object store outside
+      # this release's bundled pods.
+      externalDatabaseCIDRs: []
+      externalObjectStoreCIDRs: []
+      externalObjectStorePort: 9000
 
 service:
   port: 8080

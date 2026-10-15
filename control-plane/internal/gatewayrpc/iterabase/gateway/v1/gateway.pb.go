@@ -1937,8 +1937,11 @@ type PutArtifactInit struct {
 	MimeType          string                 `protobuf:"bytes,2,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
 	ExpectedSizeBytes *int64                 `protobuf:"varint,3,opt,name=expected_size_bytes,json=expectedSizeBytes,proto3,oneof" json:"expected_size_bytes,omitempty"`
 	ExpectedDigest    string                 `protobuf:"bytes,4,opt,name=expected_digest,json=expectedDigest,proto3" json:"expected_digest,omitempty"` // optional canonical sha256:<hex>
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Display filename. Its extension must agree with the detected type
+	// (HOR-461 admission); absent, the gateway derives one from mime_type.
+	Filename      *string `protobuf:"bytes,5,opt,name=filename,proto3,oneof" json:"filename,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PutArtifactInit) Reset() {
@@ -1995,6 +1998,13 @@ func (x *PutArtifactInit) GetExpectedSizeBytes() int64 {
 func (x *PutArtifactInit) GetExpectedDigest() string {
 	if x != nil {
 		return x.ExpectedDigest
+	}
+	return ""
+}
+
+func (x *PutArtifactInit) GetFilename() string {
+	if x != nil && x.Filename != nil {
+		return *x.Filename
 	}
 	return ""
 }
@@ -2277,7 +2287,7 @@ type ArtifactMetadata struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	Ref                  *ArtifactRef           `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
 	Source               string                 `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
-	State                string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
+	State                string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"` // customer projection, e.g. checking_security | ready | rejected
 	CreatedAtUnixMs      int64                  `protobuf:"varint,4,opt,name=created_at_unix_ms,json=createdAtUnixMs,proto3" json:"created_at_unix_ms,omitempty"`
 	RetentionUntilUnixMs *int64                 `protobuf:"varint,5,opt,name=retention_until_unix_ms,json=retentionUntilUnixMs,proto3,oneof" json:"retention_until_unix_ms,omitempty"` // absent = indefinite
 	DeletedAtUnixMs      *int64                 `protobuf:"varint,6,opt,name=deleted_at_unix_ms,json=deletedAtUnixMs,proto3,oneof" json:"deleted_at_unix_ms,omitempty"`
@@ -3146,13 +3156,15 @@ const file_iterabase_gateway_v1_gateway_proto_rawDesc = "" +
 	"\x12PutArtifactRequest\x12;\n" +
 	"\x04init\x18\x01 \x01(\v2%.iterabase.gateway.v1.PutArtifactInitH\x00R\x04init\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\x06\n" +
-	"\x04kind\"\xeb\x01\n" +
+	"\x04kind\"\x99\x02\n" +
 	"\x0fPutArtifactInit\x12E\n" +
 	"\acontext\x18\x01 \x01(\v2+.iterabase.gateway.v1.ArtifactCallerContextR\acontext\x12\x1b\n" +
 	"\tmime_type\x18\x02 \x01(\tR\bmimeType\x123\n" +
 	"\x13expected_size_bytes\x18\x03 \x01(\x03H\x00R\x11expectedSizeBytes\x88\x01\x01\x12'\n" +
-	"\x0fexpected_digest\x18\x04 \x01(\tR\x0eexpectedDigestB\x16\n" +
-	"\x14_expected_size_bytes\"Y\n" +
+	"\x0fexpected_digest\x18\x04 \x01(\tR\x0eexpectedDigest\x12\x1f\n" +
+	"\bfilename\x18\x05 \x01(\tH\x01R\bfilename\x88\x01\x01B\x16\n" +
+	"\x14_expected_size_bytesB\v\n" +
+	"\t_filename\"Y\n" +
 	"\x13PutArtifactResponse\x12B\n" +
 	"\bmetadata\x18\x01 \x01(\v2&.iterabase.gateway.v1.ArtifactMetadataR\bmetadata\"|\n" +
 	"\x12GetArtifactRequest\x12E\n" +

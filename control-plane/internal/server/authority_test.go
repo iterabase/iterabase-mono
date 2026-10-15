@@ -80,10 +80,13 @@ var reviewedRouteClasses = map[string]server.RouteClass{
 	"GET /v1/work-dashboard":                        {Kind: server.RouteAction, Action: identity.ActionWorkRead},
 	"GET /v1/work-events":                           {Kind: server.RouteAction, Action: identity.ActionWorkRead},
 
-	"POST /v1/artifacts":        {Kind: server.RouteAction, Action: identity.ActionArtifactsUpload},
-	"GET /v1/artifacts/{id}":    {Kind: server.RouteAction, Action: identity.ActionArtifactsRead},
-	"HEAD /v1/artifacts/{id}":   {Kind: server.RouteAction, Action: identity.ActionArtifactsRead},
-	"DELETE /v1/artifacts/{id}": {Kind: server.RouteBearerAction, Action: identity.ActionArtifactsDelete},
+	"POST /v1/artifacts":                       {Kind: server.RouteAction, Action: identity.ActionArtifactsUpload},
+	"GET /v1/artifacts":                        {Kind: server.RouteAction, Action: identity.ActionArtifactsRead},
+	"GET /v1/artifacts/{id}/status":            {Kind: server.RouteAction, Action: identity.ActionArtifactsRead},
+	"POST /v1/artifacts/{id}/security-retries": {Kind: server.RouteSession},
+	"GET /v1/artifacts/{id}":                   {Kind: server.RouteAction, Action: identity.ActionArtifactsRead},
+	"HEAD /v1/artifacts/{id}":                  {Kind: server.RouteAction, Action: identity.ActionArtifactsRead},
+	"DELETE /v1/artifacts/{id}":                {Kind: server.RouteBearerAction, Action: identity.ActionArtifactsDelete},
 }
 
 // TestEveryRouteIsClassified is the static customer-route classification gate:

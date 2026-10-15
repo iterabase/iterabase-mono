@@ -41,6 +41,9 @@ redis:
     enabled: false
 minio:
   enabled: true
+  # Bucket plus one generated credential per byte zone (DES-HOR-460-02):
+  # <release>-minio-artifact-{ingest,serve,lifecycle}. The provisioner also
+  # revokes the legacy broad HOR-399 `artifact-service` credential.
   artifactService:
     enabled: true
     bucket: iterabase-artifacts
@@ -85,8 +88,18 @@ control-plane:
     enabled: true
     endpoint: "" # default: <release>-minio:9000
     bucket: iterabase-artifacts
-    credentialSecret: "" # default: <release>-minio-artifacts
+    # Must match minio.artifactService.credentialSecrets; empty uses the
+    # shared <release>-minio-artifact-<zone> default on both sides.
+    credentialSecrets:
+      ingest: ""
+      serve: ""
+      lifecycle: ""
     defaultRetention: "" # indefinite unless the data agreement sets a duration
+    # HOR-461 processing pipeline: trusted coordinator, credentialless ClamAV
+    # scanner, and the FreshClam signature updater on a dedicated
+    # iterabase-lvm-xfs volume (charts/docs/artifact-operations.md).
+    processing:
+      enabled: true
   # metrics.enabled (default false): ServiceMonitors for the control-plane api,
   # manager, trusted tool runner, and modelbackend (vLLM) pods. The tool runner
   # and vLLM expose live /metrics endpoints; api/manager remain a service-repo

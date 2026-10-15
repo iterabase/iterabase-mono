@@ -4,55 +4,29 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"errors"
-	"io"
-	"sync"
 	"testing"
 	"time"
 
 	connect "connectrpc.com/connect"
 	artifactstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact/artifacttest"
 	v1 "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gatewayrpc/iterabase/gateway/v1"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gatewayrpc/iterabase/gateway/v1/gatewayv1connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-type memoryObjectStore struct {
-	mu      sync.Mutex
-	objects map[string][]byte
-}
-
-func newMemoryObjectStore() *memoryObjectStore {
-	return &memoryObjectStore{objects: map[string][]byte{}}
-}
-func (m *memoryObjectStore) Ready(context.Context) error { return nil }
-func (m *memoryObjectStore) Put(_ context.Context, key string, r io.Reader, _ string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.objects[key]; exists {
-		return errors.New("overwrite")
-	}
-	b, err := io.ReadAll(r)
-	if err == nil {
-		m.objects[key] = b
-	}
-	return err
-}
-func (m *memoryObjectStore) Get(_ context.Context, key string) (io.ReadCloser, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	b, ok := m.objects[key]
-	if !ok {
-		return nil, errors.New("missing")
-	}
-	return io.NopCloser(bytes.NewReader(append([]byte(nil), b...))), nil
-}
-func (m *memoryObjectStore) Delete(_ context.Context, key string) error {
-	m.mu.Lock()
-	delete(m.objects, key)
-	m.mu.Unlock()
-	return nil
+// admitClearedInput admits a cleared input artifact linked to the node.
+func admitClearedInput(t *testing.T, env *testEnv, creator, workItemID, runID, nodeID, body string) artifactstore.Artifact {
+	t.Helper()
+	a, err := artifacttest.AdmitCleared(context.Background(), env.pgpool, env.artifacts, env.objects, artifactstore.AdmitInput{
+		SourceType: artifactstore.SourceUpload, Attribution: artifactstore.Attribution{RequestActorID: creator},
+		DisplayName: "input.txt", ClaimedMIME: "text/plain", ContainerDepth: 1,
+		Scope: &artifactstore.Scope{WorkItemID: workItemID, AttemptID: runID, NodeExecutionID: nodeID, Role: "input"},
+	}, []byte(body))
+	require.NoError(t, err)
+	require.True(t, a.Cleared())
+	return a
 }
 
 func artifactClient(env *testEnv, cert tls.Certificate) gatewayv1connect.ArtifactServiceClient {
@@ -65,11 +39,7 @@ func TestArtifactRPCSupervisorScopeAndStreaming(t *testing.T) {
 	run1, turn1, work1, node1, creator1 := seedWorkAttempt(t, env)
 	run2, turn2, _, _, _ := seedWorkAttempt(t, env)
 
-	input, err := env.artifacts.Upload(ctx, artifactstore.UploadInput{
-		SourceType: artifactstore.SourceUserUpload, CreatedByIdentityID: creator1, MIMEType: "text/plain",
-		Scope: &artifactstore.Scope{WorkItemID: work1, AttemptID: run1, NodeExecutionID: node1, Role: "input"},
-	}, bytes.NewBufferString("authorized input"))
-	require.NoError(t, err)
+	input := admitClearedInput(t, env, creator1, work1, run1, node1, "authorized input")
 
 	client := artifactClient(env, env.supervisor)
 	context1 := &v1.ArtifactCallerContext{AttemptId: run1, CallerScope: v1.CallerScope_CALLER_SCOPE_TURN, CallerScopeId: turn1, FencingGeneration: 1}
@@ -102,9 +72,22 @@ func TestArtifactRPCSupervisorScopeAndStreaming(t *testing.T) {
 	ref := resp.Msg.Metadata.Ref
 	require.NotNil(t, ref)
 	assert.NotEqual(t, input.ID, ref.ArtifactId)
+	// DES-HOR-461-02: the output is quarantined, citable by its producer, and
+	// unusable by any consumer until cleared.
+	assert.Equal(t, artifactstore.StatusCheckingSecurity, resp.Msg.Metadata.State)
+	admissible, err := env.artifacts.Store().OwnOutputAdmissible(ctx, ref.ArtifactId, run1)
+	require.NoError(t, err)
+	assert.True(t, admissible)
 	linked, err := env.artifacts.Store().LinkedToAttempt(ctx, ref.ArtifactId, run1, node1)
 	require.NoError(t, err)
-	assert.True(t, linked)
+	assert.False(t, linked, "a quarantined output is not readable through the workload boundary")
+	_, err = client.StatArtifact(ctx, connect.NewRequest(&v1.StatArtifactRequest{Context: context1, ArtifactId: ref.ArtifactId}))
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	require.NoError(t, artifacttest.Drain(ctx, artifacttest.NewCoordinator(env.pgpool, env.objects, &artifacttest.Scanner{})))
+	linked, err = env.artifacts.Store().LinkedToAttempt(ctx, ref.ArtifactId, run1, node1)
+	require.NoError(t, err)
+	assert.True(t, linked, "the cleared output becomes readable")
 }
 
 func TestArtifactRPCRunnerReadsCommittedInputAndCannotWriteWithoutDescriptorCapability(t *testing.T) {
@@ -145,11 +128,7 @@ func TestArtifactRPCRunnerReadsCommittedInputAndCannotWriteWithoutDescriptorCapa
 	_, err := env.pgpool.Exec(ctx, `UPDATE runtime.turn_assignments SET capability_request=$2 WHERE turn_id=$1`, turnID, []byte(`[{"tool":"echo","maxEffectClass":"read_only"}]`))
 	require.NoError(t, err)
 	require.NoError(t, env.store.SnapshotAttemptTools(ctx, runID, env.poolID, nil))
-	input, err := env.artifacts.Upload(ctx, artifactstore.UploadInput{
-		SourceType: artifactstore.SourceUserUpload, CreatedByIdentityID: creatorID, MIMEType: "text/plain",
-		Scope: &artifactstore.Scope{WorkItemID: workItemID, AttemptID: runID, NodeExecutionID: nodeID, Role: "input"},
-	}, bytes.NewBufferString("runner-readable"))
-	require.NoError(t, err)
+	input := admitClearedInput(t, env, creatorID, workItemID, runID, nodeID, "runner-readable")
 	ref, err := input.Ref()
 	require.NoError(t, err)
 
@@ -167,6 +146,42 @@ func TestArtifactRPCRunnerReadsCommittedInputAndCannotWriteWithoutDescriptorCapa
 	}
 	assert.Equal(t, "runner-readable", runnerRead, "runner can read the exact input committed on its live invocation")
 	assert.Equal(t, connect.CodePermissionDenied, runnerPutCode, "read-only descriptor cannot persist artifact outputs")
+}
+
+// TestArtifactRPCQuarantinedToolOutputIsNotOutcomeUnknown proves
+// DES-HOR-461-02 at the gateway: a write tool whose output is still being
+// scanned completes normally, and a rejected output is refused.
+func TestArtifactRPCQuarantinedToolOutputIsNotOutcomeUnknown(t *testing.T) {
+	env := newTestEnv(t, nil)
+	ctx := context.Background()
+	desc := echoDescriptor()
+	desc.ArtifactCapabilities = &v1.ArtifactCapabilities{WritesArtifacts: true}
+	runner := startRefRunner(t, env, desc, func(inv *v1.Invoke) (*v1.InvokeResult, bool) {
+		put := artifactClient(env, env.runner).PutArtifact(ctx)
+		_ = put.Send(&v1.PutArtifactRequest{Kind: &v1.PutArtifactRequest_Init{Init: &v1.PutArtifactInit{
+			Context: &v1.ArtifactCallerContext{InvocationId: inv.InvocationId}, MimeType: "text/csv",
+		}}})
+		_ = put.Send(&v1.PutArtifactRequest{Kind: &v1.PutArtifactRequest_Chunk{Chunk: []byte("a,b\n1,2\n")}})
+		resp, err := put.CloseAndReceive()
+		if err != nil {
+			return &v1.InvokeResult{State: v1.InvokeState_INVOKE_STATE_FAILED}, false
+		}
+		return &v1.InvokeResult{State: v1.InvokeState_INVOKE_STATE_SUCCEEDED, ResultJson: []byte(`{}`),
+			ArtifactOutputRefs: []*v1.ArtifactRef{resp.Msg.Metadata.Ref}}, false
+	})
+	defer runner.close()
+	runID, turnID, _, _, _ := seedWorkAttempt(t, env)
+	_, err := env.pgpool.Exec(ctx, `UPDATE runtime.turn_assignments SET capability_request=$2 WHERE turn_id=$1`, turnID, []byte(`[{"tool":"echo","maxEffectClass":"read_only"}]`))
+	require.NoError(t, err)
+	require.NoError(t, env.store.SnapshotAttemptTools(ctx, runID, env.poolID, nil))
+	resp, err := gatewayClient(env, env.supervisor).InvokeTool(ctx, connect.NewRequest(&v1.InvokeRequest{
+		AttemptId: runID, CallerScope: v1.CallerScope_CALLER_SCOPE_TURN, CallerScopeId: turnID, FencingGeneration: 1,
+		ToolCallId: "artifact-write", ToolName: desc.Name, ToolVersionDigest: desc.Digest, ArgumentsJson: []byte(`{}`),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, v1.InvokeState_INVOKE_STATE_SUCCEEDED, resp.Msg.State, "a pending scan is not an ambiguous outcome")
+	require.Len(t, resp.Msg.ArtifactOutputRefs, 1)
+	assert.Equal(t, "text/csv", resp.Msg.ArtifactOutputRefs[0].MimeType)
 }
 
 func seedWorkAttempt(t *testing.T, env *testEnv) (runID, turnID, workItemID, nodeID, identityID string) {

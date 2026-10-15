@@ -4,9 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -252,19 +250,8 @@ spec:
 
 func (state *deployedState) createBrowserArtifact(t *testing.T) string {
 	t.Helper()
-	content := []byte(browserArtifactContent)
-	digestBytes := sha256.Sum256(content)
-	status, body := state.request(t, http.MethodPost, "/v1/artifacts", state.workKey, content, map[string]string{
-		"Content-Type": "text/plain", "X-Artifact-SHA256": "sha256:" + hex.EncodeToString(digestBytes[:]),
-		"X-Artifact-Source": "hor-483-browser-synthetic",
-	})
-	requireStatus(t, status, http.StatusCreated, body)
-	var artifact artifactMetadata
-	mustDecode(t, body, &artifact)
-	if artifact.ID == "" || artifact.State != "available" {
-		t.Fatalf("create browser artifact: %s", safeResponse(body))
-	}
-	return artifact.ID
+	return state.uploadClearedArtifact(t, state.workKey, browserArtifactName, "text/plain", "hor-483-browser-artifact",
+		[]byte(browserArtifactContent))
 }
 
 func (state *deployedState) startBrowserWorkItem(t *testing.T, workflowKey, title, idempotencyKey string, artifactRefs []any) workItemResponse {

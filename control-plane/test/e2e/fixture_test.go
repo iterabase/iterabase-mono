@@ -32,6 +32,9 @@ const (
 	// shared testkit helper as an LVMStorageContract (testkit/AGENTS.md).
 	lvmPlatformStorageClass  = "iterabase-lvm-xfs"
 	lvmAgentPoolStorageClass = "iterabase-agentpool-lvm-xfs"
+	// lvmSignatureStorageClass admits only the artifact signature PVC
+	// (DES-HOR-461-05).
+	lvmSignatureStorageClass = "iterabase-signatures-lvm-xfs"
 	lvmProvisioner           = "local.csi.openebs.io"
 	lvmDataVolumeGroupName   = "iterabase-data"
 	lvmNodeTopologyKey       = "openebs.io/nodename"
@@ -45,6 +48,7 @@ func lvmStorageContract() kindcluster.LVMStorageContract {
 		StorageClasses: []kindcluster.StorageClassExpectation{
 			{Name: lvmPlatformStorageClass, Shared: false},
 			{Name: lvmAgentPoolStorageClass, Shared: true},
+			{Name: lvmSignatureStorageClass, Shared: true},
 		},
 	}
 }
@@ -295,7 +299,7 @@ func installControlPlanePlatformStage(t *testing.T, state *deployedState) {
 				"defaultModel": map[string]any{"id": "deployed-e2e-unused", "api": "openai"},
 			},
 			"toolRunner": map[string]any{"enabled": false},
-			"artifact":   map[string]any{"enabled": true},
+			"artifact":   e2eArtifactValues(),
 			"ingress":    map[string]any{"enabled": false},
 			"auth":       authValues(),
 		},

@@ -7,18 +7,23 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/config"
 )
 
-// NewConfiguredService builds the shared artifact domain from process config.
+// NewConfiguredService builds the api/gateway artifact domain from process
+// config with only the ingest and serve zone credentials.
 func NewConfiguredService(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*Service, error) {
-	objects, err := NewMinIOStore(MinIOConfig{
-		Endpoint: cfg.Artifact.Endpoint, AccessKey: cfg.Artifact.AccessKey,
-		SecretKey: cfg.Artifact.SecretKey, Bucket: cfg.Artifact.Bucket, Secure: cfg.Artifact.Secure,
-	})
+	a := cfg.Artifact
+	ingest, err := NewMinIOStore(MinIOConfig{Endpoint: a.Endpoint, AccessKey: a.IngestAccessKey,
+		SecretKey: a.IngestSecretKey, Bucket: a.Bucket, Secure: a.Secure})
 	if err != nil {
 		return nil, err
 	}
-	retention, pendingTTL, sweepInterval := config.ArtifactDurations(cfg)
-	return NewService(NewStore(pool), objects, Config{
-		MaxSize: cfg.Artifact.MaxSizeBytes, DefaultRetention: retention,
-		PendingTTL: pendingTTL, SweepInterval: sweepInterval,
+	serve, err := NewMinIOStore(MinIOConfig{Endpoint: a.Endpoint, AccessKey: a.ServeAccessKey,
+		SecretKey: a.ServeSecretKey, Bucket: a.Bucket, Secure: a.Secure})
+	if err != nil {
+		return nil, err
+	}
+	retention, _ := config.ArtifactDurations(cfg)
+	return NewService(NewStore(pool), ingest, serve, Config{
+		DefaultRetention: retention, QuarantineMaxBytes: a.QuarantineMaxBytes,
+		MaxConcurrentUploads: a.MaxConcurrentUploads,
 	}, log), nil
 }

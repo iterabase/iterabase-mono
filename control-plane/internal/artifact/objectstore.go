@@ -2,6 +2,7 @@ package artifact
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -9,17 +10,61 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-// ObjectStore is the byte boundary; callers never receive its credentials or
-// endpoint. Implementations must consume the complete stream before Put
-// returns and must not overwrite an existing key.
-type ObjectStore interface {
-	Put(context.Context, string, io.Reader, string) error
-	Get(context.Context, string) (io.ReadCloser, error)
-	Delete(context.Context, string) error
-	Ready(context.Context) error
+// Object zones (DES-HOR-460-02). Each zone is a key prefix in the artifact
+// bucket whose access is granted per credential by the MinIO policies the
+// chart provisions; object keys are unique and never overwritten.
+const (
+	ZoneQuarantine = "quarantine"
+	ZoneOriginal   = "original"
+	ZoneDerived    = "derived"
+)
+
+// zonePrefix maps a zone to its bucket prefix.
+func zonePrefix(zone string) string {
+	switch zone {
+	case ZoneQuarantine:
+		return "quarantine/"
+	case ZoneOriginal:
+		return "originals/"
+	default:
+		return "derived/"
+	}
 }
 
-// MinIOConfig configures the dedicated artifact bucket credential.
+// ObjectKey is the unique, opaque storage key for one physical object. It
+// carries no customer-controlled segment.
+func ObjectKey(zone, artifactID, objectID string) string {
+	return zonePrefix(zone) + artifactID + "/" + objectID
+}
+
+// IngestStore is the quarantine write-only credential held by the API and
+// gateway. It can create new quarantine objects and nothing else: it cannot
+// read, list, overwrite, or delete any zone.
+type IngestStore interface {
+	PutNew(ctx context.Context, key string, r io.Reader, size int64, contentType string) error
+	Ready(ctx context.Context) error
+}
+
+// ServeStore is the cleared-read credential held by the API and gateway. It
+// reads original and derived zones only; the database decides whether a read
+// is allowed.
+type ServeStore interface {
+	Get(ctx context.Context, key string) (io.ReadCloser, error)
+}
+
+// LifecycleStore is the coordinator-only credential: it reads quarantine,
+// promotes into cleared zones, and purges every zone.
+type LifecycleStore interface {
+	IngestStore
+	ServeStore
+	Copy(ctx context.Context, srcKey, dstKey string) error
+	Delete(ctx context.Context, key string) error
+}
+
+// ErrObjectExists reports that a create-only write found an existing key.
+var ErrObjectExists = errors.New("artifact: object already exists")
+
+// MinIOConfig configures one zone credential against the artifact bucket.
 type MinIOConfig struct {
 	Endpoint  string
 	AccessKey string
@@ -33,7 +78,9 @@ type minioStore struct {
 	bucket string
 }
 
-func NewMinIOStore(cfg MinIOConfig) (ObjectStore, error) {
+// NewMinIOStore returns a store bound to one credential. The credential's
+// MinIO policy, not this type, limits which methods succeed.
+func NewMinIOStore(cfg MinIOConfig) (LifecycleStore, error) {
 	if cfg.Endpoint == "" || cfg.AccessKey == "" || cfg.SecretKey == "" || cfg.Bucket == "" {
 		return nil, fmt.Errorf("artifact minio endpoint, access key, secret key, and bucket are required")
 	}
@@ -47,42 +94,37 @@ func NewMinIOStore(cfg MinIOConfig) (ObjectStore, error) {
 	return &minioStore{client: client, bucket: cfg.Bucket}, nil
 }
 
+// Ready proves the endpoint answers without needing list or read rights,
+// which the ingest credential deliberately lacks.
 func (m *minioStore) Ready(ctx context.Context) error {
-	exists, err := m.client.BucketExists(ctx, m.bucket)
-	if err != nil {
+	if _, err := m.client.GetBucketLocation(ctx, m.bucket); err != nil {
 		return fmt.Errorf("check artifact bucket: %w", err)
-	}
-	if !exists {
-		return fmt.Errorf("artifact bucket %q does not exist", m.bucket)
 	}
 	return nil
 }
 
-func (m *minioStore) Put(ctx context.Context, key string, r io.Reader, contentType string) error {
-	// Every key contains a fresh artifact UUID. Stat first as a defensive
-	// immutability backstop; the service never intentionally reuses a key.
-	if _, err := m.client.StatObject(ctx, m.bucket, key, minio.StatObjectOptions{}); err == nil {
-		return fmt.Errorf("refusing to overwrite existing artifact object %q", key)
-	} else {
-		re := minio.ToErrorResponse(err)
-		if re.Code != "NoSuchKey" && re.Code != "NoSuchObject" && re.StatusCode != 404 {
-			return fmt.Errorf("check artifact object absence: %w", err)
+// uploadPartSize exceeds MaxSize+1, so minio-go sends every V2 artifact as one
+// conditional PUT (a stream that ends inside the first part is never split
+// into a multipart upload). One in-flight upload buffers at most this much
+// (HOR-602 sizing); the API bounds concurrent uploads.
+const uploadPartSize = 32 << 20
+
+func putOptions(contentType string) minio.PutObjectOptions {
+	opts := minio.PutObjectOptions{ContentType: contentType, PartSize: uploadPartSize}
+	// Create-only: the server refuses to overwrite an existing key, so the
+	// write-only credential needs no read right to keep objects immutable.
+	opts.SetMatchETagExcept("*")
+	return opts
+}
+
+func (m *minioStore) PutNew(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
+	if _, err := m.client.PutObject(ctx, m.bucket, key, r, size, putOptions(contentType)); err != nil {
+		if minio.ToErrorResponse(err).StatusCode == 412 {
+			return fmt.Errorf("%w: %s", ErrObjectExists, key)
 		}
-	}
-	if _, err := m.client.PutObject(ctx, m.bucket, key, r, -1, putOptions(contentType)); err != nil {
 		return fmt.Errorf("put artifact object: %w", err)
 	}
 	return nil
-}
-
-// uploadPartSize bounds the memory one streamed upload buffers. With an
-// unknown length minio-go otherwise sizes each part for a 5 TiB object
-// (~528 MiB), which no sized gateway/api/manager container can hold (HOR-602).
-// 16 MiB parts still allow 10,000 x 16 MiB = 156 GiB, far above MaxSize.
-const uploadPartSize = 16 << 20
-
-func putOptions(contentType string) minio.PutObjectOptions {
-	return minio.PutObjectOptions{ContentType: contentType, PartSize: uploadPartSize}
 }
 
 func (m *minioStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
@@ -97,6 +139,15 @@ func (m *minioStore) Get(ctx context.Context, key string) (io.ReadCloser, error)
 		return nil, fmt.Errorf("stat artifact object: %w", err)
 	}
 	return obj, nil
+}
+
+func (m *minioStore) Copy(ctx context.Context, srcKey, dstKey string) error {
+	dst := minio.CopyDestOptions{Bucket: m.bucket, Object: dstKey}
+	src := minio.CopySrcOptions{Bucket: m.bucket, Object: srcKey}
+	if _, err := m.client.CopyObject(ctx, dst, src); err != nil {
+		return fmt.Errorf("copy artifact object: %w", err)
+	}
+	return nil
 }
 
 func (m *minioStore) Delete(ctx context.Context, key string) error {

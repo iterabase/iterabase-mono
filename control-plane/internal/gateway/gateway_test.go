@@ -16,6 +16,7 @@ import (
 	connect "connectrpc.com/connect"
 	"github.com/jackc/pgx/v5/pgxpool"
 	artifactstore "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact"
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact/artifacttest"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gateway"
 	v1 "github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gatewayrpc/iterabase/gateway/v1"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/gatewayrpc/iterabase/gateway/v1/gatewayv1connect"
@@ -44,6 +45,7 @@ type testEnv struct {
 	caPool     *x509.CertPool
 	poolID     string // the seeded pool's uuid
 	artifacts  *artifactstore.Service
+	objects    *artifacttest.MemoryObjects
 	stop       func()
 }
 
@@ -119,7 +121,8 @@ func newTestEnvWithOAuth(t *testing.T, secrets *gateway.FakeSecretResolver, oaut
 	require.NoError(t, err)
 
 	svc := gateway.NewService(store, secrets, oauth, gateway.Config{TrustDomain: td, DispatchLease: 2 * time.Second}, nil)
-	artifacts := artifactstore.NewService(artifactstore.NewStore(pgpool), newMemoryObjectStore(), artifactstore.Config{MaxSize: 1 << 20}, nil)
+	objects := artifacttest.NewMemoryObjects()
+	artifacts := artifactstore.NewService(artifactstore.NewStore(pgpool), objects, objects, artifactstore.Config{}, nil)
 	svc.SetArtifactService(artifacts)
 
 	mux := http.NewServeMux()
@@ -148,7 +151,7 @@ func newTestEnvWithOAuth(t *testing.T, secrets *gateway.FakeSecretResolver, oaut
 
 	return &testEnv{
 		store: store, pgpool: pgpool, srvURL: fmt.Sprintf("https://localhost:%d", port),
-		supervisor: supervisor, runner: runner, runner2: runner2, wfStep: wfStep, caPool: ca.Pool, poolID: p.ID, artifacts: artifacts, stop: stop,
+		supervisor: supervisor, runner: runner, runner2: runner2, wfStep: wfStep, caPool: ca.Pool, poolID: p.ID, artifacts: artifacts, objects: objects, stop: stop,
 	}
 }
 

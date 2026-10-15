@@ -6,7 +6,7 @@ Status: current repository implementation contract for HOR-545/HOR-557 and appro
 
 Platform V2 supports exactly one schedulable K3s server node and one or more explicitly selected blank stable whole data disks. Forge prepares only physical volumes and one fixed thick volume group, `iterabase-data`. Chart-owned OpenEBS LVM LocalPV `1.10.0` creates every platform LV, XFS filesystem, mount, and claim lifecycle.
 
-K3s local-path/default/root-backed storage, Longhorn, RWX, NFS/iSCSI, thin provisioning, shrink, claim-replacing resize, alternate/BYO classes, existing PV/VG/filesystem adoption, disk-set/VG extension or replacement, migration, and multi-node/HA are unsupported. Both managed classes support only grow-in-place online XFS/LVM expansion within real free extents already present in `iterabase-data`.
+K3s local-path/default/root-backed storage, Longhorn, RWX, NFS/iSCSI, thin provisioning, shrink, claim-replacing resize, alternate/BYO classes, existing PV/VG/filesystem adoption, disk-set/VG extension or replacement, migration, and multi-node/HA are unsupported. All managed classes support only grow-in-place online XFS/LVM expansion within real free extents already present in `iterabase-data`.
 
 ## Forge device and transaction contract
 
@@ -37,11 +37,11 @@ An installed K3s whose service does not include `--disable local-storage` is imm
 
 `.github/inputs/remote-content.json` is authority for that archive and every runtime image digest. A fail-closed deterministic packaging transform removes the upstream CSI snapshot CRDs, snapshotter/controller templates, snapshot values, broad snapshot role, and all `LVMSnapshot` write authority before the dependency enters the companion. Per `DES-HOR-545-05`, it retains only the reviewed `lvmsnapshots.local.openebs.io` schema and driver `list`/`watch` needed by the pinned ordinary volume-deletion guard. The companion disables analytics, pins every required volume controller/node sidecar by digest, configures K3s's actual `/var/lib/kubelet` CSI registration/mount root, and renders the volume/node CRDs plus that inert schema. The wrapper replaces upstream combined controller RBAC with an exact volume role and the same read-only exception.
 
-Forge applies certificate substrate, LVM substrate, then platform. It waits boundedly for the volume/node and inert `LVMSnapshot` CRDs, deny-all creation admission guard, zero `LVMSnapshot` instances, exact driver `list`/`watch`, volume controller, node DaemonSet, `local.csi.openebs.io`, the exact one-node CSINode registration and topology keys, both StorageClasses, CSI/user snapshot-surface absence, and one LVMNode reporting receipt-matching `iterabase-data`. Any local-path/default class, missing/extra class, broader snapshot authority, nonzero `LVMSnapshot` set, CSI/user snapshot surface, contradictory VG, or unavailable volume controller/node/CSI authority fails closed.
+Forge applies certificate substrate, LVM substrate, then platform. It waits boundedly for the volume/node and inert `LVMSnapshot` CRDs, deny-all creation admission guard, zero `LVMSnapshot` instances, exact driver `list`/`watch`, volume controller, node DaemonSet, `local.csi.openebs.io`, the exact one-node CSINode registration and topology keys, all three StorageClasses, CSI/user snapshot-surface absence, and one LVMNode reporting receipt-matching `iterabase-data`. Any local-path/default class, missing/extra class, broader snapshot authority, nonzero `LVMSnapshot` set, CSI/user snapshot surface, contradictory VG, or unavailable volume controller/node/CSI authority fails closed.
 
 ## Exact StorageClasses
 
-Both classes are non-default, grow-only-expandable, `ReadWriteOnce`, `WaitForFirstConsumer`, `Delete`, XFS, and thick. Their provisioner is `local.csi.openebs.io` and parameters include:
+All three classes are non-default, grow-only-expandable, `ReadWriteOnce`, `WaitForFirstConsumer`, `Delete`, XFS, and thick. Their provisioner is `local.csi.openebs.io` and parameters include:
 
 ```yaml
 storage: lvm
@@ -52,6 +52,7 @@ thinProvision: "no"
 
 - `iterabase-lvm-xfs` adds `shared: "no"` and is explicit on every chart-generated data PVC: PostgreSQL, MinIO, persistent observability components, and any future enabled chart data claim.
 - `iterabase-agentpool-lvm-xfs` adds `shared: "yes"` and is authorized only for one claim per AgentPool. `shared: yes` allows multiple pods on the same node to mount the RWO filesystem; it does not create RWX or cross-node behavior.
+- `iterabase-signatures-lvm-xfs` (`DES-HOR-461-05`, 2026-10-15) adds `shared: "yes"` and is authorized by the `iterabase-signatures-claim-authority` admission policy for exactly one claim: the platform's ClamAV signature PVC (`<release>-control-plane-artifact-signatures`, default `iterabase-system/iterabase-control-plane-artifact-signatures`). The FreshClam updater is its only read-write mounter and same-node scanner pods mount it read-only (`v2-artifact-processing.md` `DES-HOR-460-07`). It holds reconstructible signature data only.
 
 A provisioned claim may change only `spec.resources.requests.storage`, and only upward. Growth preserves PVC/PV/OpenEBS `LVMVolume`/LV/filesystem identity, topology, owner, and bytes. It never authorizes claim recreation, copy/cutover, disk-set/VG mutation, thin overcommit, alternate classes, or root fallback.
 

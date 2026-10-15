@@ -69,8 +69,8 @@ func (s *Store) RespondBlocker(ctx context.Context, in BlockerResponseInput) (Bl
 		if len(ref.Metadata) > 0 && !json.Valid(ref.Metadata) {
 			return Blocker{}, fmt.Errorf("%w: artifactRefs[%d].metadata must be valid JSON", ErrInvalidInput, i)
 		}
-		var available bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM artifact.artifacts WHERE id=$1 AND state='available')`, ref.ArtifactID).Scan(&available); err != nil {
+		available, err := lockClearedArtifactTx(ctx, tx, ref.ArtifactID)
+		if err != nil {
 			return Blocker{}, err
 		}
 		if !available {
@@ -162,6 +162,9 @@ func (s *Store) completeHumanNodeTx(ctx context.Context, tx pgx.Tx, b Blocker, n
 			VALUES ($1,$2,$3,$4,'input',$5)
 			ON CONFLICT (artifact_id,work_item_id,attempt_id,node_execution_id,role) DO NOTHING`,
 			ref.ArtifactID, b.WorkItemID, b.AttemptID, nodeID, jsonOrObject(ref.Metadata)); err != nil {
+			if isArtifactUnavailable(err) {
+				return fmt.Errorf("%w: artifact is not available", ErrInvalidInput)
+			}
 			return err
 		}
 	}

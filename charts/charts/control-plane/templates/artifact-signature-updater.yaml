@@ -1,0 +1,298 @@
+{{- define "control-plane.artifactSignatureUpdaterScript" -}}
+#!/bin/sh
+# FreshClam signature updater (DES-HOR-460-05, section 10). The sole writer of
+# the signature volume. Every check downloads into pod-lifetime staging,
+# validates each database with ClamAV tooling, and publishes a changed bundle
+# as an immutable versions/<sha256> directory before atomically switching the
+# `current` symlink. state.json is replaced atomically after every successful
+# check; the scanner measures freshness from its checkedAt. A failed check
+# leaves the published bundle and state untouched and retries after a backoff.
+set -u
+umask 022
+staging=/staging/db
+root=/signatures
+log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+
+bundle_files() {
+  for f in "$staging"/*; do
+    [ -f "$f" ] || continue
+    n=${f##*/}
+    case "$n" in freshclam.dat|.*|*.tmp) continue ;; esac
+    printf '%s\n' "$n"
+  done | sort
+}
+
+publish() {
+  freshclam --foreground --stdout --config-file=/etc/freshclam/freshclam.conf $FRESHCLAM_ARGS || { log "freshclam failed"; return 1; }
+  files=$(bundle_files)
+  [ -n "$files" ] || { log "no signature database downloaded"; return 1; }
+  for n in $files; do
+    [ -s "$staging/$n" ] || { log "empty database $n"; return 1; }
+    case "$n" in
+      *.cvd|*.cld|*.cud) sigtool --info="$staging/$n" >/dev/null || { log "sigtool rejected $n"; return 1; } ;;
+    esac
+  done
+  if [ "$OFFICIAL" = true ]; then
+    for db in main daily bytecode; do
+      [ -f "$staging/$db.cvd" ] || [ -f "$staging/$db.cld" ] || { log "official database $db missing"; return 1; }
+    done
+  fi
+  manifest=$(cd "$staging" && sha256sum $files) || return 1
+  version=$(printf '%s\n' "$manifest" | sha256sum)
+  version=${version%% *}
+  current=$(readlink "$root/current" 2>/dev/null || true)
+  current=${current##*/}
+  if [ "$version" != "$current" ]; then
+    if [ ! -d "$root/versions/$version" ]; then
+      tmp="$root/versions/.tmp-$version"
+      rm -rf "$tmp" && mkdir -p "$tmp" || return 1
+      for n in $files; do cp -p "$staging/$n" "$tmp/$n" && chmod 0444 "$tmp/$n" || return 1; done
+      (cd "$tmp" && printf '%s\n' "$manifest" | sha256sum -c -s) || { log "copied bundle failed checksum"; return 1; }
+      printf '%s\n' "$manifest" > "$root/versions/.tmp-$version.sha256" || return 1
+      chmod 0555 "$tmp" && mv "$root/versions/.tmp-$version.sha256" "$root/versions/$version.sha256" && mv "$tmp" "$root/versions/$version" || return 1
+    fi
+    rm -f "$root/.current.tmp"
+    ln -s "versions/$version" "$root/.current.tmp" && mv -T "$root/.current.tmp" "$root/current" || return 1
+    log "published signature bundle $version (previous ${current:-none})"
+    previous=$current
+  else
+    previous=$(cat "$root/previous" 2>/dev/null || true)
+  fi
+  printf '%s\n' "$previous" > "$root/.previous.tmp" && mv -f "$root/.previous.tmp" "$root/previous" || return 1
+  printf '{"version":"%s","checkedAt":"%s"}\n' "$version" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$root/.state.json.tmp" || return 1
+  chmod 0444 "$root/.state.json.tmp" && mv -f "$root/.state.json.tmp" "$root/state.json" || return 1
+  # Retain the current bundle plus one validated rollback bundle.
+  for d in "$root"/versions/*; do
+    [ -d "$d" ] || continue
+    v=${d##*/}
+    [ "$v" = "$version" ] || [ "$v" = "$previous" ] && continue
+    chmod -R u+w "$d" && rm -rf "$d" "$d.sha256"
+    log "pruned signature bundle $v"
+  done
+  log "signature check complete: version $version"
+}
+
+mkdir -p "$staging" "$root/versions" || exit 1
+# Resume incremental updates from the published bundle after a restart.
+if [ -d "$root/current" ] && [ -z "$(ls -A "$staging")" ]; then
+  for f in "$root"/current/*; do [ -f "$f" ] && cp -p "$f" "$staging/" && chmod 0644 "$staging/${f##*/}"; done
+fi
+while :; do
+  if publish; then
+    sleep "$REFRESH_SECONDS"
+  else
+    log "signature check failed; the published bundle is unchanged; retrying in ${RETRY_SECONDS}s"
+    sleep "$RETRY_SECONDS"
+  fi
+done
+{{- end -}}
+{{- define "control-plane.artifactCustomSignatureFiles" -}}
+{{- $sig := .Values.artifact.processing.signatures -}}
+{{- if and $sig.customDatabasesConfigMap $sig.customDatabases -}}
+{{- fail "set artifact.processing.signatures.customDatabases or customDatabasesConfigMap, not both" -}}
+{{- end -}}
+{{- $files := list -}}
+{{- if $sig.customDatabasesConfigMap -}}
+{{- $files = required "artifact.processing.signatures.customDatabaseFiles must list the ConfigMap keys to publish" $sig.customDatabaseFiles -}}
+{{- else -}}
+{{- $files = keys $sig.customDatabases | sortAlpha -}}
+{{- end -}}
+{{- range $files -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9_-]*\\.(hdb|hsb|hdu|hsu|mdb|msb|mdu|msu|ndb|ndu|ldb|ldu|cdb|crb|cat|idb|fp|sfp|ign|ign2|ftm|pdb|gdb|wdb|cbc|yar|yara)$" .) -}}
+{{- fail (printf "custom signature database %q must be a plain ClamAV database file name" .) -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $files -}}
+{{- end -}}
+{{- define "control-plane.artifactFreshclamConf" -}}
+{{- $sig := .Values.artifact.processing.signatures -}}
+{{- $custom := include "control-plane.artifactCustomSignatureFiles" . | fromJsonArray -}}
+DatabaseDirectory /staging/db
+Foreground yes
+LogTime yes
+LogVerbose no
+# Validation is sigtool --info per database (header and digital signature),
+# not a full engine load, which keeps the updater within its memory profile.
+TestDatabases no
+{{- if $sig.mirrorURL }}
+PrivateMirror {{ $sig.mirrorURL }}
+{{- else }}
+DatabaseMirror database.clamav.net
+{{- end }}
+{{- if not $sig.official }}
+ExcludeDatabase main
+ExcludeDatabase daily
+ExcludeDatabase bytecode
+{{- end }}
+{{- range $custom }}
+DatabaseCustomURL file:///custom/{{ . }}
+{{- end }}
+{{- end -}}
+{{- define "control-plane.durationSeconds" -}}
+{{- $m := regexFindAll "^([0-9]+)(s|m|h)$" (toString .value) 1 -}}
+{{- if not $m -}}{{- fail (printf "%s must be a whole number of s, m, or h (got %q)" .name (toString .value)) -}}{{- end -}}
+{{- $n := int (trimSuffix "s" (trimSuffix "m" (trimSuffix "h" (toString .value)))) -}}
+{{- if hasSuffix "h" (toString .value) -}}{{- mul $n 3600 -}}{{- else if hasSuffix "m" (toString .value) -}}{{- mul $n 60 -}}{{- else -}}{{- $n -}}{{- end -}}
+{{- end -}}
+{{- if include "control-plane.artifactProcessingEnabled" . }}
+{{- $name := include "control-plane.artifactSignatureUpdaterName" . }}
+{{- $sig := .Values.artifact.processing.signatures }}
+{{- $s := .Values.artifact.processing.scanner }}
+{{- $img := printf "%s:%s@%s" $s.image.repository $s.image.tag (required "artifact.processing.scanner.image.digest is required" $s.image.digest) }}
+{{- $custom := include "control-plane.artifactCustomSignatureFiles" . | fromJsonArray }}
+{{- $customCM := include "control-plane.artifactCustomSignaturesConfigMap" . }}
+{{- $refresh := include "control-plane.durationSeconds" (dict "name" "artifact.processing.signatures.refreshInterval" "value" $sig.refreshInterval) | int }}
+{{- $retry := include "control-plane.durationSeconds" (dict "name" "artifact.processing.signatures.retryInterval" "value" $sig.retryInterval) | int }}
+{{- if or (lt $refresh 60) (gt $refresh 7200) }}{{ fail "artifact.processing.signatures.refreshInterval must be between 1m and 2h (DES-HOR-460-05)" }}{{- end }}
+{{- if or (lt $retry 60) (gt $retry $refresh) }}{{ fail "artifact.processing.signatures.retryInterval must be between 1m and refreshInterval" }}{{- end }}
+{{- if and (not $sig.official) (not $custom) }}{{ fail "artifact.processing.signatures.official=false requires at least one custom signature database" }}{{- end }}
+{{- if ne $sig.persistence.storageClassName "iterabase-signatures-lvm-xfs" }}{{ fail "artifact.processing.signatures.persistence.storageClassName is fixed to iterabase-signatures-lvm-xfs (DES-HOR-461-05)" }}{{- end }}
+# Dedicated signature volume: one RWO claim on the explicit non-default
+# OpenEBS LVM class. The updater is its only read-write mounter; scanners
+# mount it read-only. Contents are reconstructible non-customer data.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "control-plane.artifactSignaturesClaimName" . }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-signature-updater
+spec:
+  # DES-HOR-461-05: the one shared same-node class that admits only this
+  # claim; the scanner's read-only mount needs OpenEBS shared mounting.
+  storageClassName: iterabase-signatures-lvm-xfs
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ $sig.persistence.size }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-signature-updater
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-signature-updater
+data:
+  freshclam.conf: |
+    {{- include "control-plane.artifactFreshclamConf" . | nindent 4 }}
+  update.sh: |
+    {{- include "control-plane.artifactSignatureUpdaterScript" . | nindent 4 }}
+{{- if and $sig.customDatabases (not $sig.customDatabasesConfigMap) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $customCM }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-signature-updater
+data:
+  {{- range $file := $custom }}
+  {{ $file }}: {{ index $sig.customDatabases $file | quote }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-signature-updater
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # the sole read-write mounter of the signature volume
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: artifact-signature-updater
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: control-plane
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: artifact-signature-updater
+      annotations:
+        checksum/config: {{ printf "%s%s%s" (include "control-plane.artifactFreshclamConf" .) (include "control-plane.artifactSignatureUpdaterScript" .) (toJson $sig.customDatabases) | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $s.runAsUser }}
+        runAsGroup: {{ $s.runAsGroup }}
+        fsGroup: {{ $s.runAsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: freshclam
+          image: {{ $img | quote }}
+          imagePullPolicy: {{ $s.image.pullPolicy }}
+          command: ["/bin/sh", "/etc/freshclam/update.sh"]
+          env:
+            - name: REFRESH_SECONDS
+              value: {{ $refresh | quote }}
+            - name: RETRY_SECONDS
+              value: {{ $retry | quote }}
+            - name: OFFICIAL
+              value: {{ $sig.official | quote }}
+            # Offline/custom-only bundles skip the official DNS version check.
+            - name: FRESHCLAM_ARGS
+              value: {{ ternary "" "--no-dns" (or $sig.official (not (empty $sig.mirrorURL))) | quote }}
+          volumeMounts:
+            - name: signatures
+              mountPath: /signatures
+            - name: staging
+              mountPath: /staging
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /etc/freshclam
+              readOnly: true
+            {{- if $customCM }}
+            - name: custom
+              mountPath: /custom
+              readOnly: true
+            {{- end }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          {{- with $sig.updater.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: signatures
+          persistentVolumeClaim:
+            claimName: {{ include "control-plane.artifactSignaturesClaimName" . }}
+        - name: staging
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: config
+          configMap:
+            name: {{ $name }}
+        {{- if $customCM }}
+        - name: custom
+          configMap:
+            name: {{ $customCM }}
+        {{- end }}
+{{- end }}

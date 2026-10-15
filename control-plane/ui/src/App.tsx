@@ -17,6 +17,9 @@ import {
   loadDetail,
   Period,
   respondToBlocker,
+  waitForArtifactClearance,
+  ArtifactSecurityError,
+  artifactDownloadable,
   saveFeedback,
   stopWaiting,
   subscribe,
@@ -1338,6 +1341,7 @@ function ArtifactList({
       {artifacts.map((artifact) => (
         <button
           key={`${artifact.artifactId}-${artifact.role}`}
+          disabled={!artifactDownloadable(artifact.state)}
           onClick={() => void downloadArtifact(artifact).catch(session.lost)}
         >
           <span>▤</span>
@@ -1354,7 +1358,13 @@ function ArtifactList({
                 : ""}
             </small>
           </div>
-          <span>{c("download")} ↓</span>
+          <span>
+            {artifactDownloadable(artifact.state)
+              ? `${c("download")} ↓`
+              : artifact.state === "rejected"
+                ? c("artifactRejectedShort")
+                : c("checkingSecurity")}
+          </span>
         </button>
       ))}
     </div>
@@ -1500,6 +1510,7 @@ function BlockerForm({
   const [confirmed, setConfirmed] = useState<string[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
   const fields = schemaFields(blocker.responseSchema);
   const presentationFields = new Map(
@@ -1539,9 +1550,12 @@ function BlockerForm({
     try {
       const refs: Array<{ artifactId: string; metadata?: unknown }> = [];
       if (file) {
-        const artifact = await session.withCSRF((csrf) =>
+        const handle = await session.withCSRF((csrf) =>
           uploadArtifact(csrf, file),
         );
+        // The upload is quarantined; answer only once it is cleared.
+        setChecking(true);
+        const artifact = await waitForArtifactClearance(handle.uploadId);
         refs.push({
           artifactId: artifact.artifactId,
           metadata: { name: file.name },
@@ -1552,10 +1566,17 @@ function BlockerForm({
       );
       await onDone();
     } catch (err) {
-      if (!session.lost(err))
+      if (err instanceof ArtifactSecurityError)
+        setError(
+          err.code === "artifact_rejected"
+            ? c("artifactRejected")
+            : c("artifactCheckFailed"),
+        );
+      else if (!session.lost(err))
         setError(err instanceof Error ? err.message : c("unexpectedError"));
     } finally {
       setBusy(false);
+      setChecking(false);
     }
   }
   return (
@@ -1676,6 +1697,11 @@ function BlockerForm({
             </div>
           )}
         {error && <div className="form-error">{error}</div>}
+        {checking && (
+          <div className="form-status" role="status" aria-live="polite">
+            {c("checkingSecurity")}
+          </div>
+        )}
         <button className="button primary" disabled={!valid || busy}>
           {c("submitResponse")}
         </button>

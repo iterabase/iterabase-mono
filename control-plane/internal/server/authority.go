@@ -105,7 +105,11 @@ type Principal struct {
 	Source            string // browser | api
 	SessionID         string
 	APIKeyID          string
-	actions           []string
+	// Role is the browser account's current role, or the bearer owner's
+	// current role. CredentialKind is personal|automation for bearer keys.
+	Role           string
+	CredentialKind string
+	actions        []string
 }
 
 // Principal sources persisted as work authorization evidence (architecture 7.15).
@@ -212,6 +216,8 @@ func (h *Handler) bearerPrincipal(w http.ResponseWriter, r *http.Request, requir
 		ActorID:           cred.ActorIdentityID,
 		Source:            SourceAPI,
 		APIKeyID:          cred.ID,
+		Role:              cred.OwnerRole,
+		CredentialKind:    cred.Kind,
 		actions:           cred.Actions,
 	}, true
 }
@@ -260,6 +266,7 @@ func principalForSession(current identity.BrowserSession) Principal {
 		ActorID:           current.IdentityID,
 		Source:            SourceBrowser,
 		SessionID:         current.ID,
+		Role:              current.Role,
 		actions:           sessionActions(current.Role),
 	}
 }

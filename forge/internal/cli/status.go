@@ -63,7 +63,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		}
 		if ss, _ := p.Status(ctx, cfg.Spec.Chart.Release+"-lvm-storage", cfg.Spec.Chart.Namespace); ss != nil && ss.Installed {
 			fmt.Fprintf(out, "LVM storage substrate: %s (%s)\n", ss.Version, ss.Status)
-			readiness, readinessErr := p.WaitForLVMStorageReady(ctx, cfg.Spec.Chart.Namespace, plan.DataStorage)
+			readiness, readinessErr := p.WaitForLVMStorageReady(ctx, cfg.Spec.Chart.Namespace, plan.DataStorage, provisioner.ManagedStorageClasses(ss.Version))
 			if readinessErr != nil {
 				return readinessErr
 			}

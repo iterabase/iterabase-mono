@@ -18,7 +18,9 @@ export class ToolError extends Error {
 
 export interface ToolArtifactAPI {
   read(ref: ArtifactRef): AsyncIterable<Uint8Array>;
-  write(input: { mimeType: string; bytes: AsyncIterable<Uint8Array>; expectedSizeBytes?: bigint; expectedDigest?: string }): Promise<ArtifactRef>;
+  // filename's extension must agree with the detected type (HOR-461); the
+  // output is quarantined and usable by consumers only after clearance.
+  write(input: { mimeType: string; bytes: AsyncIterable<Uint8Array>; filename?: string; expectedSizeBytes?: bigint; expectedDigest?: string }): Promise<ArtifactRef>;
 }
 
 export interface ToolInvocationContext {

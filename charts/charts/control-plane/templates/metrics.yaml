@@ -97,6 +97,35 @@ spec:
           replacement: dispatch
           targetLabel: component
 {{- end }}
+{{- if include "control-plane.artifactProcessingEnabled" . }}
+{{- range $component := list "artifact-coordinator" "artifact-scanner" }}
+---
+# The coordinator serves metrics on its health-only listener; the scanner on
+# its plaintext metrics-only listener, never the mTLS processing port.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ printf "%s-control-plane-%s" $.Release.Name $component }}
+  labels:
+    {{- include "control-plane.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  jobLabel: app.kubernetes.io/name
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $component }}
+  endpoints:
+    - port: http-metrics
+      path: /metrics
+      interval: {{ $interval }}
+      relabelings:
+        - action: replace
+          replacement: {{ $component }}
+          targetLabel: component
+{{- end }}
+{{- end }}
 ---
 # AgentPool workers are operator-created and may live in another namespace.
 # The supervisor exposes bounded metrics on its existing plain-HTTP probe port;

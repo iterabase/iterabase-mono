@@ -10,13 +10,22 @@ image:
 persistence:
   size: 20Gi # fixed StorageClass is iterabase-lvm-xfs
 
-# Immutable artifact-service bucket (HOR-399). The provisioning Job uses the
-# MinIO root credential once to create this bucket + a dedicated bucket-scoped
-# user. API/gateway receive only the dedicated credential.
+# Artifact bucket with policy-separated byte zones (HOR-399, DES-HOR-460-02).
+# The provisioning Job uses the MinIO root credential to create the bucket and
+# one user per zone with the canonical policy in files/policies/:
+#   ingest    — quarantine write only            (API + gateway)
+#   serve     — cleared original/derived read     (API + gateway)
+#   lifecycle — promote and purge every zone      (artifact coordinator only)
+# It then revokes the legacy broad `artifact-service` credential and policy.
+# The default Secret names are a cross-chart contract with the control-plane
+# chart's artifact.credentialSecrets defaults.
 artifactService:
   enabled: true
   bucket: iterabase-artifacts
-  credentialSecret: "" # default: <release>-minio-artifacts
+  credentialSecrets:
+    ingest: "" # default: <release>-minio-artifact-ingest
+    serve: "" # default: <release>-minio-artifact-serve
+    lifecycle: "" # default: <release>-minio-artifact-lifecycle
   mcImage:
     repository: ghcr.io/iterabase/iterabase-third-party/minio
     tag: RELEASE.2025-09-07T16-13-09Z

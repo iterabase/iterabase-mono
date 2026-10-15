@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,21 +35,45 @@ const testNamespace = "iterabase-system"
 const (
 	PlatformDataStorageClass       = "iterabase-lvm-xfs"
 	AgentPoolWorkspaceStorageClass = "iterabase-agentpool-lvm-xfs"
-	lvmProvisioner                 = "local.csi.openebs.io"
-	lvmDataVolumeGroupName         = "iterabase-data"
-	lvmNodeTopologyKey             = "openebs.io/nodename"
+	// SignatureStorageClass admits only the artifact signature PVC (DES-HOR-461-05).
+	SignatureStorageClass  = "iterabase-signatures-lvm-xfs"
+	lvmProvisioner         = "local.csi.openebs.io"
+	lvmDataVolumeGroupName = "iterabase-data"
+	lvmNodeTopologyKey     = "openebs.io/nodename"
 )
 
-func lvmStorageContract() kindcluster.LVMStorageContract {
+// lvmStorageContract is the exact class set a substrate version renders: the
+// signature class exists from 0.6.0 (DES-HOR-461-05), so the n-1 install of
+// an older published substrate expects only the two original classes.
+func lvmStorageContract(substrateVersion string) kindcluster.LVMStorageContract {
+	classes := []kindcluster.StorageClassExpectation{
+		{Name: PlatformDataStorageClass, Shared: false},
+		{Name: AgentPoolWorkspaceStorageClass, Shared: true},
+	}
+	if !substrateBefore(substrateVersion, 0, 6) {
+		classes = append(classes, kindcluster.StorageClassExpectation{Name: SignatureStorageClass, Shared: true})
+	}
 	return kindcluster.LVMStorageContract{
 		DataVolumeGroupName: lvmDataVolumeGroupName,
 		Provisioner:         lvmProvisioner,
 		NodeTopologyKey:     lvmNodeTopologyKey,
-		StorageClasses: []kindcluster.StorageClassExpectation{
-			{Name: PlatformDataStorageClass, Shared: false},
-			{Name: AgentPoolWorkspaceStorageClass, Shared: true},
-		},
+		StorageClasses:      classes,
 	}
+}
+
+// substrateBefore reports whether a MAJOR.MINOR.PATCH version precedes
+// major.minor. An unparsable version is treated as current.
+func substrateBefore(version string, major, minor int) bool {
+	parts := strings.SplitN(strings.TrimPrefix(version, "v"), ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	gotMajor, err1 := strconv.Atoi(parts[0])
+	gotMinor, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return gotMajor < major || (gotMajor == major && gotMinor < minor)
 }
 
 const (
@@ -98,6 +123,8 @@ type chartState struct {
 	baseline            *nMinusOneBaseline
 	runtimeImageDigests map[string]string
 	snapshots           map[string]lifecycleSnapshot
+	schemaVersions      map[string]int
+	rolledBack          bool
 	internalIngressIP   string
 	internalCARootUID   string
 }
@@ -390,8 +417,10 @@ func substrateRenders(release string, certificateValues ...string) []sharede2e.R
 	return []sharede2e.RenderInput{
 		{Chart: certificateChartPath, Values: repositoryChartsPaths(certificateValues)},
 		{Chart: lvmStorageChartPath, Set: map[string]string{
-			"lvm-localpv.global.kubeletDir":       kindKubeletDirectory,
-			"agentpool.authorizedManagerIdentity": "system:serviceaccount:" + testNamespace + ":" + release + "-control-plane-manager",
+			"lvm-localpv.global.kubeletDir":        kindKubeletDirectory,
+			"agentpool.authorizedManagerIdentity":  "system:serviceaccount:" + testNamespace + ":" + release + "-control-plane-manager",
+			"signatures.authorizedClaim.namespace": testNamespace,
+			"signatures.authorizedClaim.name":      release + "-control-plane-artifact-signatures",
 		}},
 	}
 }
@@ -499,7 +528,8 @@ func (state *chartState) installLVMStorage(t *testing.T) {
 // already-prepared VG) and re-verifies the storage and RBAC contract.
 func (state *chartState) applyLVMStorage(t *testing.T, chart kube.Chart) {
 	t.Helper()
-	if err := state.cluster.ConfigureLVMStorage(state.ctx, chart.LocalPath, testNamespace, testRelease+"-lvm-storage", lvmStorageContract()); err != nil {
+	contract := lvmStorageContract(currentChartVersion(t, state, chart))
+	if err := state.cluster.ConfigureLVMStorage(state.ctx, chart.LocalPath, testNamespace, testRelease+"-lvm-storage", contract); err != nil {
 		t.Fatalf("install exact Kind OpenEBS LVM storage substrate %s: %v", chart.LocalPath, err)
 	}
 	state.assertLVMSnapshotDependencyRBAC(t)

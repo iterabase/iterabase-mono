@@ -48,10 +48,12 @@ Two Go images + one Node image:
 | `api` | `cmd/api` | `control-plane` | HTTP API (chi) + durable runtime (later); subcommands `serve`, `migrate up`, `migrate down`, `bootstrap` |
 | `gateway` | `cmd/gateway` | `control-plane` | mTLS workload boundary: tool `RunnerService`/`GatewayService` plus streaming `ArtifactService` |
 | `dispatch` | `cmd/dispatch` | `control-plane` | durable-dispatch Work gRPC server (HOR-249): mTLS `Harness.Work` bidi stream, worker fencing, one-credit dispatch, TurnEvent ACK/dedup, cancellation/worker-loss |
+| `artifact-coordinator` | `cmd/artifact-coordinator` | `control-plane` | V2 artifact lifecycle worker (HOR-461): the only holder of the lifecycle object credential; leases security attempts, scans over mTLS, expands email containers, promotes cleared originals, purges and expires bytes |
+| `artifact-scanner` | `cmd/artifact-scanner` | `control-plane` | isolated scanner adapter beside a pod-local `clamd` (HOR-461): no data credential, no egress; malware verdict plus the admission policy (type detection, structural validation, email expansion) |
 
-The `control-plane` image (manager + api + gateway + dispatch) runs in the platform
+The `control-plane` image (all six binaries) runs in the platform
 namespace. The harness image is Node (`harness/Dockerfile`). See `Dockerfile`
-(manager/api/gateway/dispatch) and `harness/Dockerfile` (harness).
+and `harness/Dockerfile` (harness).
 
 `migrate` runs as an RBAC-less init container before `serve`/`manager` start.
 
@@ -65,7 +67,8 @@ internal/config/    YAML + env config (api) + DatabaseFromEnv (manager)
 internal/database/  pgx pool + embedded golang-migrate migrations
 internal/identity/  identities, local accounts, browser sessions, auth email, V2 API credentials, bootstrap
 internal/catalog/   model catalog store (backends + models) + effective_catalog view (HOR-306/268)
-internal/artifact/  immutable metadata/lifecycle, MinIO streaming, retention/deletion (HOR-399)
+internal/artifact/  V2 quarantine domain (HOR-461): zone-split MinIO, independent storage/security state,
+                    shared library search, coordinator, scanner adapter, admission policy, deletion tombstones
 internal/gateway/   tool gateway: registry, authorization, credential resolution, durable invocation ledger (HOR-392)
 internal/dispatch/  durable dispatch Work server: warm-worker bidi stream, one-credit dispatch, worker fencing, active-assignment context, TurnEvent ACK/dedup, cancellation/worker-loss (HOR-249)
 internal/spiffe/    shared SPIFFE/mTLS identity verifier (HOR-392; reused by HOR-249)
@@ -560,32 +563,59 @@ never returned by customer work APIs. `work.timeline_events` is append-only and
 contains only semantic business codes/parameters. HOR-399 owns artifact bytes
 and metadata; HOR-254 stores immutable references and trace relationships.
 
-## Immutable artifacts (HOR-399)
+## Shared artifacts and quarantine (HOR-399, HOR-461)
 
-The installation is the tenant boundary. `artifact.artifacts` stores immutable
-identity/source/MIME/size/SHA-256/retention metadata and the durable
-`pending → available → deleting → deleted` lifecycle. MinIO stores bytes under
-a unique key; metadata becomes readable only after a complete verified upload.
-`work.artifact_links` is the authoritative work-item/attempt/node relationship.
+The installation is the tenant boundary. The contract is
+[`docs/architecture/v2-artifact-processing.md`](../docs/architecture/v2-artifact-processing.md).
+Every source (browser/API upload, mailbox, runner and tool output, workflow,
+sandbox publication) enters **one quarantine path**:
 
-Work-scope users with `artifact:write|read` use streaming `POST`, `GET`, and
-`HEAD /v1/artifacts[/{id}]`. Explicit `DELETE /v1/artifacts/{id}` is admin-only.
-The gateway mTLS listener exposes client-streaming `PutArtifact`,
-server-streaming `GetArtifact`, and unary `StatArtifact`. Supervisors are
-validated against active turn ownership/fencing; runners are validated against
-the exact live invocation and declared input refs. No caller receives MinIO
-credentials or presigned URLs.
+- `artifact.artifacts` keeps independent `storage_state`, `security_state`,
+  `extraction_state`, and library registration, plus immutable identity,
+  source, lineage (`parent_artifact_id` for email children), and attribution.
+  `artifact.is_cleared(id)` is the database authority every consumer joins on
+  immediately before using bytes.
+- MinIO zones are policy-separated prefixes. api/gateway hold only the ingest
+  (quarantine write-only, create-only) and serve (cleared read-only) keys; the
+  `artifact-coordinator` alone holds the lifecycle key.
+- The coordinator leases fenced security attempts (`FOR UPDATE SKIP LOCKED`;
+  attempt 1 now, 2 after one minute, 3 after five minutes), streams the exact
+  quarantine object over HTTP/2 mTLS to the `artifact-scanner` adapter, admits
+  `.eml`/`.msg` children with lineage, promotes the exact digest into the
+  cleared zone, registers it for search, and purges rejected, deleted,
+  expired, and orphaned bytes.
+- The scanner adapter (no data credential, no egress) asks the pod-local
+  ClamAV `clamd` for a verdict, then applies the Go admission policy in
+  `internal/artifact/admission` (DES-HOR-461-01). It is ready only while
+  ClamAV passes an EICAR self-test on signatures checked within 24 hours.
 
-`AssignTurn.materializations` is the exact authorized input set. The trusted
-supervisor downloads and verifies size/digest before starting the child. The
-reserved `publish_artifact` control function validates a regular relative
-workspace path, rejects traversal/symlink escape, and streams a new immutable
-reference through supervisor IPC. It is not an AgentPool workspace tool.
+Customer routes (exact V2 actions, `internal/server/artifact_api.go`):
 
-Inline tool JSON remains bounded at 64 KiB by default. Artifact size is
-configurable (1 GiB default). `retention_until = NULL` means indefinite;
-finite retention and explicit deletion preserve metadata tombstones while
-removing bytes.
+| Method | Path | Authority | Behaviour |
+| --- | --- | --- | --- |
+| `POST` | `/v1/artifacts` | `artifacts.upload` | Raw stream, `Idempotency-Key` and `X-Artifact-Filename` required, 25 MiB; `202 {uploadId, state}` provisional handle, never a usable ref |
+| `GET` | `/v1/artifacts?search=&cursor=&limit=` | `artifacts.read` | Registered, cleared artifacts only; recent order or PostgreSQL full-text search |
+| `GET` | `/v1/artifacts/{id}/status` | `artifacts.read` | Handle or id; unregistered rows only for the initiating human, the exact automation key, or a browser Admin; canonical ref only once cleared |
+| `GET`/`HEAD` | `/v1/artifacts/{id}` | `artifacts.read` | Cleared original only, `attachment` + `nosniff`; anything else is `404` |
+| `POST` | `/v1/artifacts/{id}/security-retries` | browser session + CSRF | Initiating human or Admin; one new three-attempt trigger after transient failure |
+| `DELETE` | `/v1/artifacts/{id}` | personal Admin key with `artifacts.read` + `artifacts.delete` | `409 artifact_in_use` while active work references it; otherwise `202` and an asynchronous purge to a content-free tombstone |
+
+The gateway mTLS listener exposes `PutArtifact` (into quarantine; returns the
+immutable ref with state `checking_security`), `GetArtifact`, and
+`StatArtifact` (cleared only). A producer may cite its own quarantined output
+in `complete_step` or a tool result; every consumer waits for clearance, and a
+node is not assigned until its inputs clear (DES-HOR-461-02). No caller
+receives MinIO credentials or presigned URLs.
+
+`AssignTurn.materializations` is the exact authorized, cleared input set. The
+trusted supervisor downloads and verifies size/digest before starting the
+child. The reserved `publish_artifact` control function validates a regular
+relative workspace path, rejects traversal/symlink escape, and streams a new
+quarantined artifact (with its filename) through supervisor IPC.
+
+Security advisories use `control-plane-artifact-coordinator rescan --reason
+<code> <artifact-id>...`: it withdraws each artifact from search and every read
+and queues an exact re-scan. Operations: [`../charts/docs/artifact-operations.md`](../charts/docs/artifact-operations.md).
 
 ## Git workflow
 

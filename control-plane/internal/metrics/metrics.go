@@ -53,6 +53,25 @@ type Metrics struct {
 	DispatchWorkspaceFreeRatio *prometheus.GaugeVec
 	DispatchWorkspaceWarning   *prometheus.GaugeVec
 	DispatchWorkspaceGated     *prometheus.GaugeVec
+
+	ArtifactUploads           *prometheus.CounterVec
+	ArtifactUploadBytes       *prometheus.CounterVec
+	ArtifactSecurityAttempts  *prometheus.CounterVec
+	ArtifactScanDuration      *prometheus.HistogramVec
+	ArtifactSecurityQueue     *prometheus.GaugeVec
+	ArtifactSecurityOldest    *prometheus.GaugeVec
+	ArtifactQuarantineBytes   *prometheus.GaugeVec
+	ArtifactQuarantineObjects *prometheus.GaugeVec
+	ArtifactQuarantineLimit   *prometheus.GaugeVec
+	ArtifactRegistered        *prometheus.GaugeVec
+	ArtifactDeletions         *prometheus.CounterVec
+	ArtifactDeleting          *prometheus.GaugeVec
+	ArtifactDeletingOldest    *prometheus.GaugeVec
+	ArtifactPurgedObjects     *prometheus.CounterVec
+	ArtifactReconciliations   *prometheus.CounterVec
+	ArtifactScannerReady      *prometheus.GaugeVec
+	ArtifactSignatureAge      *prometheus.GaugeVec
+	ArtifactScans             *prometheus.CounterVec
 }
 
 // New creates one isolated registry and registers process, Go, build, HTTP,
@@ -154,6 +173,14 @@ func New(component, version, commit string) *Metrics {
 			Name: "control_plane_dispatch_workspace_credit_gated", Help: "Whether one pool's durable 20/25 percent hysteresis gate withholds fresh credit.",
 		}, []string{"pool"}),
 	}
+	registerArtifactMetrics(m)
+	registerer.MustRegister(
+		m.ArtifactUploads, m.ArtifactUploadBytes, m.ArtifactSecurityAttempts, m.ArtifactScanDuration,
+		m.ArtifactSecurityQueue, m.ArtifactSecurityOldest, m.ArtifactQuarantineBytes, m.ArtifactQuarantineObjects,
+		m.ArtifactQuarantineLimit, m.ArtifactRegistered, m.ArtifactDeletions, m.ArtifactDeleting,
+		m.ArtifactDeletingOldest, m.ArtifactPurgedObjects, m.ArtifactReconciliations,
+		m.ArtifactScannerReady, m.ArtifactSignatureAge, m.ArtifactScans,
+	)
 	registerer.MustRegister(
 		m.HTTPRequests, m.HTTPDuration, m.HTTPInFlight, m.HTTPResponseBytes,
 		m.GatewayRunnerConnections, m.GatewayRunnerStreams, m.GatewayInvocations,

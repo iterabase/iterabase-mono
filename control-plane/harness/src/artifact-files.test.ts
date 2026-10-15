@@ -98,7 +98,9 @@ describe("artifact publication", () => {
       for await (const chunk of input.chunks) chunks.push(chunk);
       const got = Buffer.concat(chunks.map((c) => Buffer.from(c)));
       expect(got.toString()).toBe("result");
-      return { $typeName: "iterabase.gateway.v1.ArtifactMetadata", ref: { $typeName: "iterabase.gateway.v1.ArtifactRef", artifactId: "new", mimeType: input.mimeType, sizeBytes: input.expectedSizeBytes, digest: input.expectedDigest }, source: "sandbox_publish", state: "available", createdAtUnixMs: 0n };
+      // The admission policy checks the extension against the detected type.
+      expect(input.filename).toBe("result.txt");
+      return { $typeName: "iterabase.gateway.v1.ArtifactMetadata", ref: { $typeName: "iterabase.gateway.v1.ArtifactRef", artifactId: "new", mimeType: input.mimeType, sizeBytes: input.expectedSizeBytes, digest: input.expectedDigest }, source: "sandbox", state: "checking_security", createdAtUnixMs: 0n };
     };
     const metadata = await publishWorkspaceArtifact(client, scope, workspace, "result.txt", "text/plain", uid, gid);
     expect(metadata.ref?.artifactId).toBe("new");

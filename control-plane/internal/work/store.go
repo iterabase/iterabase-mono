@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/artifact"
 	"github.com/nunocgoncalves/iterabase-mono/control-plane/internal/workflow"
 )
 
@@ -255,17 +256,22 @@ func (s *Store) createAttemptTx(ctx context.Context, tx pgx.Tx, in createAttempt
 		if role == "" {
 			role = "source"
 		}
-		ct, err := tx.Exec(ctx, `
+		cleared, err := lockClearedArtifactTx(ctx, tx, ref.ArtifactID)
+		if err != nil {
+			return fmt.Errorf("lock source artifact: %w", err)
+		}
+		if !cleared {
+			return fmt.Errorf("%w: source artifact is not available", ErrInvalidInput)
+		}
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO work.artifact_links
 				(artifact_id, work_item_id, attempt_id, node_execution_id, role, metadata)
-			SELECT id,$2,$3,$4,$5,$6 FROM artifact.artifacts
-			WHERE id=$1 AND state='available'`,
-			ref.ArtifactID, in.WorkItemID, in.ID, execID, role, jsonOrObject(ref.Metadata))
-		if err != nil {
+			VALUES ($1,$2,$3,$4,$5,$6)`,
+			ref.ArtifactID, in.WorkItemID, in.ID, execID, role, jsonOrObject(ref.Metadata)); err != nil {
+			if isArtifactUnavailable(err) {
+				return fmt.Errorf("%w: source artifact is not available", ErrInvalidInput)
+			}
 			return fmt.Errorf("link source artifact: %w", err)
-		}
-		if ct.RowsAffected() != 1 {
-			return fmt.Errorf("%w: source artifact is not available", ErrInvalidInput)
 		}
 	}
 	if err := appendTimelineTx(ctx, tx, in.WorkItemID, in.ID, execID, "attempt_created",
@@ -440,11 +446,15 @@ func (s *Store) ListArtifacts(ctx context.Context, itemID string) ([]WorkArtifac
 	if !exists {
 		return nil, ErrNotFound
 	}
+	// Every committed link is listed with its customer state, including
+	// outputs still being checked and rejected ones (DES-HOR-461-02); only the
+	// artifact byte route decides whether bytes may be read.
 	rows, err := s.pool.Query(ctx, `
 		SELECT l.artifact_id,l.attempt_id::text,l.node_execution_id::text,l.role,l.metadata,
-		       a.mime_type,a.size_bytes,a.digest,l.created_at
+		       COALESCE(a.canonical_mime,a.claimed_mime,'application/octet-stream'),a.size_bytes,a.digest,l.created_at,
+		       a.storage_state,a.security_state,a.extraction_state,a.registered_at,a.withdrawn_at
 		FROM work.artifact_links l JOIN artifact.artifacts a ON a.id=l.artifact_id
-		WHERE l.work_item_id=$1 AND a.state='available'
+		WHERE l.work_item_id=$1 AND a.storage_state<>'uploading'
 		ORDER BY l.created_at,l.id`, itemID)
 	if err != nil {
 		return nil, err
@@ -453,10 +463,13 @@ func (s *Store) ListArtifacts(ctx context.Context, itemID string) ([]WorkArtifac
 	out := make([]WorkArtifact, 0)
 	for rows.Next() {
 		var a WorkArtifact
+		var st artifact.Artifact
 		if err := rows.Scan(&a.ArtifactID, &a.AttemptID, &a.NodeExecutionID, &a.Role, &a.Metadata,
-			&a.MIMEType, &a.SizeBytes, &a.Digest, &a.CreatedAt); err != nil {
+			&a.MIMEType, &a.SizeBytes, &a.Digest, &a.CreatedAt,
+			&st.StorageState, &st.SecurityState, &st.ExtractionState, &st.RegisteredAt, &st.WithdrawnAt); err != nil {
 			return nil, err
 		}
+		a.State = st.Status()
 		out = append(out, a)
 	}
 	return out, rows.Err()

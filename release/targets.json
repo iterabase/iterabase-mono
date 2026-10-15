@@ -9,7 +9,7 @@
       "context": "control-plane",
       "dockerfile": "control-plane/Dockerfile",
       "paths": ["control-plane/**"],
-      "go_build": {"module": "control-plane", "main": ["./cmd/manager", "./cmd/api", "./cmd/gateway", "./cmd/dispatch"], "inputs": ["control-plane/ui/**", "control-plane/Dockerfile", "control-plane/.dockerignore", "control-plane/go.mod", "control-plane/go.sum"]},
+      "go_build": {"module": "control-plane", "main": ["./cmd/manager", "./cmd/api", "./cmd/gateway", "./cmd/dispatch", "./cmd/artifact-coordinator", "./cmd/artifact-scanner"], "inputs": ["control-plane/ui/**", "control-plane/Dockerfile", "control-plane/.dockerignore", "control-plane/go.mod", "control-plane/go.sum"]},
       "build_args": ["VERSION={version}", "COMMIT={source_sha}"],
       "labels": ["org.opencontainers.image.version={version}", "org.opencontainers.image.revision={source_sha}", "org.opencontainers.image.source=https://github.com/{repository}"]
     },

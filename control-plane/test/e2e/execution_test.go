@@ -688,6 +688,28 @@ func assertExecutionEvidence(t *testing.T, state *deployedState, itemID, attempt
 	if !roles["output"] || !roles["evidence"] {
 		t.Fatalf("representative workflow artifact roles=%v want output+evidence", roles)
 	}
+	// HOR-461: the tool output entered quarantine and is cleared by the
+	// deployed scanner before any consumer may read it.
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		status, artifacts = state.request(t, http.MethodGet, "/v1/work-items/"+itemID+"/artifacts", state.workKey, nil, nil)
+		requireStatus(t, status, http.StatusOK, artifacts)
+		var states []struct {
+			State string `json:"state"`
+		}
+		mustDecode(t, artifacts, &states)
+		cleared := len(states) > 0
+		for _, s := range states {
+			cleared = cleared && (s.State == "processing_content" || s.State == "ready")
+		}
+		if cleared {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("workload output was not cleared by the scanner: %s", safeResponse(artifacts))
+		}
+		time.Sleep(2 * time.Second)
+	}
 	query := fmt.Sprintf(`SELECT string_agg(kind,',' ORDER BY seq) FROM runtime.events WHERE run_id='%s'::uuid`, attemptID)
 	events := state.databaseQuery(t, query)
 	position := -1

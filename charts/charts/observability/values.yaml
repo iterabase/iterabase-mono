@@ -24,6 +24,8 @@ alerts:
     dispatch: {enabled: true, job: control-plane, component: dispatch}
     toolMaterializer: {enabled: true, job: control-plane, component: tool-materializer}
     toolRunner: {enabled: true, job: control-plane, component: tool-runner}
+    artifactCoordinator: {enabled: true, job: control-plane, component: artifact-coordinator}
+    artifactScanner: {enabled: true, job: control-plane, component: artifact-scanner}
     inferenceGateway: {enabled: true, job: inference-gateway, component: inference-gateway}
     postgresql: {enabled: true, job: postgresql, component: postgresql}
     redis: {enabled: true, job: redis, component: redis}

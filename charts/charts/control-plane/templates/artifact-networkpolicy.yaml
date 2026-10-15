@@ -1,0 +1,175 @@
+{{- if and (include "control-plane.artifactProcessingEnabled" .) .Values.artifact.processing.networkPolicy.enabled }}
+{{- $np := .Values.artifact.processing.networkPolicy }}
+{{- $rel := .Release.Name }}
+# Section 11 isolation. Prometheus is admitted only to metrics-only ports and
+# only when metrics are enabled (same selector as the MinIO policy).
+# Scanner: ingress from the coordinator identity's pods on the mTLS port;
+# empty egress (no DNS, no signature source, no data store).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "control-plane.artifactScannerName" . }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-scanner
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+      app.kubernetes.io/instance: {{ $rel }}
+      app.kubernetes.io/component: artifact-scanner
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: control-plane
+              app.kubernetes.io/instance: {{ $rel }}
+              app.kubernetes.io/component: artifact-coordinator
+      ports:
+        - protocol: TCP
+          port: 8443
+    {{- if .Values.metrics.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+    {{- end }}
+  egress: []
+---
+# Signature updater: no ingress; DNS plus HTTP(S) to the update source only.
+# Private, link-local, and cluster ranges are excluded, so it cannot reach
+# PostgreSQL, MinIO, the API/gateway, or the scanner.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "control-plane.artifactSignatureUpdaterName" . }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-signature-updater
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+      app.kubernetes.io/instance: {{ $rel }}
+      app.kubernetes.io/component: artifact-signature-updater
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- with $np.updaterDeniedCIDRs }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        - ipBlock:
+            cidr: ::/0
+            {{- with $np.updaterDeniedIPv6CIDRs }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        {{- range $np.updaterMirrorCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+---
+# Coordinator: no customer ingress; egress to PostgreSQL, MinIO, the scanner,
+# and DNS only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "control-plane.artifactCoordinatorName" . }}
+  labels:
+    {{- include "control-plane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-coordinator
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: control-plane
+      app.kubernetes.io/instance: {{ $rel }}
+      app.kubernetes.io/component: artifact-coordinator
+  policyTypes: [Ingress, Egress]
+  {{- if .Values.metrics.enabled }}
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8092
+  {{- else }}
+  ingress: []
+  {{- end }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: control-plane
+              app.kubernetes.io/instance: {{ $rel }}
+              app.kubernetes.io/component: artifact-scanner
+      ports:
+        - protocol: TCP
+          port: 8443
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+              app.kubernetes.io/instance: {{ $rel }}
+        {{- range $np.externalObjectStoreCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 9000
+        {{- if ne (int $np.externalObjectStorePort) 9000 }}
+        - protocol: TCP
+          port: {{ $np.externalObjectStorePort }}
+        {{- end }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+              app.kubernetes.io/instance: {{ $rel }}
+        {{- range $np.externalDatabaseCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgresql.port }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}

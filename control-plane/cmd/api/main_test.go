@@ -99,7 +99,9 @@ func baseServeConfig(t *testing.T) *config.Config {
 			MaxOpenConns: 5,
 			MaxIdleConns: 2,
 		},
-		Artifact: config.ArtifactConfig{Enabled: true, Endpoint: minio.Endpoint, AccessKey: minio.AccessKey, SecretKey: minio.SecretKey, Bucket: minio.Bucket, MaxSizeBytes: 1 << 20, PendingTTL: "1h", SweepInterval: "1m"},
+		Artifact: config.ArtifactConfig{Enabled: true, Endpoint: minio.Endpoint, Bucket: minio.Bucket, SweepInterval: "1m",
+			IngestAccessKey: minio.Ingest.AccessKey, IngestSecretKey: minio.Ingest.SecretKey,
+			ServeAccessKey: minio.Serve.AccessKey, ServeSecretKey: minio.Serve.SecretKey},
 	}
 	applyAuthConfig(cfg)
 	return cfg

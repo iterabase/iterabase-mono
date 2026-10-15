@@ -172,6 +172,26 @@ func (s *Store) PrepareNode(ctx context.Context, attemptID string) (NodeExecutio
 		return node, turn, true, nil
 	}
 
+	// DES-HOR-461-02: an agent node is assigned only once every input
+	// artifact is cleared. A scan in progress leaves the node pending and
+	// unassigned; a rejected or deleted input fails it explicitly.
+	if node.State == NodePending {
+		gate, err := inputArtifactGateTx(ctx, tx, node.ID)
+		if err != nil {
+			return NodeExecution{}, runtimestore.Turn{}, false, err
+		}
+		switch gate {
+		case inputsChecking:
+			return node, runtimestore.Turn{}, false, tx.Commit(ctx)
+		case inputsRejected:
+			if err := failNodeForRejectedInputTx(ctx, tx, itemID, attemptID, node); err != nil {
+				return NodeExecution{}, runtimestore.Turn{}, false, err
+			}
+			node.State = NodeFailed
+			return node, runtimestore.Turn{}, false, tx.Commit(ctx)
+		}
+	}
+
 	var model struct {
 		ID string `json:"id"`
 	}
@@ -276,8 +296,8 @@ func (s *Store) RecordCompletionReport(ctx context.Context, turnID string, repor
 			SELECT EXISTS(
 				SELECT 1 FROM artifact.artifacts ar
 				JOIN work.artifact_links l ON l.artifact_id=ar.id
-				WHERE ar.id=$1 AND ar.state='available'
-				  AND ar.source_type IN ('sandbox_publish','tool_output','workflow')
+				WHERE ar.id=$1 AND artifact.is_admissible_output(ar.id)
+				  AND ar.source_type IN ('sandbox','tool','workflow')
 				  AND l.attempt_id=$2 AND l.node_execution_id=$3
 			)`, ref.ArtifactID, attemptID, nodeID).Scan(&authorized); err != nil {
 			return err
@@ -305,6 +325,9 @@ func (s *Store) RecordCompletionReport(ctx context.Context, turnID string, repor
 			VALUES ($1,$2,$3,$4,$5,$6)
 			ON CONFLICT (artifact_id,work_item_id,attempt_id,node_execution_id,role) DO NOTHING`,
 			ref.ArtifactID, itemID, attemptID, nodeID, ref.Role, jsonOrObject(ref.Metadata)); err != nil {
+			if isArtifactUnavailable(err) {
+				return fmt.Errorf("%w: artifact %s is not available", ErrInvalidInput, ref.ArtifactID)
+			}
 			return err
 		}
 	}
@@ -764,4 +787,54 @@ func sortedIDs(cs []Consequence) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+type inputGate int
+
+const (
+	inputsCleared inputGate = iota
+	inputsChecking
+	inputsRejected
+)
+
+// inputArtifactGateTx classifies a node's source/input artifacts. A transient
+// security failure or a security-advisory re-scan in any phase (withdrawn
+// while rescan_pending, scanning, pending a retry, or retryable_failed) keeps
+// waiting; only rejection, deletion, or quarantine expiry is permanent.
+func inputArtifactGateTx(ctx context.Context, tx pgx.Tx, nodeID string) (inputGate, error) {
+	var rejected, checking bool
+	err := tx.QueryRow(ctx, `
+		SELECT
+		  COALESCE(bool_or(a.security_state='rejected' OR a.storage_state IN ('deleting','deleted')), false),
+		  COALESCE(bool_or(NOT artifact.is_cleared(a.id)), false)
+		FROM work.artifact_links l JOIN artifact.artifacts a ON a.id=l.artifact_id
+		WHERE l.node_execution_id=$1 AND l.role IN ('source','input')`, nodeID).Scan(&rejected, &checking)
+	switch {
+	case err != nil:
+		return inputsCleared, err
+	case rejected:
+		return inputsRejected, nil
+	case checking:
+		return inputsChecking, nil
+	}
+	return inputsCleared, nil
+}
+
+func failNodeForRejectedInputTx(ctx context.Context, tx pgx.Tx, itemID, attemptID string, node NodeExecution) error {
+	customer, _ := json.Marshal(map[string]string{"code": "input_artifact_rejected",
+		"message": "A file this work needs did not pass the security check."})
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{`UPDATE runtime.node_executions SET state='failed', finished_at=now() WHERE id=$1`, []any{node.ID}},
+		{`UPDATE runtime.workflow_runs SET state='failed', finished_at=now() WHERE id=$1`, []any{attemptID}},
+		{`UPDATE work.attempts SET finished_at=now(), customer_failure_summary=$2 WHERE id=$1`, []any{attemptID, customer}},
+	} {
+		if _, err := tx.Exec(ctx, stmt.sql, stmt.args...); err != nil {
+			return err
+		}
+	}
+	return appendTimelineTx(ctx, tx, itemID, attemptID, node.ID, "work_failed",
+		map[string]any{"nodeKey": node.NodeKey, "reason": "input_artifact_rejected"}, nil, "")
 }
