@@ -35,6 +35,9 @@ const (
 const (
 	pdfSawPages      = "structure:pages"
 	pdfSawXRefStream = "structure:xref-stream"
+	// pdfSawUndeclaredStream marks a stream whose dictionary could not be
+	// located, so its filter chain is unknown.
+	pdfSawUndeclaredStream = "structure:undeclared-stream"
 )
 
 var (
@@ -63,6 +66,9 @@ func validatePDF(data []byte) string {
 		if found[reason] {
 			return reason
 		}
+	}
+	if found[pdfSawUndeclaredStream] {
+		return ReasonMalformed
 	}
 	// Header and xref must parse (section 6): a cross-reference table or
 	// stream, at least one indirect object, a trailer /Root reference, and a
@@ -142,10 +148,17 @@ func scanPDFStreams(data []byte, found map[string]bool) string {
 		keyword := pos + at
 		pos = keyword + len("stream")
 		start, ok := streamBodyStart(data, pos)
-		if !ok {
-			continue
+		if !ok || (keyword > 0 && !isPDFWhitespace(data[keyword-1]) && !isPDFDelimiter(data[keyword-1])) {
+			continue // not the stream keyword token
 		}
 		rawDict, dictFound := streamDict(data, keyword, floor)
+		if !dictFound {
+			// A stream whose dictionary cannot be located cannot have its
+			// filter chain determined, so the document is rejected rather
+			// than the stream skipped. Its body is still sniffed below, so a
+			// more specific reason such as active content takes precedence.
+			found[pdfSawUndeclaredStream] = true
+		}
 		floor = start
 		if end := bytes.Index(data[start:], []byte("endstream")); end >= 0 {
 			pos = start + end + len("endstream")
@@ -211,13 +224,11 @@ func streamBodyStart(data []byte, pos int) (int, bool) {
 	return 0, false
 }
 
-// streamDict returns the dictionary that immediately precedes a stream
-// keyword, matching nested << >> within a bounded look-behind above floor.
+// streamDict returns the dictionary that precedes a stream keyword,
+// separated from it only by whitespace and comments, matching nested << >>
+// within a bounded look-behind above floor.
 func streamDict(data []byte, keyword, floor int) ([]byte, bool) {
-	end := keyword
-	for end > 0 && isPDFWhitespace(data[end-1]) {
-		end--
-	}
+	end := skipTrailingPDFTrivia(data, keyword, floor)
 	if end < 2 || data[end-2] != '>' || data[end-1] != '>' {
 		return nil, false
 	}
@@ -238,6 +249,58 @@ func streamDict(data []byte, keyword, floor int) ([]byte, bool) {
 	}
 	return nil, false
 }
+
+// skipTrailingPDFTrivia moves end back over whitespace and comments. A
+// comment runs from a % to the end of its line; scanning backwards, the
+// rightmost % on a line that leaves the line ending in ">>" is taken as the
+// comment start, so a % inside a string literal earlier on the line is not.
+// Anything ambiguous leaves end where a dictionary cannot be matched, and the
+// stream is then rejected.
+func skipTrailingPDFTrivia(data []byte, end, floor int) int {
+	for {
+		for end > floor && isPDFWhitespace(data[end-1]) {
+			end--
+		}
+		if endsWithDictClose(data, floor, end) {
+			return end
+		}
+		lineStart := end
+		for lineStart > floor && data[lineStart-1] != '\n' && data[lineStart-1] != '\r' {
+			lineStart--
+		}
+		comment := pdfCommentStart(data, lineStart, end)
+		if comment < 0 {
+			return end
+		}
+		end = comment
+	}
+}
+
+// pdfCommentStart returns the rightmost % in data[lineStart:end] that has only
+// blanks between it and either the line start or a ">>", or -1. Each % skips
+// back over only the blanks after the previous token, so it runs in linear
+// time.
+func pdfCommentStart(data []byte, lineStart, end int) int {
+	for i := end - 1; i >= lineStart; i-- {
+		if data[i] != '%' {
+			continue
+		}
+		j := i
+		for j > lineStart && isPDFBlank(data[j-1]) {
+			j--
+		}
+		if j == lineStart || endsWithDictClose(data, lineStart, j) {
+			return i
+		}
+	}
+	return -1
+}
+
+func endsWithDictClose(data []byte, floor, end int) bool {
+	return end-2 >= floor && data[end-2] == '>' && data[end-1] == '>'
+}
+
+func isPDFBlank(c byte) bool { return c == ' ' || c == '\t' || c == '\f' || c == 0 }
 
 func hasZlibHeader(body []byte) bool {
 	return len(body) >= 2 && body[0]&0x0F == 8 && body[0]>>4 <= 7 &&

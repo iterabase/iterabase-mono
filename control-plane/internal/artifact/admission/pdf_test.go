@@ -109,6 +109,47 @@ func TestEvaluatePDFDecodesEveryFilterBeforeClearing(t *testing.T) {
 	}
 }
 
+// A stream's dictionary may be separated from the stream keyword by
+// whitespace and comments, which every PDF reader skips. Such streams are
+// still decoded; a stream whose dictionary cannot be located at all is
+// rejected rather than skipped (review: comment- and far-separated variants).
+func TestEvaluatePDFNeverSkipsAStreamWithoutItsDictionary(t *testing.T) {
+	hex := hexEncoded(pdfActionObjects)
+	objStm := func(between string) string {
+		return fmt.Sprintf("<< /Type /ObjStm /N 1 /First 4 /Filter /ASCIIHexDecode /Length %d >>%sstream\n%s\nendstream", len(hex), between, hex)
+	}
+	farComment := "\n%" + strings.Repeat("x", 70<<10) + "\n"
+	hugeDict := fmt.Sprintf("<< /Type /ObjStm /N 1 /First 4 /Filter /ASCIIHexDecode /Pad (%s) /Length %d >>\nstream\n%s\nendstream",
+		strings.Repeat("x", 70<<10), len(hex), hex)
+	for _, tc := range []struct {
+		name   string
+		stream string
+		reason string
+	}{
+		{name: "comment between dictionary and stream (review case)", stream: objStm(" % note\n"), reason: ReasonActiveContent},
+		{name: "comment on its own line", stream: objStm("\n% note\n"), reason: ReasonActiveContent},
+		{name: "several comments", stream: objStm(" % one\n  % two % three\n"), reason: ReasonActiveContent},
+		{name: "comment far from the dictionary", stream: objStm(farComment), reason: ReasonActiveContent},
+		{name: "whitespace far from the dictionary", stream: objStm(strings.Repeat(" ", 70<<10) + "\n"), reason: ReasonActiveContent},
+		{name: "percent inside a string on the dictionary line", stream: strings.Replace(objStm(" % c\n"), "/N 1", "/T (50%) /N 1", 1), reason: ReasonActiveContent},
+		{name: "dictionary beyond the look-behind", stream: hugeDict, reason: ReasonMalformed},
+		{name: "stream keyword with no dictionary", stream: "[ ]\nstream\n" + string(hex) + "\nendstream", reason: ReasonMalformed},
+		{name: "benign stream after a comment", stream: fmt.Sprintf("<< /Filter /ASCIIHexDecode /Length 9 >> %% ok\nstream\n%s\nendstream", hexEncoded("0 0 m")), reason: ""},
+		{name: "word ending in stream is not the keyword", stream: "(upstream\n)", reason: ""},
+		{name: "a long line of percent signs stays linear", stream: "<< /Length 0 >>" + strings.Repeat("% ", 4<<20) + "\nstream\n\nendstream", reason: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := Evaluate(named(admissiontest.PDFWith(tc.stream), "a.pdf"))
+			if tc.reason == "" {
+				assert.True(t, result.Accepted, result.Reason)
+				return
+			}
+			assert.False(t, result.Accepted)
+			assert.Equal(t, tc.reason, result.Reason)
+		})
+	}
+}
+
 // Section 6: "Header/xref parse succeeds". Documents that only carry the
 // lexical markers are not PDFs a reader can open.
 func TestEvaluatePDFRequiresDocumentStructure(t *testing.T) {
