@@ -9,7 +9,8 @@ variable "name" {
 }
 
 variable "region" {
-  type = string
+  description = "Hosted account region (contract region, DES-HOR-603-04)."
+  type        = string
 }
 
 variable "env_tag_key" {
@@ -18,7 +19,8 @@ variable "env_tag_key" {
 }
 
 variable "vpc_id" {
-  type = string
+  description = "Contract vpc-id: the shared hosted VPC."
+  type        = string
 }
 
 variable "subnet_id" {
@@ -27,15 +29,18 @@ variable "subnet_id" {
 }
 
 variable "instance_type" {
-  type = string
+  description = "EC2 instance type; must be in the contract allowed-instance-types."
+  type        = string
 }
 
 variable "root_volume_gib" {
-  type = number
+  description = "Size of the encrypted gp3 root volume, in GiB."
+  type        = number
 }
 
 variable "data_volume_gib" {
-  type = number
+  description = "Size of the separate gp3 data volume (the iterabase-data blank disk), in GiB."
+  type        = number
 }
 
 variable "node_role_path" {
@@ -44,7 +49,8 @@ variable "node_role_path" {
 }
 
 variable "node_permissions_boundary_arn" {
-  type = string
+  description = "Contract node-permissions-boundary-arn (DES-HOR-603-08)."
+  type        = string
 }
 
 variable "lb_controller_policy_arn" {
@@ -53,7 +59,8 @@ variable "lb_controller_policy_arn" {
 }
 
 variable "backup_bucket" {
-  type = string
+  description = "Contract backup-bucket."
+  type        = string
 }
 
 variable "backup_prefix" {
@@ -62,15 +69,18 @@ variable "backup_prefix" {
 }
 
 variable "backup_kms_key_arn" {
-  type = string
+  description = "Contract backup-kms-key-arn."
+  type        = string
 }
 
 variable "session_log_bucket" {
-  type = string
+  description = "Contract session-log-bucket for interactive Session Manager logs."
+  type        = string
 }
 
 variable "session_log_group" {
-  type = string
+  description = "Contract session-log-group for interactive Session Manager logs."
+  type        = string
 }
 
 variable "mail_identity_arn" {

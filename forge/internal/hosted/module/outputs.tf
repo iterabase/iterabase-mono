@@ -1,13 +1,16 @@
 output "instance_id" {
-  value = aws_instance.node.id
+  description = "EC2 instance ID; Forge reaches it with SSH over SSM."
+  value       = aws_instance.node.id
 }
 
 output "availability_zone" {
-  value = aws_instance.node.availability_zone
+  description = "Availability zone of the instance and its data volume."
+  value       = aws_instance.node.availability_zone
 }
 
 output "data_volume_id" {
-  value = aws_ebs_volume.data.id
+  description = "Data volume ID; Forge derives its stable NVMe by-id path."
+  value       = aws_ebs_volume.data.id
 }
 
 output "host_public_key" {
@@ -22,11 +25,13 @@ output "client_private_key" {
 }
 
 output "node_role_name" {
-  value = aws_iam_role.node.name
+  description = "Name of the environment node role."
+  value       = aws_iam_role.node.name
 }
 
 output "security_group_id" {
-  value = aws_security_group.node.id
+  description = "The Terraform-managed node security group (no inbound rules)."
+  value       = aws_security_group.node.id
 }
 
 output "smtp_username" {
