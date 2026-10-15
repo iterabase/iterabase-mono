@@ -99,6 +99,8 @@ func TestEMLInlineCIDImageInMixedIsExcludedButOtherImagesKept(t *testing.T) {
 	assert.Equal(t, "photo.png", got.Children[1].Filename)
 }
 
+// The plain alternative is the body; the original HTML is still kept as
+// quarantined source evidence (HOR-461 design decision).
 func TestEMLPrefersPlainAlternative(t *testing.T) {
 	data := multipartMessage("alternative",
 		mimePart("Content-Type: text/plain", "plain text"),
@@ -108,7 +110,16 @@ func TestEMLPrefersPlainAlternative(t *testing.T) {
 	require.True(t, got.Accepted, got.Reason)
 	require.Len(t, got.Children, 1)
 	assert.Equal(t, "plain text", string(got.Children[0].Data))
-	assert.Nil(t, got.Children[0].SourceHTML)
+	assert.Equal(t, []byte("<p>html text</p>"), got.Children[0].SourceHTML)
+}
+
+func TestMSGPlainBodyKeepsHTMLSource(t *testing.T) {
+	html := []byte("<p>html text</p>")
+	got := Evaluate(Input{Data: admissiontest.BuildMSG("Quarterly report", "plain text", html), Filename: "mail.msg", ContainerDepth: 1})
+	require.True(t, got.Accepted, got.Reason)
+	require.Len(t, got.Children, 1)
+	assert.Equal(t, "plain text", string(got.Children[0].Data))
+	assert.Equal(t, html, got.Children[0].SourceHTML)
 }
 
 func TestEMLCharsetsAndEncodedWords(t *testing.T) {
@@ -193,7 +204,7 @@ func TestMSGHTMLOnlyBody(t *testing.T) {
 	assert.Equal(t, html, got.Children[0].SourceHTML)
 }
 
-func TestMSGEmbeddedMessageBecomesTextEML(t *testing.T) {
+func TestMSGEmbeddedMessageBecomesEML(t *testing.T) {
 	embedded := admissiontest.MSGEmbeddedMessage("Fwd: résumé", "inner body")
 	data := admissiontest.BuildMSG("Quarterly report", "outer", nil, admissiontest.MSGAttachment{Filename: "Original.msg", Method: attachEmbeddedMsg, Embedded: embedded})
 	got := Evaluate(Input{Data: data, Filename: "mail.msg", ContainerDepth: 1})
@@ -203,9 +214,67 @@ func TestMSGEmbeddedMessageBecomesTextEML(t *testing.T) {
 	assert.Equal(t, "Original.eml", child.Filename)
 	assert.Equal(t, MIMEEML, child.ClaimedMIME)
 	assert.Contains(t, string(child.Data), "Subject: =?utf-8?q?Fwd:_r=C3=A9sum=C3=A9?=\r\n")
-	assert.True(t, strings.HasSuffix(string(child.Data), "\r\n\r\ninner body"))
 	childResult := Evaluate(Input{Data: child.Data, Filename: child.Filename, ClaimedMIME: child.ClaimedMIME, ContainerDepth: 2})
 	assert.True(t, childResult.Accepted, childResult.Reason)
+	expanded := evaluateEMLAt(child.Data, 1)
+	require.True(t, expanded.Accepted, expanded.Reason)
+	require.Len(t, expanded.Children, 1)
+	assert.Equal(t, "inner body", string(expanded.Children[0].Data))
+}
+
+// Ticket acceptance with native Outlook messages: a received (depth 0) .msg
+// holding an embedded message with a PDF yields the body and the embedded
+// message; that message, admitted at depth 1, yields its own body and PDF
+// (DES-HOR-461-03). Beyond the depth limit the embedded child is accepted
+// unexpanded but still carries its PDF, its HTML, and its nested message.
+func TestMSGEmbeddedMessageKeepsItsAttachments(t *testing.T) {
+	html := []byte("<p>inner <b>html</b></p>")
+	nested := admissiontest.MSGEmbeddedMessageWith("Older thread", "older body", nil)
+	embedded := admissiontest.MSGEmbeddedMessageWith("Fwd: report", "inner body", html,
+		admissiontest.MSGAttachment{Filename: "inner.pdf", MIMETag: MIMEPDF, Data: admissiontest.PDF()},
+		admissiontest.MSGAttachment{Filename: "thread.msg", Method: attachEmbeddedMsg, Embedded: nested},
+		admissiontest.MSGAttachment{Filename: "link", Method: attachByReference})
+	data := admissiontest.BuildMSG("Quarterly report", "outer", nil,
+		admissiontest.MSGAttachment{Filename: "Fwd report.msg", Method: attachEmbeddedMsg, Embedded: embedded})
+
+	received := Evaluate(Input{Data: data, Filename: "mail.msg", ContainerDepth: 0})
+	require.True(t, received.Accepted, received.Reason)
+	require.Len(t, received.Children, 2)
+	assert.Equal(t, "outer", string(received.Children[0].Data))
+	child := received.Children[1]
+	assert.Equal(t, "Fwd report.eml", child.Filename)
+	assert.Equal(t, MIMEEML, child.ClaimedMIME)
+
+	expanded := Evaluate(Input{Data: child.Data, Filename: child.Filename, ClaimedMIME: child.ClaimedMIME, ContainerDepth: 1})
+	require.True(t, expanded.Accepted, expanded.Reason)
+	require.Len(t, expanded.Children, 3)
+	assert.Equal(t, "inner body", string(expanded.Children[0].Data))
+	assert.Equal(t, html, expanded.Children[0].SourceHTML)
+	assert.Equal(t, "inner.pdf", expanded.Children[1].Filename)
+	assert.Equal(t, admissiontest.PDF(), expanded.Children[1].Data)
+	pdf := Evaluate(Input{Data: expanded.Children[1].Data, Filename: "inner.pdf", ClaimedMIME: MIMEPDF, ContainerDepth: 2})
+	assert.True(t, pdf.Accepted, pdf.Reason)
+	assert.Equal(t, "thread.eml", expanded.Children[2].Filename)
+	assert.Equal(t, MIMEEML, expanded.Children[2].ClaimedMIME)
+	thread := evaluateEMLAt(expanded.Children[2].Data, 1)
+	require.True(t, thread.Accepted, thread.Reason)
+	require.Len(t, thread.Children, 1)
+	assert.Equal(t, "older body", string(thread.Children[0].Data))
+
+	unexpanded := Evaluate(Input{Data: child.Data, Filename: child.Filename, ClaimedMIME: child.ClaimedMIME, ContainerDepth: 2})
+	assert.True(t, unexpanded.Accepted, unexpanded.Reason)
+	assert.Empty(t, unexpanded.Children)
+	assert.Contains(t, string(child.Data), "filename=inner.pdf")
+}
+
+func TestMSGEmbeddedMessageRejectsNestedOLE(t *testing.T) {
+	embedded := admissiontest.MSGEmbeddedMessageWith("Fwd", "inner", nil,
+		admissiontest.MSGAttachment{Filename: "obj", Method: attachOLE, Data: []byte("ole")})
+	data := admissiontest.BuildMSG("Quarterly report", "outer", nil,
+		admissiontest.MSGAttachment{Filename: "Fwd.msg", Method: attachEmbeddedMsg, Embedded: embedded})
+	got := Evaluate(Input{Data: data, Filename: "mail.msg", ContainerDepth: 0})
+	assert.False(t, got.Accepted)
+	assert.Equal(t, ReasonEmbeddedObject, got.Reason)
 }
 
 func TestMSGRejections(t *testing.T) {

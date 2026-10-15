@@ -51,7 +51,8 @@ func evaluateEML(in Input) Result {
 }
 
 // addEMLChildren selects the body (text/plain preferred, else sanitised
-// HTML) and adds every real attachment. Inline images referenced from the
+// HTML), keeps the original HTML as source evidence, and adds every real
+// attachment. Inline images referenced from the
 // HTML by Content-ID stay inside the HTML source evidence, not as children.
 func addEMLChildren(builder *containerBuilder, leaves []mailLeaf) string {
 	var plain, rich *mailLeaf
@@ -76,7 +77,13 @@ func addEMLChildren(builder *containerBuilder, leaves []mailLeaf) string {
 		if reason != "" {
 			return reason
 		}
-		builder.addBody(text, nil)
+		// The original HTML stays quarantined source evidence even when the
+		// plain alternative is the body.
+		var source []byte
+		if rich != nil {
+			source = rich.body
+		}
+		builder.addBody(text, source)
 	case rich != nil:
 		source, reason := decodeCharset(rich.charset, rich.body)
 		if reason != "" {

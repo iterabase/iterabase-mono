@@ -21,6 +21,12 @@ func FuzzEvaluate(f *testing.F) {
 	}{
 		{admissiontest.PDF(), "a.pdf"},
 		{admissiontest.PDFWith(flateStream(f, "<< /JS (x) >>")), "a.pdf"},
+		{admissiontest.EncodedActivePDF(), "a.pdf"},
+		{admissiontest.PDFWith(pdfObjectStream("[/A85 /Fl]", "/DecodeParms [null << /Predictor 12 /Columns 4 >>]", ascii85Encoded(string(zlibBytes(f, pngUpPredicted("<< /Type /Font >>", 4)))))), "a.pdf"},
+		{admissiontest.PDFWith(pdfObjectStream("/LZW", "", []byte("\x80\x0b\x60\x50\x22\x0c\x0c\x85\x01"))), "a.pdf"},
+		{admissiontest.PDFWith(pdfObjectStream("/RL", "", runLengthEncoded("<< /Type /Font >>"))), "a.pdf"},
+		{admissiontest.BuildMSG("Outer", "body", nil, admissiontest.MSGAttachment{Filename: "fwd.msg", Method: attachEmbeddedMsg,
+			Embedded: admissiontest.MSGEmbeddedMessageWith("Inner", "inner", []byte("<p>x</p>"), admissiontest.MSGAttachment{Filename: "a.pdf", Data: admissiontest.PDF()})}), "a.msg"},
 		{admissiontest.DOCX(), "a.docx"},
 		{admissiontest.XLSX(), "a.xlsx"},
 		{[]byte("a,b\n1,2\n"), "a.csv"},

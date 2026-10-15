@@ -85,6 +85,15 @@ func EncryptedPDF() []byte {
 	return PDFWith("<< /Filter /Standard /V 2 /R 3 /Length 128 >>", "<< /Encrypt 6 0 R >>")
 }
 
+// EncodedActivePDF returns a PDF whose JavaScript action dictionary lives
+// only inside an ASCIIHexDecode object stream, so no raw byte spells it.
+func EncodedActivePDF() []byte {
+	objects := "6 0 << /S /JavaScript /JS (app.alert(1)) >>"
+	encoded := fmt.Sprintf("%X>", objects)
+	return PDFWith(fmt.Sprintf("<< /Type /ObjStm /N 1 /First 4 /Filter /ASCIIHexDecode /Length %d >>\nstream\n%s\nendstream",
+		len(encoded), encoded))
+}
+
 // ZIP and OOXML fixtures.
 
 // ZipEntry is one stored file of a ZIP fixture.

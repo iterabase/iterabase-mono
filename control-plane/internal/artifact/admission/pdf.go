@@ -5,6 +5,7 @@ import (
 	"compress/flate"
 	"compress/zlib"
 	"io"
+	"regexp"
 )
 
 // pdfNameReasons maps PDF names (after #xx escape decoding) to the reason
@@ -30,15 +31,28 @@ const (
 	pdfDictLookBehind = 64 << 10
 )
 
+// Structural markers recorded alongside reasons in the scan's found set.
+const (
+	pdfSawPages      = "structure:pages"
+	pdfSawXRefStream = "structure:xref-stream"
+)
+
+var (
+	pdfIndirectObject = regexp.MustCompile(`(?:^|[^0-9])[0-9]{1,10}[ \t\r\n\f\x00]+[0-9]{1,5}[ \t\r\n\f\x00]+obj[ \t\r\n\f\x00<\[(/]`)
+	pdfRootReference  = regexp.MustCompile(`/Root[ \t\r\n\f\x00]*[0-9]{1,10}[ \t\r\n\f\x00]+[0-9]{1,5}[ \t\r\n\f\x00]+R`)
+	pdfStartXRef      = regexp.MustCompile(`startxref[ \t\r\n\f\x00]+[0-9]{1,20}[ \t\r\n\f\x00]`)
+	pdfXRefTable      = regexp.MustCompile(`(?:^|[\r\n])xref[ \t]*\r?\n[ \t]*[0-9]+[ \t]+[0-9]+`)
+)
+
 func validatePDF(data []byte) string {
 	if !bytes.Contains(head(data, 1024), []byte("%PDF-")) ||
 		!bytes.Contains(data[max(0, len(data)-1024):], []byte("%%EOF")) ||
-		!bytes.Contains(data, []byte("startxref")) {
+		!pdfStartXRef.Match(data) {
 		return ReasonMalformed
 	}
 	found := make(map[string]bool)
 	scanPDFNames(data, found)
-	// An encrypted document's streams are ciphertext; stop before inflating.
+	// An encrypted document's streams are ciphertext; stop before decoding.
 	if found[ReasonEncrypted] {
 		return ReasonEncrypted
 	}
@@ -50,6 +64,13 @@ func validatePDF(data []byte) string {
 			return reason
 		}
 	}
+	// Header and xref must parse (section 6): a cross-reference table or
+	// stream, at least one indirect object, a trailer /Root reference, and a
+	// page tree. Every check runs on bytes the scan has already examined.
+	hasXRef := pdfXRefTable.Match(data) || found[pdfSawXRefStream]
+	if !hasXRef || !pdfIndirectObject.Match(data) || !pdfRootReference.Match(data) || !found[pdfSawPages] {
+		return ReasonMalformed
+	}
 	return ""
 }
 
@@ -57,6 +78,9 @@ func scanPDFNames(data []byte, found map[string]bool) {
 	forEachPDFName(data, func(name []byte) {
 		if reason, ok := pdfNameReasons[string(name)]; ok {
 			found[reason] = true
+		}
+		if string(name) == "Pages" {
+			found[pdfSawPages] = true
 		}
 	})
 }
@@ -91,20 +115,22 @@ func forEachPDFName(data []byte, fn func([]byte)) {
 	}
 }
 
-// scanPDFStreams inflates FlateDecode streams and scans the inflated bytes
+// scanPDFStreams decodes every filtered stream and scans the decoded bytes
 // for forbidden names. Hostile-input hardening:
-//   - Inflation starts at the stream body and runs to the deflate stream's own
-//     end, not to a possibly forged "endstream" or /Length.
+//   - Decoding starts at the stream body and runs to each filter's own
+//     end-of-data, not to a possibly forged "endstream" or /Length.
 //   - A body with a valid zlib header is inflated even when its dictionary
 //     cannot be found, so a malformed dictionary cannot hide a stream.
+//   - A stream whose filter chain cannot be determined or decoded is rejected
+//     rather than skipped, unless its chain ends in a raster codec and it is
+//     not an object stream (raster samples cannot hold PDF objects).
 //   - Inflate errors are tolerated and the partial output is scanned, because
 //     a lenient reader may still render a truncated stream.
-//   - Both compressed input consumed and output produced are charged to one
-//     budget, so overlapping or empty-block streams cannot go quadratic.
+//   - Consumed and produced bytes are charged to one budget, so overlapping
+//     or empty-block streams cannot go quadratic.
 func scanPDFStreams(data []byte, found map[string]bool) string {
 	b := newBudget()
 	inflater := newPDFInflater()
-	var out bytes.Buffer
 	// floor is where the previous stream keyword ended: look-behinds never
 	// re-scan earlier bytes, so dictionary matching stays linear.
 	floor := 0
@@ -119,27 +145,60 @@ func scanPDFStreams(data []byte, found map[string]bool) string {
 		if !ok {
 			continue
 		}
-		dict, dictFound := streamDict(data, keyword, floor)
+		rawDict, dictFound := streamDict(data, keyword, floor)
 		floor = start
 		if end := bytes.Index(data[start:], []byte("endstream")); end >= 0 {
 			pos = start + end + len("endstream")
 		} else {
 			pos = len(data)
 		}
-		declaredFlate := dictFound && hasFlateFilter(dict)
-		if !declaredFlate && !hasZlibHeader(data[start:]) {
+		chain, objectStream, reason := streamFilterChain(data[start:], rawDict, dictFound, found)
+		if reason != "" {
+			return reason
+		}
+		if len(chain) == 0 {
 			continue
 		}
-		limit := min(int64(MaxPDFStreamBytes), b.remaining)
-		out.Reset()
-		body := &chargedReader{data: data[start:], b: b}
-		n := inflater.inflate(&out, body, declaredFlate, limit+1)
-		if body.exhausted || n > MaxPDFStreamBytes || !b.take(n) {
+		decoded, status := decodePDFStream(data[start:], chain, objectStream, b, inflater)
+		switch status {
+		case pdfOverBudget:
 			return ReasonResourceLimit
+		case pdfUndecodable:
+			return ReasonMalformed
+		case pdfRasterOnly:
+			continue
 		}
-		scanPDFNames(out.Bytes(), found)
+		scanPDFNames(decoded, found)
 	}
 	return ""
+}
+
+// streamFilterChain returns the chain to decode a stream body with, and
+// whether it is an object stream. An empty chain means the body needs no
+// decoding: unfiltered bytes were covered by the whole-file name scan. A body
+// with a zlib header is inflated even without a usable declaration, in case a
+// reader sniffs it.
+func streamFilterChain(body, rawDict []byte, dictFound bool, found map[string]bool) ([]pdfFilter, bool, string) {
+	var chain []pdfFilter
+	objectStream := false
+	if dictFound {
+		dict, parsed := parsePDFDict(rawDict)
+		if !parsed {
+			return nil, false, ReasonMalformed
+		}
+		if isPDFNameValue(dict["Type"], "XRef") {
+			found[pdfSawXRefStream] = true
+		}
+		objectStream = isPDFNameValue(dict["Type"], "ObjStm")
+		var ok bool
+		if chain, ok = pdfFilterChain(dict); !ok {
+			return nil, false, ReasonMalformed
+		}
+	}
+	if len(chain) == 0 && hasZlibHeader(body) {
+		chain = []pdfFilter{{name: "FlateDecode"}}
+	}
+	return chain, objectStream, ""
 }
 
 func streamBodyStart(data []byte, pos int) (int, bool) {
@@ -178,16 +237,6 @@ func streamDict(data []byte, keyword, floor int) ([]byte, bool) {
 		}
 	}
 	return nil, false
-}
-
-func hasFlateFilter(dict []byte) bool {
-	flateFound := false
-	forEachPDFName(dict, func(name []byte) {
-		if string(name) == "FlateDecode" || string(name) == "Fl" {
-			flateFound = true
-		}
-	})
-	return flateFound
 }
 
 func hasZlibHeader(body []byte) bool {

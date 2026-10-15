@@ -169,7 +169,12 @@ type MSGAttachment struct {
 // a unicode PR_BODY when textBody is non-empty, a binary PR_HTML when
 // htmlBody is non-nil, and the given attachments.
 func BuildMSG(subject, textBody string, htmlBody []byte, attachments ...MSGAttachment) []byte {
-	nodes := msgMessage(msgTopHeaderBytes, subject, textBody, htmlBody)
+	return CFB(append(msgMessage(msgTopHeaderBytes, subject, textBody, htmlBody), msgAttachmentNodes(attachments)...)...)
+}
+
+// msgAttachmentNodes returns one attachment storage per attachment.
+func msgAttachmentNodes(attachments []MSGAttachment) []*CFBNode {
+	var nodes []*CFBNode
 	for i, a := range attachments {
 		method := a.Method
 		if method == 0 {
@@ -190,7 +195,7 @@ func BuildMSG(subject, textBody string, htmlBody []byte, attachments ...MSGAttac
 		}
 		nodes = append(nodes, CFBStorage(fmt.Sprintf("%s%08X", msgAttachPrefix, i), children...))
 	}
-	return CFB(nodes...)
+	return nodes
 }
 
 // MSG returns an Outlook .msg with a unicode PR_BODY and each attachment
@@ -218,6 +223,12 @@ func MSGWithOLEAttachment() []byte {
 // for MSGAttachment.Embedded.
 func MSGEmbeddedMessage(subject, textBody string) []*CFBNode {
 	return msgMessage(msgEmbedHeaderBytes, subject, textBody, nil)
+}
+
+// MSGEmbeddedMessageWith returns an embedded message with an optional
+// binary PR_HTML and its own attachments, for MSGAttachment.Embedded.
+func MSGEmbeddedMessageWith(subject, textBody string, htmlBody []byte, attachments ...MSGAttachment) []*CFBNode {
+	return append(msgMessage(msgEmbedHeaderBytes, subject, textBody, htmlBody), msgAttachmentNodes(attachments)...)
 }
 
 func msgMessage(headerBytes int, subject, body string, html []byte) []*CFBNode {

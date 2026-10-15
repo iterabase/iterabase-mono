@@ -67,6 +67,7 @@ func Corpus() []Case {
 		{Name: "generic zip as docx", Filename: "letter.docx", ClaimedMIME: mimeDOCX, Data: ZIP(), Reason: reasonUnsupportedType},
 		{Name: "macro docx", Filename: "letter.docx", ClaimedMIME: mimeDOCX, Data: MacroDOCX(), Reason: reasonMacroContent},
 		{Name: "active pdf", Filename: "report.pdf", ClaimedMIME: mimePDF, Data: ActivePDF(), Reason: reasonActiveContent},
+		{Name: "hex-encoded active pdf", Filename: "report.pdf", ClaimedMIME: mimePDF, Data: EncodedActivePDF(), Reason: reasonActiveContent},
 		{Name: "encrypted pdf", Filename: "report.pdf", ClaimedMIME: mimePDF, Data: EncryptedPDF(), Reason: reasonEncrypted},
 		{Name: "encrypted ooxml as docx", Filename: "letter.docx", ClaimedMIME: mimeDOCX, Data: EncryptedOOXML(), Reason: reasonEncrypted},
 		{Name: "html as txt", Filename: "notes.txt", ClaimedMIME: mimeTXT, Data: HTML(), Reason: reasonUnsupportedType},
