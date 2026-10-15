@@ -151,21 +151,30 @@ policy.
    archive, builds the source charts' dependencies once, and exports the
    [scenario environment](#scenario-environment). The job then runs the owner's
    Make target.
-5. **fixture images** calls `bake.yml` for the needed capacities before any
-   real-machine scenario. It is a no-op when this tree's generation is already
-   baked.
-6. **real-machine** runs one F3 scenario per job on its own fresh EC2 host:
+5. **fixture images (cpu)** and **fixture images (gpu)** (`bake-cpu`,
+   `bake-gpu`) each call `bake.yml` for one capacity, only when a selected
+   real-machine scenario needs that capacity. The CPU bake also runs when the
+   preview runs, because the preview host boots from the CPU fixture AMI. Each
+   is a no-op when this tree's generation of that AMI is already baked.
+6. **real-machine** runs one F3 scenario per job on its own fresh EC2 host, in
+   `real-machine-cpu` and `real-machine-gpu`. Each waits only on its own
+   capacity's bake, so a CPU scenario never waits on the GPU bake (HOR-676). The
+   two jobs are identical apart from their capacity, which
+   `test_workflow_permissions.py` enforces.
    `aws_ci.py launch-fixture` boots the baked AMI (and, for GPU, restores the
    model-cache snapshot), pins the host key, and exports the host environment;
    `e2e_inputs.py prepare` adds the artifacts; `make -C forge <target>` runs the
    scenario; `aws_ci.py cleanup-run` removes the host on every outcome. The host
    carries an `iterabase-ci-deadline` at the scenario timeout plus 10 minutes, so
    the reaper removes it if cleanup never runs.
-7. **preview** deploys the commit's preview (see [Previews](#previews-c6-c9-c12)).
-   It is not part of `E2E / required`.
+7. **preview** deploys the commit's preview (see [Previews](#previews-c6-c9-c12))
+   after the CPU bake, never the GPU bake. `select` decides whether it runs. It
+   is not part of `E2E / required`, and neither is a CPU bake that ran only for
+   it.
 8. **`E2E / required`** requires `select`, and requires `build`, `images`,
-   `kind`, `bake`, and `real-machine` to succeed when they had work and to be
-   skipped when they had none.
+   `kind`, `bake-cpu`, `bake-gpu`, `real-machine-cpu`, and `real-machine-gpu`
+   to succeed when they had real-machine work and to be skipped when they had
+   none.
 
 A push to `master` only builds (and updates `staging`); the merge queue already
 ran the scenarios on that exact commit. Nothing from an earlier run is reused
@@ -223,21 +232,61 @@ in [`dependencies.md`](dependencies.md).
 
 ## Baked fixture images (`bake.yml`, `DES-HOR-590-03`)
 
-Fixture AMIs hold software inputs only: Ubuntu 24.04, host packages, and the
-shared pinned image cache from `remote-content.json`. They never hold cluster
-state. The GPU AMI carries the same shared cache on a larger root volume; the
-GPU-only NVIDIA (`nvcr.io`) and vLLM images are not baked yet and are pulled by
-digest at run time. The model cache is a separate EBS snapshot of the model
-pinned in `forge/test/e2e/model-cache.json`.
+Fixture AMIs hold software inputs only: Ubuntu 24.04, host packages, and a
+pinned image cache from `remote-content.json`. They never hold cluster state.
+`fixture_image_cache.py` decides what each AMI carries and hashes exactly that
+set into its generation:
 
-`aws_ci.py bake-ami` and `bake-model-cache` launch a builder from the Canonical
-AMI with a per-run pinned host key, run the bake over SSH, create the image or
-snapshot with CI tags, copy it to the three CI regions, and terminate the
-builder. Each product is tagged with the generation it carries (a hash of the
-pinned content), so a bake is a no-op when that generation exists in every
-region; `force` rebakes. Because `e2e.yml` calls the bake before real-machine
-scenarios, a pull request that changes pinned inputs bakes its own generation.
-A missing generation fails the launch; there is no fallback to an older one.
+- The CPU AMI carries every pinned image except the GPU-only ones (`nvcr.io`,
+  `nvidia/`, vLLM).
+- The GPU AMI carries the GPU-only images and every shared image except
+  `CPU_FIXTURE_ONLY_REPOSITORIES`. The GPU scenario runs the whole platform
+  (Forge substrate, platform chart, overlay, Flux) and the GPU operator offline
+  from its cache, so it needs the shared images too. The listed repositories are
+  the ones no GPU scenario loads: the CPU LVM, workspace and inotify pods'
+  `debian`, the hosted-only `aws-load-balancer-controller`, the production-only
+  `external-dns`, and testcontainers' `ryuk`. A change to one of these rebakes
+  only the CPU AMI (HOR-676). A new shared image is cached on both AMIs until it
+  is listed there, which is the safe default.
+
+The model cache is a separate EBS snapshot of the model pinned in
+`forge/test/e2e/model-cache.json`.
+
+`aws_ci.py bake-ami` and `bake-model-cache` launch a builder with a per-run
+pinned host key, run the bake over SSH, create the image or snapshot with CI
+tags, copy it to the three CI regions, and terminate the builder. Each product
+is tagged with the generation it carries (a hash of the pinned content), so a
+bake is a no-op when that generation exists in every region; `force` rebakes.
+Because `e2e.yml` calls the bake before real-machine scenarios, a pull request
+that changes pinned inputs bakes its own generation. A missing generation fails
+the launch; there is no fallback to an older one.
+
+Fixture AMI bakes are incremental (HOR-676):
+
+- **Source.** The builder boots from the newest available `fixture-<capacity>`
+  AMI in the primary region that carries another generation and whose root fits
+  the builder's. When there is none, or with `cold` or `force`, it boots from a
+  transient copy of the Canonical image (a cold bake). Which earlier generation
+  the source carries only changes how much is reused, never the result.
+- **Seed.** The seed lists the generations already on the builder. An archive is
+  reused only when the earlier generation was written by the same seed format
+  for the same capacity and records the same reference, digest and archive name
+  with its sha256, size and config digest, and the archive still matches that
+  sha256 and size. Reused archives are hard-linked into the staged generation,
+  so they write no new blocks. Changed and new images are pulled as before, and
+  every archive is verified once. The staged generation then replaces the old
+  one through the same atomic swap. Earlier generations, including archives no
+  longer pinned, are pruned after the swap. Host packages are installed
+  idempotently, and the builder is sealed the same way from either source.
+- **Disk.** The builder root is gp3 at 500 MiB/s and 8,000 IOPS. An incremental
+  builder's root is also preloaded at 300 MiB/s (`DES-HOR-590-05`), so reading
+  the earlier generation back is not throttled to S3 lazy loading.
+- **Snapshot wait.** The AMI's snapshot uploads only the blocks the bake changed.
+  `bake.yml` waits for the AMI for at most two hours from its creation after a
+  cold bake, one hour after an incremental one. A first full GPU snapshot of
+  about 48 GB took more than 50 minutes. The CI role's sessions last an hour,
+  so the job waits in up to three sessions of at most 45 minutes, re-assuming
+  the role before each.
 
 ## Reaper (`reaper.yml`)
 
@@ -245,7 +294,8 @@ The `reap` job terminates every instance tagged `iterabase-ci=true` whose
 `iterabase-ci-deadline` has passed, or which is older than 180 minutes when it
 has no deadline, in all three regions. Untagged instances are reported and never
 touched. The `images` job keeps the two newest baked generations per fixture role
-and of the model cache and deletes older AMIs and snapshots. Both support
+and of the model cache and deletes older AMIs and snapshots. The newest kept AMI
+is the next incremental bake's source. Both support
 `dry_run`. See [`runbooks/aws-ci.md`](runbooks/aws-ci.md#operations).
 
 ## Previews (C6, C9, C12)

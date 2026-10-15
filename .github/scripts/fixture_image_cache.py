@@ -10,7 +10,9 @@ derive their expectations from it, so the host cache cannot drift from
 `.github/inputs/remote-content.json`. A seed dispatch also verifies a matching
 generation archive by archive and repairs anything missing, truncated,
 corrupt, or recorded without archive digests through the same staging and
-atomic-swap path.
+atomic-swap path, and an incremental bake (HOR-676) reuses every intact
+archive an earlier generation on the same host already holds, so only changed
+images are pulled.
 """
 
 from __future__ import annotations
@@ -60,6 +62,31 @@ def is_gpu_only(reference: str) -> bool:
     return "vllm" in path
 
 
+# Pinned images no GPU scenario loads, by registry/repository path (HOR-676).
+# The GPU fixture runs the whole platform (Forge substrate, platform chart,
+# overlay, Flux) plus the GPU operator offline from its cache, so it needs every
+# shared image except these. Leaving them out keeps a change to them from
+# rebaking the GPU AMI. An image missing here is cached on both fixtures, which
+# is safe; list one here only with evidence that the GPU fixture never renders it.
+CPU_FIXTURE_ONLY_REPOSITORIES = frozenset(
+    {
+        # The CPU LVM, workspace and inotify stages' pods (cpuFixtureState only).
+        "debian",
+        # The hosted AWS preset only; disabled in every fixture's values.
+        "public.ecr.aws/eks/aws-load-balancer-controller",
+        # Production DNS only; disabled with no E2E mode (platform values).
+        "registry.k8s.io/external-dns/external-dns",
+        # testcontainers on GitHub-hosted runners (ci.yml); no fixture runs it.
+        "testcontainers/ryuk",
+    }
+)
+
+
+def is_cpu_fixture_only(reference: str) -> bool:
+    """Return true when the pinned image is never loaded on the GPU fixture."""
+    return repository(reference) in CPU_FIXTURE_ONLY_REPOSITORIES
+
+
 def load_runtime_images(root: Path) -> list[dict[str, str]]:
     """Load and validate the pinned runtime-image authority."""
     manifest_path = root / ".github/inputs/remote-content.json"
@@ -99,16 +126,18 @@ def select_images(
 ) -> list[dict[str, str]]:
     """Return the pinned images a fixture capacity caches in its AMI (C1).
 
-    The GPU AMI carries everything, including the nvcr.io/NVIDIA/vLLM images:
-    its root volume is sized for the cache and its imported copy. The CPU AMI
-    leaves the GPU-only images out.
+    The GPU AMI carries the nvcr.io/NVIDIA/vLLM images and every shared image
+    its scenario loads; its root volume is sized for the cache and its imported
+    copy. It leaves the CPU-fixture-only images out, so the GPU generation
+    hashes only what the GPU fixture needs (HOR-676). The CPU AMI leaves the
+    GPU-only images out.
     """
     if capacity not in CAPACITIES:
         raise FixtureImageCacheError(
             f"unsupported capacity {capacity!r}; expected one of {CAPACITIES}"
         )
     if capacity == "gpu":
-        return list(images)
+        return [image for image in images if not is_cpu_fixture_only(image["reference"])]
     return [image for image in images if not is_gpu_only(image["reference"])]
 
 
@@ -183,7 +212,11 @@ def docker_manifest_config_digest(data: bytes, reference: str) -> str:
 
 def build_manifest(root: Path, capacity: str) -> dict[str, Any]:
     """Build the deterministic cache manifest a fixture capacity must hold."""
-    images = select_images(load_runtime_images(root), capacity)
+    return manifest_for(capacity, select_images(load_runtime_images(root), capacity))
+
+
+def manifest_for(capacity: str, images: list[dict[str, str]]) -> dict[str, Any]:
+    """Build the cache manifest for one capacity's selected images."""
     archives = [archive_name(image["reference"], image["digest"]) for image in images]
     if len(set(archives)) != len(archives):
         raise FixtureImageCacheError("pinned image archive names are not unique")
@@ -316,6 +349,20 @@ def archive_verification_failures(
     output: str,
 ) -> list[str]:
     """Return why each expected archive fails the recorded digest contract."""
+    verdicts = archive_verdicts(
+        images=images, expectations=expectations, remote_dir=remote_dir, output=output
+    )
+    return [failure for failure in verdicts.values() if failure is not None]
+
+
+def archive_verdicts(
+    *,
+    images: list[dict[str, str]],
+    expectations: dict[str, tuple[str, int]],
+    remote_dir: str,
+    output: str,
+) -> dict[str, str | None]:
+    """Return each expected archive's failure reason, or None when it is intact."""
     verified: dict[str, tuple[str, int]] = {}
     verdicts: dict[str, str] = {}
     for line in output.splitlines():
@@ -327,31 +374,33 @@ def archive_verification_failures(
                 verified[parts[3]] = (parts[1], int(parts[2]))
             except ValueError:
                 continue
-    failures: list[str] = []
+    results: dict[str, str | None] = {}
     for image in images:
         archive = image["archive"]
         path = f"{remote_dir}/images/{archive}"
         expectation = expectations.get(archive)
         if expectation is None:
-            failures.append(f"archive {archive} has no recorded sha256/size")
+            results[archive] = f"archive {archive} has no recorded sha256/size"
             continue
         verdict = verdicts.get(path)
         if verdict is not None:
-            failures.append(f"archive is {verdict}: {archive}")
+            results[archive] = f"archive is {verdict}: {archive}"
             continue
         actual = verified.get(path)
         if actual is None:
-            failures.append(f"archive was not verified: {archive}")
+            results[archive] = f"archive was not verified: {archive}"
             continue
         actual_sha256, actual_size = actual
         expected_sha256, expected_size = expectation
         if actual_size != expected_size:
-            failures.append(
+            results[archive] = (
                 f"archive size mismatch for {archive}: {actual_size} != {expected_size}"
             )
         elif actual_sha256 != expected_sha256:
-            failures.append(f"archive sha256 mismatch for {archive}")
-    return failures
+            results[archive] = f"archive sha256 mismatch for {archive}"
+        else:
+            results[archive] = None
+    return results
 
 
 def verify_recorded_generation(
@@ -389,6 +438,119 @@ def verify_recorded_generation(
     )
 
 
+def reusable_entries(recorded: Any, capacity: str) -> dict[str, dict[str, Any]]:
+    """Return a recorded generation's complete entries by archive, or {}.
+
+    Only a generation this seed format wrote for this capacity, with every
+    archive's sha256 and size recorded, can lend archives to another.
+    """
+    if (
+        not isinstance(recorded, dict)
+        or recorded.get("schema_version") != SCHEMA_VERSION
+        or recorded.get("seed_format") != SEED_FORMAT_VERSION
+        or recorded.get("capacity") != capacity
+        or not recorded_archive_expectations(recorded)
+    ):
+        return {}
+    entries: dict[str, dict[str, Any]] = {}
+    for entry in recorded["images"]:
+        reference = entry.get("reference")
+        digest = entry.get("digest")
+        config_digest = entry.get("config_digest")
+        if (
+            isinstance(reference, str)
+            and reference
+            and isinstance(digest, str)
+            and SHA256_RE.match(digest)
+            and isinstance(config_digest, str)
+            and SHA256_RE.match(config_digest)
+        ):
+            entries[entry["archive"]] = entry
+    return entries
+
+
+def reusable_archives(
+    *,
+    images: list[dict[str, str]],
+    capacity: str,
+    remote_root: str,
+    capture: Callable[[str], subprocess.CompletedProcess[str]],
+) -> tuple[dict[str, tuple[str, dict[str, Any]]], list[str]]:
+    """Return the intact archives that earlier generations on the host hold.
+
+    An incremental bake boots its builder from the previous fixture AMI, whose
+    cache holds an earlier generation (HOR-676). An archive is reused only when
+    that generation records the same reference, digest and archive name with
+    its sha256, size and config digest, and the archive on disk still matches
+    the recorded sha256 and size. Returns {archive: (generation directory,
+    recorded entry)} and why each rejected candidate must be pulled again.
+    """
+    listing = capture(
+        f"sudo find {shlex.quote(remote_root)} -mindepth 2 -maxdepth 2 "
+        "-name generation.json -print"
+    )
+    if listing.returncode != 0:
+        return {}, []
+    wanted = {image["archive"]: image for image in images}
+    candidates: dict[str, tuple[str, dict[str, Any]]] = {}
+    for path in sorted(listing.stdout.split()):
+        directory = path.rsplit("/", 1)[0]
+        if not SHA256_HEX_RE.match(directory.rsplit("/", 1)[-1]):
+            continue
+        result = capture(f"sudo cat {shlex.quote(path)}")
+        if result.returncode != 0:
+            continue
+        try:
+            recorded = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            continue
+        for archive, entry in reusable_entries(recorded, capacity).items():
+            image = wanted.get(archive)
+            if (
+                image is not None
+                and archive not in candidates
+                and entry["reference"] == image["reference"]
+                and entry["digest"] == image["digest"]
+            ):
+                candidates[archive] = (directory, entry)
+
+    intact: dict[str, tuple[str, dict[str, Any]]] = {}
+    rejected: list[str] = []
+    for directory in sorted({directory for directory, _ in candidates.values()}):
+        group = [
+            wanted[archive]
+            for archive, (source, _) in sorted(candidates.items())
+            if source == directory
+        ]
+        expectations = {
+            image["archive"]: (
+                candidates[image["archive"]][1]["sha256"],
+                candidates[image["archive"]][1]["size"],
+            )
+            for image in group
+        }
+        result = capture(
+            verification_command(directory, [image["archive"] for image in group])
+        )
+        if not verification_verdict_lines(result.stdout):
+            rejected.append(
+                f"verification of {directory} failed (exit {result.returncode})"
+            )
+            continue
+        verdicts = archive_verdicts(
+            images=group,
+            expectations=expectations,
+            remote_dir=directory,
+            output=result.stdout,
+        )
+        for archive, failure in verdicts.items():
+            if failure is None:
+                intact[archive] = candidates[archive]
+            else:
+                rejected.append(failure)
+    return intact, rejected
+
+
 def seed_fixture_image_cache(
     *,
     manifest: dict[str, Any],
@@ -406,7 +568,11 @@ def seed_fixture_image_cache(
     Pulls every pinned image with the reviewed crane binary directly on the
     fixture, stages the generation under a temporary directory, and swaps it in
     atomically. A matching generation is verified archive by archive and left
-    untouched only when every archive is intact.
+    untouched only when every archive is intact. Otherwise every intact archive
+    an earlier generation on the host already holds for the same reference and
+    digest is hard-linked into the staged generation instead of pulled again,
+    so an incremental bake writes only the changed images; the earlier
+    generations, with the archives no longer pinned, are pruned after the swap.
     """
     capacity = manifest["capacity"]
     generation = manifest["generation"]
@@ -511,6 +677,24 @@ def seed_fixture_image_cache(
                     file=sys.stderr,
                 )
 
+    reusable: dict[str, tuple[str, dict[str, Any]]] = {}
+    if not dry_run:
+        reusable, rejected = reusable_archives(
+            images=manifest["images"],
+            capacity=capacity,
+            remote_root=remote_root,
+            capture=probe,
+        )
+        for reason in rejected:
+            print(
+                f"fixture {address}: not reusing an earlier archive: {reason}; pulling it",
+                file=sys.stderr,
+            )
+        print(
+            f"fixture {address}: reusing {len(reusable)} verified archives from earlier "
+            f"generations; pulling {len(manifest['images']) - len(reusable)}"
+        )
+
     execute(ssh_command(f"sudo mkdir -p {remote_root}"))
     execute(ssh_command(f"df -h {remote_root}"))
     execute(ssh_command(f"sudo rm -rf {staging_dir} && sudo mkdir -p {staging_dir}/images"))
@@ -525,6 +709,16 @@ def seed_fixture_image_cache(
     for image in manifest["images"]:
         reference = f"{image['reference']}@{image['digest']}"
         archive = f"{staging_dir}/images/{image['archive']}"
+        if image["archive"] in reusable:
+            # A hard link on the same filesystem writes no data blocks, so the
+            # AMI snapshot of an incremental bake carries only changed images.
+            source_dir, entry = reusable[image["archive"]]
+            source = f"{source_dir}/images/{image['archive']}"
+            execute(ssh_command(f"sudo ln {shlex.quote(source)} {shlex.quote(archive)}"))
+            image["config_digest"] = entry["config_digest"]
+            image["size"] = entry["size"]
+            image["sha256"] = entry["sha256"]
+            continue
         workdir = f"{staging_dir}/.work"
         execute(ssh_command(f"sudo rm -rf {workdir} && sudo mkdir -p {workdir}"))
         execute(

@@ -17,7 +17,7 @@ def parse_jobs(path: Path) -> tuple[dict[str, str], dict[str, dict]]:
     """Top-level permissions and job permissions, calls, conditions and needs."""
     top: dict[str, str] = {}
     jobs: dict[str, dict] = {}
-    section, job, block = None, None, None
+    section, job, block, output = None, None, None, None
     for raw in path.read_text(encoding="utf-8").splitlines():
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
@@ -34,8 +34,9 @@ def parse_jobs(path: Path) -> tuple[dict[str, str], dict[str, dict]]:
             continue
         if indent == 2 and line.endswith(":"):
             job = line[:-1]
-            jobs[job] = {"permissions": {}, "uses": None, "if": "", "needs": ""}
+            jobs[job] = {"permissions": {}, "uses": None, "if": "", "needs": "", "outputs": {}}
             block = None
+            output = None
         elif job and indent == 4:
             block = line.rstrip(":") if line.endswith(":") else None
             match = re.fullmatch(r"uses:\s*\./\.github/workflows/([\w.-]+\.ya?ml)", line)
@@ -50,6 +51,12 @@ def parse_jobs(path: Path) -> tuple[dict[str, str], dict[str, dict]]:
         elif job and indent == 6 and block == "permissions":
             key, _, value = line.partition(":")
             jobs[job]["permissions"][key.strip()] = value.strip()
+        elif job and indent == 6 and block == "outputs":
+            key, _, value = line.partition(":")
+            output = key.strip()
+            jobs[job]["outputs"][output] = "" if value.strip() in {">", ">-"} else value.strip()
+        elif job and indent > 6 and block == "outputs" and output:
+            jobs[job]["outputs"][output] = (jobs[job]["outputs"][output] + " " + line).strip()
         elif job and indent > 4 and block == "if":
             jobs[job]["if"] += " " + line
     return top, jobs
@@ -144,22 +151,29 @@ class PreviewEligibilityTests(unittest.TestCase):
             "github.actor": actor,
             "github.triggering_actor": actor,
             "needs.select.outputs.build": build,
+            "steps.plan.outputs.build": build,
             "inputs.all": full,
         }
 
-    def test_preview_uses_pr_author_not_rerun_actor(self) -> None:
+    def eligibility(self) -> str:
+        """The preview's eligibility, decided once by `select` (HOR-676)."""
         _, jobs = parse_jobs(WORKFLOWS / "e2e.yml")
+        self.assertEqual(jobs["preview"]["if"], "needs.select.outputs.preview == 'true'")
+        return jobs["select"]["outputs"]["preview"]
+
+    def test_preview_uses_pr_author_not_rerun_actor(self) -> None:
+        eligible = self.eligibility()
         for author in ("nunocgoncalves", "dependabot[bot]"):
             for actor in ("nunocgoncalves", "dependabot[bot]"):
                 for fork in (False, True):
                     with self.subTest(author=author, actor=actor, fork=fork):
                         self.assertEqual(
-                            condition_matches(jobs["preview"]["if"], self.context(author=author, actor=actor, fork=fork)),
+                            condition_matches(eligible, self.context(author=author, actor=actor, fork=fork)),
                             author != "dependabot[bot]" and not fork,
                         )
 
     def test_staging_and_existing_no_preview_cases(self) -> None:
-        _, jobs = parse_jobs(WORKFLOWS / "e2e.yml")
+        eligible = self.eligibility()
         cases = [
             ({"event": "push", "author": "", "actor": "dependabot[bot]"}, True),
             ({"event": "merge_group"}, False),
@@ -171,7 +185,7 @@ class PreviewEligibilityTests(unittest.TestCase):
         ]
         for changes, expected in cases:
             with self.subTest(**changes):
-                self.assertEqual(condition_matches(jobs["preview"]["if"], self.context(**changes)), expected)
+                self.assertEqual(condition_matches(eligible, self.context(**changes)), expected)
 
     def test_teardown_uses_pr_author_not_closing_actor(self) -> None:
         _, jobs = parse_jobs(WORKFLOWS / "preview.yml")
@@ -192,10 +206,78 @@ class PreviewEligibilityTests(unittest.TestCase):
                     continue
                 with self.subTest(workflow=workflow, job=name):
                     self.assertNotRegex(job["if"], r"(?i)dependabot|github\.(?:actor|triggering_actor)|pull_request\.user")
+                    outputs = {key: value for key, value in job["outputs"].items()
+                               if not (workflow == "e2e.yml" and name == "select" and key == "preview")}
+                    self.assertNotRegex(" ".join(outputs.values()), r"(?i)dependabot|pull_request\.user")
             self.assertEqual(jobs["required"]["if"], "always()")
         _, jobs = parse_jobs(WORKFLOWS / "e2e.yml")
         self.assertEqual(set(re.findall(r"[\w-]+", jobs["required"]["needs"])),
-                         {"select", "build", "images", "kind", "bake", "real-machine"})
+                         {"select", "build", "images", "kind", "bake-cpu", "bake-gpu",
+                          "real-machine-cpu", "real-machine-gpu"})
+
+
+def job_blocks(path: Path) -> dict[str, str]:
+    """Each top-level job's raw text, keyed by job id."""
+    blocks: dict[str, list[str]] = {}
+    section, job = None, None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        indent = len(raw) - len(raw.lstrip())
+        if raw.strip() and indent == 0:
+            section = raw.strip().rstrip(":")
+            job = None
+            continue
+        if section != "jobs":
+            continue
+        if raw.strip() and indent == 2 and raw.strip().endswith(":") and not raw.lstrip().startswith("#"):
+            job = raw.strip()[:-1]
+            blocks[job] = []
+        elif job and not (indent == 2 and raw.lstrip().startswith("#")):
+            blocks[job].append(raw)
+    return {name: "\n".join(lines).strip() for name, lines in blocks.items()}
+
+
+class FixtureBakeDependencyTests(unittest.TestCase):
+    """HOR-676: each capacity bakes, and its scenarios wait, on its own."""
+
+    def test_real_machine_jobs_wait_only_on_their_own_bake(self) -> None:
+        _, jobs = parse_jobs(WORKFLOWS / "e2e.yml")
+        for capacity, other in (("cpu", "gpu"), ("gpu", "cpu")):
+            with self.subTest(capacity=capacity):
+                needs = set(re.findall(r"[\w-]+", jobs[f"real-machine-{capacity}"]["needs"]))
+                self.assertIn(f"bake-{capacity}", needs)
+                self.assertNotIn(f"bake-{other}", needs)
+                self.assertEqual(jobs[f"bake-{capacity}"]["uses"], "bake.yml")
+                self.assertTrue(jobs[f"bake-{capacity}"]["if"].startswith(f"needs.select.outputs.real_{capacity} != '[]'"))
+                self.assertEqual(jobs[f"real-machine-{capacity}"]["if"], f"needs.select.outputs.real_{capacity} != '[]'")
+        for name, job in jobs.items():
+            with self.subTest(job=name):
+                if name not in {"real-machine-gpu", "required"}:
+                    self.assertNotIn("bake-gpu", job["needs"])
+
+    def test_preview_waits_on_the_cpu_bake_it_boots_from(self) -> None:
+        # A preview boots from this tree's CPU fixture AMI; racing a new
+        # generation's bake failed PR #170's preview.
+        _, jobs = parse_jobs(WORKFLOWS / "e2e.yml")
+        needs = set(re.findall(r"[\w-]+", jobs["preview"]["needs"]))
+        self.assertIn("bake-cpu", needs)
+        self.assertNotIn("bake-gpu", needs)
+        self.assertIn("needs.select.outputs.preview == 'true'", jobs["bake-cpu"]["if"])
+        self.assertNotIn("preview", jobs["bake-gpu"]["if"])
+
+    def test_real_machine_jobs_differ_only_by_capacity(self) -> None:
+        blocks = job_blocks(WORKFLOWS / "e2e.yml")
+        self.assertEqual(blocks["real-machine-cpu"].replace("cpu", "CAPACITY"),
+                         blocks["real-machine-gpu"].replace("gpu", "CAPACITY"))
+
+    def test_bake_waits_in_as_many_sessions_as_the_cold_bound_needs(self) -> None:
+        import aws_ci
+
+        text = (WORKFLOWS / "bake.yml").read_text(encoding="utf-8")
+        waits = text.count("--phase image") + text.count("--phase await")
+        self.assertEqual(waits, aws_ci.BAKE_IMAGE_SESSIONS)
+        self.assertEqual(text.count("--final"), 1)
+        self.assertGreaterEqual(aws_ci.BAKE_IMAGE_SESSIONS * aws_ci.BAKE_SESSION_WAIT_SECONDS,
+                                max(aws_ci.BAKE_IMAGE_WAIT_SECONDS.values()))
 
 
 if __name__ == "__main__":

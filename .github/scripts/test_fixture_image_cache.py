@@ -57,12 +57,21 @@ def recorded_generation(manifest: dict[str, object]) -> dict[str, object]:
                 "reference": image["reference"],
                 "digest": image["digest"],
                 "archive": image["archive"],
+                "config_digest": "sha256:" + "c" * 64,
                 "sha256": fake_archive_sha256(remote_archive_path(manifest, image["archive"])),
                 "size": fake_archive_size(remote_archive_path(manifest, image["archive"])),
             }
             for image in manifest["images"]
         ],
     }
+
+
+def generation_dir(manifest: dict[str, object]) -> str:
+    return f"{manifest['cache_root']}/{manifest['capacity']}/{manifest['generation']}"
+
+
+def pinned(reference: str, fill: str) -> dict[str, str]:
+    return {"reference": reference, "digest": "sha256:" + fill * 64}
 
 
 class FakeFixtureHost:
@@ -79,12 +88,23 @@ class FakeFixtureHost:
         generation_json: dict[str, object] | None,
         broken: dict[str, str] | None = None,
         verification_failure: tuple[int, str] | None = None,
+        earlier: dict[str, dict[str, object]] | None = None,
     ) -> None:
         self.generation_json = generation_json
         self.broken = broken or {}
         self.verification_failure = verification_failure
+        # Generation directory -> generation.json of earlier generations on the
+        # host, as a builder booted from the previous fixture AMI holds them.
+        self.earlier = dict(earlier or {})
+        if generation_json is not None:
+            self.earlier[
+                f"{generation_json['cache_root']}/{generation_json['capacity']}/"
+                f"{generation_json['generation']}"
+            ] = generation_json
         self.commands: list[str] = []
         self.generation_written: str | None = None
+        self.links: list[tuple[str, str]] = []
+        self.pulled: list[str] = []
 
     def __call__(
         self, command: list[str], **kwargs: object
@@ -102,6 +122,21 @@ class FakeFixtureHost:
             return subprocess.CompletedProcess(
                 command, 0, json.dumps(self.generation_json), ""
             )
+        remote = shlex.split(rendered)[-1]
+        if remote.startswith("sudo find") and "-name generation.json" in remote:
+            listing = "".join(f"{directory}/generation.json\n" for directory in self.earlier)
+            return subprocess.CompletedProcess(command, 0, listing, "")
+        if remote.startswith("sudo cat") and remote.endswith("/generation.json"):
+            recorded = self.earlier.get(shlex.split(remote)[-1].rsplit("/", 1)[0])
+            if recorded is None:
+                return subprocess.CompletedProcess(command, 1, "", "absent")
+            return subprocess.CompletedProcess(command, 0, json.dumps(recorded), "")
+        if remote.startswith("sudo ln "):
+            source, destination = shlex.split(remote)[-2:]
+            self.links.append((source, destination))
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if " pull --platform " in remote:
+            self.pulled.append(shlex.split(remote)[-2])
         if "bash -c" in rendered and "fixture-image-cache-verify" in rendered:
             if self.verification_failure is not None:
                 returncode, stderr = self.verification_failure
@@ -152,15 +187,64 @@ class FakeFixtureHost:
 
 
 class FixtureImageCacheTests(unittest.TestCase):
-    def test_gpu_ami_carries_everything_and_cpu_leaves_gpu_images_out(self) -> None:
-        # C1: the GPU AMI bakes the nvcr.io/NVIDIA/vLLM images as well.
+    def test_each_ami_leaves_out_only_the_other_fixtures_images(self) -> None:
+        # C1: the GPU AMI bakes the nvcr.io/NVIDIA/vLLM images as well; HOR-676:
+        # it leaves out the images only the CPU fixture loads.
         images = fixture_image_cache.load_runtime_images(ROOT)
+        everything = {image["reference"] for image in images}
         cpu = {image["reference"] for image in fixture_image_cache.select_images(images, "cpu")}
         gpu = {image["reference"] for image in fixture_image_cache.select_images(images, "gpu")}
-        gpu_only = {image["reference"] for image in images if fixture_image_cache.is_gpu_only(image["reference"])}
+        gpu_only = {ref for ref in everything if fixture_image_cache.is_gpu_only(ref)}
+        cpu_only = {ref for ref in everything if fixture_image_cache.is_cpu_fixture_only(ref)}
         self.assertTrue(gpu_only)
-        self.assertEqual(gpu, {image["reference"] for image in images})
-        self.assertEqual(cpu, gpu - gpu_only)
+        self.assertTrue(cpu_only)
+        self.assertFalse(gpu_only & cpu_only)
+        self.assertEqual(gpu, everything - cpu_only)
+        self.assertEqual(cpu, everything - gpu_only)
+
+    def test_cpu_fixture_only_repositories_are_pinned_and_shared(self) -> None:
+        # A stale entry would silently stop meaning anything; a GPU-only one
+        # would drop an image from both AMIs.
+        images = fixture_image_cache.load_runtime_images(ROOT)
+        repositories = {fixture_image_cache.repository(image["reference"]): image["reference"] for image in images}
+        for path in fixture_image_cache.CPU_FIXTURE_ONLY_REPOSITORIES:
+            with self.subTest(repository=path):
+                self.assertIn(path, repositories)
+                self.assertFalse(fixture_image_cache.is_gpu_only(repositories[path]))
+
+    def test_generation_scoping_keeps_each_fixture_independent(self) -> None:
+        images = fixture_image_cache.load_runtime_images(ROOT)
+
+        def generations(changed: list[dict[str, str]]) -> dict[str, str]:
+            return {
+                capacity: fixture_image_cache.generation(
+                    capacity, fixture_image_cache.select_images(changed, capacity)
+                )
+                for capacity in fixture_image_cache.CAPACITIES
+            }
+
+        def with_digest(prefix: str) -> list[dict[str, str]]:
+            changed = [dict(image) for image in images]
+            target = next(image for image in changed if image["reference"].startswith(prefix))
+            target["digest"] = "sha256:" + "0" * 64
+            return changed
+
+        baseline = generations(images)
+        added_cpu_only = images + [pinned("registry.k8s.io/external-dns/external-dns:v9.9.9", "1")]
+        cases = {
+            "CPU-only digest": (with_digest("debian:"), {"cpu"}),
+            "CPU-only image added": (added_cpu_only, {"cpu"}),
+            "GPU-only digest": (with_digest("nvcr.io/nvidia/gpu-operator:"), {"gpu"}),
+            "shared digest": (with_digest("postgres:"), {"cpu", "gpu"}),
+            "new shared image": (images + [pinned("quay.io/example/new:v1", "2")], {"cpu", "gpu"}),
+        }
+        for name, (changed, expected) in cases.items():
+            with self.subTest(case=name):
+                after = generations(changed)
+                self.assertEqual(
+                    {capacity for capacity in after if after[capacity] != baseline[capacity]},
+                    expected,
+                )
 
     def test_gpu_only_classification_matches_reviewed_authority(self) -> None:
         images = fixture_image_cache.load_runtime_images(ROOT)
@@ -333,6 +417,112 @@ class FixtureImageCacheTests(unittest.TestCase):
                 for image in rewritten["images"]:
                     self.assertRegex(image["sha256"], r"^[0-9a-f]{64}$")
                     self.assertGreater(image["size"], 0)
+
+    def _incremental_manifests(self) -> tuple[dict[str, object], dict[str, object]]:
+        previous = fixture_image_cache.manifest_for("cpu", [
+            pinned("busybox:1.37.0", "a"),
+            pinned("postgres:16-alpine", "b"),
+            pinned("redis:7-alpine", "c"),
+            pinned("quay.io/example/removed:v1", "d"),
+        ])
+        current = fixture_image_cache.manifest_for("cpu", [
+            pinned("busybox:1.37.0", "a"),
+            pinned("postgres:16-alpine", "b"),
+            pinned("redis:7-alpine", "e"),
+            pinned("quay.io/example/added:v1", "f"),
+        ])
+        return previous, current
+
+    def test_seed_pulls_only_images_an_earlier_generation_lacks(self) -> None:
+        previous, current = self._incremental_manifests()
+        earlier = generation_dir(previous)
+        host = FakeFixtureHost(generation_json=None, earlier={earlier: recorded_generation(previous)})
+
+        commands, stdout, _ = self._seed_with_fake_host(current, host)
+
+        self.assertIn("reusing 2 verified archives", stdout)
+        unchanged = [image for image in current["images"] if image["reference"] in {"busybox:1.37.0", "postgres:16-alpine"}]
+        self.assertEqual(
+            sorted(host.links),
+            sorted(
+                (f"{earlier}/images/{image['archive']}",
+                 f"{current['cache_root']}/cpu/.staging-{current['generation']}/images/{image['archive']}")
+                for image in unchanged
+            ),
+        )
+        self.assertEqual(sorted(host.pulled), ["quay.io/example/added:v1@sha256:" + "f" * 64,
+                                               "redis:7-alpine@sha256:" + "e" * 64])
+        # Every pinned archive is verified: the reused ones against their record
+        # before linking, the pulled ones as they are written.
+        verify = next(command for command in commands if "fixture-image-cache-verify" in command)
+        for image in unchanged:
+            self.assertIn(f"{earlier}/images/{image['archive']}", verify)
+        written = json.loads(host.generation_written)
+        recorded = {entry["archive"]: entry for entry in recorded_generation(previous)["images"]}
+        self.assertEqual([entry["reference"] for entry in written["images"]],
+                         [image["reference"] for image in current["images"]])
+        for entry in written["images"]:
+            self.assertRegex(entry["sha256"], r"^[0-9a-f]{64}$")
+            self.assertGreater(entry["size"], 0)
+            self.assertRegex(entry["config_digest"], fixture_image_cache.SHA256_RE)
+            if entry["archive"] in recorded:
+                self.assertEqual(entry["sha256"], recorded[entry["archive"]]["sha256"])
+        # The earlier generation, with the archive no longer pinned, goes only
+        # after the swap.
+        swap = next(index for index, command in enumerate(commands) if "fixture-image-cache-swap" in command)
+        prune = next(index for index, command in enumerate(commands)
+                     if "-exec rm -rf" in command and current["generation"] in command)
+        self.assertGreater(prune, swap)
+
+    def test_seed_pulls_again_an_earlier_archive_that_fails_verification(self) -> None:
+        previous, current = self._incremental_manifests()
+        broken = next(image["archive"] for image in previous["images"] if image["reference"] == "busybox:1.37.0")
+        host = FakeFixtureHost(generation_json=None, broken={broken: "corrupt"},
+                               earlier={generation_dir(previous): recorded_generation(previous)})
+
+        _, stdout, stderr = self._seed_with_fake_host(current, host)
+
+        self.assertIn("reusing 1 verified archives", stdout)
+        self.assertIn(f"archive sha256 mismatch for {broken}", stderr)
+        self.assertIn("busybox:1.37.0@sha256:" + "a" * 64, host.pulled)
+        self.assertEqual(len(host.links), 1)
+
+    def test_seed_repairs_a_broken_generation_by_pulling_only_the_broken_archive(self) -> None:
+        manifest = fixture_image_cache.build_manifest(ROOT, "cpu")
+        archive = manifest["images"][3]
+        host = FakeFixtureHost(generation_json=recorded_generation(manifest), broken={archive["archive"]: "missing"})
+
+        self._seed_with_fake_host(manifest, host)
+
+        self.assertEqual(host.pulled, [f"{archive['reference']}@{archive['digest']}"])
+        self.assertEqual(len(host.links), len(manifest["images"]) - 1)
+
+    def test_seed_never_reuses_archives_it_cannot_prove_identical(self) -> None:
+        previous, current = self._incremental_manifests()
+        retagged = fixture_image_cache.manifest_for("cpu", [
+            pinned("busybox:1.36.0", "a"),  # same digest and archive name, other reference
+            pinned("postgres:16-alpine", "b"),
+        ])
+        self.assertEqual(retagged["images"][0]["archive"], current["images"][0]["archive"])
+        cases = {
+            "other seed format": dict(recorded_generation(previous), seed_format=fixture_image_cache.SEED_FORMAT_VERSION - 1),
+            "other capacity": dict(recorded_generation(previous), capacity="gpu"),
+            "no archive digests": dict(recorded_generation(previous), images=[
+                {key: value for key, value in entry.items() if key != "sha256"}
+                for entry in recorded_generation(previous)["images"]
+            ]),
+        }
+        for name, recorded in cases.items():
+            with self.subTest(case=name):
+                host = FakeFixtureHost(generation_json=None, earlier={generation_dir(previous): recorded})
+                self._seed_with_fake_host(current, host)
+                self.assertEqual(host.links, [])
+                self.assertEqual(len(host.pulled), len(current["images"]))
+        host = FakeFixtureHost(generation_json=None, earlier={generation_dir(retagged): recorded_generation(retagged)})
+        self._seed_with_fake_host(current, host)
+        postgres = next(image["archive"] for image in current["images"] if image["reference"] == "postgres:16-alpine")
+        self.assertEqual([source.rsplit("/", 1)[-1] for source, _ in host.links], [postgres])
+        self.assertIn("busybox:1.37.0@sha256:" + "a" * 64, host.pulled)
 
     def test_seed_reports_a_failed_verification_command_instead_of_every_archive(
         self,

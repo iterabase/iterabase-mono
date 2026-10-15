@@ -1044,6 +1044,84 @@ class FixtureLaunchTests(unittest.TestCase):
         # Staging never expires on the preview TTL; PR previews do after 72 h.
         self.assertGreater(aws_ci.preview_deadline("staging") - aws_ci.preview_deadline("pr-1"), dt.timedelta(days=365))
 
+    def test_bake_builder_root_is_provisioned_and_preloaded_only_when_restored(self) -> None:
+        import aws_ci
+
+        base = dict(region=CI_REGION, image_id="ami-0123456789abcdef0", instance_type="m6i.xlarge",
+                    subnet_id="subnet-0123456789abcdef0", security_group_id="sg-0123456789abcdef0",
+                    tags=required_tags("1", "bake-gpu"), user_data_path="/tmp/u.sh")
+        for incremental, root in (
+            (False, "DeviceName=/dev/sda1,Ebs={VolumeSize=160,VolumeType=gp3,DeleteOnTermination=true,"
+                    "Iops=8000,Throughput=500}"),
+            (True, "DeviceName=/dev/sda1,Ebs={VolumeSize=160,VolumeType=gp3,DeleteOnTermination=true,"
+                   "Iops=8000,Throughput=500,VolumeInitializationRate=300}"),
+        ):
+            with self.subTest(incremental=incremental):
+                options = aws_ci.bake_builder_launch_options("gpu", incremental=incremental)
+                command = aws_ci.launch_command(**base, **options)
+                mappings = command[command.index("--block-device-mappings") + 1:command.index("--tag-specifications")]
+                self.assertEqual(mappings, [
+                    root, "DeviceName=/dev/sdf,Ebs={VolumeSize=8,VolumeType=gp3,DeleteOnTermination=true}",
+                ])
+        # gp3 needs 4 IOPS per MiB/s of throughput at most and allows 16,000.
+        self.assertGreaterEqual(aws_ci.BAKE_BUILDER_ROOT_IOPS, aws_ci.FIXTURE_VOLUME_THROUGHPUT_MIBPS * 4)
+        self.assertLessEqual(aws_ci.BAKE_BUILDER_ROOT_IOPS, 16000)
+
+    def test_incremental_bake_boots_from_the_newest_other_generation(self) -> None:
+        import aws_ci
+
+        def image(image_id: str, role: str, generation: str | None, created: str, root_gib: int = 160) -> dict:
+            tags = [{"Key": aws_ci.AMI_ROLE_TAG, "Value": role}]
+            if generation:
+                tags.append({"Key": aws_ci.IMAGE_CACHE_TAG, "Value": generation})
+            return {"ImageId": image_id, "CreationDate": created, "State": "available", "Tags": tags,
+                    "RootDeviceName": "/dev/sda1",
+                    "BlockDeviceMappings": [{"DeviceName": "/dev/sda1",
+                                             "Ebs": {"SnapshotId": "snap-" + image_id, "VolumeSize": root_gib}}]}
+
+        images = [
+            image("ami-old", "fixture-gpu", "g1", "2026-10-01T00:00:00.000Z"),
+            image("ami-new", "fixture-gpu", "g2", "2026-10-05T00:00:00.000Z"),
+            image("ami-same", "fixture-gpu", "g3", "2026-10-09T00:00:00.000Z"),
+            image("ami-cpu", "fixture-cpu", "c1", "2026-10-10T00:00:00.000Z", root_gib=40),
+            image("ami-big", "fixture-gpu", "g4", "2026-10-08T00:00:00.000Z", root_gib=200),
+            image("ami-untagged", "fixture-gpu", None, "2026-10-07T00:00:00.000Z"),
+        ]
+        chosen = aws_ci.select_previous_fixture_ami(images, "gpu", "g3")
+        self.assertEqual(chosen["ImageId"] if chosen else None, "ami-new")
+        self.assertIsNone(aws_ci.select_previous_fixture_ami(images[2:3], "gpu", "g3"))
+        self.assertIsNone(aws_ci.select_previous_fixture_ami([], "cpu", "c2"))
+        self.assertEqual(aws_ci.select_previous_fixture_ami(images, "cpu", "c2")["ImageId"], "ami-cpu")
+
+    def test_image_wait_is_bounded_from_creation_across_sessions(self) -> None:
+        import aws_ci
+
+        created = NOW
+        self.assertEqual(aws_ci.image_wait_seconds(created, NOW, "cold"), (aws_ci.BAKE_SESSION_WAIT_SECONDS, False))
+        self.assertEqual(aws_ci.image_wait_seconds(created, NOW, "incremental"), (aws_ci.BAKE_SESSION_WAIT_SECONDS, False))
+        later = NOW + dt.timedelta(seconds=aws_ci.BAKE_SESSION_WAIT_SECONDS)
+        self.assertEqual(aws_ci.image_wait_seconds(created, later, "incremental"),
+                         (aws_ci.BAKE_IMAGE_WAIT_SECONDS["incremental"] - aws_ci.BAKE_SESSION_WAIT_SECONDS, True))
+        self.assertEqual(aws_ci.image_wait_seconds(created, later, "cold"), (aws_ci.BAKE_SESSION_WAIT_SECONDS, False))
+        self.assertEqual(aws_ci.image_wait_seconds(created, NOW + dt.timedelta(hours=3), "cold"), (0, True))
+        # A cold GPU first snapshot ran past 50 min (HOR-676): two hours, and an
+        # incremental bake keeps a lower bound.
+        self.assertGreaterEqual(aws_ci.BAKE_IMAGE_WAIT_SECONDS["cold"], 7200)
+        self.assertLess(aws_ci.BAKE_IMAGE_WAIT_SECONDS["incremental"], aws_ci.BAKE_IMAGE_WAIT_SECONDS["cold"])
+        # Each wait fits one hour-long OIDC session with room for the API calls.
+        self.assertLessEqual(aws_ci.BAKE_SESSION_WAIT_SECONDS, 3000)
+        with self.assertRaises(AwsCiError):
+            aws_ci.image_wait_seconds(created, NOW, "warm")
+
+    def test_bake_parser_accepts_the_incremental_phases(self) -> None:
+        args = build_parser().parse_args(["bake-ami", "--region", CI_REGION, "--run-id", "1", "--capacity", "gpu",
+                                          "--phase", "await", "--image", "ami-1", "--mode", "incremental", "--final"])
+        self.assertEqual((args.phase, args.image, args.mode, args.final, args.cold), ("await", "ami-1", "incremental", True, False))
+        args = build_parser().parse_args(["bake-ami", "--region", CI_REGION, "--run-id", "1", "--capacity", "cpu",
+                                          "--phase", "build", "--cold"])
+        self.assertTrue(args.cold)
+        self.assertEqual(args.mode, "cold")
+
     def test_bake_seal_removes_builder_identity(self) -> None:
         import aws_ci
 
