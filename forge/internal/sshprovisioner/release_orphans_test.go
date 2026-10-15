@@ -181,6 +181,61 @@ func TestPruneFailedRevisionOrphans_FailedRevisionWithNothingLeftOverDeletesNoth
 	assert.Empty(t, commandsMatching(obs.records(), "kubectl"), "a failed revision whose objects are all still rendered needs no live read")
 }
 
+// The same object spelled with and without metadata.namespace is one live
+// object; the current revision still renders it, so it is never a leftover.
+func TestPruneFailedRevisionOrphans_NamespaceSpellingIsOneObject(t *testing.T) {
+	implicit := "---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: iterabase-control-plane-api\n"
+	explicit := "---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: iterabase-control-plane-api\n  namespace: iterabase-system\n"
+	for _, tc := range []struct{ name, failed, current string }{
+		{"implicit then explicit", implicit, explicit},
+		{"explicit then implicit", explicit, implicit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, obs := startObservedFakeSSH(t, func(cmd string) sshCommandResult {
+				switch {
+				case strings.Contains(cmd, "'history'"):
+					return sshCommandResult{stdout: `[{"revision":1,"status":"failed"},{"revision":2,"status":"deployed"}]`}
+				case strings.Contains(cmd, "'--revision' '1'"):
+					return sshCommandResult{stdout: tc.failed}
+				case strings.Contains(cmd, "'get' 'manifest'"):
+					return sshCommandResult{stdout: tc.current}
+				case strings.Contains(cmd, "'get' '-f' '-'"):
+					return sshCommandResult{stdout: list(t, helmOwned("apps/v1", "Deployment", "iterabase-system", "iterabase-control-plane-api", nil))}
+				}
+				return sshCommandResult{}
+			})
+			deleted, err := p.pruneFailedRevisionOrphans(context.Background(), "iterabase", "iterabase-system")
+			require.NoError(t, err)
+			assert.Empty(t, deleted)
+			assert.Empty(t, commandsMatching(obs.records(), "kubectl"), "the currently deployed object is not a candidate")
+		})
+	}
+}
+
+// A cluster-scoped object is one live object whatever namespace a manifest
+// spells for it; the live guard keeps the current revision's copy.
+func TestPruneFailedRevisionOrphans_ClusterScopedSpellingIsOneObject(t *testing.T) {
+	failed := "---\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: iterabase-reader\n  namespace: elsewhere\n"
+	current := "---\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: iterabase-reader\n"
+	p, obs := startObservedFakeSSH(t, func(cmd string) sshCommandResult {
+		switch {
+		case strings.Contains(cmd, "'history'"):
+			return sshCommandResult{stdout: `[{"revision":1,"status":"failed"},{"revision":2,"status":"deployed"}]`}
+		case strings.Contains(cmd, "'--revision' '1'"):
+			return sshCommandResult{stdout: failed}
+		case strings.Contains(cmd, "'get' 'manifest'"):
+			return sshCommandResult{stdout: current}
+		case strings.Contains(cmd, "'get' '-f' '-'"):
+			return sshCommandResult{stdout: list(t, helmOwned("rbac.authorization.k8s.io/v1", "ClusterRole", "", "iterabase-reader", nil))}
+		}
+		return sshCommandResult{}
+	})
+	deleted, err := p.pruneFailedRevisionOrphans(context.Background(), "iterabase", "iterabase-system")
+	require.NoError(t, err)
+	assert.Empty(t, deleted)
+	assert.Empty(t, commandsMatching(obs.records(), "'delete'"))
+}
+
 func TestPruneFailedRevisionOrphans_AlreadyGoneDeletesNothing(t *testing.T) {
 	p, obs := startObservedFakeSSH(t, func(cmd string) sshCommandResult {
 		switch {

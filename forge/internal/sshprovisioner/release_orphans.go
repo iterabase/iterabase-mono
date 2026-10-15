@@ -32,11 +32,53 @@ type manifestRef struct {
 // key ignores the API version so an object rendered under different versions
 // across revisions (for example v1beta1 then v1) is still one object.
 func (r manifestRef) key() string {
-	group := "" // the core group's apiVersion is just "v1"
-	if g, _, ok := strings.Cut(r.APIVersion, "/"); ok {
-		group = g
+	return apiGroup(r.APIVersion) + "|" + r.Kind + "|" + r.Namespace + "|" + r.Name
+}
+
+// effective is the ref with the namespace the API server gives it when the
+// manifest leaves it out, so the same object spelled with and without
+// metadata.namespace compares equal. Cluster-scoped objects get the release
+// namespace too; that is consistent across revisions, and live identities are
+// checked separately by renderedSet.renders.
+func (r manifestRef) effective(namespace string) manifestRef {
+	if r.Namespace == "" {
+		r.Namespace = namespace
 	}
-	return group + "|" + r.Kind + "|" + r.Namespace + "|" + r.Name
+	return r
+}
+
+// apiGroup is the group of an apiVersion; the core group's is just "v1".
+func apiGroup(apiVersion string) string {
+	if g, _, ok := strings.Cut(apiVersion, "/"); ok {
+		return g
+	}
+	return ""
+}
+
+// renderedSet is what the current revision renders, by effective identity and
+// by cluster-scoped identity.
+type renderedSet struct {
+	effective map[string]bool // group|kind|effective namespace|name
+	anyScope  map[string]bool // group|kind|name
+}
+
+func newRenderedSet(refs []manifestRef, namespace string) renderedSet {
+	s := renderedSet{effective: map[string]bool{}, anyScope: map[string]bool{}}
+	for _, ref := range refs {
+		s.effective[ref.effective(namespace).key()] = true
+		s.anyScope[apiGroup(ref.APIVersion)+"|"+ref.Kind+"|"+ref.Name] = true
+	}
+	return s
+}
+
+// renders reports whether a live object is one the current revision renders.
+// A live object without a namespace is cluster-scoped, which any namespace
+// spelling in the manifest resolves to.
+func (s renderedSet) renders(obj liveObject) bool {
+	if obj.Metadata.Namespace == "" {
+		return s.anyScope[apiGroup(obj.APIVersion)+"|"+obj.Kind+"|"+obj.Metadata.Name]
+	}
+	return s.effective[manifestRef{APIVersion: obj.APIVersion, Kind: obj.Kind, Namespace: obj.Metadata.Namespace, Name: obj.Metadata.Name}.key()]
 }
 
 // pruneFailedRevisionOrphans deletes objects that this release rendered in a
@@ -46,9 +88,11 @@ func (r manifestRef) key() string {
 // manifest is never deleted: it survives every later successful revision.
 // Called only after a successful upgrade, it deletes what Helm would have
 // deleted from an accurate baseline: objects whose live ownership annotations
-// still name this release and that do not ask Helm to keep them.
+// still name this release and that do not ask Helm to keep them. Objects are
+// compared by the identity the API server gives them, so a namespace spelled
+// out in one revision and left implicit in another is still one object.
 func (p *SSHProvisioner) pruneFailedRevisionOrphans(ctx context.Context, release, namespace string) ([]string, error) {
-	candidates, err := p.failedRevisionLeftovers(ctx, release, namespace)
+	candidates, rendered, err := p.failedRevisionLeftovers(ctx, release, namespace)
 	if err != nil || len(candidates) == 0 {
 		return nil, err
 	}
@@ -56,7 +100,7 @@ func (p *SSHProvisioner) pruneFailedRevisionOrphans(ctx context.Context, release
 	if err != nil {
 		return nil, fmt.Errorf("read objects from failed revisions of %s/%s: %w", namespace, release, err)
 	}
-	orphans, deleted := releaseOwned(live, release, namespace)
+	orphans, deleted := releaseOwned(live, rendered, release, namespace)
 	if len(orphans) == 0 {
 		return nil, nil
 	}
@@ -67,33 +111,31 @@ func (p *SSHProvisioner) pruneFailedRevisionOrphans(ctx context.Context, release
 }
 
 // failedRevisionLeftovers returns the objects the release's failed revisions
-// rendered that its current revision does not.
-func (p *SSHProvisioner) failedRevisionLeftovers(ctx context.Context, release, namespace string) ([]manifestRef, error) {
+// rendered that its current revision does not, and what the current revision
+// renders.
+func (p *SSHProvisioner) failedRevisionLeftovers(ctx context.Context, release, namespace string) ([]manifestRef, renderedSet, error) {
 	out, err := p.run(ctx, helmCmd("history", release, "-n", namespace, "-o", "json"))
 	if err != nil {
-		return nil, fmt.Errorf("helm history %s/%s: %w", namespace, release, err)
+		return nil, renderedSet{}, fmt.Errorf("helm history %s/%s: %w", namespace, release, err)
 	}
 	failed, err := failedRevisions(out)
 	if err != nil || len(failed) == 0 {
-		return nil, err
+		return nil, renderedSet{}, err
 	}
 	current, err := p.revisionManifest(ctx, release, namespace, 0)
 	if err != nil {
-		return nil, err
+		return nil, renderedSet{}, err
 	}
-	rendered := make(map[string]bool, len(current))
-	for _, ref := range current {
-		rendered[ref.key()] = true
-	}
+	rendered := newRenderedSet(current, namespace)
 	leftovers := map[string]manifestRef{}
 	for _, revision := range failed {
 		refs, err := p.revisionManifest(ctx, release, namespace, revision)
 		if err != nil {
-			return nil, err
+			return nil, renderedSet{}, err
 		}
 		for _, ref := range refs {
-			if !rendered[ref.key()] {
-				leftovers[ref.key()] = ref
+			if key := ref.effective(namespace).key(); !rendered.effective[key] {
+				leftovers[key] = ref
 			}
 		}
 	}
@@ -101,7 +143,7 @@ func (p *SSHProvisioner) failedRevisionLeftovers(ctx context.Context, release, n
 	for _, ref := range leftovers {
 		refs = append(refs, ref)
 	}
-	return refs, nil
+	return refs, rendered, nil
 }
 
 // liveObjects reads the refs that still exist. Refs without an explicit
@@ -142,15 +184,16 @@ func (p *SSHProvisioner) liveObjects(ctx context.Context, refs []manifestRef, na
 }
 
 // releaseOwned keeps the live objects whose Helm ownership annotations still
-// name this release and that do not ask Helm to keep them. Objects since
-// adopted by another owner are not this release's to delete.
-func releaseOwned(live []liveObject, release, namespace string) ([]manifestRef, []string) {
+// name this release, that do not ask Helm to keep them, and that the current
+// revision does not render under another spelling. Objects since adopted by
+// another owner are not this release's to delete.
+func releaseOwned(live []liveObject, rendered renderedSet, release, namespace string) ([]manifestRef, []string) {
 	var owned []manifestRef
 	var refs []string
 	for _, obj := range live {
 		a := obj.Metadata.Annotations
 		if a[helmReleaseNameAnnotation] != release || a[helmReleaseNamespaceAnnotation] != namespace ||
-			a[helmResourcePolicyAnnotation] == helmResourcePolicyKeep {
+			a[helmResourcePolicyAnnotation] == helmResourcePolicyKeep || rendered.renders(obj) {
 			continue
 		}
 		owned = append(owned, manifestRef{APIVersion: obj.APIVersion, Kind: obj.Kind, Namespace: obj.Metadata.Namespace, Name: obj.Metadata.Name})
