@@ -475,8 +475,15 @@ DOCS: dict[str, tuple[str, bytes]] = {
 # stop the wait it is in ("stop",), or keep stopping the wait and asking again
 # until the work passes maxTransitions and fails ("until_failed",).
 Step = tuple
-_DETAILS = ("answer", "submitted", {"reference": "BK-77120", "incoterm": "FOB", "packages": 12,
+def _details(reference: str) -> Step:
+    """The shipment details answer. The booking reference is the broker wait's
+    correlation key, and an open wait's key must be unique in the installation,
+    so every item has its own."""
+    return ("answer", "submitted", {"reference": reference, "incoterm": "FOB", "packages": 12,
                                     "grossWeightKg": 2340.5, "hazardous": False})
+
+
+
 _INVOICE = ("upload", "uploaded", "fatura-comercial.pdf")
 _STOP = ("stop",)
 _UNTIL_FAILED = ("until_failed",)
@@ -508,19 +515,21 @@ WORK: list[tuple[str, str, str, dict, list[Step], list[str]]] = [
      ["Pedido de cotação LCL Leixões–Santos.eml", "pedido.pdf"]),
     # Customs walks every gate type and state.
     ("demo-3101", "demo/customs", "Customs · Leixões export, ceramics", _BOOKING, [], []),
-    ("demo-3102", "demo/customs", "Customs · Sines import, machinery", _BOOKING, [_DETAILS], []),
-    ("demo-3103", "demo/customs", "Customs · Lisbon export, cork", _BOOKING, [_DETAILS, _INVOICE], []),
-    ("demo-3104", "demo/customs", "Customs · Porto import, textiles", _BOOKING,
-     [_DETAILS, _INVOICE, _STOP], []),
+    ("demo-3102", "demo/customs", "Customs · Sines import, machinery", _BOOKING, [_details("BK-77102")], []),
+    ("demo-3103", "demo/customs", "Customs · Lisbon export, cork", _BOOKING, [_details("BK-77103"), _INVOICE], []),
+    # demo-3104 was seeded once with a reference another item already waited
+    # on, so it failed; the decision item uses a new key and title.
+    ("demo-3109", "demo/customs", "Customs · Porto import, yarn", _BOOKING,
+     [_details("BK-77109"), _INVOICE, _STOP], []),
     ("demo-3105", "demo/customs", "Customs · Aveiro export, wine", _BOOKING,
-     [_DETAILS, _INVOICE, _STOP, ("answer", "file", {})], []),
+     [_details("BK-77105"), _INVOICE, _STOP, ("answer", "file", {})], []),
     ("demo-3106", "demo/customs", "Customs · Leixões import, steel", _BOOKING,
-     [_DETAILS, _INVOICE, _STOP, ("answer", "file", {}), ("answer", "declined", {})], []),
+     [_details("BK-77106"), _INVOICE, _STOP, ("answer", "file", {}), ("answer", "declined", {})], []),
     ("demo-3107", "demo/customs", "Customs · Setúbal export, paper", _BOOKING,
-     [_DETAILS, _INVOICE, _STOP, ("answer", "file", {}), ("answer", "approved", {})], []),
+     [_details("BK-77107"), _INVOICE, _STOP, ("answer", "file", {}), ("answer", "approved", {})], []),
     # Asking again and again passes maxTransitions: Failed (transition_limit).
     ("demo-3108", "demo/customs", "Customs · Sines export, granite", _BOOKING,
-     [_DETAILS, _INVOICE, _UNTIL_FAILED], []),
+     [_details("BK-77108"), _INVOICE, _UNTIL_FAILED], []),
 ]
 
 
@@ -655,11 +664,14 @@ upload_answer() {{
 }}
 # Waits until the new work is waiting, then stops the wait (as a person would).
 stop_wait() {{
+  state=''
   for _ in $(seq 1 60); do
     status=$(api -H "Cookie: $cookie" "{target}/v1/work-items/$id")
-    [ "$status" = 200 ] && [ "$(field state)" = waiting ] && break
+    [ "$status" = 200 ] && state=$(field state)
+    [ "$state" = waiting ] && break
     sleep 1
   done
+  [ "$state" = waiting ] || {{ echo "preview demo: $id is $state, not waiting"; exit 1; }}
   status=$(api -H "Cookie: $cookie" -H "X-CSRF-Token: $csrf" -X POST "{target}/v1/work-items/$id/wait/stop")
   [ "$status" = 200 ] || {{ echo "preview demo: stop wait for $id returned $status"; exit 1; }}
 }}

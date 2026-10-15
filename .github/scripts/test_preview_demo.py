@@ -165,6 +165,13 @@ class Manifests(unittest.TestCase):
         kinds = {spec.get("type", "enum") for spec in details["humanGate"]["responseSchema"]["properties"].values()}
         self.assertEqual(kinds, {"string", "enum", "integer", "number", "boolean"})
 
+    def test_open_wait_keys_are_unique(self) -> None:
+        """An open wait's correlation key is unique in the installation, so no
+        two demo items may wait on the same booking reference."""
+        references = [step[2]["reference"] for entry in preview_demo.WORK for step in entry[4]
+                      if step[0] == "answer" and "reference" in step[2]]
+        self.assertEqual(len(references), len(set(references)))
+
     def test_documents_are_real_files(self) -> None:
         for name, (mime, data) in preview_demo.DOCS.items():
             if mime == "application/pdf":
