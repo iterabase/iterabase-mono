@@ -7,9 +7,9 @@ customer `forge apply`, and later pushes upgrade it in place. Images are the
 build-once digests imported into the host's containerd; charts are the source
 charts re-versioned `<version>-pr.<N>.<run>` / `<version>-main.<run>` and
 published to the preview namespace; the CI-owned preview overlay is the
-versioned E2E fixture overlay plus the preview values, committed on the host as
-a file:// repository that Forge serves to Flux over read-only node SSH
-(DES-HOR-632-01). Inference routes to a hosted, capped OpenAI-compatible API.
+versioned E2E fixture overlay plus the preview values, rendered on the runner by
+Forge, which ships only the result to the host (DES-HOR-593-03). Inference
+routes to a hosted, capped OpenAI-compatible API.
 """
 from __future__ import annotations
 
@@ -38,12 +38,8 @@ CHARTS = ROOT / "charts" / "charts"
 PREVIEW_CHARTS = "oci://ghcr.io/iterabase/preview/charts"
 PREVIEW_CHART_NAMES = ("iterabase-platform", "cert-manager-substrate", "lvm-storage-substrate")
 # The preview overlay is the versioned E2E fixture plus the preview values,
-# committed on the host and served to Flux over read-only node SSH
-# (DES-HOR-632-01). No overlay token is involved.
+# rendered on the runner by Forge (DES-HOR-593-03).
 OVERLAY_FIXTURE = ROOT / "forge" / "test" / "e2e" / "overlay"
-OVERLAY_ROOT = "/var/lib/iterabase-preview/overlay"
-OVERLAY_REPO = f"file://{OVERLAY_ROOT}"
-OVERLAY_REF = "preview"
 RELEASE = "iterabase"
 NAMESPACE = "iterabase-system"
 HOST_CHARTS = "/var/lib/iterabase-preview/charts"
@@ -148,38 +144,17 @@ def block_yaml(value: dict[str, Any], indent: int = 0) -> str:
     return "".join(lines)
 
 
-def overlay_archive(values: str, fixture: pathlib.Path = OVERLAY_FIXTURE) -> bytes:
-    """The fixture overlay with the preview values appended to values.client.yaml,
-    as a deterministic tar.gz (sorted, timestamp-free)."""
-    buffer = io.BytesIO()
-    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as gz, tarfile.open(fileobj=gz, mode="w") as archive:
-        for path in sorted(p for p in fixture.rglob("*") if p.is_file()):
-            relative = path.relative_to(fixture).as_posix()
-            contents = path.read_bytes()
-            if relative == "values.client.yaml":
-                contents += b"\n" + values.encode("utf-8")
-            info = tarfile.TarInfo(relative)
-            info.size, info.mode = len(contents), 0o644
-            archive.addfile(info, io.BytesIO(contents))
-    return buffer.getvalue()
+def prepare_overlay(values: str, workdir: pathlib.Path, fixture: pathlib.Path = OVERLAY_FIXTURE) -> pathlib.Path:
+    """Copy the fixture overlay into workdir with the preview values as a
+    separate, last value file; Forge renders it locally."""
+    overlay = workdir / "overlay"
+    shutil.rmtree(overlay, ignore_errors=True)
+    shutil.copytree(fixture, overlay)
+    (overlay / "values.preview.yaml").write_text(values, encoding="utf-8")
+    return overlay
 
 
-def overlay_script() -> str:
-    """Commit the archive on stdin as a fresh one-commit overlay repository."""
-    return f"""set -euo pipefail
-command -v git >/dev/null || {{ sudo apt-get update -qq && sudo apt-get install -y git; }}
-sudo rm -rf {OVERLAY_ROOT}
-sudo install -d -o ubuntu -g ubuntu -m 0755 {OVERLAY_ROOT}
-tar -xz -C {OVERLAY_ROOT}
-cd {OVERLAY_ROOT}
-git init -q -b {OVERLAY_REF}
-git add -A
-git -c user.email=preview@iterabase.invalid -c user.name="Iterabase preview" commit -qm "Preview overlay"
-git rev-parse HEAD
-"""
-
-
-def forge_config(host: Host, data_device: str, version: str, workdir: pathlib.Path) -> pathlib.Path:
+def forge_config(host: Host, data_device: str, version: str, overlay: pathlib.Path, workdir: pathlib.Path) -> pathlib.Path:
     config = workdir / "forge.yaml"
     config.write_text(f"""apiVersion: forge.horizonshift.io/v1alpha1
 kind: Cluster
@@ -204,12 +179,10 @@ spec:
     clusterCIDRv6: fd42::/48
     serviceCIDRv6: fd43::/112
     disable: [traefik, servicelb, local-storage]
-  flux:
-    enabled: true
-    version: "v2.4.0"
   overlay:
-    repo: {OVERLAY_REPO}
-    ref: {OVERLAY_REF}
+    path: {overlay}
+    valueFiles: [values.yaml, values.client.yaml, values.preview.yaml]
+    toolDirs: [tools/client]
   chart:
     version: {version}
     repository: {HOST_CHARTS}/iterabase-platform
@@ -354,12 +327,11 @@ def serve_on_tailnet(host: Host, environment: str, hosts: dict[str, str]) -> dic
 
 
 PREVIEW_EVIDENCE = (
-    "sudo k3s kubectl get gitrepository,kustomization,helmrelease -A -o wide",
-    "sudo k3s kubectl get gitrepository -A -o yaml",
+    "sudo k3s kubectl get configmaps -n iterabase-overlay -L iterabase.com/overlay-part",
+    "sudo k3s kubectl get configmap overlay-tools -n iterabase-overlay -o yaml",
     "sudo k3s kubectl get pods -A -o wide",
     "sudo k3s kubectl get events -A --sort-by=.lastTimestamp | tail -60",
-    "sudo k3s kubectl logs -n flux-system deploy/source-controller --tail=120",
-    "sudo journalctl -u ssh --no-pager --since -30min | grep -i iterabase-overlay | tail -40",
+    f"sudo k3s kubectl logs -n {NAMESPACE} -l app.kubernetes.io/component=tool-runner --all-containers --tail=120",
 )
 
 
@@ -385,11 +357,11 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
     archives = package_charts(version, workdir)
     forge = ROOT / "forge" / "bin" / "forge"
     run("make", "-C", "forge", "build")
-    config = forge_config(host, args.data_device, version, workdir)
-    env = {key: value for key, value in os.environ.items() if key != "FORGE_OVERLAY_TOKEN"}
+    env = dict(os.environ)
     env["FORGE_HOME"] = str(workdir / "forge-home")
     hosts = tailnet_hosts(host, args.name)
-    host.ssh_bytes(overlay_script(), overlay_archive(preview_values(images, args.model_id, hosts, args.admin_email)))
+    overlay = prepare_overlay(preview_values(images, args.model_id, hosts, args.admin_email), workdir)
+    config = forge_config(host, args.data_device, version, overlay, workdir)
     host.ssh(f"sudo install -d -o ubuntu {HOST_CHARTS}")
     for chart, archive in archives.items():
         host.copy(archive, f"/tmp/{archive.name}")
@@ -399,7 +371,7 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
     # sequence). The host's state decides, not whether this run launched it.
     if args.created == "true" or host.ssh("command -v k3s >/dev/null && echo yes || echo no").strip() != "yes":
         subprocess.run([str(forge), "apply", "--config", str(config), "--skip-chart", "--skip-gpu", "--skip-overlay",
-                        "--skip-secrets", "--skip-flux"], env=env, check=True)
+                        "--skip-secrets"], env=env, check=True)
     import_images(host, images, args.source_sha, workdir)
     try:
         subprocess.run([str(forge), "apply", "--config", str(config)], env=env, check=True)

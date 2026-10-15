@@ -9,12 +9,18 @@ render=$(helm template runner-check charts/control-plane -f values-control-plane
 
 grep -q 'app.kubernetes.io/component: tool-runner' <<<"$render"
 grep -q 'spiffe://iterabase.local/tool-runners/default/overlay-tools' <<<"$render"
-flux_rbac=$(awk '/# The materializer polls one exact GitRepository/{p=1} /^apiVersion: cert-manager.io/{p=0} p' <<<"$render")
-grep -q '^kind: Role$' <<<"$flux_rbac"
-grep -q '^kind: RoleBinding$' <<<"$flux_rbac"
-grep -q '^  namespace: "flux-system"$' <<<"$flux_rbac"
-grep -q 'resourceNames: \["overlay"\]' <<<"$flux_rbac"
-! grep -q '^kind: ClusterRole' <<<"$flux_rbac"
+# The overlay grant is exactly get on ConfigMaps in the dedicated overlay
+# namespace (DES-HOR-593-05): no list/watch, no other resource, no cluster scope.
+overlay_rbac=$(awk '/# The materializer reads Forge.s overlay-tools pointer ConfigMap/{p=1} /^apiVersion: cert-manager.io/{p=0} p' <<<"$render")
+grep -q '^kind: Role$' <<<"$overlay_rbac"
+grep -q '^kind: RoleBinding$' <<<"$overlay_rbac"
+test "$(grep -c '^  namespace: "iterabase-overlay"$' <<<"$overlay_rbac")" -eq 2
+grep -q '^  - apiGroups: \[""\]$' <<<"$overlay_rbac"
+grep -q '^    resources: \["configmaps"\]$' <<<"$overlay_rbac"
+grep -q '^    verbs: \["get"\]$' <<<"$overlay_rbac"
+test "$(grep -c 'apiGroups:' <<<"$overlay_rbac")" -eq 1
+! grep -q '^kind: ClusterRole' <<<"$overlay_rbac"
+! grep -q -i 'flux' <<<"$render"
 grep -q 'mountPath: /artifacts, readOnly: true' <<<"$render"
 grep -q 'name: TOOL_RUNNER_MAX_GENERATIONS' <<<"$render"
 grep -q 'name: TOOL_RUNNER_DRAIN_MAX_AGE' <<<"$render"
@@ -52,20 +58,22 @@ grep -q 'name: runner-tls' <<<"$runner"
 ! grep -q 'name: kube-api' <<<"$runner"
 grep -q 'rm -f /control/runner-ready; exec node /app/dist/main.js run' <<<"$runner"
 
-grep -q 'name: FLUX_ENABLED, value: "true"' <<<"$materializer"
+grep -q 'name: OVERLAY_TOOLS_ENABLED, value: "true"' <<<"$materializer"
+grep -q 'name: OVERLAY_TOOLS_NAMESPACE, value: "iterabase-overlay"' <<<"$materializer"
+grep -q 'name: OVERLAY_TOOLS_MAX_ARCHIVE_BYTES, value: "1048576"' <<<"$materializer"
 
 # Product-only install (DES-HOR-651-01): the product layer ships in the image,
-# so disabling the overlay client layer removes every Flux credential surface.
+# so disabling the overlay client layer removes every Kubernetes credential surface.
 product_only=$(helm template runner-check charts/control-plane -f values-control-plane-auth.yaml \
   --set postgresql.enabled=false \
   --set gateway.enabled=true \
   --set toolRunner.enabled=true \
-  --set toolRunner.flux.enabled=false)
+  --set toolRunner.overlayTools.enabled=false)
 grep -q 'app.kubernetes.io/component: tool-runner' <<<"$product_only"
-grep -q 'name: FLUX_ENABLED, value: "false"' <<<"$product_only"
-! grep -q 'source.toolkit.fluxcd.io' <<<"$product_only"
-! grep -q 'name: FLUX_SOURCE_NAME' <<<"$product_only"
+grep -q 'name: OVERLAY_TOOLS_ENABLED, value: "false"' <<<"$product_only"
+! grep -q 'name: OVERLAY_TOOLS_NAMESPACE' <<<"$product_only"
+! grep -q '^kind: Role' <<<"$product_only"
 ! grep -q 'name: kube-api' <<<"$product_only"
 ! grep -q 'app.kubernetes.io/component: tool-materializer' <<<"$product_only"
 
-echo "OK: tool runner renders with exact SPIFFE/Flux scoping, a Flux-free product-only mode, config-triggered gateway rollout, process-lifetime readiness, bounded generations, read-only artifacts, split credentials, and Prometheus scraping"
+echo "OK: tool runner renders with exact SPIFFE scoping, get-only overlay ConfigMap RBAC, a credential-free product-only mode, config-triggered gateway rollout, process-lifetime readiness, bounded generations, read-only artifacts, split credentials, and Prometheus scraping"

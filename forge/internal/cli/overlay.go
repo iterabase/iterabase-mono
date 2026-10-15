@@ -1,127 +1,176 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"net/http"
+	"io/fs"
 	"os"
-	"strings"
-	"time"
+	"path/filepath"
+	"regexp"
+	"sort"
+
+	"github.com/spf13/cobra"
+
+	"github.com/nunocgoncalves/iterabase-mono/forge/internal/config"
 )
 
-// ScopeChecker validates an overlay git token has access to the repo's host
-// (GitHub PAT scope check). The real impl calls the GitHub API; tests use a fake.
-type ScopeChecker interface {
-	Check(ctx context.Context, token []byte, repo string) error
+// Overlays repository layout (DES-HOR-593-03).
+const (
+	customersDir     = "customers"
+	templateName     = "_template"
+	templateNameMark = "__NAME__"
+)
+
+var customerNameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?$`)
+
+func newOverlayCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "overlay",
+		Short: "Work with the customer overlays repository",
+	}
+	newCmd := &cobra.Command{
+		Use:   "new <name>",
+		Short: "Scaffold customers/<name> from customers/_template",
+		Long: `new copies customers/_template in the overlays repository to customers/<name>,
+replacing every __NAME__ with the customer name. Review and commit the result,
+then provision it with 'forge init --provider aws --config customers/<name>/forge.yaml'.`,
+		Args: cobra.ExactArgs(1),
+		RunE: runOverlayNew,
+	}
+	newCmd.Flags().String("root", ".", "overlays repository root")
+	cmd.AddCommand(newCmd)
+	return cmd
 }
 
-// githubScopeChecker validates a GitHub token via GET /user (401 => invalid) and
-// warns if the classic-PAT X-OAuth-Scopes header lacks "repo". GitHub App and
-// Actions installation tokens can return 403 for /user; in that case the exact
-// repository API must confirm access before the token is accepted. Non-GitHub
-// repos skip the check. The clone remains the final repository-access check.
-type githubScopeChecker struct {
-	client     *http.Client
-	apiBaseURL string
-}
-
-func (g githubScopeChecker) Check(ctx context.Context, token []byte, repo string) error {
-	if !strings.HasPrefix(repo, "https://github.com/") {
-		return nil // scope check is GitHub-only
+func runOverlayNew(cmd *cobra.Command, args []string) error {
+	name := args[0]
+	if !customerNameRe.MatchString(name) || name == templateName {
+		return fmt.Errorf("customer name %q must be a lowercase DNS label of at most 32 characters", name)
 	}
-	apiBaseURL := strings.TrimSuffix(g.apiBaseURL, "/")
-	if apiBaseURL == "" {
-		apiBaseURL = "https://api.github.com"
+	root, _ := cmd.Flags().GetString("root")
+	src := filepath.Join(root, customersDir, templateName)
+	dst := filepath.Join(root, customersDir, name)
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("%s already exists", dst)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBaseURL+"/user", nil)
-	if err != nil {
-		return fmt.Errorf("token scope check: %w", err)
+	if info, err := os.Stat(src); err != nil || !info.IsDir() {
+		return fmt.Errorf("template %s not found; run from the overlays repository or pass --root", src)
 	}
-	req.Header.Set("Authorization", "Bearer "+string(token))
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("token scope check: %w", err)
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	switch {
-	case resp.StatusCode == http.StatusUnauthorized:
-		return fmt.Errorf("overlay token is invalid or expired (GitHub returned 401)")
-	case resp.StatusCode == http.StatusForbidden:
-		if err := g.checkRepositoryAccess(ctx, apiBaseURL, token, repo); err != nil {
-			return fmt.Errorf("overlay token repository access check after GitHub /user returned 403: %w", err)
+	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		fmt.Fprintln(os.Stderr, "warning: GitHub token cannot use /user; exact overlay repository access was verified")
-		return nil
-	case resp.StatusCode >= 400:
-		return fmt.Errorf("overlay token scope check: GitHub returned %d", resp.StatusCode)
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("template entry %s is not a regular file", path)
+		}
+		data, err := os.ReadFile(path) //nolint:gosec // template file inside the overlays repository the operator named
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, bytes.ReplaceAll(data, []byte(templateNameMark), []byte(name)), 0o644) //nolint:gosec // overlay files are reviewed repository content, not secrets
+	})
+	if err != nil {
+		_ = os.RemoveAll(dst)
+		return err
 	}
-	if scopes := resp.Header.Get("X-OAuth-Scopes"); scopes != "" && !strings.Contains(scopes, "repo") {
-		fmt.Fprintf(os.Stderr, "warning: overlay token scopes [%s] lack 'repo'; a private overlay clone may fail\n", scopes)
+	if _, err := config.Load(filepath.Join(dst, "forge.yaml")); err != nil {
+		_ = os.RemoveAll(dst)
+		return fmt.Errorf("scaffolded forge.yaml is invalid: %w", err)
 	}
+	fmt.Fprintf(cmd.OutOrStdout(), "created %s\n", dst)
 	return nil
 }
 
-func (g githubScopeChecker) checkRepositoryAccess(ctx context.Context, apiBaseURL string, token []byte, repo string) error {
-	repositoryPath := strings.TrimSuffix(strings.TrimPrefix(repo, "https://github.com/"), ".git")
-	parts := strings.Split(repositoryPath, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return fmt.Errorf("cannot derive exact GitHub repository from %q", repo)
+func newFleetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "fleet",
+		Short: "Operate every customer in the overlays repository",
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBaseURL+"/repos/"+parts[0]+"/"+parts[1], nil)
+	apply := &cobra.Command{
+		Use:   "apply",
+		Short: "Run forge apply for every customers/<name>/forge.yaml",
+		Long: `apply runs 'forge apply' for each customer in the overlays repository, in name
+order, so one change to a shared base or component reaches every installation
+(DES-HOR-593-04). It continues past a failing customer and fails at the end,
+naming every customer that failed.`,
+		RunE: runFleetApply,
+	}
+	apply.Flags().String("root", ".", "overlays repository root")
+	apply.Flags().StringSlice("only", nil, "limit to these customer names")
+	apply.Flags().Bool("dry-run", false, "print each customer's plan without mutating")
+	cmd.AddCommand(apply)
+	return cmd
+}
+
+func runFleetApply(cmd *cobra.Command, _ []string) error {
+	root, _ := cmd.Flags().GetString("root")
+	only, _ := cmd.Flags().GetStringSlice("only")
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	configs, err := fleetConfigs(root, only)
 	if err != nil {
-		return fmt.Errorf("build repository access request: %w", err)
+		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+string(token))
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("repository access request: %w", err)
+	var failed []string
+	for _, path := range configs {
+		fmt.Fprintf(cmd.OutOrStdout(), "== %s\n", path)
+		cfg, err := config.Load(path)
+		if err == nil {
+			err = applyInstallation(context.Background(), cmd, cfg, applyOptsFromFlags(cmd), dryRun)
+		}
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s: %v\n", path, err)
+			failed = append(failed, path)
+		}
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GitHub returned %d for %s/%s", resp.StatusCode, parts[0], parts[1])
+	if len(failed) > 0 {
+		return fmt.Errorf("fleet apply failed for %d of %d customers: %v", len(failed), len(configs), failed)
 	}
+	fmt.Fprintf(cmd.OutOrStdout(), "fleet apply complete: %d customers\n", len(configs))
 	return nil
 }
 
-// resolveOverlayToken determines the overlay git token:
-//   - FORGE_OVERLAY_TOKEN env var (non-interactive) wins; its scopes are checked.
-//   - Otherwise, for an https repo when interactive (TTY), prompt (non-echo;
-//     empty => public repo, tokenless). A prompted token's scopes are checked.
-//   - file:// repos, or https with no env var + non-interactive (CI), need no
-//     token (public/CI proceeds tokenless).
-func resolveOverlayToken(ctx context.Context, repo, envToken string, interactive bool, tp passwordPrompter, sc ScopeChecker) ([]byte, error) {
-	if envToken != "" {
-		tok := []byte(envToken)
-		if err := sc.Check(ctx, tok, repo); err != nil {
-			return nil, err
-		}
-		return tok, nil
-	}
-	if !strings.HasPrefix(repo, "https://") {
-		return nil, nil // file:// needs no token
-	}
-	if !interactive || tp == nil {
-		return nil, nil // CI / non-interactive proceeds tokenless
-	}
-	tok, err := tp.Prompt("Overlay repo token (enter for a public repo)")
+// fleetConfigs lists customers/<name>/forge.yaml, excluding the template.
+func fleetConfigs(root string, only []string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(root, customersDir))
 	if err != nil {
-		return nil, fmt.Errorf("read overlay token: %w", err)
+		return nil, fmt.Errorf("overlays repository %s: %w", root, err)
 	}
-	if len(tok) == 0 {
-		return nil, nil // empty => public repo, tokenless
+	wanted := map[string]bool{}
+	for _, name := range only {
+		wanted[name] = true
 	}
-	if err := sc.Check(ctx, tok, repo); err != nil {
-		return nil, err
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == templateName {
+			continue
+		}
+		if len(wanted) > 0 && !wanted[e.Name()] {
+			continue
+		}
+		delete(wanted, e.Name())
+		path := filepath.Join(root, customersDir, e.Name(), "forge.yaml")
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		out = append(out, path)
 	}
-	return tok, nil
-}
-
-// newGithubScopeChecker builds the production GitHub scope checker.
-func newGithubScopeChecker() ScopeChecker {
-	return githubScopeChecker{client: &http.Client{Timeout: 15 * time.Second}, apiBaseURL: "https://api.github.com"}
+	if len(wanted) > 0 {
+		missing := make([]string, 0, len(wanted))
+		for name := range wanted {
+			missing = append(missing, name)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("no such customers: %v", missing)
+	}
+	sort.Strings(out)
+	return out, nil
 }

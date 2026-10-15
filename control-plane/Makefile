@@ -301,7 +301,7 @@ tool-runner-deps: ## Install locked tool-runner dependencies.
 	cd tool-runner && npm ci
 
 .PHONY: tool-runner-build
-tool-runner-build: ## Build the tool runner + Flux materializer.
+tool-runner-build: ## Build the tool runner + overlay tool materializer.
 	cd tool-runner && npm run build
 
 .PHONY: tool-runner-lint

@@ -133,7 +133,7 @@ spec:
           annotations:
             summary: "No valid trusted-tool generation is ready"
             description: "The runner has not activated a complete reviewed tool generation."
-            first_action: "Inspect Flux artifact status and materializer validation errors."
+            first_action: "Inspect the overlay-tools pointer and archive ConfigMaps and materializer validation errors."
             runbook_url: {{ printf "%s#iterabasetoolgenerationunavailable" $runbook | quote }}
         - alert: IterabaseToolMaterializationFailures
           expr: increase(tool_runner_materializations_total{result="failure"}[15m]) >= 3
@@ -141,7 +141,7 @@ spec:
           labels: {severity: warning, component: tool-materializer}
           annotations:
             summary: "Trusted-tool materialization is repeatedly failing"
-            description: "Three or more Flux artifact materialization attempts failed in fifteen minutes."
+            description: "Three or more overlay tool archive materialization attempts failed in fifteen minutes."
             first_action: "Inspect artifact digest, archive bounds, manifests, and materializer logs."
             runbook_url: {{ printf "%s#iterabasetoolmaterializationfailures" $runbook | quote }}
 

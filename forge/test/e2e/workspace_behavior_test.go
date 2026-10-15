@@ -144,7 +144,7 @@ rm -f %[1]s
 		Name: state.runID, Address: state.ip, SSHKeyPath: state.privKeyPath, RunLabel: true, DualStack: true,
 	})
 	output, applyErr := runForgeE(state.forgeBin, state.forgeHome, "apply", "--config", cfg,
-		"--skip-chart", "--skip-gpu", "--skip-overlay", "--skip-secrets", "--skip-flux")
+		"--skip-chart", "--skip-gpu", "--skip-overlay", "--skip-secrets")
 	if applyErr == nil {
 		t.Fatalf("Forge created a PV on a process-held raw data disk:\n%s", output)
 	}

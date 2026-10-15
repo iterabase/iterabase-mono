@@ -298,7 +298,7 @@ tests:
               component: tool-materializer
             exp_annotations:
               summary: Trusted-tool materialization is repeatedly failing
-              description: Three or more Flux artifact materialization attempts failed in fifteen minutes.
+              description: Three or more overlay tool archive materialization attempts failed in fifteen minutes.
               first_action: Inspect artifact digest, archive bounds, manifests, and materializer logs.
               runbook_url: https://github.com/nunocgoncalves/iterabase-mono/blob/master/docs/runbooks/platform-alerts.md#iterabasetoolmaterializationfailures
       - eval_time: 20m

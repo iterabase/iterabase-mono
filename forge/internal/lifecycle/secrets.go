@@ -5,18 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/deployer"
-	"github.com/nunocgoncalves/iterabase-mono/forge/internal/overlayer"
 )
 
 // SecretSync declares a Kubernetes Secret forge materializes from an
 // operator-local env var. The declaration (name/namespace/key/envVar) is
-// non-secret and lives in the overlay repo's secrets.yaml (the runtime GitOps
-// source of truth); the VALUE is read from the named env var (gitignored .env)
+// non-secret and lives in the overlay's secrets.yaml; the VALUE is read from the named env var (gitignored .env)
 // and applied via `kubectl apply -f -` over SSH stdin — it never touches helm
 // values, git, or the process list. First consumer: the Cloudflare API token
 // shared by cert-manager (cert-issuers, HOR-342) + external-dns (HOR-343).
@@ -55,33 +52,24 @@ func (envOnlySecretResolver) Resolve(_ context.Context, name, envVar string) (st
 	return v, nil
 }
 
-// applySecrets is the secret-sync phase: it reads the overlay's secrets.yaml
-// (non-secret declarations) from the cloned overlay on the host, resolves each
-// env var on the operator, and materializes the Secrets via `kubectl apply -f -`
-// over SSH stdin (Deployer.ApplyManifest). Runs AFTER the overlay clone + BEFORE
-// the platform chart so consumers (cert-manager's ClusterIssuer) find the Secret
+// applySecrets is the secret-sync phase: it parses the overlay's secrets.yaml
+// (non-secret declarations, read on the operator machine), resolves each env
+// var on the operator, and materializes the Secrets via `kubectl apply -f -`
+// over SSH stdin (Deployer.ApplyManifest). Runs BEFORE the platform chart so consumers (cert-manager's ClusterIssuer) find the Secret
 // on first reconcile.
 //
 // Invariants: secret values are read from env vars (gitignored .env) and piped
 // via stdin — they never appear in a command string, ps, helm values, or git.
 // The declaration is the only thing in the overlay. Idempotent (kubectl apply);
 // reality-as-state on re-apply. No-op without an overlay (secrets live there).
-func applySecrets(ctx context.Context, o overlayer.Overlayer, d deployer.Deployer, opts ApplyOpts, res *Result, overlayDest string) error {
-	if d == nil || o == nil || opts.SkipSecrets || overlayDest == "" {
+func applySecrets(ctx context.Context, d deployer.Deployer, opts ApplyOpts, res *Result, content []byte) error {
+	// secrets.yaml is optional: an overlay without it has no secrets to
+	// materialize.
+	if d == nil || opts.SkipSecrets || len(content) == 0 {
 		return nil
 	}
 
-	// secrets.yaml is optional: an overlay without it simply has no secrets to
-	// materialize. A missing file surfaces as a "No such file" cat error.
-	content, err := o.ReadFile(ctx, overlayDest, "secrets.yaml")
-	if err != nil {
-		if strings.Contains(err.Error(), "No such file") {
-			return nil // no secrets.yaml ⇒ no secrets
-		}
-		return fmt.Errorf("read overlay secrets.yaml: %w", err)
-	}
-
-	secs, err := parseSecrets([]byte(content))
+	secs, err := parseSecrets(content)
 	if err != nil {
 		return fmt.Errorf("parse overlay secrets.yaml: %w", err)
 	}

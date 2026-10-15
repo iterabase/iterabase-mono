@@ -64,7 +64,7 @@ func TestAuditNeverReachesOperatorHome(t *testing.T) {
 		"HOME %q escapes the isolated test root %q", home, isolatedRoot)
 
 	p := &fakeProv{pf: readyPf(), hostSwapErr: errors.New("swapoff failed")}
-	_, err = Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{})
+	_, err = Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{})
 	require.Error(t, err)
 
 	audit, err := os.ReadFile(filepath.Join(root, testConfig().Metadata.Name, "audit.jsonl"))

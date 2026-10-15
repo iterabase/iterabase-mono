@@ -32,7 +32,7 @@ import (
 func applyInferencePlatformStage(t *testing.T, state *gpuFixtureState) {
 	prepareCandidateChart(t, state.host.IP, state.privKeyPath)
 	state.runtimeImageDigests = prepareCandidateImages(t, state.host.IP, state.privKeyPath)
-	plan := prepareCandidateOverlay(t, state.runID, state.host.IP, state.privKeyPath)
+	plan := prepareCandidateOverlay(t)
 	// GPU readiness was already proven on this host. Reconcile the same config
 	// with the platform chart while skipping a redundant GPU-operator upgrade.
 	candidateConfig := writeForgeConfigInferenceGPU(
@@ -41,9 +41,13 @@ func applyInferencePlatformStage(t *testing.T, state *gpuFixtureState) {
 	out := applyOnceArgs(t, state.forgeBin, state.forgeHome, candidateConfig, "--skip-gpu")
 	state.bindKubeconfigTunnel(t)
 	markers := []string{"action:     skip", "node ready: true", "data storage: iterabase-data", "LVM storage ready: true", "certificate substrate applied: true", "LVM storage substrate applied: true",
-		"chart applied: true", "overlay applied: true", "flux installed: true", "gitrepository: ready=True"}
+		"chart applied: true", "overlay revision: sha256:", "overlay tools:  sha256:"}
 	assertApplyMarkers(t, out, markers...)
 	t.Logf("apply output:\n%s", out)
+	sc, err := sshDial(state.host.IP, state.privKeyPath)
+	require.NoError(t, err)
+	defer sc.Close()
+	assertOverlayDelivered(t, sc, state.runID, plan, out)
 	candidateCluster := remotecluster.Use(t, filepath.Join(state.forgeHome, state.runID, "kubeconfig.yaml"))
 	assertCandidateImageDigests(t, candidateCluster, "iterabase-system", state.runtimeImageDigests,
 		controlPlaneDigestEnv, inferenceGatewayDigestEnv, toolRunnerDigestEnv)
@@ -246,8 +250,7 @@ func writeForgeConfigInferenceGPU(
 		Name: name, Address: ip, SSHKeyPath: keyPath, GPU: true,
 		ChartVersion: chartVersion, ChartRepository: os.Getenv("FORGE_E2E_CHART_REPOSITORY"),
 		ChartRelease: "itb", ChartNamespace: "iterabase-system",
-		OverlayRepo: plan.repository, OverlayRef: plan.ref,
-		Flux: plan.flux,
+		OverlayPath: plan.path, OverlayValueFiles: plan.valueFiles, OverlayToolDirs: plan.toolDirs,
 	})
 }
 

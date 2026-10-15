@@ -272,7 +272,7 @@ Upgrading from control-plane chart `0.4.11` or earlier changes the default edge
 Secret name. A single Helm upgrade cannot guarantee that ingress-shim issues
 that new Secret before ingress-nginx observes the changed Ingress. Pre-issue it
 while the existing Ingress still references the old Secret, then switch in a
-second phase (with Flux/reconcilers suspended when that is the deployment's
+second phase (with automated reconcilers paused when that is the deployment's
 normal maintenance procedure):
 
 ```sh
@@ -516,13 +516,17 @@ kubelet `system-reserved`, and the per-instance concurrency budget are in
 size AgentPools and ModelBackends explicitly through their `spec.resources` in
 the overlay.
 
-## Flux-backed gateway tool runner
+## Gateway tool runner
 
 The control-plane chart can deploy the HOR-397 Node 24 runner as a two-container
 pod. Its materializer receives a projected, read-only Kubernetes token limited
-to `get` on the configured Flux `GitRepository`; the runner receives the mTLS
-SPIFFE leaf but no Kubernetes or Git credential. The materializer verifies the
-exact Flux artifact digest and writes immutable generation directories. The
+by a namespaced Role to `get` on ConfigMaps in the dedicated overlay namespace
+(`control-plane.toolRunner.overlayTools.namespace`, default `iterabase-overlay`);
+the runner receives the mTLS SPIFFE leaf but no Kubernetes or Git credential.
+The materializer reads Forge's `overlay-tools` pointer ConfigMap, then the
+immutable `overlay-tools-<sha256>` archive ConfigMap it names, verifies the
+exact SHA-256 of the `tools.tar.gz` bytes against the pointer, and writes
+immutable generation directories (DES-HOR-593-05). The
 runner mounts those files read-only, validates all manifests/bundles atomically,
 and connects outbound to the tool gateway. It exposes no inbound execution API;
 when `control-plane.metrics.enabled=true` (or the narrower
@@ -539,14 +543,16 @@ carries only customer `tools/client` bundles, and an overlay `tools/product` is
 rejected. The layer contract is documented in
 [`control-plane/tool-runner/tools/README.md`](../control-plane/tool-runner/tools/README.md).
 
-With `control-plane.toolRunner.flux.enabled=true` (default), a valid, Ready Flux
-`GitRepository` named `overlay` must exist before installing with the runner
-enabled, because readiness intentionally requires a validated first generation.
-Forge establishes and gates on the exact source revision and digest before Helm.
-With `flux.enabled=false` the runner serves the image product layer alone and
-the chart renders no Flux RBAC or Kubernetes API credential. Generic chart-only CI disables the runner because it has no
-cross-repository runner image or Flux source; the dedicated kind+Flux contract
-covers the enabled runtime path.
+With `control-plane.toolRunner.overlayTools.enabled=true` (default), the overlay
+namespace must exist before Helm installs the Role into it, and the pointer and
+archive ConfigMaps must exist before the runner becomes Ready, because readiness
+intentionally requires a validated first generation. `forge apply` creates the
+namespace and writes both ConfigMaps before Helm; it always writes an archive,
+even an empty one, so a missing pointer or archive means "not ready", never "no
+overlay". With `overlayTools.enabled=false` the runner serves the image product
+layer alone and the chart renders no overlay RBAC or Kubernetes API credential.
+The generic chart-only scenarios disable the runner; the observability scenarios
+write the same ConfigMaps Forge does and cover the enabled runtime path.
 
 **Dispatch (Work server).** The control-plane chart deploys the durable Work
 bidi-stream gRPC server (HOR-249) at `control-plane.dispatch.*`, enabled by

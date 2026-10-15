@@ -94,6 +94,28 @@ type fakeSSHObserver struct {
 	authAttempts atomic.Int64
 	execRequests atomic.Int64
 	stdinBytes   atomic.Int64
+
+	mu       sync.Mutex
+	commands []stdinRecord // every exec, with the stdin it carried
+}
+
+// stdinRecord is one observed exec request and the stdin bytes it delivered.
+type stdinRecord struct {
+	cmd   string
+	stdin string
+}
+
+func (o *fakeSSHObserver) record(cmd, stdin string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.commands = append(o.commands, stdinRecord{cmd: cmd, stdin: stdin})
+}
+
+// records returns a snapshot of the observed exec requests in arrival order.
+func (o *fakeSSHObserver) records() []stdinRecord {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]stdinRecord(nil), o.commands...)
 }
 
 type countingWriter struct{ counter *atomic.Int64 }
@@ -205,14 +227,19 @@ func serveSession(ch ssh.NewChannel, h resultHandler, obs *fakeSSHObserver) {
 		result := h(cmd)
 		_ = req.Reply(true, nil)
 		// Commands that read stdin (runStdin) must drain stdin before exit-status
-		// so the client's write completes cleanly: "cat > file" (overlay git cred)
-		// and "kubectl apply -f -" (secret-sync; the '-' arg is the stdin marker).
+		// so the client's write completes cleanly: "cat > file" (staged overlay
+		// value files) and "kubectl apply/get -f -" (the '-' arg is the stdin
+		// marker).
+		var stdin bytes.Buffer
 		if strings.Contains(cmd, "cat >") || strings.Contains(cmd, "'-'") {
-			sink := io.Writer(io.Discard)
+			sink := io.Writer(&stdin)
 			if obs != nil {
-				sink = countingWriter{counter: &obs.stdinBytes}
+				sink = io.MultiWriter(&stdin, countingWriter{counter: &obs.stdinBytes})
 			}
 			_, _ = io.Copy(sink, sch)
+		}
+		if obs != nil {
+			obs.record(cmd, stdin.String())
 		}
 		if result.stdout != "" {
 			_, _ = sch.Write([]byte(result.stdout))
@@ -821,34 +848,6 @@ func TestDeployer_Apply(t *testing.T) {
 	assert.Contains(t, got, "'--wait'")
 }
 
-func TestDeployer_Apply_NoWait(t *testing.T) {
-	var got string
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case cmd == helmVerifyCommand:
-			return "/usr/local/bin/helm\n", 0
-		case strings.Contains(cmd, "'show' 'crds'"):
-			return "", 0
-		case strings.Contains(cmd, "'template'"):
-			return "", 0
-		case strings.Contains(cmd, "'upgrade' '--install'"):
-			got = cmd
-			return "", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	require.NoError(t, p.Apply(context.Background(), deployer.ApplyOpts{
-		Release: "opo1", Repository: "oci://ghcr.io/nunocgoncalves/iterabase-platform",
-		Version: "0.3.0", Namespace: "iterabase-system", NoWait: true,
-	}))
-	assert.NotContains(t, got, "'--wait'")
-	assert.Contains(t, got, "'--timeout' '10m'")
-}
-
 func TestDeployer_Apply_ReconcilesCRDsBeforeUpgrade(t *testing.T) {
 	const crds = "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: examples.example.com\n"
 	var commands []string
@@ -1353,115 +1352,6 @@ func TestDeployerStatusDistinguishesReleaseAbsenceFromObservationFailure(t *test
 	}
 }
 
-func TestDeployer_CRDOwnedBy(t *testing.T) {
-	tests := []struct {
-		name string
-		out  string
-		want bool
-	}{
-		{
-			name: "all selected CRDs owned by companion",
-			out: "certificates.cert-manager.io\topo1-cert-manager\titerabase-system\n" +
-				"issuers.cert-manager.io\topo1-cert-manager\titerabase-system\n",
-			want: true,
-		},
-		{
-			name: "partial transfer remains incomplete",
-			out: "certificates.cert-manager.io\topo1-cert-manager\titerabase-system\n" +
-				"issuers.cert-manager.io\topo1\titerabase-system\n",
-			want: false,
-		},
-		{name: "empty selection", want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-				if strings.Contains(cmd, "'get' 'crd'") && strings.Contains(cmd, "'jsonpath=") {
-					return tt.out, 0
-				}
-				return "", 1
-			})
-			defer cleanup()
-			p := newProvisioner(t, addr, cfg)
-			defer p.Close()
-			owned, err := p.CRDOwnedBy(context.Background(),
-				"app.kubernetes.io/name=cert-manager", "opo1-cert-manager", "iterabase-system")
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, owned)
-		})
-	}
-}
-
-func TestDeployer_CRDsAnnotated(t *testing.T) {
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		if strings.Contains(cmd, "'get' 'crd'") && strings.Contains(cmd, "'-o' 'json'") {
-			return `{"items":[{"metadata":{"annotations":{"forge.horizonshift.io/certificate-substrate-migration":"0.3.0"}}},{"metadata":{"annotations":{"forge.horizonshift.io/certificate-substrate-migration":"0.3.0"}}}]}`, 0
-		}
-		return "", 1
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	complete, err := p.CRDsAnnotated(context.Background(), "app.kubernetes.io/name=cert-manager",
-		"forge.horizonshift.io/certificate-substrate-migration", "0.3.0")
-	require.NoError(t, err)
-	assert.True(t, complete)
-}
-
-func TestDeployer_AnnotateCRDs(t *testing.T) {
-	var annotate string
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case strings.Contains(cmd, "'get' 'crd'"):
-			return "customresourcedefinition.apiextensions.k8s.io/certificates.cert-manager.io\n", 0
-		case strings.Contains(cmd, "'annotate' '--overwrite'"):
-			annotate = cmd
-			return "", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	require.NoError(t, p.AnnotateCRDs(context.Background(), "app.kubernetes.io/name=cert-manager",
-		"forge.horizonshift.io/certificate-substrate-migration", "0.3.0"))
-	assert.Contains(t, annotate, "'forge.horizonshift.io/certificate-substrate-migration=0.3.0'")
-}
-
-func TestDeployer_TransferCertificateHookOwnership(t *testing.T) {
-	var annotations []string
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case strings.Contains(cmd, "'get' 'clusterissuer'"):
-			return "clusterissuer.cert-manager.io/selfsigned\nclusterissuer.cert-manager.io/internal-ca\n", 0
-		case strings.Contains(cmd, "'get' 'certificate'"):
-			return "certificate.cert-manager.io/opo1-internal-ca-root\n", 0
-		case strings.Contains(cmd, "'annotate' '--overwrite'"):
-			annotations = append(annotations, cmd)
-			return "", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	require.NoError(t, p.TransferCertificateHookOwnership(context.Background(),
-		"app.kubernetes.io/instance=opo1,app.kubernetes.io/managed-by=Helm", "opo1", "iterabase-system"))
-	require.Len(t, annotations, 2)
-	assert.Contains(t, annotations[0], "'clusterissuer.cert-manager.io/selfsigned'")
-	assert.NotContains(t, annotations[0], "'-n'")
-	assert.Contains(t, annotations[1], "'-n' 'iterabase-system'")
-	assert.Contains(t, annotations[1], "'certificate.cert-manager.io/opo1-internal-ca-root'")
-	for _, annotate := range annotations {
-		assert.Contains(t, annotate, "'meta.helm.sh/release-name=opo1'")
-		assert.Contains(t, annotate, "'meta.helm.sh/release-namespace=iterabase-system'")
-		assert.Contains(t, annotate, "'helm.sh/hook-'")
-		assert.Contains(t, annotate, "'helm.sh/hook-weight-'")
-	}
-}
-
 func TestDeployer_TransferMetalLBHookOwnership(t *testing.T) {
 	var annotates []string
 	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
@@ -1508,48 +1398,6 @@ func TestDeployer_TransferMetalLBHookOwnership_NoObjectsNoCRDs(t *testing.T) {
 	// Unknown-kind errors are tolerated as no-ops so cloud installs (where the
 	// MetalLB CRDs never existed) do not fail the platform apply.
 	require.NoError(t, p.TransferMetalLBHookOwnership(context.Background(), "opo1", "iterabase-system"))
-}
-
-func TestDeployer_TransferCRDOwnership(t *testing.T) {
-	var annotate string
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case strings.Contains(cmd, "'get' 'crd'"):
-			return "customresourcedefinition.apiextensions.k8s.io/certificates.cert-manager.io\ncustomresourcedefinition.apiextensions.k8s.io/issuers.cert-manager.io\n", 0
-		case strings.Contains(cmd, "'annotate' '--overwrite'"):
-			annotate = cmd
-			return "", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	require.NoError(t, p.TransferCRDOwnership(context.Background(),
-		"app.kubernetes.io/name=cert-manager", "opo1-cert-manager", "iterabase-system"))
-	assert.Contains(t, annotate, "'customresourcedefinition.apiextensions.k8s.io/certificates.cert-manager.io'")
-	assert.Contains(t, annotate, "'meta.helm.sh/release-name=opo1-cert-manager'")
-	assert.Contains(t, annotate, "'meta.helm.sh/release-namespace=iterabase-system'")
-}
-
-func TestDeployer_RestartDeployment(t *testing.T) {
-	var commands []string
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		commands = append(commands, cmd)
-		return "", 0
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	require.NoError(t, p.RestartDeployment(context.Background(),
-		"app.kubernetes.io/name=control-plane,app.kubernetes.io/instance=opo1,app.kubernetes.io/component=gateway",
-		"iterabase-system"))
-	require.Len(t, commands, 2)
-	assert.Contains(t, commands[0], "'rollout' 'restart' 'deployment' '-n' 'iterabase-system'")
-	assert.Contains(t, commands[0], "'-l=app.kubernetes.io/name=control-plane,app.kubernetes.io/instance=opo1,app.kubernetes.io/component=gateway'")
-	assert.Contains(t, commands[1], "'rollout' 'status' 'deployment'")
-	assert.Contains(t, commands[1], "'--timeout=5m'")
 }
 
 func TestDeployer_UninstallChart(t *testing.T) {
@@ -2179,183 +2027,6 @@ func TestIsAptLockHeld(t *testing.T) {
 	assert.False(t, isAptLockHeld("E: Unable to locate package linux-headers-6.8.0"))
 }
 
-func TestOverlayer_Clone(t *testing.T) {
-	var gotClone, gotCheck string
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case cmd == "command -v git":
-			return "/usr/bin/git\n", 0
-		case strings.Contains(cmd, "clone"):
-			gotClone = cmd
-			return "", 0
-		case strings.HasPrefix(cmd, "test -f "):
-			gotCheck = cmd
-			return "", 0
-		case strings.Contains(cmd, "rev-parse HEAD"):
-			return "deadbeef\n", 0
-		default: // rm -rf, mkdir -p
-			return "", 0
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	commit, err := p.Clone(context.Background(), "https://github.com/example/overlay.git", "master", "/var/lib/forge/overlay/opo1", nil)
-	require.NoError(t, err)
-	assert.Equal(t, "deadbeef", commit)
-	assert.Contains(t, gotClone, "https://github.com/example/overlay.git")
-	assert.Contains(t, gotClone, "http.version=HTTP/1.1")
-	assert.Contains(t, gotClone, "/var/lib/forge/overlay/opo1")
-	assert.Contains(t, gotCheck, "values.yaml")
-	assert.Contains(t, gotCheck, "values.client.yaml")
-	assert.Contains(t, gotCheck, "crds/client/kustomization.yaml")
-}
-
-func TestOverlayer_Clone_RetriesTransientTransportFailure(t *testing.T) {
-	previousInterval := overlayCloneRetryInterval
-	overlayCloneRetryInterval = time.Millisecond
-	defer func() { overlayCloneRetryInterval = previousInterval }()
-
-	cloneCalls := 0
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case strings.Contains(cmd, "clone"):
-			cloneCalls++
-			if cloneCalls < overlayCloneMaxAttempts {
-				return "fatal: expected flush after ref listing", 128
-			}
-			return "", 0
-		case strings.HasPrefix(cmd, "test -f "):
-			return "", 0
-		case strings.Contains(cmd, "rev-parse HEAD"):
-			return "deadbeef\n", 0
-		default:
-			return "", 0
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-
-	commit, err := p.Clone(context.Background(), "https://github.com/example/overlay.git", "master", "/var/lib/forge/overlay/opo1", nil)
-	require.NoError(t, err)
-	assert.Equal(t, "deadbeef", commit)
-	assert.Equal(t, overlayCloneMaxAttempts, cloneCalls)
-}
-
-func TestOverlayer_Clone_DoesNotRetryAuthenticationFailure(t *testing.T) {
-	cloneCalls := 0
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		if strings.Contains(cmd, "clone") {
-			cloneCalls++
-			return "fatal: Authentication failed", 128
-		}
-		return "", 0
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-
-	_, err := p.Clone(context.Background(), "https://github.com/example/overlay.git", "master", "/var/lib/forge/overlay/opo1", nil)
-	require.ErrorContains(t, err, "overlay clone")
-	assert.Equal(t, 1, cloneCalls)
-}
-
-func TestIsTransientGitCloneFailure(t *testing.T) {
-	assert.True(t, isTransientGitCloneFailure("fatal: expected flush after ref listing"))
-	assert.True(t, isTransientGitCloneFailure("RPC failed; HTTP 503"))
-	assert.False(t, isTransientGitCloneFailure("fatal: Authentication failed"))
-	assert.False(t, isTransientGitCloneFailure("Repository not found"))
-}
-
-func TestOverlayer_Clone_StructureValidation(t *testing.T) {
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case cmd == "command -v git":
-			return "/usr/bin/git\n", 0
-		case strings.Contains(cmd, "clone"):
-			return "", 0
-		case strings.HasPrefix(cmd, "test -f "):
-			return "", 1 // structure missing
-		default:
-			return "", 0
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	_, err := p.Clone(context.Background(), "https://github.com/example/overlay.git", "master", "/var/lib/forge/overlay/opo1", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "overlay structure")
-}
-
-func TestOverlayer_Clone_TokenCredFile(t *testing.T) {
-	var gotClone string
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case cmd == "command -v git":
-			return "/usr/bin/git\n", 0
-		case strings.Contains(cmd, "clone"):
-			gotClone = cmd
-			return "", 0
-		case strings.HasPrefix(cmd, "test -f "):
-			return "", 0
-		case strings.Contains(cmd, "rev-parse HEAD"):
-			return "abc\n", 0
-		default: // cat > credFile (runStdin), rm -rf, mkdir -p
-			return "", 0
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	_, err := p.Clone(context.Background(), "https://github.com/example/overlay.git", "master", "/var/lib/forge/overlay/opo1", []byte("ghp_secret"))
-	require.NoError(t, err)
-	assert.NotContains(t, gotClone, "ghp_secret", "token must not appear in the clone command/ps")
-	assert.Contains(t, gotClone, "credential.helper=store --file=")
-	assert.Contains(t, gotClone, "https://github.com/example/overlay.git", "clone URL has no embedded token")
-}
-
-func TestDeployer_ApplyKustomize_Empty(t *testing.T) {
-	var applied bool
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case strings.Contains(cmd, "kustomize"):
-			return "", 0 // empty render (no objects)
-		case strings.Contains(cmd, "apply"):
-			applied = true
-			return "", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	require.NoError(t, p.ApplyKustomize(context.Background(), "/var/lib/forge/overlay/opo1/crds/client"))
-	assert.False(t, applied, "empty kustomize => apply skipped (no objects)")
-}
-
-func TestDeployer_ApplyKustomize_Objects(t *testing.T) {
-	var applied bool
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case strings.Contains(cmd, "kustomize"):
-			return "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n", 0
-		case strings.Contains(cmd, "apply"):
-			applied = true
-			return "", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	require.NoError(t, p.ApplyKustomize(context.Background(), "/var/lib/forge/overlay/opo1/crds/client"))
-	assert.True(t, applied, "non-empty kustomize => apply runs")
-}
-
 func TestDeployer_ApplyManifest(t *testing.T) {
 	var got string
 	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
@@ -2391,242 +2062,4 @@ func TestDeployer_ApplyManifest_Error(t *testing.T) {
 	err := p.ApplyManifest(context.Background(), `{"apiVersion":"v1","kind":"Secret"}`)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kubectl apply -f -")
-}
-
-func TestOverlayer_ReadFile(t *testing.T) {
-	t.Run("exists", func(t *testing.T) {
-		addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-			if strings.HasPrefix(cmd, "cat ") {
-				return "secrets: []\n", 0
-			}
-			return "", 1
-		})
-		defer cleanup()
-		p := newProvisioner(t, addr, cfg)
-		defer p.Close()
-		out, err := p.ReadFile(context.Background(), "/var/lib/forge/overlay/opo1", "secrets.yaml")
-		require.NoError(t, err)
-		assert.Equal(t, "secrets: []\n", out)
-	})
-	t.Run("missing", func(t *testing.T) {
-		// A missing file makes cat exit non-zero; the real host's stderr carries
-		// "No such file" (asserted via the lifecycle fake). This legacy handler
-		// injects only stdout, so this case asserts only that the error surfaces.
-		addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-			if strings.HasPrefix(cmd, "cat ") {
-				return "", 1
-			}
-			return "", 1
-		})
-		defer cleanup()
-		p := newProvisioner(t, addr, cfg)
-		defer p.Close()
-		_, err := p.ReadFile(context.Background(), "/var/lib/forge/overlay/opo1", "secrets.yaml")
-		require.Error(t, err)
-	})
-}
-
-func TestFluxer_EnsureFlux_InstallsReviewedCLIAndDigestPinnedRuntime(t *testing.T) {
-	var gotDownload, gotFluxInstall string
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case cmd == "sudo test -f '/usr/local/bin/flux'":
-			return "", 1
-		case cmd == "uname -m":
-			return "x86_64\n", 0
-		case cmd == "mktemp /tmp/forge-flux.XXXXXX":
-			return "/tmp/forge-flux.archive\n", 0
-		case cmd == "mktemp -d /tmp/forge-flux.XXXXXX":
-			return "/tmp/forge-flux.extract\n", 0
-		case cmd == "mktemp /tmp/forge-flux-runtime.XXXXXX":
-			return "/tmp/forge-flux-runtime.test\n", 0
-		case strings.HasPrefix(cmd, "curl -fsSL"):
-			gotDownload = cmd
-			return "", 0
-		case strings.Contains(cmd, "sha256sum --check --status"), strings.HasPrefix(cmd, "tar -xzf"), strings.HasPrefix(cmd, "sudo install -d"), strings.HasPrefix(cmd, "rm -f "), strings.HasPrefix(cmd, "rm -rf "):
-			return "", 0
-		case strings.Contains(cmd, "bash -o pipefail") && strings.Contains(cmd, "flux install --export"):
-			gotFluxInstall = cmd
-			return "", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	require.NoError(t, p.EnsureFlux(context.Background(), "v2.4.0"))
-	assert.Contains(t, gotDownload, "flux_2.4.0_linux_amd64.tar.gz")
-	assert.Contains(t, gotFluxInstall, "--version=")
-	assert.Contains(t, gotFluxInstall, "v2.4.0")
-	for _, image := range []string{fluxHelmControllerImage, fluxKustomizeControllerImage, fluxNotificationControllerImage, fluxSourceControllerImage} {
-		assert.Contains(t, gotFluxInstall, image)
-	}
-	// Root-flux scoping contract: the exported controller args must be
-	// namespace-scoped, or the root and a tenant instance both template every
-	// Flux CR cluster-wide and overwrite each other's artifact URLs.
-	assert.Contains(t, gotFluxInstall, "flux install --export --watch-all-namespaces=false --version=")
-	assert.NotContains(t, gotFluxInstall, "--watch-all-namespaces=true")
-	assert.Contains(t, gotFluxInstall, "grep -v")
-	assert.Contains(t, gotFluxInstall, "@sha256:")
-	assert.Contains(t, gotFluxInstall, "sudo /usr/local/bin/k3s kubectl apply -f")
-}
-
-func TestFluxer_EnsureFlux_ReviewedCLIPresent(t *testing.T) {
-	var gotFluxInstall string
-	sawDownload := false
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case cmd == "sudo test -f '/usr/local/bin/flux'":
-			return "", 0
-		case cmd == "uname -m":
-			return "x86_64\n", 0
-		case cmd == "sudo sha256sum '/usr/local/bin/flux' | awk '{print $1}'":
-			return "11462ee3dd85d8d9fb584659ea6a838a1ca3414f3700ae432bebbcca9132f410\n", 0
-		case cmd == "mktemp /tmp/forge-flux-runtime.XXXXXX":
-			return "/tmp/forge-flux-runtime.test\n", 0
-		case strings.HasPrefix(cmd, "rm -f "):
-			return "", 0
-		case strings.HasPrefix(cmd, "curl -fsSL"):
-			sawDownload = true
-			return "", 0
-		case strings.Contains(cmd, "bash -o pipefail") && strings.Contains(cmd, "flux install --export"):
-			gotFluxInstall = cmd
-			return "", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	require.NoError(t, p.EnsureFlux(context.Background(), "v2.4.0"))
-	assert.False(t, sawDownload)
-	assert.Contains(t, gotFluxInstall, "--version=")
-	assert.Contains(t, gotFluxInstall, "v2.4.0")
-	assert.Contains(t, gotFluxInstall, "--watch-all-namespaces=false")
-}
-
-func TestFluxer_EnsureFlux_ArchiveSubstitutionFailsBeforeExtraction(t *testing.T) {
-	extracted := false
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case cmd == "sudo test -f '/usr/local/bin/flux'":
-			return "", 1
-		case cmd == "uname -m":
-			return "x86_64\n", 0
-		case cmd == "mktemp /tmp/forge-flux.XXXXXX":
-			return "/tmp/forge-flux.archive\n", 0
-		case strings.HasPrefix(cmd, "curl -fsSL"), strings.HasPrefix(cmd, "rm -f "):
-			return "", 0
-		case strings.Contains(cmd, "sha256sum --check --status"):
-			return "", 1
-		case strings.HasPrefix(cmd, "tar -xzf"):
-			extracted = true
-			return "", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	err := p.EnsureFlux(context.Background(), "v2.4.0")
-	require.ErrorContains(t, err, "verify flux content checksum")
-	assert.False(t, extracted)
-}
-
-func TestFluxer_UninstallFlux(t *testing.T) {
-	var got string
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case cmd == "sudo test -f '/usr/local/bin/flux'":
-			return "", 0
-		case cmd == "uname -m":
-			return "x86_64\n", 0
-		case cmd == "sudo sha256sum '/usr/local/bin/flux' | awk '{print $1}'":
-			return "11462ee3dd85d8d9fb584659ea6a838a1ca3414f3700ae432bebbcca9132f410\n", 0
-		case strings.Contains(cmd, "flux") && strings.Contains(cmd, "uninstall"):
-			got = cmd
-			return "", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	require.NoError(t, p.UninstallFlux(context.Background()))
-	assert.Contains(t, got, "uninstall")
-	assert.Contains(t, got, "--silent") // non-interactive
-	assert.Contains(t, got, "KUBECONFIG=/etc/rancher/k3s/k3s.yaml")
-}
-
-func TestFluxer_UninstallFlux_FluxAbsent(t *testing.T) {
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		if cmd == "sudo test -f '/usr/local/bin/flux'" {
-			return "", 1 // CLI absent
-		}
-		return "", 1
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	// No flux CLI => nothing to remove, not an error (destroy proceeds to k3s).
-	require.NoError(t, p.UninstallFlux(context.Background()))
-}
-
-func TestFluxer_GitRepositoryArtifact(t *testing.T) {
-	var got string
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		switch {
-		case strings.Contains(cmd, "gitrepository"):
-			got = cmd
-			return "True\tmain@sha1:abc\tsha256:0123456789abcdef\n", 0
-		default:
-			return "", 1
-		}
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	artifact, err := p.GitRepositoryArtifact(context.Background(), "overlay")
-	require.NoError(t, err)
-	assert.True(t, artifact.Ready)
-	assert.Equal(t, "main@sha1:abc", artifact.Revision)
-	assert.Equal(t, "sha256:0123456789abcdef", artifact.Digest)
-	assert.Contains(t, got, "gitrepository")
-	assert.Contains(t, got, "flux-system")
-	assert.Contains(t, got, "overlay")
-	assert.Contains(t, got, "--ignore-not-found=true")
-}
-
-func TestFluxer_GitRepositoryArtifact_NotPresent(t *testing.T) {
-	addr, cfg, cleanup := startFakeSSH(t, func(cmd string) (string, int) {
-		if strings.Contains(cmd, "--ignore-not-found=true") {
-			return "", 0 // absent CR is a successful empty read
-		}
-		return "", 1
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-	artifact, err := p.GitRepositoryArtifact(context.Background(), "overlay")
-	require.NoError(t, err, "a missing/not-ready GitRepository is tolerated, not an error")
-	assert.False(t, artifact.Ready)
-	assert.Empty(t, artifact.Revision)
-	assert.Empty(t, artifact.Digest)
-}
-
-func TestFluxer_GitRepositoryArtifact_CommandFailure(t *testing.T) {
-	addr, cfg, cleanup := startFakeSSH(t, func(string) (string, int) {
-		return "forbidden", 1
-	})
-	defer cleanup()
-	p := newProvisioner(t, addr, cfg)
-	defer p.Close()
-
-	_, err := p.GitRepositoryArtifact(context.Background(), "overlay")
-	require.ErrorContains(t, err, `get Flux GitRepository "overlay"`)
-	assert.Contains(t, err.Error(), "ssh run", "the underlying kubectl/SSH failure remains visible")
 }

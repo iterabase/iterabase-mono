@@ -10,7 +10,7 @@ import (
 
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/config"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/lifecycle"
-	"github.com/nunocgoncalves/iterabase-mono/forge/internal/sshprovisioner"
+	"github.com/nunocgoncalves/iterabase-mono/forge/internal/overlay"
 )
 
 func newApplyCmd() *cobra.Command {
@@ -18,18 +18,18 @@ func newApplyCmd() *cobra.Command {
 		Use:   "apply",
 		Short: "Provision or reconcile the cluster from forge.yaml",
 		Long: `apply bootstraps k3s on the target host(s) and converges the cluster to the
-state declared in forge.yaml. Safe to re-run: it reconciles from reality and
-skips work already done. Immutable field changes are refused (use 'forge
-destroy' then 'forge apply'); version changes are routed to 'forge upgrade'.`,
+state declared in forge.yaml and its overlay. Safe to re-run: it reconciles from
+reality and skips work already done. Immutable field changes are refused (use
+'forge destroy' then 'forge apply'); version changes are routed to 'forge
+upgrade'. The overlay is rendered on this machine and only its result is sent
+to the host.`,
 		RunE: runApply,
 	}
 	cmd.Flags().Bool("dry-run", false, "preflight and print the plan without mutating")
 	cmd.Flags().Bool("skip-chart", false, "skip the platform chart phase (k3s only)")
 	cmd.Flags().Bool("skip-gpu", false, "skip the GPU readiness phase")
-	cmd.Flags().Bool("skip-overlay", false, "skip the overlay phase (clone + chart values + CRD instances)")
+	cmd.Flags().Bool("skip-overlay", false, "skip the overlay phase (values, tools and object instances)")
 	cmd.Flags().Bool("skip-secrets", false, "skip the secret-sync phase (materialize declared Secrets)")
-	cmd.Flags().Bool("skip-flux", false, "skip the Flux GitOps phase (install + sync resources)")
-	cmd.Flags().String("overlay", "", "overlay repo URL (client fork; https:// or file://; overrides forge.yaml overlay.repo)")
 	cmd.Flags().String("kubeconfig-out", "", "path to write the fetched kubeconfig (default ~/.forge/<install>/kubeconfig.yaml)")
 	return cmd
 }
@@ -39,29 +39,54 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	// --overlay overrides forge.yaml overlay.repo (flag > config).
-	if overlayRepo, _ := cmd.Flags().GetString("overlay"); overlayRepo != "" {
-		cfg.Spec.Overlay.Repo = overlayRepo
-		if cfg.Spec.Overlay.Ref == "" {
-			cfg.Spec.Overlay.Ref = config.DefaultOverlayRef
-		}
-		if err := cfg.Validate(); err != nil {
-			return err
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	return applyInstallation(context.Background(), cmd, cfg, applyOptsFromFlags(cmd), dryRun)
+}
+
+// applyOptsFromFlags reads the apply phase flags a command defines; commands
+// without them (forge init --provider aws) get a full apply.
+func applyOptsFromFlags(cmd *cobra.Command) lifecycle.ApplyOpts {
+	var opts lifecycle.ApplyOpts
+	flags := cmd.Flags()
+	if flags.Lookup("kubeconfig-out") != nil {
+		opts.KubeconfigOut, _ = flags.GetString("kubeconfig-out")
+	}
+	for name, dst := range map[string]*bool{
+		"skip-chart":   &opts.SkipChart,
+		"skip-gpu":     &opts.SkipGPU,
+		"skip-overlay": &opts.SkipOverlay,
+		"skip-secrets": &opts.SkipSecrets,
+	} {
+		if flags.Lookup(name) != nil {
+			*dst, _ = flags.GetBool(name)
 		}
 	}
-	log := newLogger(cmd)
+	return opts
+}
 
-	p, err := sshprovisioner.New(cfg.Spec.Hosts[0])
+// applyInstallation renders the overlay locally, resolves the host, and runs
+// the lifecycle apply (or prints the plan).
+func applyInstallation(ctx context.Context, cmd *cobra.Command, cfg *config.Cluster, opts lifecycle.ApplyOpts, dryRun bool) error {
+	log := newLogger(cmd)
+	if cfg.Spec.Overlay.Path != "" && !opts.SkipOverlay {
+		rendered, err := overlay.Render(cfg.Dir, cfg.Spec.Overlay)
+		if err != nil {
+			return err
+		}
+		opts.Overlay = rendered
+	}
+
+	t, p, err := connect(ctx, cfg)
 	if err != nil {
 		return err
 	}
+	defer t.Close()
 	defer p.Close()
-
-	ctx := context.Background()
-	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	opts.ExtraValueFiles = t.ValueFiles
+	opts.ExtraManifests = t.Manifests
 
 	if dryRun {
-		plan, err := lifecycle.Plan(ctx, cfg, p)
+		plan, err := lifecycle.Plan(ctx, t.Cluster, p, opts.Overlay)
 		if err != nil {
 			return err
 		}
@@ -69,33 +94,18 @@ func runApply(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	kcOut, _ := cmd.Flags().GetString("kubeconfig-out")
-	skipChart, _ := cmd.Flags().GetBool("skip-chart")
-	skipGPU, _ := cmd.Flags().GetBool("skip-gpu")
-	skipOverlay, _ := cmd.Flags().GetBool("skip-overlay")
-	skipSecrets, _ := cmd.Flags().GetBool("skip-secrets")
-	skipFlux, _ := cmd.Flags().GetBool("skip-flux")
-
-	// Resolve the overlay git token when a phase that needs it will run: the
-	// overlay clone (Overlayer.Clone) and/or the Flux GitRepository Secret. Public
-	// repos + CI proceed tokenless; private repos prompt (TTY) or use
-	// FORGE_OVERLAY_TOKEN. The same token is reused for both (HOR-341 contract).
-	var overlayToken []byte
-	if cfg.Spec.Overlay.Repo != "" && (!skipOverlay || (cfg.Spec.Flux.Enabled && !skipFlux)) {
-		envTok, _ := os.LookupEnv("FORGE_OVERLAY_TOKEN")
-		tok, err := resolveOverlayToken(ctx, cfg.Spec.Overlay.Repo, envTok, isTTY(), termPasswordPrompter{}, newGithubScopeChecker())
-		if err != nil {
+	if t.Prepare != nil {
+		if err := t.Prepare(ctx, p); err != nil {
 			return err
 		}
-		overlayToken = tok
 	}
-
-	log.Info("applying", "install", cfg.Metadata.Name)
-	res, err := lifecycle.Apply(ctx, cfg, p, p, p, p, lifecycle.ApplyOpts{KubeconfigOut: kcOut, SkipChart: skipChart, SkipGPU: skipGPU, SkipOverlay: skipOverlay, SkipSecrets: skipSecrets, SkipFlux: skipFlux, OverlayToken: overlayToken, SecretResolver: cliSecretResolver{interactive: isTTY(), prompter: termPasswordPrompter{}, out: os.Stderr}})
+	opts.SecretResolver = cliSecretResolver{interactive: isTTY(), prompter: termPasswordPrompter{}, out: os.Stderr}
+	log.Info("applying", "install", t.Cluster.Metadata.Name)
+	res, err := lifecycle.Apply(ctx, t.Cluster, p, p, p, opts)
 	if err != nil {
 		return err
 	}
-	printApplyResult(cmd.OutOrStdout(), cfg, res)
+	printApplyResult(cmd.OutOrStdout(), t.Cluster, res)
 	return nil
 }
 
@@ -129,24 +139,16 @@ func printApplyResult(out io.Writer, cfg *config.Cluster, res *lifecycle.Result)
 			fmt.Fprintf(out, "  gpu driver: (chart default)\n")
 		}
 	}
-	if cfg.Spec.Overlay.Repo != "" {
-		fmt.Fprintf(out, "  overlay:        %s@%s\n", cfg.Spec.Overlay.Repo, cfg.Spec.Overlay.Ref)
-		fmt.Fprintf(out, "  overlay applied: %v\n", res.OverlayApplied)
-		if res.OverlayCommit != "" {
-			fmt.Fprintf(out, "  overlay commit: %s\n", res.OverlayCommit)
+	if res.OverlayApplied {
+		fmt.Fprintf(out, "  overlay:        %s\n", cfg.Spec.Overlay.Path)
+		fmt.Fprintf(out, "  overlay revision: %s\n", res.OverlayRevision)
+		fmt.Fprintf(out, "  overlay tools:  %s\n", res.ToolsDigest)
+		for _, pruned := range res.OverlayPruned {
+			fmt.Fprintf(out, "  overlay pruned: %s\n", pruned)
 		}
 	}
 	if res.SecretsApplied {
 		fmt.Fprintf(out, "  secrets applied: true\n")
-	}
-	if cfg.Spec.Flux.Enabled {
-		fmt.Fprintf(out, "  flux: %s\n", cfg.Spec.Flux.Version)
-		fmt.Fprintf(out, "  flux installed: %v\n", res.FluxInstalled)
-		if res.GitRepositoryStatus != "" {
-			fmt.Fprintf(out, "  gitrepository: %s\n", res.GitRepositoryStatus)
-		} else {
-			fmt.Fprintf(out, "  gitrepository: (not reconciled in this run)\n")
-		}
 	}
 }
 
@@ -189,10 +191,7 @@ func printPlan(cmd *cobra.Command, plan *lifecycle.ReconcilePlan) {
 			plan.Preflight.KernelHeadersInstalled, plan.Preflight.HasDKMS,
 			plan.Preflight.HasGCC, plan.Preflight.HasMake)
 	}
-	if plan.OverlayRepo != "" {
-		fmt.Fprintf(out, "  overlay:  %s@%s\n", plan.OverlayRepo, plan.OverlayRef)
-	}
-	if plan.FluxEnabled {
-		fmt.Fprintf(out, "  flux:     %s (enabled)\n", plan.FluxVersion)
+	if plan.OverlayRevision != "" {
+		fmt.Fprintf(out, "  overlay:  %s\n", plan.OverlayRevision)
 	}
 }

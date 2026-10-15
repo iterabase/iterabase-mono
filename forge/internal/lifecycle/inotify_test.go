@@ -22,7 +22,7 @@ func completeDataStorage() *provisioner.DataStorageState {
 
 func TestPlanReportsHostInotifyWithoutMutation(t *testing.T) {
 	p := &fakeProv{pf: readyPf(), hostInotify: driftingHostInotify()}
-	plan, err := Plan(context.Background(), testConfig(), p)
+	plan, err := Plan(context.Background(), testConfig(), p, nil)
 	require.NoError(t, err)
 	require.NotNil(t, plan.HostInotify)
 	assert.False(t, plan.HostInotify.Ready())
@@ -35,7 +35,7 @@ func TestPlanReportsHostInotifyWithoutMutation(t *testing.T) {
 
 func TestPlanHostInotifyInspectionFailureFailsClosed(t *testing.T) {
 	p := &fakeProv{pf: readyPf(), hostInotifyInspectErr: errors.New("sudo unavailable")}
-	_, err := Plan(context.Background(), testConfig(), p)
+	_, err := Plan(context.Background(), testConfig(), p, nil)
 	require.ErrorContains(t, err, "sudo unavailable")
 	assert.Zero(t, p.hostInotifyCalls)
 	assert.Empty(t, p.mutationOrder)
@@ -44,7 +44,7 @@ func TestPlanHostInotifyInspectionFailureFailsClosed(t *testing.T) {
 func TestApplyReconcilesHostInotifyBeforeInstallAndStorage(t *testing.T) {
 	useTempHome(t)
 	p := &fakeProv{pf: readyPf(), readyAfterInstall: true, kubeconfig: []byte(minKubeconfig), hostInotify: driftingHostInotify()}
-	res, err := Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{ReadyTimeout: time.Second, ReadyInterval: time.Millisecond})
+	res, err := Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{ReadyTimeout: time.Second, ReadyInterval: time.Millisecond})
 	require.NoError(t, err)
 	assert.Equal(t, 1, p.hostInotifyCalls)
 	assert.Equal(t, []string{"host-inotify", "host-swap", "data-storage-tools", "data-storage-reconcile", "k3s-install"}, p.mutationOrder)
@@ -53,7 +53,7 @@ func TestApplyReconcilesHostInotifyBeforeInstallAndStorage(t *testing.T) {
 
 func TestApplyInspectsButDoesNotReconcileHostInotifyDuringDryRun(t *testing.T) {
 	p := &fakeProv{pf: readyPf(), hostInotify: driftingHostInotify()}
-	res, err := Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{DryRun: true})
+	res, err := Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{DryRun: true})
 	require.NoError(t, err)
 	assert.Equal(t, 1, p.hostInotifyInspectCalls)
 	assert.Zero(t, p.hostInotifyCalls)
@@ -67,7 +67,7 @@ func TestApplyHealsHostInotifyOnInstalledReapply(t *testing.T) {
 	useTempHome(t)
 	p := &fakeProv{pf: readyPf(), state: inSyncState(), ready: true, kubeconfig: []byte(minKubeconfig), hostInotify: driftingHostInotify()}
 	p.pf.Installed = true
-	res, err := Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{ReadyTimeout: time.Second, ReadyInterval: time.Millisecond})
+	res, err := Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{ReadyTimeout: time.Second, ReadyInterval: time.Millisecond})
 	require.NoError(t, err)
 	assert.Equal(t, 1, p.hostInotifyCalls)
 	assert.Zero(t, p.hostSwapCalls, "install-only swap hardening must not run on an installed reapply")
@@ -77,7 +77,7 @@ func TestApplyHealsHostInotifyOnInstalledReapply(t *testing.T) {
 
 func TestApplyHostInotifyFailureStopsBeforeDownstreamMutation(t *testing.T) {
 	p := &fakeProv{pf: readyPf(), hostInotifyErr: errors.New("read-back effective value 128 is below the required 8192")}
-	_, err := Apply(context.Background(), testConfig(), p, nil, nil, nil, ApplyOpts{})
+	_, err := Apply(context.Background(), testConfig(), p, nil, nil, ApplyOpts{})
 	require.ErrorContains(t, err, "host inotify capacity: read-back effective value 128 is below the required 8192")
 	assert.Contains(t, err.Error(), "observed before reconcile: effective=", "failure evidence must report observed versus required capacity")
 	assert.Equal(t, 1, p.hostInotifyCalls)

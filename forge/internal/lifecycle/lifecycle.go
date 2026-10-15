@@ -14,9 +14,9 @@ import (
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/artifacts"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/config"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/deployer"
-	"github.com/nunocgoncalves/iterabase-mono/forge/internal/fluxer"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/k3s"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/kubeconfig"
+	"github.com/nunocgoncalves/iterabase-mono/forge/internal/overlay"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/overlayer"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/provisioner"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/version"
@@ -61,10 +61,7 @@ type ReconcilePlan struct {
 	GPUEnabled         bool   // gpu.enabled; the GPU readiness phase will run
 	GPUOperatorVersion string // nvidia/gpu-operator chart version to install (empty => GPU disabled)
 	GPUDriverVersion   string // nvidia driver version to pin (empty => gpu-operator chart default)
-	OverlayRepo        string // overlay.repo (empty => overlay phase skipped)
-	OverlayRef         string // overlay.ref (branch or tag)
-	FluxEnabled        bool   // flux.enabled; the Flux GitOps phase will run
-	FluxVersion        string // flux2 release tag to install (empty => Flux disabled)
+	OverlayRevision    string // rendered overlay content digest (empty => overlay phase skipped)
 	DataStorage        *provisioner.DataStorageState
 }
 
@@ -82,11 +79,11 @@ type Result struct {
 	GPUOperatorApplied          bool   // nvidia/gpu-operator release installed/upgraded
 	GPUDriverVersion            string // nvidia driver version pinned via driver.version (empty => chart default)
 	GPUReady                    bool   // operator conditions and live node evidence passed the GPU readiness gate
-	OverlayApplied              bool   // overlay cloned + chart applied with overlay values + CRD instances applied
-	OverlayCommit               string // resolved overlay commit SHA
-	SecretsApplied              bool   // declared Secrets materialized from operator env vars
-	FluxInstalled               bool   // Flux components installed + GitRepository/Kustomization applied
-	GitRepositoryStatus         string // gated Ready revision/digest of the forge-applied GitRepository
+	OverlayApplied              bool   // overlay values, tools archive and object instances applied
+	OverlayRevision             string // rendered overlay content digest
+	ToolsDigest                 string // digest of the delivered tools/client archive
+	OverlayPruned               []string
+	SecretsApplied              bool // declared Secrets materialized from operator env vars
 }
 
 // ApplyOpts configures an apply run.
@@ -97,13 +94,22 @@ type ApplyOpts struct {
 	ReadyInterval    time.Duration  // default 2s
 	SkipChart        bool           // skip the platform chart phase (k3s-only)
 	SkipGPU          bool           // skip the GPU readiness phase
-	SkipOverlay      bool           // skip the overlay phase (clone + chart values + CRD instances)
+	SkipOverlay      bool           // skip the overlay phase (values, tools and object instances)
 	SkipSecrets      bool           // skip the secret-sync phase (materialize declared Secrets)
-	SkipFlux         bool           // skip the Flux GitOps phase (install + sync resources)
 	SecretResolver   SecretResolver // resolves declared secret values (env-or-prompt); nil => env-only fallback
 	GPUReadyTimeout  time.Duration  // default 15m (driver compile is slow on first boot)
 	GPUReadyInterval time.Duration  // default 5s
-	OverlayToken     []byte         // https git token for a private overlay repo (nil => public/file://)
+	// Overlay is the overlay rendered on the operator machine (DES-HOR-593-03);
+	// nil when forge.yaml configures none.
+	Overlay *overlay.Rendered
+	// ExtraValueFiles are installation-fact Helm values Forge derives itself
+	// (for example the hosted AWS environment). They apply after the overlay's
+	// value files.
+	ExtraValueFiles []overlay.ValueFile
+	// ExtraManifests are installation-fact objects Forge derives itself (for
+	// example the hosted DNS token Secret). They are applied over SSH stdin
+	// before the platform chart, in order.
+	ExtraManifests []string
 }
 
 // withDefaults fills zero-valued timeouts/intervals with their defaults.
@@ -125,7 +131,7 @@ func (o ApplyOpts) withDefaults() ApplyOpts {
 
 // Plan runs preflight + read-state and returns the reconcile decision. It does
 // not mutate the host.
-func Plan(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner) (*ReconcilePlan, error) {
+func Plan(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner, rendered *overlay.Rendered) (*ReconcilePlan, error) {
 	host := cfg.Spec.Hosts[0]
 	pf, err := p.Preflight(ctx)
 	if err != nil {
@@ -156,10 +162,9 @@ func Plan(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner) (
 		plan.GPUOperatorVersion = cfg.Spec.GPU.Operator.Version
 		plan.GPUDriverVersion = cfg.Spec.GPU.Driver.Version
 	}
-	plan.OverlayRepo = cfg.Spec.Overlay.Repo
-	plan.OverlayRef = cfg.Spec.Overlay.Ref
-	plan.FluxEnabled = cfg.Spec.Flux.Enabled
-	plan.FluxVersion = cfg.Spec.Flux.Version
+	if rendered != nil {
+		plan.OverlayRevision = rendered.Revision
+	}
 
 	if !pf.Installed {
 		if err := validateFreshInstallPreflight(cfg, pf); err != nil {
@@ -211,10 +216,13 @@ func validateFreshInstallPreflight(cfg *config.Cluster, pf *provisioner.Prefligh
 
 // Apply runs Plan and, unless DryRun, executes the install/reconcile, fetches
 // and stores the kubeconfig, and waits for the node to be Ready.
-func Apply(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner, d deployer.Deployer, o overlayer.Overlayer, f fluxer.Fluxer, opts ApplyOpts) (*Result, error) {
+func Apply(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner, d deployer.Deployer, o overlayer.Overlayer, opts ApplyOpts) (*Result, error) {
 	opts = opts.withDefaults()
+	if err := validateOverlayChart(cfg, opts); err != nil {
+		return nil, err
+	}
 
-	plan, err := Plan(ctx, cfg, p)
+	plan, err := Plan(ctx, cfg, p, opts.Overlay)
 	if err != nil {
 		return nil, err
 	}
@@ -269,10 +277,10 @@ func Apply(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner, 
 		return res, err
 	}
 
-	// Overlay delivery is deliberately phased: clone + secrets, certificate
-	// substrate, LVM storage substrate, exact Flux source artifact, platform chart, CR instances, then
-	// enable continuous Flux reconciliation.
-	if err := applyOverlayPhase(ctx, cfg, p, o, f, d, opts, res); err != nil {
+	// Overlay delivery is deliberately phased: stage values + secrets,
+	// certificate substrate, LVM storage substrate, tools archive, platform
+	// chart, owned object instances, then pruning of superseded overlay objects.
+	if err := applyOverlayPhase(ctx, cfg, p, o, d, opts, res); err != nil {
 		return res, err
 	}
 
@@ -306,10 +314,7 @@ func prepareHostBeforeK3s(ctx context.Context, cfg *config.Cluster, p provisione
 const (
 	certificateSubstrateChart        = "cert-manager-substrate"
 	certificateSubstrateFirstVersion = "0.3.0"
-	certificateCRDLabelSelector      = "app.kubernetes.io/name=cert-manager"
-	certificateMigrationAnnotation   = "forge.horizonshift.io/certificate-substrate-migration"
-	certificateMigrationComplete     = "0.3.0"
-	fluxArtifactFirstVersion         = "0.3.0"
+	toolRunnerFirstVersion           = "0.3.0"
 	lvmStorageSubstrateChart         = provisioner.LVMStorageSubstrateChart
 	lvmStorageSubstrateFirstVersion  = provisioner.LVMStorageSubstrateFirstVersion
 )
@@ -402,52 +407,11 @@ func refusePreLVMPlatform(ctx context.Context, cfg *config.Cluster, d deployer.D
 	return nil
 }
 
-func certificateHookLabelSelector(platformRelease string) string {
-	return "app.kubernetes.io/instance=" + platformRelease + ",app.kubernetes.io/managed-by=Helm"
-}
-
-func certificateOwnershipMigrationRequired(ctx context.Context, d deployer.Deployer, ch config.Chart) (bool, error) {
-	requiresSubstrate, err := certificateSubstrateRequired(ch.Version)
-	if err != nil || !requiresSubstrate {
-		return false, err
-	}
-	state, err := d.Status(ctx, ch.Release, ch.Namespace)
-	if err != nil {
-		return false, fmt.Errorf("read platform release for certificate ownership migration: %w", err)
-	}
-	if !state.Installed {
-		return false, nil
-	}
-	have, err := canonicalChartVersion(state.Version)
-	if err != nil {
-		return false, fmt.Errorf("installed platform release: %w", err)
-	}
-	if semver.Compare(have, "v"+certificateSubstrateFirstVersion) < 0 {
-		return true, nil
-	}
-
-	// A 0.3 platform with CRDs still owned by the platform release is an
-	// interrupted hand-off, not a completed migration. Derive that checkpoint
-	// from the live annotations so a failed or partial transfer resumes.
-	owned, err := d.CRDOwnedBy(ctx, certificateCRDLabelSelector, certificateSubstrateRelease(ch.Release), ch.Namespace)
-	if err != nil {
-		return false, fmt.Errorf("read certificate CRD ownership migration state: %w", err)
-	}
-	if !owned {
-		return true, nil
-	}
-	complete, err := d.CRDsAnnotated(ctx, certificateCRDLabelSelector, certificateMigrationAnnotation, certificateMigrationComplete)
-	if err != nil {
-		return false, fmt.Errorf("read certificate migration completion state: %w", err)
-	}
-	return !complete, nil
-}
-
 // applyCertificateSubstrate installs the same-version companion release before
 // any cert-manager consumers. The release owns the operator, CRDs, webhook, CSI
 // driver, and ordered internal-CA bootstrap. The platform remains their Helm
 // owner.
-func applyCertificateSubstrate(ctx context.Context, cfg *config.Cluster, d deployer.Deployer, opts ApplyOpts, res *Result, overlayDest string) error {
+func applyCertificateSubstrate(ctx context.Context, cfg *config.Cluster, d deployer.Deployer, opts ApplyOpts, res *Result, valueFiles []string) error {
 	if d == nil || opts.SkipChart || cfg.Spec.Chart.Version == "" {
 		return nil
 	}
@@ -475,9 +439,7 @@ func applyCertificateSubstrate(ctx context.Context, cfg *config.Cluster, d deplo
 			"global.internalTLS.platformRelease=" + ch.Release,
 		},
 	}
-	if overlayDest != "" {
-		dopts.ValueFiles = overlayValueFiles(overlayDest)
-	}
+	dopts.ValueFiles = valueFiles
 	if err := d.Apply(ctx, dopts); err != nil {
 		auditFail(cfg, "apply-certificate-substrate", err)
 		return fmt.Errorf("certificate substrate: %w", err)
@@ -525,14 +487,11 @@ func applyLVMStorageSubstrate(ctx context.Context, cfg *config.Cluster, p provis
 }
 
 // applyChart runs the platform chart phase (helm upgrade --install) when a chart
-// version is configured and the phase is not skipped. When an overlay is cloned
-// (overlayDest != ""), its value files feed the chart (-f values.yaml -f
-// values.client.yaml). No-op otherwise.
-func applyChart(ctx context.Context, cfg *config.Cluster, d deployer.Deployer, opts ApplyOpts, res *Result, overlayDest string, extraValues ...string) error {
-	return applyChartWithWait(ctx, cfg, d, opts, res, overlayDest, false, extraValues...)
-}
-
-func applyChartWithWait(ctx context.Context, cfg *config.Cluster, d deployer.Deployer, opts ApplyOpts, res *Result, overlayDest string, noWait bool, extraValues ...string) error {
+// version is configured and the phase is not skipped. The staged value files
+// (overlay first, then Forge-derived installation facts) feed the chart in
+// order. The tool runner reads the overlay tools archive exactly when an
+// overlay is delivered (DES-HOR-593-05).
+func applyChart(ctx context.Context, cfg *config.Cluster, d deployer.Deployer, opts ApplyOpts, res *Result, valueFiles []string) error {
 	if d == nil || opts.SkipChart || cfg.Spec.Chart.Version == "" {
 		return nil
 	}
@@ -542,179 +501,14 @@ func applyChartWithWait(ctx context.Context, cfg *config.Cluster, d deployer.Dep
 		Repository: ch.Repository,
 		Version:    ch.Version,
 		Namespace:  ch.Namespace,
-		Values:     append([]string(nil), extraValues...),
-		NoWait:     noWait,
-	}
-	if overlayDest != "" {
-		dopts.ValueFiles = overlayValueFiles(overlayDest)
+		Values:     overlayToolsValues(cfg, opts),
+		ValueFiles: valueFiles,
 	}
 	if err := d.Apply(ctx, dopts); err != nil {
 		auditFail(cfg, "apply", err)
 		return fmt.Errorf("chart: %w", err)
 	}
 	res.ChartApplied = true
-	return nil
-}
-
-// migrateCertificateOwnership performs the one-time platform-first hand-off
-// from the <=0.2.2 bundled cert-manager resources to the 0.3 companion release.
-func migrateCertificateOwnership(ctx context.Context, cfg *config.Cluster, d deployer.Deployer, opts ApplyOpts, res *Result, overlayDest string) (bool, error) {
-	if d == nil || opts.SkipChart || cfg.Spec.Chart.Version == "" {
-		return false, nil
-	}
-	migration, err := certificateOwnershipMigrationRequired(ctx, d, cfg.Spec.Chart)
-	if err != nil || !migration {
-		return false, err
-	}
-	ch := cfg.Spec.Chart
-	// The old cert-issuers subchart created ClusterIssuers and internal CA
-	// Certificates as unowned Helm hooks. Adopt them into the unchanged platform
-	// release before 0.3 renders them as normal resources.
-	if err := d.TransferCertificateHookOwnership(ctx, certificateHookLabelSelector(ch.Release), ch.Release, ch.Namespace); err != nil {
-		auditFail(cfg, "migrate-certificate-hook-ownership", err)
-		return false, fmt.Errorf("certificate hook ownership migration: %w", err)
-	}
-	if err := applyChart(ctx, cfg, d, opts, res, overlayDest, "control-plane.toolRunner.enabled=false"); err != nil {
-		return false, err
-	}
-	if err := d.TransferCRDOwnership(ctx, certificateCRDLabelSelector, certificateSubstrateRelease(ch.Release), ch.Namespace); err != nil {
-		auditFail(cfg, "migrate-certificate-substrate-ownership", err)
-		return false, fmt.Errorf("certificate substrate ownership migration: %w", err)
-	}
-	return true, nil
-}
-
-// cloneOverlay clones the client fork when overlay.repo is configured, returning
-// the host dest path + resolved commit. Returns ("", "", nil) when the overlay
-// phase is skipped (no repo, SkipOverlay). Errors if a repo is set but no
-// overlayer is wired.
-func cloneOverlay(ctx context.Context, cfg *config.Cluster, o overlayer.Overlayer, opts ApplyOpts) (dest, commit string, err error) {
-	if cfg.Spec.Overlay.Repo == "" || opts.SkipOverlay {
-		return "", "", nil
-	}
-	if o == nil {
-		return "", "", fmt.Errorf("overlay.repo is set but no overlayer is wired (internal error)")
-	}
-	if err := o.EnsureGit(ctx); err != nil {
-		return "", "", fmt.Errorf("overlay git: %w", err)
-	}
-	dest = overlayDestPath(cfg)
-	commit, err = o.Clone(ctx, cfg.Spec.Overlay.Repo, cfg.Spec.Overlay.Ref, dest, opts.OverlayToken)
-	if err != nil {
-		return "", "", fmt.Errorf("overlay clone: %w", err)
-	}
-	return dest, commit, nil
-}
-
-// applyCRDInstances runs kubectl apply -k on the overlay's crds/client dir (after
-// the chart so the CRD kinds exist). No-op when no overlay is configured.
-func applyCRDInstances(ctx context.Context, d deployer.Deployer, overlayDest string) error {
-	if overlayDest == "" || d == nil {
-		return nil
-	}
-	if err := d.ApplyKustomize(ctx, overlayDest+"/crds/client"); err != nil {
-		return fmt.Errorf("overlay crd instances: %w", err)
-	}
-	return nil
-}
-
-// applyOverlayPhase runs the ordered delivery path: clone the client fork →
-// secrets → certificate substrate → LVM storage substrate → Flux source → platform → CRs → Flux
-// Kustomization. The source precedes Helm because the chart-managed tool runner
-// is intentionally unready until it loads a valid generation.
-func applyOverlayPhase(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner, o overlayer.Overlayer, f fluxer.Fluxer, d deployer.Deployer, opts ApplyOpts, res *Result) error {
-	overlayDest, overlayCommit, err := cloneOverlay(ctx, cfg, o, opts)
-	if err != nil {
-		auditFail(cfg, "apply-overlay", err)
-		return err
-	}
-	res.OverlayCommit = overlayCommit
-	if err := validateChartFluxSource(ctx, cfg, f, d, opts, overlayCommit); err != nil {
-		auditFail(cfg, "apply-flux", err)
-		return err
-	}
-	if err := applySecrets(ctx, o, d, opts, res, overlayDest); err != nil {
-		auditFail(cfg, "apply-secrets", err)
-		return err
-	}
-
-	// Platform <=0.2.2 owns cert-manager and CSI objects in the platform Helm
-	// release. Installing the companion first would fail on those exact names.
-	// Upgrade the old owner with the new runner deferred, transfer only the kept
-	// CRD annotations, then install the companion. The normal platform apply
-	// below restores the overlay's intended runner value after Flux is Ready.
-	// MetalLB hook-ownership adoption (DES-HOR-511-01) runs before this hand-off:
-	// hook-era predecessors created the pools/advertisements as unowned hooks, so
-	// Helm must adopt them before any target platform apply (including the
-	// certificate hand-off apply below) renders them as ordinary resources, or it
-	// rejects the upgrade. Idempotent and a no-op when no hooks exist.
-	if err := migrateMetalLBHookOwnership(ctx, cfg, d, opts); err != nil {
-		return err
-	}
-	migrated, err := migrateCertificateOwnership(ctx, cfg, d, opts, res, overlayDest)
-	if err != nil {
-		return err
-	}
-	if err := applyCertificateSubstrate(ctx, cfg, d, opts, res, overlayDest); err != nil {
-		return err
-	}
-	if err := applyLVMStorageSubstrate(ctx, cfg, p, d, opts, res); err != nil {
-		return err
-	}
-	if err := applyFluxSourcePhase(ctx, cfg, o, f, d, opts, res, overlayCommit); err != nil {
-		return err
-	}
-	if err := applyPlatformChartPhase(ctx, cfg, d, opts, res, overlayDest, migrated); err != nil {
-		return err
-	}
-	if err := applyCRDInstances(ctx, d, overlayDest); err != nil {
-		auditFail(cfg, "apply-overlay", err)
-		return err
-	}
-	if err := applyFluxReconciliationPhase(ctx, cfg, d, opts); err != nil {
-		return err
-	}
-	res.OverlayApplied = overlayDest != ""
-	return nil
-}
-
-func applyPlatformChartPhase(ctx context.Context, cfg *config.Cluster, d deployer.Deployer, opts ApplyOpts, res *Result, overlayDest string, migrated bool) error {
-	if migrated {
-		// Routine gateway config changes roll through the chart's pod-template
-		// checksum. The migration still stages an explicit restart because its
-		// guarded platform apply intentionally omitted the runner, so the existing
-		// gateway Pod loaded no approved runner identity. Publish the final ConfigMap
-		// without waiting, restart only that gateway, then let the normal waited Helm
-		// reconcile below gate on runner registration.
-		if err := applyChartWithWait(ctx, cfg, d, opts, res, overlayDest, true); err != nil {
-			return err
-		}
-		selector := "app.kubernetes.io/name=control-plane,app.kubernetes.io/instance=" + cfg.Spec.Chart.Release + ",app.kubernetes.io/component=gateway"
-		if err := d.RestartDeployment(ctx, selector, cfg.Spec.Chart.Namespace); err != nil {
-			auditFail(cfg, "restart-migrated-gateway", err)
-			return fmt.Errorf("restart migrated gateway: %w", err)
-		}
-	}
-	if err := applyChart(ctx, cfg, d, opts, res, overlayDest); err != nil {
-		return err
-	}
-	if cfg.Spec.Chart.Version == "" || d == nil || opts.SkipChart {
-		return nil
-	}
-	requiresSubstrate, err := certificateSubstrateRequired(cfg.Spec.Chart.Version)
-	if err != nil || !requiresSubstrate {
-		return err
-	}
-	complete, err := d.CRDsAnnotated(ctx, certificateCRDLabelSelector, certificateMigrationAnnotation, certificateMigrationComplete)
-	if err != nil {
-		return fmt.Errorf("read certificate migration completion state: %w", err)
-	}
-	if !complete {
-		if err := d.AnnotateCRDs(ctx, certificateCRDLabelSelector, certificateMigrationAnnotation, certificateMigrationComplete); err != nil {
-			auditFail(cfg, "mark-certificate-migration-complete", err)
-			return fmt.Errorf("mark certificate migration complete: %w", err)
-		}
-	}
 	return nil
 }
 
@@ -732,18 +526,6 @@ func migrateMetalLBHookOwnership(ctx context.Context, cfg *config.Cluster, d dep
 		return fmt.Errorf("metallb hook ownership migration: %w", err)
 	}
 	return nil
-}
-
-// overlayDestPath is the host path where the overlay fork is cloned.
-func overlayDestPath(cfg *config.Cluster) string {
-	return "/var/lib/forge/overlay/" + cfg.Metadata.Name
-}
-
-// overlayValueFiles returns the -f value files from the cloned overlay, in order
-// (base then client; later wins). Both files always exist in a valid overlay
-// (values.client.yaml may be comment-only).
-func overlayValueFiles(dest string) []string {
-	return []string{dest + "/values.yaml", dest + "/values.client.yaml"}
 }
 
 // gpuOperatorRepoName is the local Helm repository name forge registers the
@@ -883,7 +665,7 @@ func waitForGPU(ctx context.Context, p provisioner.Provisioner, requestedDriverV
 //   - driver.upgradePolicy.gpuPodDeletion.deleteEmptyDir=true — let the operator
 //     delete GPU pods that hold emptyDir volumes so the upgrade can progress.
 //   - driver.upgradePolicy.drain.enable=false — never full-node drain. On a
-//     single-node cluster a drain would evict Flux, metrics-server, and the rest
+//     single-node cluster a drain would evict metrics-server, and the rest
 //     of the control plane; only GPU pods are deleted, by the operator, not by
 //     kubelet eviction.
 //
@@ -957,15 +739,15 @@ type DestroyOpts struct {
 
 // Destroy removes platform/K3s resources but deliberately preserves the
 // receipt-matching data PVs, iterabase-data VG, LVs, and bytes.
-func Destroy(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner, d deployer.Deployer, o overlayer.Overlayer, f fluxer.Fluxer) error {
-	return DestroyWithOptions(ctx, cfg, p, d, o, f, DestroyOpts{})
+func Destroy(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner, d deployer.Deployer, o overlayer.Overlayer) error {
+	return DestroyWithOptions(ctx, cfg, p, d, o, DestroyOpts{})
 }
 
 // DestroyWithOptions preserves ordinary destroy semantics and performs an
 // explicitly requested purge only after the existing product/platform/K3s
 // destroy path succeeds. A requested reboot is last, after any purge.
-func DestroyWithOptions(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner, d deployer.Deployer, o overlayer.Overlayer, f fluxer.Fluxer, opts DestroyOpts) error {
-	destroyProductSubstrate(ctx, cfg, d, o, f)
+func DestroyWithOptions(ctx context.Context, cfg *config.Cluster, p provisioner.Provisioner, d deployer.Deployer, o overlayer.Overlayer, opts DestroyOpts) error {
+	destroyProductSubstrate(ctx, cfg, d, o)
 	if err := p.Uninstall(ctx); err != nil {
 		return err
 	}
@@ -984,15 +766,9 @@ func DestroyWithOptions(ctx context.Context, cfg *config.Cluster, p provisioner.
 
 // destroyProductSubstrate stops reconcilers and charts in reverse apply order.
 // Cleanup remains best-effort and never mutates the selected data disks or VG.
-func destroyProductSubstrate(ctx context.Context, cfg *config.Cluster, d deployer.Deployer, o overlayer.Overlayer, f fluxer.Fluxer) {
-	if f != nil && cfg.Spec.Flux.Enabled {
-		_ = f.UninstallFlux(ctx)
-	}
-	if o != nil && cfg.Spec.Overlay.Repo != "" {
-		_ = o.Remove(ctx, overlayDestPath(cfg))
-		if cfg.Spec.Flux.Enabled && strings.HasPrefix(cfg.Spec.Overlay.Repo, "file://") {
-			_ = o.StopServingToFlux(ctx)
-		}
+func destroyProductSubstrate(ctx context.Context, cfg *config.Cluster, d deployer.Deployer, o overlayer.Overlayer) {
+	if o != nil {
+		_ = o.Remove(ctx, overlayStageDir(cfg))
 	}
 	if d != nil && cfg.Spec.Chart.Version != "" {
 		ch := cfg.Spec.Chart
@@ -1126,7 +902,7 @@ func storeKubeconfig(ctx context.Context, cfg *config.Cluster, p provisioner.Pro
 	if err != nil {
 		return "", err
 	}
-	kc, err := kubeconfig.RewriteServer(raw, cfg.Spec.Hosts[0].Address, 6443)
+	kc, err := kubeconfig.RewriteServer(raw, cfg.KubeAPIHost(), 6443)
 	if err != nil {
 		return "", err
 	}

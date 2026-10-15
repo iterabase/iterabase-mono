@@ -265,8 +265,6 @@ func hostFixtureConsumerReleaseBody(dataStorageDevice string) string {
 %s
 %s
 if ! command -v k3s >/dev/null 2>&1 || ! k3s kubectl get --raw=/readyz >/dev/null 2>&1; then exit 0; fi
-teardown_step="delete Flux kustomizations"
-k3s kubectl delete kustomizations.kustomize.toolkit.fluxcd.io --all -A --ignore-not-found=true --wait=true --timeout=2m || true
 teardown_step="delete AgentPool resources"
 if k3s kubectl get crd agentpools.platform.iterabase.com >/dev/null 2>&1; then
   k3s kubectl delete agentpools.platform.iterabase.com --all -A --ignore-not-found=true --wait=true --timeout=5m

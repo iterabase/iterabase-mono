@@ -66,7 +66,7 @@ func applyGPUSubstrateStage(t *testing.T, state *gpuFixtureState) {
 	// Bring up K3s first so the pinned-image cache is imported and verified
 	// before the GPU operator (or any chart) can consult a public registry.
 	bootstrap := applyOnceArgs(t, state.forgeBin, state.forgeHome, cfgPath,
-		"--skip-gpu", "--skip-chart", "--skip-overlay", "--skip-secrets", "--skip-flux")
+		"--skip-gpu", "--skip-chart", "--skip-overlay", "--skip-secrets")
 	assertApplyMarkers(t, bootstrap, "action:     install", "node ready: true", "data storage: iterabase-data")
 	preparePinnedImageCache(t, &state.diagnostics, state.host.IP, state.privKeyPath, "gpu")
 	out := applyOnce(t, state.forgeBin, state.forgeHome, cfgPath)

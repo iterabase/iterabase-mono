@@ -89,7 +89,7 @@ scheduler admits pods by requests, not by usage.
 ## Request budget per instance size
 
 All figures are requests. `toolRunner` (125m / 320Mi) is included even though
-the throwaway reference hosts ran without Flux. The AWS Load Balancer
+the throwaway reference hosts ran without an overlay tool source. The AWS Load Balancer
 Controller is a placeholder until HOR-593 pins it. Artifact processing is
 reserved from the HOR-460 reference profile until HOR-461/HOR-462 measure it.
 

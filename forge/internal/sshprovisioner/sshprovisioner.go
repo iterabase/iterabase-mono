@@ -1195,9 +1195,7 @@ func applyArgs(opts deployer.ApplyOpts, override string) []string {
 		"--create-namespace",
 		"--timeout", timeout,
 	)
-	if !opts.NoWait {
-		args = append(args, "--wait")
-	}
+	args = append(args, "--wait")
 	for _, f := range opts.ValueFiles {
 		args = append(args, "-f", f)
 	}
@@ -1246,8 +1244,6 @@ func (p *SSHProvisioner) Status(ctx context.Context, release, namespace string) 
 	return state, nil
 }
 
-const crdOwnershipJSONPath = `{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.meta\.helm\.sh/release-name}{"\t"}{.metadata.annotations.meta\.helm\.sh/release-namespace}{"\n"}{end}`
-
 // metalLBWebhookConfigName is the ValidatingWebhookConfiguration the bundled
 // metallb subchart renders; its failurePolicy mirrors metallb.crds.validationFailurePolicy.
 const metalLBWebhookConfigName = "metallb-webhook-configuration"
@@ -1269,139 +1265,6 @@ const (
 // MetalLB controller + webhook backend to be ready before converging. A package
 // variable so tests can shorten it.
 var metalLBBackendWaitTimeout = 10 * time.Minute
-
-// CRDOwnedBy implements deployer.Deployer from live Helm ownership annotations.
-func (p *SSHProvisioner) CRDOwnedBy(ctx context.Context, labelSelector, release, namespace string) (bool, error) {
-	out, err := p.run(ctx, kubectlCmd("get", "crd", "-l", labelSelector, "-o", "jsonpath="+crdOwnershipJSONPath))
-	if err != nil {
-		return false, fmt.Errorf("read CRD ownership: %w", err)
-	}
-	out = strings.TrimSpace(out)
-	if out == "" {
-		return false, nil
-	}
-	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Split(line, "\t")
-		if len(fields) != 3 || fields[0] == "" || fields[1] != release || fields[2] != namespace {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-// CRDsAnnotated implements deployer.Deployer from live CRD metadata.
-func (p *SSHProvisioner) CRDsAnnotated(ctx context.Context, labelSelector, annotation, value string) (bool, error) {
-	out, err := p.run(ctx, kubectlCmd("get", "crd", "-l", labelSelector, "-o", "json"))
-	if err != nil {
-		return false, fmt.Errorf("read CRD annotations: %w", err)
-	}
-	var list struct {
-		Items []struct {
-			Metadata struct {
-				Annotations map[string]string `json:"annotations"`
-			} `json:"metadata"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal([]byte(out), &list); err != nil {
-		return false, fmt.Errorf("decode CRD annotations: %w", err)
-	}
-	if len(list.Items) == 0 {
-		return false, nil
-	}
-	for _, item := range list.Items {
-		if item.Metadata.Annotations[annotation] != value {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-// AnnotateCRDs implements deployer.Deployer with one idempotent kubectl
-// annotation operation over the selected CRDs.
-func (p *SSHProvisioner) AnnotateCRDs(ctx context.Context, labelSelector, annotation, value string) error {
-	out, err := p.run(ctx, kubectlCmd("get", "crd", "-l", labelSelector, "-o", "name"))
-	if err != nil {
-		return fmt.Errorf("list CRDs for annotation: %w", err)
-	}
-	resources := strings.Fields(out)
-	if len(resources) == 0 {
-		return fmt.Errorf("no CRDs match annotation selector %q", labelSelector)
-	}
-	args := append([]string{"annotate", "--overwrite"}, resources...)
-	args = append(args, annotation+"="+value)
-	if _, err := p.run(ctx, kubectlCmd(args...)); err != nil {
-		return fmt.Errorf("annotate CRDs: %w", err)
-	}
-	return nil
-}
-
-// TransferCertificateHookOwnership implements deployer.Deployer. Platform 0.2
-// created ClusterIssuers and internal-CA Certificates as Helm hooks, so Helm did
-// not attach release annotations. Platform 0.3 renders them as normal resources;
-// annotate the existing objects before upgrade so Helm adopts them in place.
-func (p *SSHProvisioner) TransferCertificateHookOwnership(ctx context.Context, labelSelector, release, namespace string) error {
-	selections := []struct {
-		kind      string
-		namespace string
-	}{
-		{kind: "clusterissuer"},
-		{kind: "certificate", namespace: namespace},
-	}
-	for _, selection := range selections {
-		getArgs := []string{"get", selection.kind}
-		if selection.namespace != "" {
-			getArgs = append(getArgs, "-n", selection.namespace)
-		}
-		getArgs = append(getArgs, "-l", labelSelector, "-o", "name")
-		out, err := p.run(ctx, kubectlCmd(getArgs...))
-		if err != nil {
-			return fmt.Errorf("list %s resources for ownership transfer: %w", selection.kind, err)
-		}
-		resources := strings.Fields(out)
-		if len(resources) == 0 {
-			continue
-		}
-		args := []string{"annotate", "--overwrite"}
-		if selection.namespace != "" {
-			args = append(args, "-n", selection.namespace)
-		}
-		args = append(args, resources...)
-		args = append(args,
-			"meta.helm.sh/release-name="+release,
-			"meta.helm.sh/release-namespace="+namespace,
-			"helm.sh/hook-",
-			"helm.sh/hook-weight-",
-		)
-		if _, err := p.run(ctx, kubectlCmd(args...)); err != nil {
-			return fmt.Errorf("transfer %s ownership to %s/%s: %w", selection.kind, namespace, release, err)
-		}
-	}
-	return nil
-}
-
-// TransferCRDOwnership implements deployer.Deployer. Kept CRDs survive the old
-// platform release's upgrade, but retain its Helm ownership annotations. Move
-// only those metadata fields so the companion chart can adopt the same objects
-// without deleting certificates or relying on Helm --take-ownership support.
-func (p *SSHProvisioner) TransferCRDOwnership(ctx context.Context, labelSelector, release, namespace string) error {
-	out, err := p.run(ctx, kubectlCmd("get", "crd", "-l", labelSelector, "-o", "name"))
-	if err != nil {
-		return fmt.Errorf("list CRDs for ownership transfer: %w", err)
-	}
-	resources := strings.Fields(out)
-	if len(resources) == 0 {
-		return fmt.Errorf("no CRDs match ownership-transfer selector %q", labelSelector)
-	}
-	args := append([]string{"annotate", "--overwrite"}, resources...)
-	args = append(args,
-		"meta.helm.sh/release-name="+release,
-		"meta.helm.sh/release-namespace="+namespace,
-	)
-	if _, err := p.run(ctx, kubectlCmd(args...)); err != nil {
-		return fmt.Errorf("transfer CRD ownership to %s/%s: %w", namespace, release, err)
-	}
-	return nil
-}
 
 // TransferMetalLBHookOwnership implements deployer.Deployer. The pre-DES-HOR-511
 // platform created the IPAddressPool and L2Advertisement objects as Helm
@@ -1481,19 +1344,6 @@ func (p *SSHProvisioner) metalLBAdmissionBackendReady(ctx context.Context, relea
 	return true, nil
 }
 
-// RestartDeployment implements deployer.Deployer for the one migration seam
-// where a ConfigMap must become live before Helm can wait on its consumer.
-func (p *SSHProvisioner) RestartDeployment(ctx context.Context, labelSelector, namespace string) error {
-	selector := "-l=" + labelSelector
-	if _, err := p.run(ctx, kubectlCmd("rollout", "restart", "deployment", "-n", namespace, selector)); err != nil {
-		return fmt.Errorf("restart deployment %q in %s: %w", labelSelector, namespace, err)
-	}
-	if _, err := p.run(ctx, kubectlCmd("rollout", "status", "deployment", "-n", namespace, selector, "--timeout=5m")); err != nil {
-		return fmt.Errorf("wait for deployment %q in %s: %w", labelSelector, namespace, err)
-	}
-	return nil
-}
-
 // UninstallChart implements deployer.Deployer. A missing release is an
 // idempotent success, but Helm absence, status failures, failed hooks, and
 // uninstall failures are propagated so stateful callers can preserve the
@@ -1534,33 +1384,6 @@ func (p *SSHProvisioner) EnsureRepo(ctx context.Context, name, url string) error
 // automatically, like NodeReady/GPUReady).
 func kubectlCmd(args ...string) string {
 	return joinArgs(append([]string{"sudo", "k3s", "kubectl"}, args...))
-}
-
-// ApplyKustomize implements deployer.Deployer: `kubectl apply -k dir` against
-// the k3s kubeconfig on the host. Used for overlay CRD instances (kubectl apply
-// -k crds/client/), after the chart so the CRD kinds exist. The dir is rendered
-// first with `kubectl kustomize`; an empty build (e.g. an overlay scaffold with
-// no instances) is a no-op — `kubectl apply -k` errors with "no objects passed
-// to apply" on an empty build. Idempotent.
-func (p *SSHProvisioner) ApplyKustomize(ctx context.Context, dir string) error {
-	rendered, err := p.run(ctx, kubectlCmd("kustomize", dir))
-	if err != nil {
-		return fmt.Errorf("kubectl kustomize: %w", err)
-	}
-	if strings.TrimSpace(rendered) == "" {
-		return nil // no objects to apply (empty overlay scaffold)
-	}
-	if _, err := p.run(ctx, kubectlCmd("apply", "-k", dir)); err != nil {
-		return fmt.Errorf("kubectl apply -k: %w", err)
-	}
-	return nil
-}
-
-// DeleteKustomize implements deployer.Deployer: `kubectl delete -k dir`
-// (best-effort; for destroy). A missing resource is not an error.
-func (p *SSHProvisioner) DeleteKustomize(ctx context.Context, dir string) error {
-	_, _ = p.run(ctx, kubectlCmd("delete", "-k", dir, "--ignore-not-found=true"))
-	return nil
 }
 
 // ApplyManifest implements deployer.Deployer: `kubectl apply -f -` against the

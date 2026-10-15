@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -37,6 +38,9 @@ type Cluster struct {
 	Kind       string   `yaml:"kind"`
 	Metadata   Metadata `yaml:"metadata"`
 	Spec       Spec     `yaml:"spec"`
+	// Dir is the directory holding forge.yaml. Relative overlay paths resolve
+	// against it. Load sets it; it is never read from or written to YAML.
+	Dir string `yaml:"-"`
 }
 
 // Metadata identifies the install.
@@ -47,13 +51,16 @@ type Metadata struct {
 // Spec is the cluster substrate specification.
 type Spec struct {
 	Mode        string      `yaml:"mode"`
+	Provider    Provider    `yaml:"provider"`
 	Hosts       []Host      `yaml:"hosts"`
 	K3s         K3s         `yaml:"k3s"`
-	Flux        Flux        `yaml:"flux"`
 	Overlay     Overlay     `yaml:"overlay"`
 	Chart       Chart       `yaml:"chart"`
 	GPU         GPU         `yaml:"gpu"`
 	DataStorage DataStorage `yaml:"dataStorage"`
+	// FluxLegacy is the removed Flux GitOps block (DES-HOR-593-04). It is kept
+	// only to reject old configs with a migration error.
+	FluxLegacy *yaml.Node `yaml:"flux,omitempty"`
 }
 
 // DataStorage selects the immutable set of blank whole disks Forge prepares as
@@ -123,91 +130,74 @@ type K3s struct {
 	ExtraArgs     []string `yaml:"extraArgs"`
 }
 
-// Flux is the opt-in Flux GitOps toggle. When Enabled, forge installs Flux
-// (flux install) on the forge-provisioned cluster and applies a GitRepository +
-// Kustomization pointing at the client overlay fork (overlay.repo) for
-// continuous reconciliation of the overlay contents (CRD instances +, later, the
-// pi/ tree). The platform Helm release stays forge-managed; Flux does not run a
-// HelmRelease (no dual-ownership of the chart). overlay.repo is an https://
-// fork that source-controller fetches directly, or a file:// path on the host
-// that Forge serves to source-controller over read-only SSH from the node
-// (DES-HOR-632-01).
-type Flux struct {
-	Enabled bool   `yaml:"enabled"`
-	Version string `yaml:"version"` // flux2 release tag (semver, e.g. v2.4.0); default defaultFluxVersion
+// Overlay is the customer overlay directory on the operator machine
+// (DES-HOR-593-03). Forge renders it locally and ships only the rendered result
+// to the installation: Helm value files, the Kustomize-built CRD instances, the
+// customer tools archive and the secret declarations. An empty Path skips the
+// overlay phase.
+type Overlay struct {
+	// Path is the overlay directory, relative to forge.yaml (or absolute). It
+	// holds kustomization.yaml (CRD instances), the value files, the tool
+	// directories and the optional secrets.yaml.
+	Path string `yaml:"path"`
+	// ValueFiles are Helm value files relative to Path, applied in order (later
+	// wins). They may reach shared bases inside the same overlays repository,
+	// for example ../../bases/hosted/values.yaml. Default: [values.yaml].
+	ValueFiles []string `yaml:"valueFiles"`
+	// ToolDirs are customer tool directories relative to Path. Each holds one
+	// directory per tool; together they form the tools/client layer the tool
+	// runner loads (DES-HOR-593-05). Missing directories are skipped.
+	// Default: [tools].
+	ToolDirs []string `yaml:"toolDirs"`
+	// RepoLegacy and RefLegacy are the removed Git overlay pointer. They are kept
+	// only to reject old configs with a migration error.
+	RepoLegacy string `yaml:"repo,omitempty"`
+	RefLegacy  string `yaml:"ref,omitempty"`
 }
 
-const defaultFluxVersion = "v2.4.0"
-
-// applyDefaults fills the flux2 version default when Flux is enabled. When
-// disabled, the Flux phase is skipped and defaults stay empty.
-func (f *Flux) applyDefaults() {
-	if !f.Enabled {
+// applyDefaults fills the value-file and tool-directory defaults when an
+// overlay is configured.
+func (o *Overlay) applyDefaults() {
+	if o.Path == "" {
 		return
 	}
-	if f.Version == "" {
-		f.Version = defaultFluxVersion
+	if len(o.ValueFiles) == 0 {
+		o.ValueFiles = []string{"values.yaml"}
+	}
+	if len(o.ToolDirs) == 0 {
+		o.ToolDirs = []string{"tools"}
 	}
 }
 
-// validate enforces v1 constraints on the Flux configuration. Flux requires an
-// https:// or file:// overlay.repo (an empty repo gives Flux nothing to watch).
-// A disabled Flux config is always valid.
-func (f Flux) validate(overlay Overlay) error {
-	if !f.Enabled {
+func (o Overlay) validate() error {
+	if o.RepoLegacy != "" || o.RefLegacy != "" {
+		return fmt.Errorf("overlay.repo and overlay.ref are removed: Forge renders a local overlay directory and ships only its result (DES-HOR-593-03); check out the overlay and set overlay.path")
+	}
+	if o.Path == "" {
+		if len(o.ValueFiles) > 0 || len(o.ToolDirs) > 0 {
+			return fmt.Errorf("overlay.valueFiles and overlay.toolDirs require overlay.path")
+		}
 		return nil
 	}
-	if overlay.Repo == "" {
-		return fmt.Errorf("flux.enabled requires overlay.repo to be set (Flux watches the client overlay fork)")
+	for i, file := range o.ValueFiles {
+		if err := validateOverlayRelPath(file); err != nil {
+			return fmt.Errorf("overlay.valueFiles[%d]: %w", i, err)
+		}
 	}
-	// A file:// overlay is served to source-controller from the node over
-	// read-only SSH (DES-HOR-632-01); an https fork is read directly.
-	if !strings.HasPrefix(overlay.Repo, "https://") && !strings.HasPrefix(overlay.Repo, "file://") {
-		return fmt.Errorf("flux.enabled requires an https:// or file:// overlay.repo (got %q)", overlay.Repo)
-	}
-	if f.Version != defaultFluxVersion {
-		return fmt.Errorf("flux.version %q has no repository-reviewed executable/runtime identity", f.Version)
+	for i, dir := range o.ToolDirs {
+		if err := validateOverlayRelPath(dir); err != nil {
+			return fmt.Errorf("overlay.toolDirs[%d]: %w", i, err)
+		}
 	}
 	return nil
 }
 
-// Overlay is the client-fork overlay repo pointer (no base-ref). When Repo is
-// set, `forge apply` clones the fork on the host and applies its Helm values
-// (values.yaml + values.client.yaml) + CRD instances (kubectl apply -k
-// crds/client/). When empty, the overlay phase is skipped. v1 supports https://
-// (token-authenticated or public) and file:// repos; ssh:// / git@ support is a
-// fast-follow (different auth model — deploy key, not the https token).
-type Overlay struct {
-	Repo string `yaml:"repo"` // client-fork git URL (https:// or file://); empty => overlay phase skipped
-	Ref  string `yaml:"ref"`  // branch or tag (default "master")
-}
-
-const DefaultOverlayRef = "master"
-
-// applyDefaults fills the overlay ref default when a repo is configured. With
-// no repo, the overlay phase is skipped and defaults stay empty.
-func (o *Overlay) applyDefaults() {
-	if o.Repo == "" {
-		return
+func validateOverlayRelPath(p string) error {
+	if strings.TrimSpace(p) == "" {
+		return fmt.Errorf("must be non-empty")
 	}
-	if o.Ref == "" {
-		o.Ref = DefaultOverlayRef
-	}
-}
-
-// validate enforces v1 constraints on the overlay pointer. A missing repo is
-// valid (overlay phase skipped). A repo must be an https:// or file:// git URL
-// (v1 auth model: token over https; file:// for dev/test); the ref must be set
-// (applyDefaults fills the "master" default).
-func (o Overlay) validate() error {
-	if o.Repo == "" {
-		return nil
-	}
-	if !strings.HasPrefix(o.Repo, "https://") && !strings.HasPrefix(o.Repo, "file://") {
-		return fmt.Errorf("overlay.repo %q: v1 supports https:// and file:// repos (ssh:// / git@ is a fast-follow)", o.Repo)
-	}
-	if o.Ref == "" {
-		return fmt.Errorf("overlay.ref is required when overlay.repo is set")
+	if filepath.IsAbs(p) {
+		return fmt.Errorf("%q must be relative to overlay.path", p)
 	}
 	return nil
 }
@@ -345,13 +335,23 @@ func (g GPU) validate(mode string) error {
 	return nil
 }
 
-// Load reads and parses a forge.yaml config from path.
+// Load reads and parses a forge.yaml config from path and records its
+// directory for relative overlay paths.
 func Load(path string) (*Cluster, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %q: %w", path, err)
 	}
-	return Parse(data)
+	c, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config %q: %w", path, err)
+	}
+	c.Dir = filepath.Dir(abs)
+	return c, nil
 }
 
 // Parse parses and validates a forge.yaml config from bytes.
@@ -383,13 +383,27 @@ func (c *Cluster) Validate() error {
 	c.Spec.Chart.applyDefaults(c.Metadata.Name)
 	c.Spec.GPU.applyDefaults(c.Metadata.Name)
 	c.Spec.Overlay.applyDefaults()
-	c.Spec.Flux.applyDefaults()
+	c.Spec.Provider.applyDefaults()
 	return c.Spec.validate()
 }
 
 func (s *Spec) validate() error {
+	if s.FluxLegacy != nil {
+		return fmt.Errorf("flux is removed: forge apply is the only overlay delivery path (DES-HOR-593-04); delete the flux block")
+	}
+	if err := s.Provider.validate(); err != nil {
+		return err
+	}
 	switch s.Mode {
 	case ModeSingleNode:
+		if s.Provider.AWS != nil {
+			// The AWS provider derives the host and the data disk from the
+			// environment it provisions; forge.yaml must not pin them.
+			if len(s.Hosts) != 0 || len(s.DataStorage.Devices) != 0 {
+				return fmt.Errorf("provider.aws derives hosts and dataStorage from the provisioned environment; remove them from forge.yaml")
+			}
+			break
+		}
 		if len(s.Hosts) != 1 {
 			return fmt.Errorf("mode %q requires exactly 1 host, got %d", s.Mode, len(s.Hosts))
 		}
@@ -406,13 +420,12 @@ func (s *Spec) validate() error {
 	if err := s.GPU.validate(s.Mode); err != nil {
 		return err
 	}
-	if err := s.DataStorage.validate(); err != nil {
-		return err
+	if s.Provider.AWS == nil {
+		if err := s.DataStorage.validate(); err != nil {
+			return err
+		}
 	}
 	if err := s.Overlay.validate(); err != nil {
-		return err
-	}
-	if err := s.Flux.validate(s.Overlay); err != nil {
 		return err
 	}
 	return s.K3s.validate()

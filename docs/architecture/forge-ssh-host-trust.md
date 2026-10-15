@@ -82,6 +82,10 @@ The mismatch/unknown diagnostic reports: the address, the key-exchange stage, th
 - `forge init --ssh-host-key` now writes the verified key to the trust file instead of `forge.yaml`. `--ssh-trust-file` selects the path; the default is `~/.forge/trust/<install-name>/<address>`.
 - Test-only seams: `WithSSHConfig` remains for fake-SSH unit tests; the real-machine E2E writes the host key pinned at launch (`FORGE_E2E_FIXTURE_SSH_HOST_KEY`) into a per-run trust file. No test-only insecure callback exists in any non-test build path.
 
+### 3.8 Forge-launched hosted environments (`DES-HOR-593-02`)
+
+For `provider.aws` environments, the host key is not verified out of band: it is generated with the environment on the operator machine, installed by cloud-init user-data (stock keys deleted), and stored in the environment's IAM-protected Terraform state. Forge writes the trust file `~/.forge/<name>/ssh/known_hosts` from that state, bound to the instance ID it dials over SSM, before every connection. Forge still never scans or TOFU-learns a key from the network peer, and verification remains the key-exchange callback above. See [`forge-hosted-environments.md`](forge-hosted-environments.md).
+
 ## 4. Operator procedures
 
 ### 4.1 First enrollment

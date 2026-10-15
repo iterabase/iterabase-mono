@@ -524,18 +524,17 @@ func exerciseImmutableToolGenerationStage(t *testing.T, state *deployedState) {
 		t.Fatalf("active attempt pinned tool digest=%q want=%q", digest, v1Digest)
 	}
 
-	oldRevision, oldDigest := state.fluxRevision, state.fluxDigest
-	publishToolGeneration(t, state, state.toolV2)
+	oldRevision, oldDigest := state.overlayRevision, state.overlayDigest
+	publishToolGeneration(t, state, "e2e-overlay-v2", state.toolV2)
 	v2Digest := state.toolV2[0].digest
 	waitForDatabaseValue(t, state, fmt.Sprintf("SELECT count(*) FROM toolgateway.runner_registrations WHERE tool_name='platform.fixture_read' AND tool_digest='%s' AND active AND accepting_new", v2Digest), "1", 3*time.Minute)
 	waitForDatabaseValue(t, state, fmt.Sprintf("SELECT count(*) FROM toolgateway.runner_registrations WHERE tool_name='platform.fixture_read' AND tool_digest='%s' AND active AND NOT accepting_new", v1Digest), "1", 3*time.Minute)
 	if digest := state.databaseQuery(t, pinQuery); digest != v1Digest {
 		t.Fatalf("active attempt pin changed across tool generation: got=%q want=%q", digest, v1Digest)
 	}
-	state.fluxRevision = state.kubectl(t, 30*time.Second, "get", "gitrepository", "overlay", "-n", "flux-system", "-o", "jsonpath={.status.artifact.revision}")
-	state.fluxDigest = state.kubectl(t, 30*time.Second, "get", "gitrepository", "overlay", "-n", "flux-system", "-o", "jsonpath={.status.artifact.digest}")
-	if state.fluxRevision == oldRevision || state.fluxDigest == oldDigest || !canonicalDigest(state.fluxDigest) {
-		t.Fatalf("tool generation did not advance exact Flux identity: before=%s/%s after=%s/%s", oldRevision, oldDigest, state.fluxRevision, state.fluxDigest)
+	pointer := state.kubectl(t, 30*time.Second, "get", "configmap", overlayToolsPointer, "-n", overlayToolsNamespace, "-o", "jsonpath={.data.revision}/{.data.digest}")
+	if pointer != state.overlayRevision+"/"+state.overlayDigest || state.overlayRevision == oldRevision || state.overlayDigest == oldDigest || !canonicalDigest(state.overlayDigest) {
+		t.Fatalf("tool generation did not advance exact overlay identity: before=%s/%s after=%s", oldRevision, oldDigest, pointer)
 	}
 
 	status, blockerBody := state.request(t, http.MethodGet, "/v1/work-items/"+pinned.ID+"/blocker", state.workKey, nil, nil)
@@ -551,19 +550,19 @@ func exerciseImmutableToolGenerationStage(t *testing.T, state *deployedState) {
 }
 
 // exerciseProductOnlyInstallStage proves HOR-651's fresh-install criterion:
-// with toolRunner.flux.enabled=false, no overlay source and no client tools,
+// with toolRunner.overlayTools.enabled=false, no overlay source and no client tools,
 // the first generation is product-only and a workflow runs the reference
 // product tool from the tool-runner image.
 func exerciseProductOnlyInstallStage(t *testing.T, state *deployedState) {
 	t.Helper()
-	// Flux is not even installed yet, so no overlay source can exist.
-	if crd := state.kubectl(t, 30*time.Second, "get", "crd", "gitrepositories.source.toolkit.fluxcd.io", "-o", "name", "--ignore-not-found"); crd != "" {
-		t.Fatalf("product-only install has a Flux source API: %s", crd)
+	// The overlay namespace does not exist yet, so no overlay source can exist.
+	if namespace := state.kubectl(t, 30*time.Second, "get", "namespace", overlayToolsNamespace, "-o", "name", "--ignore-not-found"); namespace != "" {
+		t.Fatalf("product-only install has an overlay namespace: %s", namespace)
 	}
 	env := state.kubectl(t, 30*time.Second, "get", "deployment/iterabase-tool-runner", "-n", controlPlaneNamespace, "-o",
 		`jsonpath={range .spec.template.spec.containers[?(@.name=="materializer")].env[*]}{.name}={.value}{"\n"}{end}`)
-	if !strings.Contains(env, "FLUX_ENABLED=false") || strings.Contains(env, "FLUX_SOURCE_NAME") {
-		t.Fatalf("product-only materializer env still configures a Flux client: %s", env)
+	if !strings.Contains(env, "OVERLAY_TOOLS_ENABLED=false") || strings.Contains(env, "OVERLAY_TOOLS_NAMESPACE") {
+		t.Fatalf("product-only materializer env still configures an overlay source: %s", env)
 	}
 	active := state.databaseQuery(t, "SELECT string_agg(DISTINCT tool_name, ',') FROM toolgateway.runner_registrations WHERE active")
 	if active != productDiagnosticTool {
@@ -578,8 +577,18 @@ func exerciseProductOnlyInstallStage(t *testing.T, state *deployedState) {
 // from the tool-runner image.
 func exerciseProductToolLayerStage(t *testing.T, state *deployedState) {
 	t.Helper()
-	pod := state.kubectl(t, 30*time.Second, "get", "pods", "-n", "default", "-l", "app=tool-git", "-o", "jsonpath={.items[0].metadata.name}")
-	state.kubectl(t, 30*time.Second, "exec", "-n", "default", pod, "--", "/bin/sh", "-ceu", "test -d /git/repo/tools/client && test ! -e /git/repo/tools/product")
+	// The archive the pointer names in-cluster carries only tools/client.
+	archive := state.kubectl(t, 30*time.Second, "get", "configmap", overlayToolsPointer, "-n", overlayToolsNamespace, "-o", "jsonpath={.data.archive}")
+	encoded := state.kubectl(t, 30*time.Second, "get", "configmap", archive, "-n", overlayToolsNamespace, "-o", "jsonpath={.binaryData.tools\\.tar\\.gz}")
+	names, err := overlayArchiveEntries(encoded)
+	if err != nil || len(names) == 0 {
+		t.Fatalf("read overlay archive %s: entries=%v err=%v", archive, names, err)
+	}
+	for _, name := range names {
+		if !strings.HasPrefix(name, "tools/client/") {
+			t.Fatalf("overlay archive %s carries %s outside tools/client", archive, name)
+		}
+	}
 	runProductDiagnostic(t, state, "Product tool layer")
 }
 

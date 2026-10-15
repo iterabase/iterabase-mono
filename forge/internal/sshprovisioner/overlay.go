@@ -3,178 +3,205 @@ package sshprovisioner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"path/filepath"
+	"path"
+	"sort"
 	"strings"
-	"time"
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/nunocgoncalves/iterabase-mono/forge/internal/deployer"
 	"github.com/nunocgoncalves/iterabase-mono/forge/internal/overlayer"
 )
 
-// Compile-time assertion: SSHProvisioner implements overlayer.Overlayer.
 var _ overlayer.Overlayer = (*SSHProvisioner)(nil)
 
-const overlayCloneMaxAttempts = 3
-
-var overlayCloneRetryInterval = 2 * time.Second
-
-// EnsureGit implements overlayer.Overlayer. Installs git on the host if absent
-// (apt; v1: Ubuntu hosts), mirroring ensureHelm. Idempotent.
-func (p *SSHProvisioner) EnsureGit(ctx context.Context) error {
-	if _, err := p.run(ctx, "command -v git"); err == nil {
-		return nil
+// StageFiles implements overlayer.Overlayer: it replaces dir with exactly the
+// given files, written over SSH stdin so their content never appears in a
+// command string.
+func (p *SSHProvisioner) StageFiles(ctx context.Context, dir string, files []overlayer.File) ([]string, error) {
+	for _, f := range files {
+		if f.Name == "" || strings.ContainsAny(f.Name, "/\\") {
+			return nil, fmt.Errorf("overlay stage file name %q must be a base name", f.Name)
+		}
 	}
-	if _, err := p.run(ctx, "sudo apt-get update -qq && sudo apt-get install -y git"); err != nil {
-		return fmt.Errorf("install git: %w", err)
+	if _, err := p.run(ctx, "sudo rm -rf "+shellQuote(dir)+" && sudo install -d -m 0700 -o $(id -un) -g $(id -gn) "+shellQuote(dir)); err != nil {
+		return nil, fmt.Errorf("overlay stage directory: %w", err)
 	}
-	return nil
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		dest := path.Join(dir, f.Name)
+		if _, err := p.runStdin(ctx, "umask 077 && cat > "+shellQuote(dest), string(f.Content)); err != nil {
+			return nil, fmt.Errorf("overlay stage %s: %w", f.Name, err)
+		}
+		paths = append(paths, dest)
+	}
+	return paths, nil
 }
 
-// Clone implements overlayer.Overlayer. Fresh shallow clone of the overlay repo
-// at ref into dest. For https repos with a token, the token is injected via a
-// git credential-helper "store" file (written over SSH stdin so it never appears
-// in the command string or ps), then deleted; the remote URL in .git/config
-// never contains the token. Returns the resolved commit SHA.
-func (p *SSHProvisioner) Clone(ctx context.Context, repo, ref, dest string, token []byte) (string, error) {
-	// Fresh clone: remove dest if it exists, ensure the parent dir is present.
-	if _, err := p.run(ctx, "rm -rf "+shellQuote(dest)); err != nil {
-		return "", fmt.Errorf("overlay remove: %w", err)
-	}
-	// Create the parent dir (e.g. /var/lib/forge/overlay) owned by the SSH user
-	// so the non-sudo git clone can write into it. sudo install -d creates the
-	// dir + parents with the given ownership.
-	if _, err := p.run(ctx, "sudo install -d -o $(id -un) -g $(id -gn) "+shellQuote(filepath.Dir(dest))); err != nil {
-		return "", fmt.Errorf("overlay mkdir: %w", err)
-	}
-
-	// Force HTTP/1.1 for GitHub smart-HTTP clones. Dual-stack cloud hosts have
-	// repeatedly hit HTTP/2 "expected flush after ref listing" failures even
-	// while the public repository is reachable; HTTP/1.1 plus bounded retries
-	// preserves exact-source behavior without retrying authentication failures.
-	cloneArgs := []string{"git", "-c", "http.version=HTTP/1.1", "clone", "--branch", ref, "--depth", "1", repo, dest}
-	if len(token) > 0 && strings.HasPrefix(repo, "https://") {
-		credFile := dest + ".creds"
-		credLine := fmt.Sprintf("https://x-access-token:%s@%s\n", string(token), httpsHost(repo))
-		// Write the cred file via stdin so the token is never in the command
-		// string (ps/history). umask 077 => 0600.
-		if _, err := p.runStdin(ctx, "umask 077 && cat > "+shellQuote(credFile), credLine); err != nil {
-			return "", fmt.Errorf("overlay credentials: %w", err)
-		}
-		defer func() { _, _ = p.run(ctx, "rm -f "+shellQuote(credFile)) }()
-		cloneArgs = append([]string{"git", "-c", "credential.helper=store --file=" + credFile},
-			cloneArgs[1:]...) // replace the leading "git"
-	}
-
-	if err := p.cloneOverlayWithRetry(ctx, joinArgs(cloneArgs), dest); err != nil {
-		return "", fmt.Errorf("overlay clone: %w", err)
-	}
-
-	// Light structural validation: the overlay must have the files forge consumes.
-	// Fails fast with an actionable error instead of an opaque helm/kubectl failure.
-	if err := p.validateOverlayStructure(ctx, dest); err != nil {
-		_ = p.Remove(ctx, dest) // clean up the malformed clone
-		return "", err
-	}
-
-	commit, err := p.run(ctx, "git -C "+shellQuote(dest)+" rev-parse HEAD")
-	if err != nil {
-		return "", fmt.Errorf("overlay commit: %w", err)
-	}
-	return strings.TrimSpace(commit), nil
-}
-
-func (p *SSHProvisioner) cloneOverlayWithRetry(ctx context.Context, command, dest string) error {
-	var cloneErr error
-	for attempt := 1; attempt <= overlayCloneMaxAttempts; attempt++ {
-		output, err := p.run(ctx, command)
-		if err == nil {
-			return nil
-		}
-		cloneErr = err
-		if attempt == overlayCloneMaxAttempts || !isTransientGitCloneFailure(output+"\n"+err.Error()) {
-			break
-		}
-		// A failed git clone may leave a partial destination. Remove only that
-		// fresh clone path before the bounded retry; credential material remains
-		// outside dest and is removed by the existing deferred cleanup.
-		if _, removeErr := p.run(ctx, "rm -rf "+shellQuote(dest)); removeErr != nil {
-			return fmt.Errorf("retry cleanup: %w", removeErr)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(overlayCloneRetryInterval):
-		}
-	}
-	return cloneErr
-}
-
-func isTransientGitCloneFailure(detail string) bool {
-	detail = strings.ToLower(detail)
-	for _, fragment := range []string{
-		"expected flush after ref listing",
-		"rpc failed",
-		"remote end hung up unexpectedly",
-		"connection reset by peer",
-		"could not resolve host",
-		"failed to connect",
-		"operation timed out",
-		"tls connection was non-properly terminated",
-		"gnutls recv error",
-		"early eof",
-		"http 500",
-		"http 502",
-		"http 503",
-		"http 504",
-	} {
-		if strings.Contains(detail, fragment) {
-			return true
-		}
-	}
-	return false
-}
-
-// Remove implements overlayer.Overlayer. Best-effort: a missing dir is not an error.
-func (p *SSHProvisioner) Remove(ctx context.Context, dest string) error {
-	if _, err := p.run(ctx, "rm -rf "+shellQuote(dest)); err != nil {
+// Remove implements overlayer.Overlayer.
+func (p *SSHProvisioner) Remove(ctx context.Context, dir string) error {
+	if _, err := p.run(ctx, "sudo rm -rf "+shellQuote(dir)); err != nil {
 		return fmt.Errorf("overlay remove: %w", err)
 	}
 	return nil
 }
 
-// ReadFile implements overlayer.Overlayer: reads a file from the cloned overlay
-// on the host (e.g. secrets.yaml). A missing file surfaces as a cat error
-// ("No such file or directory") so the caller can treat optional files as absent.
-func (p *SSHProvisioner) ReadFile(ctx context.Context, dest, relPath string) (string, error) {
-	out, err := p.run(ctx, "cat "+shellQuote(filepath.Join(dest, relPath)))
+// liveObject is the subset of a live object ApplyOwned and PruneOwned read.
+type liveObject struct {
+	Kind     string `json:"kind"`
+	Metadata struct {
+		Name      string            `json:"name"`
+		Namespace string            `json:"namespace"`
+		Labels    map[string]string `json:"labels"`
+	} `json:"metadata"`
+	Items []liveObject `json:"items"`
+}
+
+func (o liveObject) ref() string {
+	if o.Metadata.Namespace == "" {
+		return o.Kind + "/" + o.Metadata.Name
+	}
+	return o.Kind + "/" + o.Metadata.Namespace + "/" + o.Metadata.Name
+}
+
+// parseLiveObjects reads kubectl get -o json output: a List, one object, or
+// nothing.
+func parseLiveObjects(out string) ([]liveObject, error) {
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	var obj liveObject
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		return nil, fmt.Errorf("parse kubectl output: %w", err)
+	}
+	if strings.HasSuffix(obj.Kind, "List") {
+		return obj.Items, nil
+	}
+	return []liveObject{obj}, nil
+}
+
+// ApplyOwned implements deployer.Deployer.
+func (p *SSHProvisioner) ApplyOwned(ctx context.Context, manifest, ownerLabel, ownerValue string) error {
+	out, err := p.runStdin(ctx, kubectlCmd("get", "-f", "-", "-o", "json", "--ignore-not-found"), manifest)
 	if err != nil {
-		return "", fmt.Errorf("overlay read %s: %w", relPath, err)
+		return fmt.Errorf("read live overlay objects: %w", err)
+	}
+	live, err := parseLiveObjects(out)
+	if err != nil {
+		return err
+	}
+	var conflicts []string
+	for _, obj := range live {
+		if obj.Metadata.Labels[ownerLabel] != ownerValue {
+			conflicts = append(conflicts, obj.ref())
+		}
+	}
+	if len(conflicts) > 0 {
+		sort.Strings(conflicts)
+		return fmt.Errorf("refusing to overwrite objects not owned by the overlay (%s!=%s): %s; rename the overlay objects or remove the installation-owned ones deliberately", ownerLabel, ownerValue, strings.Join(conflicts, ", "))
+	}
+	if _, err := p.runStdin(ctx, kubectlCmd("apply", "-f", "-"), manifest); err != nil {
+		return fmt.Errorf("kubectl apply -f -: %w", err)
+	}
+	return nil
+}
+
+// pruneMarker separates the per-resource listings of a discovery prune.
+const pruneMarker = "### forge-prune-resource "
+
+// PruneOwned implements deployer.Deployer. With no kinds it discovers every
+// listable, deletable resource type on the cluster and lists them all in one
+// host-side command, so an owned object is found whatever its kind.
+func (p *SSHProvisioner) PruneOwned(ctx context.Context, kinds []string, selector string, keep []deployer.ObjectRef) ([]string, error) {
+	listings, err := p.ownedListings(ctx, kinds, selector)
+	if err != nil {
+		return nil, err
+	}
+	kept := make(map[string]bool, len(keep))
+	for _, k := range keep {
+		kept[strings.ToLower(k.Kind)+"/"+k.Namespace+"/"+k.Name] = true
+	}
+	var deleted []string
+	for _, l := range listings {
+		for _, obj := range l.objects {
+			if kept[strings.ToLower(obj.Kind)+"/"+obj.Metadata.Namespace+"/"+obj.Metadata.Name] {
+				continue
+			}
+			args := []string{"delete", l.resource, obj.Metadata.Name, "--ignore-not-found", "--timeout=2m"}
+			if obj.Metadata.Namespace != "" {
+				args = append(args, "-n", obj.Metadata.Namespace)
+			}
+			if _, err := p.run(ctx, kubectlCmd(args...)); err != nil {
+				return deleted, fmt.Errorf("delete %s: %w", obj.ref(), err)
+			}
+			deleted = append(deleted, obj.ref())
+		}
+	}
+	return deleted, nil
+}
+
+type ownedListing struct {
+	resource string
+	objects  []liveObject
+}
+
+func (p *SSHProvisioner) ownedListings(ctx context.Context, kinds []string, selector string) ([]ownedListing, error) {
+	if len(kinds) == 0 {
+		return p.discoverOwned(ctx, selector)
+	}
+	var out []ownedListing
+	for _, kind := range kinds {
+		raw, err := p.run(ctx, kubectlCmd("get", kind, "--all-namespaces", "-l", selector, "-o", "json", "--ignore-not-found"))
+		if err != nil {
+			if strings.Contains(err.Error(), "the server doesn't have a resource type") {
+				continue
+			}
+			return nil, fmt.Errorf("list %s: %w", kind, err)
+		}
+		objects, err := parseLiveObjects(raw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ownedListing{resource: kind, objects: objects})
 	}
 	return out, nil
 }
 
-// httpsHost extracts the host[:port] from an https:// URL (no path), used to
-// scope the credential-helper cred line to the repo's host.
-func httpsHost(repo string) string {
-	s := strings.TrimPrefix(repo, "https://")
-	if i := strings.IndexByte(s, '/'); i >= 0 {
-		s = s[:i]
+// discoverOwned lists objects matching selector across every listable,
+// deletable resource type in one SSH round trip. A type whose listing fails
+// (for example an unavailable aggregated API) fails the prune: an owned object
+// must never be silently left behind.
+func (p *SSHProvisioner) discoverOwned(ctx context.Context, selector string) ([]ownedListing, error) {
+	k := kubectlCmd()
+	script := "set -eu\n" +
+		"for r in $(" + k + " api-resources --verbs=list,delete -o name); do\n" +
+		"  printf '%s%s\\n' " + shellQuote(pruneMarker) + " \"$r\"\n" +
+		"  " + k + " get \"$r\" --all-namespaces -l " + shellQuote(selector) + " -o json --ignore-not-found\n" +
+		"done\n"
+	raw, err := p.run(ctx, "bash -c "+shellQuote(script))
+	if err != nil {
+		return nil, fmt.Errorf("discover owned objects: %w", err)
 	}
-	return s
+	return parseDiscovered(raw)
 }
 
-// validateOverlayStructure checks the cloned overlay has the files forge
-// consumes (values.yaml, values.client.yaml, crds/client/kustomization.yaml).
-func (p *SSHProvisioner) validateOverlayStructure(ctx context.Context, dest string) error {
-	check := "test -f " + shellQuote(dest+"/values.yaml") +
-		" && test -f " + shellQuote(dest+"/values.client.yaml") +
-		" && test -f " + shellQuote(dest+"/crds/client/kustomization.yaml")
-	if _, err := p.run(ctx, check); err != nil {
-		return fmt.Errorf("overlay structure: %s is missing values.yaml, values.client.yaml, or crds/client/kustomization.yaml", dest)
+// parseDiscovered splits the discovery output into per-resource listings,
+// keeping only resources with matching objects.
+func parseDiscovered(raw string) ([]ownedListing, error) {
+	var out []ownedListing
+	for _, chunk := range strings.Split(raw, pruneMarker)[1:] {
+		resource, body, _ := strings.Cut(chunk, "\n")
+		objects, err := parseLiveObjects(body)
+		if err != nil {
+			return nil, fmt.Errorf("discover owned %s: %w", resource, err)
+		}
+		if len(objects) > 0 {
+			out = append(out, ownedListing{resource: strings.TrimSpace(resource), objects: objects})
+		}
 	}
-	return nil
+	return out, nil
 }
 
 // runStdin runs cmd on the host with stdin supplied. The command string itself
