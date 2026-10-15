@@ -10,7 +10,7 @@ derive their expectations from it, so the host cache cannot drift from
 `.github/inputs/remote-content.json`. A seed dispatch also verifies a matching
 generation archive by archive and repairs anything missing, truncated,
 corrupt, or recorded without archive digests through the same staging and
-atomic-swap path, and an incremental bake (HOR-676) reuses every intact
+atomic-swap path, and an incremental bake (DES-HOR-676-02) reuses every intact
 archive an earlier generation on the same host already holds, so only changed
 images are pulled.
 """
@@ -62,7 +62,7 @@ def is_gpu_only(reference: str) -> bool:
     return "vllm" in path
 
 
-# Pinned images no GPU scenario loads, by registry/repository path (HOR-676).
+# Pinned images no GPU scenario loads, by registry/repository path (DES-HOR-676-03).
 # The GPU fixture runs the whole platform (Forge substrate, platform chart,
 # overlay, Flux) plus the GPU operator offline from its cache, so it needs every
 # shared image except these. Leaving them out keeps a change to them from
@@ -129,7 +129,7 @@ def select_images(
     The GPU AMI carries the nvcr.io/NVIDIA/vLLM images and every shared image
     its scenario loads; its root volume is sized for the cache and its imported
     copy. It leaves the CPU-fixture-only images out, so the GPU generation
-    hashes only what the GPU fixture needs (HOR-676). The CPU AMI leaves the
+    hashes only what the GPU fixture needs (DES-HOR-676-03). The CPU AMI leaves the
     GPU-only images out.
     """
     if capacity not in CAPACITIES:
@@ -479,7 +479,7 @@ def reusable_archives(
     """Return the intact archives that earlier generations on the host hold.
 
     An incremental bake boots its builder from the previous fixture AMI, whose
-    cache holds an earlier generation (HOR-676). An archive is reused only when
+    cache holds an earlier generation (DES-HOR-676-02). An archive is reused only when
     that generation records the same reference, digest and archive name with
     its sha256, size and config digest, and the archive on disk still matches
     the recorded sha256 and size. Returns {archive: (generation directory,

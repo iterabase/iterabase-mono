@@ -7,7 +7,7 @@ name: Bake
 # this tree's generation already exists. E2E calls this once per capacity its
 # real-machine scenarios need, so a change to the pinned inputs bakes them on its
 # own pull request. A bake is incremental from the newest earlier fixture AMI of
-# its capacity when one exists (HOR-676); `cold` or `force` bakes from Ubuntu.
+# its capacity when one exists (DES-HOR-676-02); `cold` or `force` bakes from Ubuntu.
 on:
   push:
     branches: [master]

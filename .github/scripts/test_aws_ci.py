@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import re
 import unittest
+from unittest import mock
 
 from aws_ci import (
     ALL_APPROVED_INSTANCE_TYPES,
@@ -1025,8 +1026,48 @@ class FixtureLaunchTests(unittest.TestCase):
 
         images = [image("ami-a", "g1", "2026-10-01"), image("ami-b", "g2", "2026-10-03"),
                   image("ami-c", "g3", "2026-10-05"), image("ami-d", "g3", "2026-10-04")]
-        self.assertEqual([item["ImageId"] for item in aws_ci.prune_plan(images, aws_ci.IMAGE_CACHE_TAG)], ["ami-a"])
+        # ami-d is a bake of g3 that the newer forced rebake ami-c superseded.
+        self.assertEqual([item["ImageId"] for item in aws_ci.prune_plan(images, aws_ci.IMAGE_CACHE_TAG)], ["ami-a", "ami-d"])
         self.assertEqual(aws_ci.prune_plan(images[:2], aws_ci.IMAGE_CACHE_TAG), [])
+        # A rebake still pending never retires the bake launches still use.
+        pending = {**image("ami-e", "g2", "2026-10-06"), "State": "pending"}
+        self.assertEqual(aws_ci.prune_plan(images[:2] + [pending], aws_ci.IMAGE_CACHE_TAG), [])
+
+    def test_forced_rebake_replaces_an_existing_generation_in_every_region(self) -> None:
+        import aws_ci
+
+        generation = "f" * 64
+        marker = {aws_ci.AMI_ROLE_TAG: "fixture-gpu", aws_ci.IMAGE_CACHE_TAG: generation}
+        # Each bake of a generation is named by its run, so a forced rebake of an
+        # existing generation cannot collide with it (InvalidAMIName.Duplicate).
+        first = aws_ci.fixture_ami_name("gpu", generation, "bake-38672467440-1-gpu")
+        forced = aws_ci.fixture_ami_name("gpu", generation, "bake-38680000000-1-gpu")
+        self.assertNotEqual(first, forced)
+        self.assertLessEqual(len(forced), 128)  # the EC2 AMI name limit
+        self.assertRegex(forced, r"^[A-Za-z0-9()\[\] ./'@_-]{3,128}$")
+
+        primary = CI_REGION
+        others = [region for region in aws_ci.region_order(primary) if region != primary]
+        created = dt.datetime(2026, 10, 15, 12, tzinfo=dt.timezone.utc)
+        newest = {others[0]: "2026-10-10T00:00:00.000Z", others[1]: "2026-10-15T12:05:00.000Z"}
+
+        def tagged_ids(region, kind, tags, *, include_pending=False):
+            self.assertEqual((kind, tags, include_pending), ("image", marker, True))
+            return [{"ImageId": "ami-" + region, "CreationDate": newest[region]}] if region in newest else []
+
+        with mock.patch.object(aws_ci, "tagged_ids", side_effect=tagged_ids):
+            # The stale earlier bake is replaced; a copy already started from this bake is not duplicated.
+            self.assertEqual(aws_ci.regions_behind(primary, created, marker), (others[0],))
+            newest.pop(others[1])
+            self.assertEqual(aws_ci.regions_behind(primary, created, marker), (others[0], others[1]))
+
+        calls = []
+        source = {"ImageId": "ami-forced", "Name": forced, "Tags": [{"Key": aws_ci.BASE_CREATED_TAG, "Value": "2026-10-15T12:00:00Z"}]}
+        with mock.patch.object(aws_ci, "describe_image", return_value=source), \
+                mock.patch.object(aws_ci, "aws_json", side_effect=lambda argv: calls.append(argv) or {"ImageId": "ami-copy"}):
+            copies = aws_ci.copy_fixture_ami(primary, "ami-forced", "gpu", generation, marker, (others[0],))
+        self.assertEqual(copies, {others[0]: "ami-copy"})
+        self.assertEqual(calls[0][calls[0].index("--name") + 1], forced)
 
     def test_preview_inputs_fail_closed(self) -> None:
         import aws_ci

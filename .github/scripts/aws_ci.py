@@ -42,7 +42,7 @@ CI_REGION = CI_REGIONS[0]
 # inference stack requires; the launch loop tries each type and each offered AZ.
 APPROVED_INSTANCE_TYPES: dict[str, tuple[str, ...]] = {
     "cpu": ("m6i.xlarge",),
-    # Fixture AMI bake builders only (HOR-676, C14): ~625 MiB/s sustained EBS
+    # Fixture AMI bake builders only (DES-HOR-676-05): ~625 MiB/s sustained EBS
     # bandwidth, so the provisioned builder throughput is usable for a whole
     # bake rather than an m6i.xlarge's ~30-minute burst. Bakes are short and rare.
     "bake": ("m6i.4xlarge",),
@@ -103,7 +103,7 @@ SPOT_MARKET_OPTIONS = "MarketType=spot,SpotOptions={SpotInstanceType=one-time,In
 # bake run's cleanup removes only the builder and its transient source image.
 AMI_ROLE_TAG = "iterabase-ci-ami"
 IMAGE_CACHE_TAG = "iterabase-ci-image-cache"
-# When the Ubuntu base under a fixture AMI was cold-baked (HOR-676): incremental
+# When the Ubuntu base under a fixture AMI was cold-baked (DES-HOR-676-05): incremental
 # bakes inherit it, and a base older than BAKE_BASE_MAX_AGE forces a cold bake so
 # the OS under the image cache is refreshed.
 BASE_CREATED_TAG = "iterabase-ci-base-created"
@@ -129,14 +129,14 @@ FIXTURE_VOLUME_INITIALIZATION_MIBPS = 300
 FIXTURE_VOLUME_THROUGHPUT_MIBPS = 500
 # The bake builder pulls, unpacks and repacks every pinned image on its root, and
 # an incremental bake reads the previous generation back to verify it. At gp3's
-# 125 MiB/s and 3,000 IOPS default the GPU seed took 37 min (HOR-676), so the
+# 125 MiB/s and 3,000 IOPS default the GPU seed took 37 min (HOR-676; DES-HOR-676-01), so the
 # builder root gets the fixture throughput and these IOPS: 500 MiB/s needs at
 # least 2,000 at 256 KiB per IO, unpacking many small layer files needs more,
 # and gp3 allows up to 16,000. It lasts only while the builder runs.
 BAKE_BUILDER_ROOT_IOPS = 8000
 # How long a baked AMI may take to become available, from its CreateImage. A
 # cold GPU bake's first full snapshot (~48 GB) ran past 50 min on PR #170
-# (HOR-676), so a cold bake gets two hours; an incremental bake snapshots only
+# (DES-HOR-676-03), so a cold bake gets two hours; an incremental bake snapshots only
 # the blocks it changed. A bake whose AMI another run is still creating waits
 # the cold bound, because it cannot tell which kind of bake made it.
 BAKE_IMAGE_WAIT_SECONDS = {"cold": 7200, "incremental": 3600}
@@ -1814,7 +1814,7 @@ def fixture_base_created(image: dict[str, Any]) -> dt.datetime | None:
 
 def select_previous_fixture_ami(images: list[dict[str, Any]], capacity: str, generation: str,
                                 now: dt.datetime | None = None) -> dict[str, Any] | None:
-    """The base an incremental bake boots its builder from (HOR-676).
+    """The base an incremental bake boots its builder from (DES-HOR-676-02).
 
     The newest available fixture AMI of this capacity that carries another
     image-cache generation and whose root fits the builder's root. Which earlier
@@ -1864,6 +1864,28 @@ def image_wait_seconds(created: dt.datetime, now: dt.datetime, mode: str) -> tup
     return BAKE_SESSION_WAIT_SECONDS, False
 
 
+def regions_behind(primary: str, created: dt.datetime, marker: dict[str, str]) -> tuple[str, ...]:
+    """The other regions whose newest image of this generation predates the
+    primary bake: none at all, or the one a forced rebake replaces. A copy
+    already started from this bake (or a later one) is newer, so no duplicate
+    copy starts."""
+    behind = []
+    for region in region_order(primary):
+        if region == primary:
+            continue
+        images = tagged_ids(region, "image", marker, include_pending=True)
+        if not images or parse_timestamp(str(images[0].get("CreationDate"))) < created:
+            behind.append(region)
+    return tuple(behind)
+
+
+def fixture_ami_name(capacity: str, generation: str, run_id: str) -> str:
+    """AMI names are unique per region, so each bake of a generation is named
+    by its run: a forced rebake replaces the generation instead of colliding
+    with it (`InvalidAMIName.Duplicate`). The generation tag stays the identity."""
+    return f"{TAG_PREFIX}-fixture-{capacity}-{generation}-{run_id}"
+
+
 def await_fixture_ami(primary: str, image_id: str, capacity: str, generation: str, marker: dict[str, str],
                       mode: str, *, final: bool) -> bool:
     """Wait one session for the primary AMI, then copy it to the regions lacking it.
@@ -1881,9 +1903,8 @@ def await_fixture_ami(primary: str, image_id: str, capacity: str, generation: st
             )
         write_outputs({"image": image_id, "pending": "true"})
         return False
-    missing = tuple(region for region in region_order(primary)
-                    if region != primary and not tagged_ids(region, "image", marker, include_pending=True))
-    copies = copy_fixture_ami(primary, image_id, capacity, generation, marker, missing)
+    copies = copy_fixture_ami(primary, image_id, capacity, generation, marker,
+                              regions_behind(primary, created, marker))
     write_outputs({"image": image_id, "pending": "false"})
     write_summary(
         f"### {capacity.upper()} fixture AMI\n\n- image cache generation `{generation}` ({mode} bake)\n"
@@ -1902,7 +1923,7 @@ def command_bake_ami(args: argparse.Namespace) -> int:
     region's AMI is available the copies to the other regions start; a fixture
     launch only ever uses an available AMI, so the copies need no waiting here.
 
-    A build is incremental (HOR-676) when an earlier fixture AMI of this capacity
+    A build is incremental (DES-HOR-676-02) when an earlier fixture AMI of this capacity
     exists: the builder boots from it, the seed pulls only the changed images,
     and the snapshot uploads only the changed blocks. `--cold` (and `--force`)
     bakes from the Canonical image instead.
@@ -1965,7 +1986,7 @@ def command_bake_ami(args: argparse.Namespace) -> int:
         return 0  # nothing was built: this generation already existed
     base_tag = {BASE_CREATED_TAG: args.base_created} if args.base_created else {}
     tags = product_tags(f"fixture-ami-{generation}", f"fixture-{args.capacity}", {**marker, **base_tag})
-    name = f"{TAG_PREFIX}-fixture-{args.capacity}-{generation}"
+    name = fixture_ami_name(args.capacity, generation, args.run_id)
     image_id = str(aws_json([
         "ec2", "create-image", "--region", primary, "--instance-id", args.builder, "--name", name,
         "--description", f"iterabase CI {args.capacity} fixture, image cache {generation} (DES-HOR-590-03)",
@@ -1979,11 +2000,13 @@ def copy_fixture_ami(primary: str, image_id: str, capacity: str, generation: str
                      regions: tuple[str, ...]) -> dict[str, str]:
     """Start copying a baked fixture AMI to other regions; a launch uses each copy once it is available.
 
-    Copies carry the source's base date so every region ages its base alike."""
-    base = tagged_value(describe_image(primary, image_id).get("Tags"), BASE_CREATED_TAG)
+    Copies carry the source's name and base date, so every region names the
+    same bake alike and ages its base alike."""
+    source = describe_image(primary, image_id)
+    base = tagged_value(source.get("Tags"), BASE_CREATED_TAG)
     tags = product_tags(f"fixture-ami-{generation}", f"fixture-{capacity}",
                         {**marker, **({BASE_CREATED_TAG: base} if base else {})})
-    name = f"{TAG_PREFIX}-fixture-{capacity}-{generation}"
+    name = str(source.get("Name") or f"{TAG_PREFIX}-fixture-{capacity}-{generation}")
     return {region: str(aws_json([
         "ec2", "copy-image", "--region", region, "--source-region", primary, "--source-image-id", image_id,
         "--name", name, "--tag-specifications", tag_specifications("image", tags), tag_specifications("snapshot", tags),
@@ -2147,14 +2170,25 @@ BAKE_GENERATIONS_KEPT = 2
 
 
 def prune_plan(items: list[dict[str, Any]], generation_tag: str, keep: int = BAKE_GENERATIONS_KEPT) -> list[dict[str, Any]]:
-    """Baked images or snapshots beyond the newest `keep` generations, oldest generations first."""
+    """Baked images or snapshots to remove: every generation beyond the newest
+    `keep`, and within a kept generation every bake a newer usable bake of it
+    superseded (a forced rebake). A pending rebake never retires the bake
+    launches still use."""
+    def generation(item: dict[str, Any]) -> str:
+        return tagged_value(item.get("Tags"), generation_tag) or ""
+
+    def created(item: dict[str, Any]) -> str:
+        return str(item.get("CreationDate") or item.get("StartTime") or "")
+
     newest: dict[str, str] = {}
+    usable: dict[str, str] = {}
     for item in items:
-        generation = tagged_value(item.get("Tags"), generation_tag) or ""
-        created = str(item.get("CreationDate") or item.get("StartTime") or "")
-        newest[generation] = max(newest.get(generation, ""), created)
-    kept = set(sorted(newest, key=lambda generation: newest[generation], reverse=True)[:keep])
-    return [item for item in items if (tagged_value(item.get("Tags"), generation_tag) or "") not in kept]
+        newest[generation(item)] = max(newest.get(generation(item), ""), created(item))
+        if item.get("State", "available") in ("available", "completed"):
+            usable[generation(item)] = max(usable.get(generation(item), ""), created(item))
+    kept = set(sorted(newest, key=lambda key: newest[key], reverse=True)[:keep])
+    return [item for item in items
+            if generation(item) not in kept or created(item) < usable.get(generation(item), "")]
 
 
 def command_prune_images(args: argparse.Namespace) -> int:
