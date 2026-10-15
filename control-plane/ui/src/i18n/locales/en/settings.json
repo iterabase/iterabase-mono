@@ -42,7 +42,6 @@
   "reauthMismatch": "We could not confirm your password.",
   "reauthSubmit": "Confirm",
   "reauthTitle": "Confirm it is you",
-  "regionUnavailable": "Region unavailable",
   "requestCreatedMeta": "Requested · {{when}}",
   "requestVerifiedMeta": "Verified email · {{when}}",
   "requestsCount_one": "{{count, number}} request",

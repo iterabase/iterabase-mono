@@ -117,7 +117,7 @@ describe("PublicAuth journey", () => {
     const user = userEvent.setup();
     render(<PublicAuth onAuthenticated={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Request access" }));
-    await user.click(screen.getByRole("button", { name: "PT" }));
+    await user.selectOptions(screen.getByLabelText("Language"), "pt");
     await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.click(screen.getByRole("button", { name: "Pedir acesso" }));
     expect(await screen.findByRole("status")).toHaveTextContent(

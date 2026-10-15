@@ -9,8 +9,6 @@ const BUTTON = 32;
 const STATUS = 26;
 
 export const lengthBudgets: Record<string, number> = {
-  "common:languageShort.en": 2,
-  "common:languageShort.pt": 2,
   "common:retry": BUTTON,
 
   "auth:signIn": BUTTON,

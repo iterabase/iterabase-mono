@@ -30,7 +30,6 @@ export function AuthFrame({
   title,
   subline,
   trust,
-  locale,
   children,
 }: {
   brand: string;
@@ -39,13 +38,11 @@ export function AuthFrame({
   title: string;
   subline: string;
   trust: [string, string, string];
-  locale?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <main className="xt auth-page">
       <div className="auth-glow" aria-hidden="true" />
-      {locale}
       <div className="auth-layout">
         <Brand name={brand} />
         <div className="auth-hero">

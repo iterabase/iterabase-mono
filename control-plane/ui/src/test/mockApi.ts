@@ -143,7 +143,39 @@ export function createMockApi(
         organizationName,
       });
     if (path === "/v1/profile") return json({ profile, csrfToken: "csrf-2" });
-    if (path === "/v1/sessions") return json([]);
+    if (path === "/v1/sessions")
+      return json(
+        overrides.empty
+          ? []
+          : [
+              {
+                id: "s-1",
+                current: true,
+                browser: "Safari",
+                os: "iOS",
+                device: "Mobile",
+                createdAt: "2026-10-14T08:57:00Z",
+                lastActiveAt: "2026-10-14T09:02:00Z",
+              },
+              {
+                id: "s-2",
+                current: false,
+                browser: "Chrome",
+                os: "macOS",
+                device: "Desktop",
+                country: "PT",
+                region: "PT-13",
+                createdAt: "2026-10-14T08:30:00Z",
+                lastActiveAt: "2026-10-14T09:01:00Z",
+              },
+              {
+                id: "s-3",
+                current: false,
+                createdAt: "2026-10-13T18:05:00Z",
+                lastActiveAt: "2026-10-13T18:05:00Z",
+              },
+            ],
+      );
     if (path === "/v1/access-requests") return json([]);
     if (path === "/v1/organization/settings")
       return json({

@@ -42,7 +42,6 @@
   "reauthMismatch": "Não foi possível confirmar a palavra-passe.",
   "reauthSubmit": "Confirmar",
   "reauthTitle": "Confirme a sua identidade",
-  "regionUnavailable": "Região indisponível",
   "requestCreatedMeta": "Pedido · {{when}}",
   "requestVerifiedMeta": "Email verificado · {{when}}",
   "requestsCount_many": "{{count, number}} pedidos",

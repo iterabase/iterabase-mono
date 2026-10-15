@@ -462,9 +462,13 @@ function FailureRows({ data }: { data: Failures }) {
         return (
           <li key={code} className="failed-row">
             <WarnIcon />
-            <b className="text-[14px] font-semibold">{t(`failure.${code}`)}</b>
-            {anyUnknown && <UnknownBadge />}
-            <span className="muted text-[13px] min-w-0 flex-1">
+            <span className="failed-reason">
+              <b className="text-[14px] font-semibold">
+                {t(`failure.${code}`)}
+              </b>
+              {anyUnknown && <UnknownBadge />}
+            </span>
+            <span className="failed-detail muted text-[13px] min-w-0 flex-1">
               {t("failed.count", { count: grouped.length })} ·{" "}
               {grouped.map((item, index) => (
                 <span key={item.id}>
@@ -485,7 +489,7 @@ function FailureRows({ data }: { data: Failures }) {
               to="/work/$itemId"
               params={{ itemId: grouped[0].id }}
               search={(previous) => previous}
-              className="ml-auto text-[13.5px] font-medium text-[var(--blue)] underline whitespace-nowrap"
+              className="failed-action text-[13.5px] font-medium text-[var(--blue)] underline whitespace-nowrap"
             >
               {anyUnknown ||
               failureCode(grouped[0]) === "interrupted_after_write"

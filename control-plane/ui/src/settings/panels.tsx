@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useDesktop } from "../screens/work/media";
 import {
   AccessRequest,
   AuthAPIError,
@@ -23,7 +24,12 @@ import {
   DialogContent,
   DialogTitle,
 } from "../components/ui/dialog";
-import { formatDateTime, formatNumber } from "../i18n/format";
+import {
+  formatDateTime,
+  formatNumber,
+  formatShortDate,
+  formatTime as formatClock,
+} from "../i18n/format";
 import type { AccessRequests } from "./useAccessRequests";
 
 // The panels hosted by the Settings shell (HOR-459), in the XTSettingsPeople
@@ -177,7 +183,7 @@ export function ProfilePanel({
           />
         )}
         <form
-          className="grid gap-[14px] desk:grid-cols-2 desk:gap-x-[18px]"
+          className="grid grid-cols-1 gap-[14px] desk:grid-cols-2 desk:gap-x-[18px]"
           onSubmit={submit}
         >
           <label className="field">
@@ -497,24 +503,16 @@ export function SessionsPanel({
     void load();
   }, [load]);
 
+  const desktop = useDesktop();
   const others = sessions?.filter((session) => !session.current) ?? [];
-
-  return (
-    <Panel
-      title={copy("sessionsTitle")}
-      count={
-        sessions && sessions.length > 0
-          ? copy("sessionsCount", {
-              count: sessions.length,
-            })
-          : undefined
-      }
-      busy={busy || sessions === null}
-      action={
-        others.length > 0 && (
+  // Desktop keeps the action in the panel header; phone puts it under the
+  // list at full width so it never sits alone on a wrapped header row.
+  const revokeOthers =
+    others.length > 0
+      ? (size: string) => (
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
+            className={`btn btn-secondary ${size}`}
             onClick={() =>
               confirm({
                 title: copy("revokeOthersConfirm"),
@@ -531,7 +529,20 @@ export function SessionsPanel({
             {copy("revokeOthers")} ({formatNumber(others.length, locale)})
           </button>
         )
+      : null;
+
+  return (
+    <Panel
+      title={copy("sessionsTitle")}
+      count={
+        sessions && sessions.length > 0
+          ? copy("sessionsCount", {
+              count: sessions.length,
+            })
+          : undefined
       }
+      busy={busy || sessions === null}
+      action={desktop && revokeOthers && revokeOthers("btn-sm")}
     >
       {sessions === null && !loadError && (
         <p className="panel-body muted m-0 text-[13.5px]" role="status">
@@ -560,7 +571,7 @@ export function SessionsPanel({
               <li key={session.id} className="session-row">
                 <span className="flex min-w-0 flex-wrap items-center gap-x-[10px] gap-y-[6px]">
                   <b className="text-[14.5px] font-semibold">
-                    {sessionLabel(session, copy)}
+                    {sessionLabel(session, copy, locale)}
                   </b>
                   {session.current && (
                     <span className="badge session-current">
@@ -624,26 +635,57 @@ export function SessionsPanel({
               </li>
             ))}
           </ul>
+          {!desktop && revokeOthers && (
+            <div className="session-foot">{revokeOthers("w-full")}</div>
+          )}
         </>
       )}
     </Panel>
   );
 }
 
-function sessionLabel(session: SessionInfo, copy: SettingsT): string {
+function sessionLabel(
+  session: SessionInfo,
+  copy: SettingsT,
+  locale: LocaleCode,
+): string {
   const client = [session.browser, session.os, session.device]
     .filter(Boolean)
     .join(" · ");
-  const region = session.region || session.country || copy("regionUnavailable");
-  if (!client)
-    return region === copy("regionUnavailable")
-      ? copy("clientUnavailable")
-      : region;
-  return `${client} — ${region}`;
+  // Region needs an operator-mounted GeoIP database; without one it is left
+  // out rather than labelled unavailable on every row.
+  const region = countryName(session.country, locale);
+  if (!client) return region || copy("clientUnavailable");
+  return region ? `${client} — ${region}` : client;
 }
 
+/** The session's country by name ("Portugal"); the GeoIP subdivision code
+ * (PT-13) means nothing to a person, so it is not shown. */
+function countryName(
+  country: string | undefined,
+  locale: LocaleCode,
+): string | undefined {
+  if (!country) return undefined;
+  try {
+    return (
+      new Intl.DisplayNames([locale === "pt" ? "pt-PT" : "en-GB"], {
+        type: "region",
+      }).of(country) ?? country
+    );
+  } catch {
+    return country;
+  }
+}
+
+/** This year's sessions drop the year: "14 Oct, 09:57". */
 function formatTime(value: string, locale: LocaleCode): string {
-  return formatDateTime(value, locale);
+  const date = new Date(value);
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.getFullYear() !== new Date().getFullYear()
+  )
+    return formatDateTime(value, locale);
+  return `${formatShortDate(date, locale)}, ${formatClock(date, locale)}`;
 }
 
 /** Two letters from the email's local part: joao.pires@… → JP. */

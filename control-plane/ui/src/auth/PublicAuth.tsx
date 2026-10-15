@@ -82,6 +82,9 @@ export default function PublicAuth({
   organizationName = "",
   onAuthenticated,
 }: Props) {
+  // Starts from the account's or the browser's language. The page has no
+  // switch of its own (founder review, 2026-10-15); only the access-request
+  // and setup forms choose a language.
   const [locale, setLocale] = useState<LocaleCode>(initialLocale);
   const [view, setView] = useState<View>(initialState);
   const [email, setEmail] = useState("");
@@ -318,24 +321,6 @@ export default function PublicAuth({
       title={c("heroTitle")}
       subline={c("heroSub")}
       trust={[c("trustApproval"), c("trustAttributed"), c("trustData")]}
-      locale={
-        <div
-          className="seg auth-locale"
-          role="group"
-          aria-label={c("language")}
-        >
-          {(["en", "pt"] as const).map((code) => (
-            <button
-              key={code}
-              type="button"
-              aria-pressed={locale === code}
-              onClick={() => setLocale(code)}
-            >
-              {c(`languageShort.${code}`)}
-            </button>
-          ))}
-        </div>
-      }
     >
       {view.kind === "sign-in" && (
         <form className="auth-form" onSubmit={onSignIn} aria-busy={busy}>

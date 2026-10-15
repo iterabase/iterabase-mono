@@ -158,16 +158,48 @@
   inset: 0;
   border-radius: 16px;
 }
+/* Phone: the reason, then what failed, then the action, all under the icon's
+   column so long titles wrap on their own line. */
 .failed-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 4px 10px;
+  padding: 12px 14px;
+}
+.failed-row > svg {
+  margin-top: 2px;
+}
+.failed-row > :not(svg) {
+  grid-column: 2;
+}
+.failed-reason {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 12px;
-  padding: 12px 14px;
+  gap: 6px 10px;
+}
+.failed-detail {
+  line-height: 1.45;
+}
+.failed-action {
+  justify-self: start;
+  padding-top: 4px;
 }
 @media (min-width: 900px) {
   .failed-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
     padding: 12px 18px;
+  }
+  .failed-row > svg {
+    margin-top: 0;
+  }
+  .failed-action {
+    margin-left: auto;
+    padding-top: 0;
   }
 }
 .xt .failed-phone {
