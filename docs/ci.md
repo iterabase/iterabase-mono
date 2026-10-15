@@ -43,7 +43,7 @@ reason for each choice) is written to the run summary and uploaded as the
 
 | Event | Diff | Mode |
 | --- | --- | --- |
-| `pull_request` | PR base … head | honours `selected_by`; strict with the `e2e-real-machine` label |
+| `pull_request` | merge commit's first parent … merge commit (anything but a two-parent merge commit selects everything) | honours `selected_by`; strict with the `e2e-real-machine` label |
 | `merge_group` | queue base … queue head | strict |
 | push to `master` | `before` … head (a new branch selects everything) | honours `selected_by` |
 | schedule, manual, `all: true` | none | everything |
