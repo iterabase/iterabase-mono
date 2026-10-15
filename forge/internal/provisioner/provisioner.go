@@ -35,9 +35,15 @@ const SignatureStorageClassFirstVersion = "v0.6.0"
 // ManagedStorageClasses returns the exact class set a substrate version
 // renders, so one Forge binary validates older and newer platforms. An
 // unparsable version is treated as current (fail closed on the larger set).
+// Only the release core counts: a preview build such as `0.6.0-pr.170.3` is
+// cut from 0.6.0 source and renders its classes, although SemVer orders it
+// before 0.6.0.
 func ManagedStorageClasses(substrateVersion string) []ManagedStorageClass {
 	classes := []ManagedStorageClass{{Name: AgentPoolStorageClass, Shared: true}, {Name: PlatformStorageClass, Shared: false}}
 	v := "v" + strings.TrimPrefix(substrateVersion, "v")
+	if semver.IsValid(v) {
+		v = strings.TrimSuffix(semver.Canonical(v), semver.Prerelease(v))
+	}
 	if !semver.IsValid(v) || semver.Compare(v, SignatureStorageClassFirstVersion) >= 0 {
 		classes = append(classes, ManagedStorageClass{Name: SignatureStorageClass, Shared: true})
 	}
