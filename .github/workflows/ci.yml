@@ -27,7 +27,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TESTCONTAINERS_RYUK_CONTAINER_IMAGE: testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0
+  TESTCONTAINERS_RYUK_CONTAINER_IMAGE: testcontainers/ryuk:0.13.0@sha256:31b31269d06603366cbfd0284708dcd2e281e8a4188e53fce3d3304439d0df3d
   GO_CACHE_DEPENDENCIES: |
     control-plane/go.sum
     inference-gateway/go.sum
