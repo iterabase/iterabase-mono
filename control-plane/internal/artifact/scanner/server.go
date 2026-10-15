@@ -164,13 +164,12 @@ func (a *Adapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "scanner not ready", http.StatusServiceUnavailable)
 		return
 	}
-	select {
-	case a.inFlight <- struct{}{}:
-		defer func() { <-a.inFlight }()
-	default:
+	release, ok := a.acquire(r)
+	if !ok {
 		http.Error(w, "scanner busy", http.StatusServiceUnavailable)
 		return
 	}
+	defer release()
 	req, data, err := readRequest(r)
 	if err != nil {
 		a.count("error")
@@ -214,6 +213,22 @@ func (a *Adapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if err := writeResponse(w, v, children); err != nil {
 		a.Log.Warn("artifact scanner response write failed", "error", err)
+	}
+}
+
+// acquire takes the one engine slot (section 11). A request that arrives
+// while the previous one is still releasing it waits briefly instead of
+// failing as a transient outage.
+func (a *Adapter) acquire(r *http.Request) (func(), bool) {
+	busy := time.NewTimer(30 * time.Second)
+	defer busy.Stop()
+	select {
+	case a.inFlight <- struct{}{}:
+		return func() { <-a.inFlight }, true
+	case <-busy.C:
+		return nil, false
+	case <-r.Context().Done():
+		return nil, false
 	}
 }
 

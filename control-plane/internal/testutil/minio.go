@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -77,6 +78,26 @@ func NewMinIO(t *testing.T) MinIOConfig {
 		mcExec(t, container, "mc", "admin", "policy", "create", "local", name, path)
 		mcExec(t, container, "mc", "admin", "policy", "attach", "local", name, "--user", cred.AccessKey)
 	}
+	// MinIO applies new users and policies asynchronously; wait until every
+	// zone credential is effective so tests never race IAM propagation.
+	for _, cred := range []MinIOCredential{cfg.Ingest, cfg.Serve, cfg.Lifecycle} {
+		zone, err := minio.New(cfg.Endpoint, &minio.Options{Creds: credentials.NewStaticV4(cred.AccessKey, cred.SecretKey, "")})
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			_, err := zone.GetBucketLocation(ctx, cfg.Bucket)
+			return err == nil
+		}, 30*time.Second, 200*time.Millisecond, "zone credential %s never became effective", cred.AccessKey)
+	}
+	lifecycle, err := minio.New(cfg.Endpoint, &minio.Options{Creds: credentials.NewStaticV4(cfg.Lifecycle.AccessKey, cfg.Lifecycle.SecretKey, "")})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		_, err := lifecycle.PutObject(ctx, cfg.Bucket, "quarantine/.iam-probe", strings.NewReader("x"), 1, minio.PutObjectOptions{})
+		if err != nil {
+			return false
+		}
+		_, err = lifecycle.StatObject(ctx, cfg.Bucket, "quarantine/.iam-probe", minio.StatObjectOptions{})
+		return err == nil && lifecycle.RemoveObject(ctx, cfg.Bucket, "quarantine/.iam-probe", minio.RemoveObjectOptions{}) == nil
+	}, 30*time.Second, 200*time.Millisecond, "lifecycle policy never became effective")
 	return cfg
 }
 
