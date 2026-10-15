@@ -78,26 +78,47 @@ func NewMinIO(t *testing.T) MinIOConfig {
 		mcExec(t, container, "mc", "admin", "policy", "create", "local", name, path)
 		mcExec(t, container, "mc", "admin", "policy", "attach", "local", name, "--user", cred.AccessKey)
 	}
-	// MinIO applies new users and policies asynchronously; wait until every
-	// zone credential is effective so tests never race IAM propagation.
-	for _, cred := range []MinIOCredential{cfg.Ingest, cfg.Serve, cfg.Lifecycle} {
-		zone, err := minio.New(cfg.Endpoint, &minio.Options{Creds: credentials.NewStaticV4(cred.AccessKey, cred.SecretKey, "")})
+	// MinIO applies new users and policies asynchronously, and a credential
+	// can authenticate before its policy grants anything. Wait until each
+	// zone credential can perform the exact operation it exists for, so tests
+	// never race IAM propagation.
+	zone := func(cred MinIOCredential) *minio.Client {
+		c, err := minio.New(cfg.Endpoint, &minio.Options{Creds: credentials.NewStaticV4(cred.AccessKey, cred.SecretKey, "")})
 		require.NoError(t, err)
-		require.Eventually(t, func() bool {
-			_, err := zone.GetBucketLocation(ctx, cfg.Bucket)
-			return err == nil
-		}, 30*time.Second, 200*time.Millisecond, "zone credential %s never became effective", cred.AccessKey)
+		return c
 	}
-	lifecycle, err := minio.New(cfg.Endpoint, &minio.Options{Creds: credentials.NewStaticV4(cfg.Lifecycle.AccessKey, cfg.Lifecycle.SecretKey, "")})
-	require.NoError(t, err)
+	lifecycle, ingest, serve := zone(cfg.Lifecycle), zone(cfg.Ingest), zone(cfg.Serve)
+	put := func(c *minio.Client, key string) error {
+		_, err := c.PutObject(ctx, cfg.Bucket, key, strings.NewReader("x"), 1, minio.PutObjectOptions{})
+		return err
+	}
+	remove := func(key string) bool {
+		return lifecycle.RemoveObject(ctx, cfg.Bucket, key, minio.RemoveObjectOptions{}) == nil
+	}
 	require.Eventually(t, func() bool {
-		_, err := lifecycle.PutObject(ctx, cfg.Bucket, "quarantine/.iam-probe", strings.NewReader("x"), 1, minio.PutObjectOptions{})
+		if put(lifecycle, "quarantine/.iam-probe") != nil {
+			return false
+		}
+		_, err := lifecycle.StatObject(ctx, cfg.Bucket, "quarantine/.iam-probe", minio.StatObjectOptions{})
+		return err == nil && remove("quarantine/.iam-probe")
+	}, 30*time.Second, 200*time.Millisecond, "lifecycle policy never became effective")
+	attempt := 0
+	require.Eventually(t, func() bool {
+		attempt++
+		key := fmt.Sprintf("quarantine/.iam-probe-ingest-%d", attempt)
+		return put(ingest, key) == nil && remove(key)
+	}, 30*time.Second, 200*time.Millisecond, "ingest policy never became effective")
+	require.NoError(t, put(lifecycle, "originals/.iam-probe"))
+	require.Eventually(t, func() bool {
+		object, err := serve.GetObject(ctx, cfg.Bucket, "originals/.iam-probe", minio.GetObjectOptions{})
 		if err != nil {
 			return false
 		}
-		_, err = lifecycle.StatObject(ctx, cfg.Bucket, "quarantine/.iam-probe", minio.StatObjectOptions{})
-		return err == nil && lifecycle.RemoveObject(ctx, cfg.Bucket, "quarantine/.iam-probe", minio.RemoveObjectOptions{}) == nil
-	}, 30*time.Second, 200*time.Millisecond, "lifecycle policy never became effective")
+		defer object.Close()
+		b, err := io.ReadAll(object)
+		return err == nil && string(b) == "x"
+	}, 30*time.Second, 200*time.Millisecond, "serve policy never became effective")
+	require.True(t, remove("originals/.iam-probe"))
 	return cfg
 }
 
