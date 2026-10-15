@@ -1074,6 +1074,10 @@ func ensureMapKey(mapNode *yaml.Node, key string, values map[string]string) {
 // immediately reapplies the release with the chart's steady-state Fail policy
 // and asserts the live webhook failurePolicy is Fail. Failure returns so a
 // later reapply re-enters and completes the bootstrap safely.
+//
+// After a successful apply it deletes objects that failed revisions created and
+// the release no longer renders, which Helm's previous-revision baseline misses
+// (DES-HOR-677-02).
 func (p *SSHProvisioner) Apply(ctx context.Context, opts deployer.ApplyOpts) error {
 	if err := p.ensureHelm(ctx); err != nil {
 		return err
@@ -1092,7 +1096,8 @@ func (p *SSHProvisioner) Apply(ctx context.Context, opts deployer.ApplyOpts) err
 		if _, err := p.run(ctx, helmCmd(applyArgs(opts, "")...)); err != nil {
 			return fmt.Errorf("helm install: %w", err)
 		}
-		return nil
+		_, err := p.pruneFailedRevisionOrphans(ctx, opts.Release, opts.Namespace)
+		return err
 	}
 
 	// MetalLB enabled: reconcile the admission-webhook failurePolicy to the
@@ -1128,7 +1133,8 @@ func (p *SSHProvisioner) Apply(ctx context.Context, opts deployer.ApplyOpts) err
 	if final != metalLBPolicyFail {
 		return fmt.Errorf("metallb validation failurePolicy not converged to %s: got %q", metalLBPolicyFail, final)
 	}
-	return nil
+	_, err = p.pruneFailedRevisionOrphans(ctx, opts.Release, opts.Namespace)
+	return err
 }
 
 func (p *SSHProvisioner) verifiedApplyOpts(ctx context.Context, opts deployer.ApplyOpts) (deployer.ApplyOpts, func(), error) {

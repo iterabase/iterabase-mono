@@ -28,9 +28,9 @@ func TestE2E(t *testing.T) {
 			Stages: []sharede2e.Stage[*cpuFixtureState]{
 				{Name: "prepare-fresh-host", Run: cpuDiagnosticStage(failureDomainFixturePrepare, prepareCPUFixtureStage)},
 				{Name: "reject-gpu-on-cpu-host", DependsOn: []string{"prepare-fresh-host"}, Run: cpuDiagnosticStage(failureDomainSubstrate, rejectGPUOnCPUStage)},
-				{Name: "fresh-current-with-local-overlay", DependsOn: []string{"reject-gpu-on-cpu-host"}, Run: cpuDiagnosticStage(failureDomainForgeHandoff, runOverlayStage)},
-				{Name: "assert-overlay-tools-loaded", DependsOn: []string{"fresh-current-with-local-overlay"}, Run: cpuDiagnosticStage(failureDomainForgeHandoff, assertOverlayToolsLoadedStage)},
-				{Name: "assert-inotify-capacity", DependsOn: []string{"fresh-current-with-local-overlay"}, Run: cpuDiagnosticStage(failureDomainForgeReconcile, assertHostInotifyCapacityStage)},
+				{Name: "fresh-current-recovers-failed-first-install", DependsOn: []string{"reject-gpu-on-cpu-host"}, Run: cpuDiagnosticStage(failureDomainForgeHandoff, runRecoveredFirstInstallStage)},
+				{Name: "assert-overlay-tools-loaded", DependsOn: []string{"fresh-current-recovers-failed-first-install"}, Run: cpuDiagnosticStage(failureDomainForgeHandoff, assertOverlayToolsLoadedStage)},
+				{Name: "assert-inotify-capacity", DependsOn: []string{"fresh-current-recovers-failed-first-install"}, Run: cpuDiagnosticStage(failureDomainForgeReconcile, assertHostInotifyCapacityStage)},
 				{Name: "reapply-current-idempotently", DependsOn: []string{"assert-inotify-capacity"}, Run: cpuDiagnosticStage(failureDomainForgeReconcile, reapplyCurrentPlatformStage)},
 				{Name: "assert-inotify-reapply-idempotent", DependsOn: []string{"reapply-current-idempotently"}, Run: cpuDiagnosticStage(failureDomainForgeReconcile, assertHostInotifyReapplyStage)},
 				{Name: "sync-secrets", DependsOn: []string{"reapply-current-idempotently"}, Run: cpuDiagnosticStage(failureDomainForgeHandoff, runSecretsStage)},

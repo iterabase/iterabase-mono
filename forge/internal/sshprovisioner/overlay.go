@@ -48,13 +48,16 @@ func (p *SSHProvisioner) Remove(ctx context.Context, dir string) error {
 	return nil
 }
 
-// liveObject is the subset of a live object ApplyOwned and PruneOwned read.
+// liveObject is the subset of a live object ApplyOwned, PruneOwned and
+// pruneFailedRevisionOrphans read.
 type liveObject struct {
-	Kind     string `json:"kind"`
-	Metadata struct {
-		Name      string            `json:"name"`
-		Namespace string            `json:"namespace"`
-		Labels    map[string]string `json:"labels"`
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Metadata   struct {
+		Name        string            `json:"name"`
+		Namespace   string            `json:"namespace"`
+		Labels      map[string]string `json:"labels"`
+		Annotations map[string]string `json:"annotations"`
 	} `json:"metadata"`
 	Items []liveObject `json:"items"`
 }

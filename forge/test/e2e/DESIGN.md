@@ -97,7 +97,7 @@ AgentPool workspace assertions.
 
 | Scenario | Capacity | Make target | Proves |
 | --- | --- | --- | --- |
-| `cpu` (CI smoke) | cpu | `test-e2e` | GPU refusal on a CPU host, the locally rendered overlay handoff, the tool runner loading the client tool, durable inotify capacity, idempotent reapply, secret sync, re-apply delivery of an overlay change with pruning, and refusal to overwrite installation-owned objects |
+| `cpu` (CI smoke) | cpu | `test-e2e` | GPU refusal on a CPU host, one-apply recovery from two failed first platform revisions with their leftovers pruned and the admission webhook CA in place, the locally rendered overlay handoff, the tool runner loading the client tool, durable inotify capacity, idempotent reapply, secret sync, re-apply delivery of an overlay change with pruning, and refusal to overwrite installation-owned objects |
 | `cpu-workspace` | cpu | `test-e2e-workspace` | process-open raw-device refusal, PV/VG identity and classes, two-worker RWO AgentPool, concurrent isolated work, capacity gating, human-gate worker replacement, XFS/LVM growth, reboot and reapply with persisted bytes, claim release, and non-purging ordinary destroy |
 | `gpu` | gpu | `test-e2e-gpu` | GPU substrate readiness, GPU smoke, exact platform handoff, model-cache seeding, and one real serving completion; the optional `driver-upgrade` stage proves an `emptyDir`-safe driver transition |
 
