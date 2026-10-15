@@ -29,6 +29,11 @@ const (
 	basePolicy = policyBeforeStyle + "style-src 'self'" + policyAfterStyle
 )
 
+// rootFiles are the unhashed files public/ copies to the dist root and
+// index.html links by fixed name. They are revalidated, never immutable,
+// because their name does not change with their content.
+var rootFiles = map[string]bool{"/favicon.svg": true}
+
 // nonceBytes is the random nonce size: 144 bits, base64 without padding.
 const nonceBytes = 18
 
@@ -42,6 +47,7 @@ func Handler() http.Handler {
 }
 
 // NewHandler serves the app from a dist file system: immutable /assets/ files,
+// the revalidated root files index.html links by name (the favicon),
 // and index.html for every other path it is given, so browser deep links
 // (/work/W-1, /settings/profile, /auth/verify?token=…) reach the client
 // router. Each document gets a fresh CSP style nonce, published to the app as
@@ -69,13 +75,17 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	if strings.HasPrefix(r.URL.Path, "/assets/") {
-		h.serveAsset(w, r)
+		h.serveAsset(w, r, "public, max-age=31536000, immutable")
+		return
+	}
+	if rootFiles[r.URL.Path] {
+		h.serveAsset(w, r, "no-cache")
 		return
 	}
 	h.serveDocument(w)
 }
 
-func (h *handler) serveAsset(w http.ResponseWriter, r *http.Request) {
+func (h *handler) serveAsset(w http.ResponseWriter, r *http.Request, cacheControl string) {
 	w.Header().Set("Content-Security-Policy", basePolicy)
 	name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 	info, err := fs.Stat(h.root, name)
@@ -83,7 +93,7 @@ func (h *handler) serveAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Cache-Control", cacheControl)
 	http.ServeFileFS(w, r, h.root, name)
 }
 

@@ -19,9 +19,12 @@ const nodeTone: Record<StepKind, string> = {
 export function HowItWorks({
   workflow,
   items,
+  live,
 }: {
   workflow: WorkflowSummary;
   items: WorkItem[];
+  /** False when the counts could not be refreshed: no "Live now". */
+  live: boolean;
 }) {
   const { t } = useTranslation("team");
   const locale = useLocale();
@@ -37,10 +40,12 @@ export function HowItWorks({
           {t("tabs.how")}
         </h2>
         <div className="cw-how__head">
-          <span className="flex items-center gap-[7px]">
-            <span className="dot live bg-[var(--ok)]" aria-hidden="true" />
-            <b className="font-semibold text-[var(--ink)]">{t("how.live")}</b>
-          </span>
+          {live && (
+            <span className="flex items-center gap-[7px]">
+              <span className="dot live bg-[var(--ok)]" aria-hidden="true" />
+              <b className="font-semibold text-[var(--ink)]">{t("how.live")}</b>
+            </span>
+          )}
           <span className="ml-auto hidden items-center gap-[7px] desk:flex">
             <CoworkerMark coworker={workflow.coworker} size={14} decorative />
             {t("how.does", { name })}

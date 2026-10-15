@@ -56,6 +56,8 @@ export function aboutMinutes(decisions: number): number {
 }
 
 const DONE_SHOWN = 3;
+/** The work list API returns at most this many rows. */
+const WORK_LIST_LIMIT = 200;
 
 function TodayBoard() {
   const { t } = useTranslation("today");
@@ -73,9 +75,33 @@ function TodayBoard() {
     [],
   );
   const today = useLiveQuery(() => loadSummary(periodFor("today")), []);
+  // What needs the person is read on its own: the period list is capped and
+  // newest first, so older open decisions could fall off it.
+  const attention = useLiveQuery(
+    () => listWorkItems({ state: "blocked", limit: WORK_LIST_LIMIT }),
+    [],
+  );
 
   const all = items.status === "ready" ? items.data : [];
-  const decisions = decisionsOf(all);
+  const decisions =
+    attention.status === "ready" ? decisionsOf(attention.data) : [];
+  // A full page may be cut short; the dashboard counts every open decision.
+  const decisionCount =
+    decisions.length >= WORK_LIST_LIMIT && today.status === "ready"
+      ? Math.max(decisions.length, today.data.counts.blocked ?? 0)
+      : decisions.length;
+  const ready = items.status === "ready" && attention.status === "ready";
+  const loadFailed = items.status === "error" || attention.status === "error";
+  const loading =
+    !loadFailed &&
+    (items.status === "loading" || attention.status === "loading");
+  const stale =
+    (items.status === "ready" && items.stale) ||
+    (attention.status === "ready" && attention.stale);
+  const reload = () => {
+    reload();
+    attention.reload();
+  };
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (
@@ -101,8 +127,8 @@ function TodayBoard() {
   const failed = groupItems(all).failed.filter(
     (item) => minutesBetween(item.finishedAt ?? item.updatedAt) <= 24 * 60,
   );
-  const about = t("aboutMinutes", { count: aboutMinutes(decisions.length) });
-  const count = formatNumber(decisions.length, locale);
+  const about = t("aboutMinutes", { count: aboutMinutes(decisionCount) });
+  const count = formatNumber(decisionCount, locale);
 
   return (
     <div className="today">
@@ -114,7 +140,7 @@ function TodayBoard() {
           <h1 className="serif m-0 text-[32px] desk:text-[44px] leading-[1.08]">
             {greeting}
           </h1>
-          {items.status === "ready" && (
+          {ready && (
             <p className="m-0 max-w-[720px] text-[15.5px] desk:text-[18px] leading-[1.5] text-[var(--ink2)]">
               <DaySentence done={done} />
               {desk && " "}
@@ -125,7 +151,7 @@ function TodayBoard() {
                   <Trans
                     t={t}
                     i18nKey="sentence.decisions"
-                    count={decisions.length}
+                    count={decisionCount}
                     values={{ about }}
                     components={{ b: <b className="text-[var(--ink)]" /> }}
                   />
@@ -134,7 +160,7 @@ function TodayBoard() {
           )}
         </section>
 
-        {items.status === "ready" &&
+        {ready &&
           (desk ? (
             <section
               aria-labelledby="your-turn-title"
@@ -155,7 +181,7 @@ function TodayBoard() {
                     </span>
                     <span className="text-[15px] text-[var(--ink2)]">
                       {t("today.decisionsAbout", {
-                        count: decisions.length,
+                        count: decisionCount,
                         about,
                       })}
                     </span>
@@ -187,7 +213,7 @@ function TodayBoard() {
                   <span className="mono text-[34px] leading-none">{count}</span>
                   <span className="flex flex-col gap-[2px] min-w-0">
                     <b className="text-[15.5px]">
-                      {t("today.decisionsWaiting", { count: decisions.length })}
+                      {t("today.decisionsWaiting", { count: decisionCount })}
                     </b>
                     <span className="text-[13px] text-[#CFC9BF]">{about}</span>
                   </span>
@@ -199,21 +225,21 @@ function TodayBoard() {
             </section>
           ))}
 
-        {items.status === "loading" && (
+        {loading && (
           <div className="desk:col-span-full">
             <Loading />
           </div>
         )}
-        {items.status === "error" && (
+        {loadFailed && (
           <div className="desk:col-span-full">
-            <ErrorState onRetry={items.reload} />
+            <ErrorState onRetry={reload} />
           </div>
         )}
-        {items.status === "ready" && (
+        {ready && (
           <>
-            {items.stale && (
+            {stale && (
               <div className="desk:col-span-full">
-                <StaleNotice onRetry={items.reload} />
+                <StaleNotice onRetry={reload} />
               </div>
             )}
             <TeamNow items={all} desk={desk} />
@@ -221,17 +247,14 @@ function TodayBoard() {
             <DoneSinceYesterday done={done} desk={desk} />
           </>
         )}
-        {workflows &&
-          workflows.length === 0 &&
-          items.status === "ready" &&
-          all.length === 0 && (
-            <div className="desk:col-span-full">
-              <NoCoworkers body={t("today.noCoworkers")} compact />
-            </div>
-          )}
+        {workflows && workflows.length === 0 && ready && all.length === 0 && (
+          <div className="desk:col-span-full">
+            <NoCoworkers body={t("today.noCoworkers")} compact />
+          </div>
+        )}
       </div>
 
-      {items.status === "ready" && (
+      {ready && (
         <StatusBar
           desk={desk}
           seconds={

@@ -106,6 +106,17 @@ export function useBlockerResponse(
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Answers belong to one gate. The hook outlives a gate (the sheet stays
+  // open while work moves on), so a new gate starts empty.
+  const [answering, setAnswering] = useState(blocker.id);
+  if (answering !== blocker.id) {
+    setAnswering(blocker.id);
+    setDrafts({});
+    setConfirmed([]);
+    setFile(null);
+    setBusy(false);
+    setError("");
+  }
 
   const schemaFields = useMemo(
     () => Object.entries(blocker.responseSchema.properties ?? {}),
@@ -222,7 +233,7 @@ export function useBlockerResponse(
     setDrafts((current) => ({ ...current, [key]: value }));
 
   const fields = quick ? null : (
-    <div className="flex flex-col gap-4">
+    <div key={blocker.id} className="flex flex-col gap-4">
       {schemaFields.map(([key, field], index) => {
         const state = parsed.get(key);
         const label =

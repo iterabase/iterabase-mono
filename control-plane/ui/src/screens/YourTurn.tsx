@@ -34,13 +34,35 @@ import { ExactContent, ItemProvenance } from "./WorkItem";
 // provenance and exact content. It ends in All clear on Today. A, E, N and Esc
 // mirror visible buttons.
 
+/** A decision is one gate: answering it can open the next gate on the same
+ * item, which is a new decision. */
+function decisionKey(item: WorkItem): string {
+  return item.blocker?.id ?? item.id;
+}
+
 export function YourTurn() {
   const navigate = useNavigate();
   const started = useRef(Date.now());
   const [cleared, setCleared] = useState<ClearedDecision[]>([]);
   const [skipped, setSkipped] = useState<string[]>([]);
+  // Each answer or skip bumps the generation; All clear waits for a queue read
+  // that started after the last one, so a gate the answer opened is seen.
+  const generation = useRef(0);
+  const [settledAt, setSettledAt] = useState(0);
   // The queue is read live, so a decision someone else clears drops out.
-  const queue = useLiveQuery(() => listWorkItems({ state: "blocked" }), []);
+  const queue = useLiveQuery(async () => {
+    const read = generation.current;
+    return {
+      items: await listWorkItems({ state: "blocked" }),
+      generation: read,
+    };
+  }, []);
+  const reloadQueue = queue.reload;
+  const advance = () => {
+    generation.current += 1;
+    setSettledAt(generation.current);
+    reloadQueue();
+  };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -50,15 +72,22 @@ export function YourTurn() {
     return () => document.removeEventListener("keydown", onKey);
   }, [navigate]);
 
-  const clearedIds = new Set(cleared.map((entry) => entry.id));
+  const handled = new Set([
+    ...cleared.map((entry) => entry.blockerId),
+    ...skipped,
+  ]);
   const remaining =
     queue.status === "ready"
-      ? decisionsOf(queue.data).filter(
-          (item) => !clearedIds.has(item.id) && !skipped.includes(item.id),
+      ? decisionsOf(queue.data.items).filter(
+          (item) => !handled.has(decisionKey(item)),
         )
       : [];
   const current = remaining[0];
-  const finished = queue.status === "ready" && !current;
+  const finished =
+    queue.status === "ready" &&
+    !current &&
+    queue.data.generation >= settledAt &&
+    !queue.refreshing;
 
   // Nothing left: All clear, in the frame with Today current.
   useEffect(() => {
@@ -95,12 +124,18 @@ export function YourTurn() {
       total={cleared.length + remaining.length}
     >
       <Decision
-        key={current.id}
+        key={decisionKey(current)}
         item={current}
         upNext={remaining.slice(1, 4)}
         cleared={cleared}
-        onCleared={(entry) => setCleared((list) => [...list, entry])}
-        onSkip={() => setSkipped((list) => [...list, current.id])}
+        onCleared={(entry) => {
+          setCleared((list) => [...list, entry]);
+          advance();
+        }}
+        onSkip={() => {
+          setSkipped((list) => [...list, decisionKey(current)]);
+          advance();
+        }}
       />
     </Focus>
   );
@@ -262,7 +297,7 @@ function Decision({
             <ul className="list flex flex-col gap-[10px]">
               {cleared.map((entry) => (
                 <li
-                  key={entry.id}
+                  key={entry.blockerId}
                   className="card row gap-3 p-[14px] opacity-80"
                 >
                   <DoneCheck size={26} />
@@ -306,6 +341,7 @@ function DecisionCard({
   const response = useBlockerResponse(blocker, (outcome) => {
     onCleared({
       id: data.item.id,
+      blockerId: blocker.id,
       title,
       source: data.item.source.title,
       outcome:
@@ -399,15 +435,19 @@ function DecisionCard({
               </span>
             </p>
           )}
-          {desk && error}
           {desk && (
-            <DeskActions
-              response={response}
-              onOpen={openItem}
-              openLabel={t("turn.openItem")}
-            />
+            // The decision's own footer: it sticks to the bottom of the
+            // window while long exact content scrolls (never off-screen).
+            <div className="turn-dock">
+              {error}
+              <DeskActions
+                response={response}
+                onOpen={openItem}
+                openLabel={t("turn.openItem")}
+              />
+              {skip}
+            </div>
           )}
-          {desk && skip}
         </article>
       </div>
       {!desk && <div className="mt-4 text-center">{skip}</div>}

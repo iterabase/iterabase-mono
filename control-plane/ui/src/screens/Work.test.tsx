@@ -230,6 +230,33 @@ describe("Work", () => {
     );
   });
 
+  it("starts a later gate on the same item with empty answers", async () => {
+    const user = userEvent.setup();
+    start(`/work/${fx.login.id}`);
+    const sheet = await screen.findByRole("dialog", { name: fx.login.title });
+    await user.type(await within(sheet).findByLabelText("SMS code"), "123456");
+    await user.click(within(sheet).getByRole("button", { name: /Send code/ }));
+    expect(
+      await within(sheet).findByText(
+        "Answer sent. Your AI coworker carries on.",
+      ),
+    ).toBeInTheDocument();
+
+    // The work moves on and later asks again, with the same field.
+    const title = {
+      en: "Enter the new SMS code",
+      pt: "Introduza o novo código",
+    };
+    const item = api.items.find((entry) => entry.id === fx.login.id)!;
+    item.state = "blocked";
+    item.blocker = { id: "b-2094-2", kind: "information", title };
+    api.blockers[item.id] = { ...api.blockers[item.id], id: "b-2094-2", title };
+    await act(async () => api.emit("blocker_opened", item.id));
+
+    expect(await within(sheet).findByText(title.en)).toBeInTheDocument();
+    expect(within(sheet).getByLabelText("SMS code")).toHaveValue("");
+  });
+
   it("answers a one-choice question with the answer's own button", async () => {
     const user = userEvent.setup();
     start(`/work/${fx.question.id}`);

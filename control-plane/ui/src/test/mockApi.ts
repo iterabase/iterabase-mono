@@ -2,7 +2,7 @@
 // local design preview. It mirrors the server's projections closely enough to
 // exercise every screen; it is never shipped.
 import type { AuthProfile } from "../auth/authApi";
-import type { WorkItem } from "../lib/types";
+import type { Blocker, WorkItem } from "../lib/types";
 import * as fx from "./fixtures";
 
 export interface MockCall {
@@ -21,6 +21,12 @@ export interface MockApi {
   /** Ends every open stream with an error (a dropped connection). */
   drop: () => void;
   profile: AuthProfile;
+  /** Open gates by work item; a test may add the gate an answer opens. */
+  blockers: Record<string, Blocker>;
+  /** Runs after a gate is answered, before the event is emitted. */
+  onRespond?: (item: WorkItem, blockerId: string) => void;
+  /** Requests whose path and query match answer 500 (a server failure). */
+  failing?: RegExp;
 }
 
 export const operator: AuthProfile = {
@@ -62,6 +68,7 @@ export function createMockApi(
     organizationName: string;
   }> = {},
 ): MockApi {
+  const blockers: Record<string, Blocker> = { ...fx.blockers };
   const items = overrides.empty ? [] : fx.items.map((item) => ({ ...item }));
   const workflows = overrides.empty ? [] : fx.workflows;
   const summary = overrides.empty ? fx.emptySummary : fx.summary;
@@ -91,7 +98,9 @@ export function createMockApi(
     const key = params.get("workflowKey");
     const search = params.get("search")?.toLowerCase();
     const from = params.get("from");
-    return items.filter((item) => {
+    // Like the server: newest first, at most `limit` (200) rows.
+    const limit = Math.min(Number(params.get("limit")) || 200, 200);
+    const matching = items.filter((item) => {
       if (state && item.state !== state) return false;
       if (key && item.workflowKey !== key) return false;
       if (
@@ -103,6 +112,12 @@ export function createMockApi(
         return !!item.finishedAt && item.finishedAt >= from;
       return true;
     });
+    return [...matching]
+      .sort(
+        (a, b) =>
+          b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+      )
+      .slice(0, limit);
   }
 
   async function handle(
@@ -111,6 +126,8 @@ export function createMockApi(
   ): Promise<Response> {
     const url = new URL(String(input), "http://localhost");
     const method = (init.method ?? "GET").toUpperCase();
+    if (api.failing?.test(url.pathname + url.search))
+      return json({ error: "internal" }, 500);
     const headers = Object.fromEntries(new Headers(init.headers).entries());
     let body: unknown;
     if (typeof init.body === "string") {
@@ -235,8 +252,8 @@ export function createMockApi(
         case "/timeline":
           return json(fx.timelineFor(found.id));
         case "/blocker":
-          return found.state === "blocked" && fx.blockers[found.id]
-            ? json(fx.blockers[found.id])
+          return found.state === "blocked" && blockers[found.id]
+            ? json(blockers[found.id])
             : json({ error: "no open blocker" }, 404);
         case "/feedback":
         case "/consequences":
@@ -255,7 +272,7 @@ export function createMockApi(
       (match = path.match(/^\/v1\/work-blockers\/([^/]+)\/responses$/)) &&
       method === "POST"
     ) {
-      const blocker = Object.values(fx.blockers).find(
+      const blocker = Object.values(blockers).find(
         (candidate) => candidate.id === match![1],
       );
       const found =
@@ -266,11 +283,13 @@ export function createMockApi(
       found.state = "in_progress";
       found.blocker = undefined;
       found.updatedAt = new Date().toISOString();
+      api.onRespond?.(found, blocker.id);
       emit("blocker_resolved", found.id);
       return json({ ...blocker, state: "resolved" });
     }
     return json({ error: "not found" }, 404);
   }
 
-  return { handle, calls, items, emit, drop, profile };
+  const api: MockApi = { handle, calls, items, emit, drop, profile, blockers };
+  return api;
 }

@@ -26,6 +26,7 @@ func builtApp() http.Handler {
 	return dashboardui.NewHandler(fstest.MapFS{
 		"index.html":    {Data: []byte(testIndex)},
 		"assets/app.js": {Data: []byte("console.log('app')")},
+		"favicon.svg":   {Data: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)},
 	})
 }
 
@@ -70,6 +71,18 @@ func TestAssetsAreImmutableAndMissingAssetsAre404(t *testing.T) {
 	assert.NotContains(t, asset.Header().Get("Content-Security-Policy"), "nonce-")
 	assert.Equal(t, http.StatusNotFound, get(app, "/assets/missing.js").Code)
 	assert.Equal(t, http.StatusNotFound, get(app, "/assets/").Code, "no directory listing")
+}
+
+func TestFaviconIsServedAsAnImage(t *testing.T) {
+	app := builtApp()
+	icon := get(app, "/favicon.svg")
+	require.Equal(t, http.StatusOK, icon.Code)
+	assert.Equal(t, "image/svg+xml", icon.Header().Get("Content-Type"))
+	assert.Equal(t, "no-cache", icon.Header().Get("Cache-Control"), "a fixed name is revalidated, never immutable")
+	assert.Contains(t, icon.Body.String(), "<svg")
+	assert.NotContains(t, icon.Header().Get("Content-Security-Policy"), "nonce-")
+	missing := dashboardui.NewHandler(fstest.MapFS{"index.html": {Data: []byte(testIndex)}})
+	assert.Equal(t, http.StatusNotFound, get(missing, "/favicon.svg").Code)
 }
 
 func TestPlaceholderBuildAnswers503(t *testing.T) {

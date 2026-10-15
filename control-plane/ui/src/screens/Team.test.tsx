@@ -136,6 +136,27 @@ describe("AI coworker", () => {
     expect(steps[4]).toHaveTextContent("Collects replies1 waiting");
   });
 
+  it("never shows How it works as live when its work could not be read", async () => {
+    const user = userEvent.setup();
+    const { api } = startApp(quotesPath);
+    api.failing = /^\/v1\/work-items\?.*workflowKey=/;
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("This couldn't be loaded");
+    expect(screen.queryByText("Live now")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("list", { name: "How Quotes works, step by step" }),
+    ).not.toBeInTheDocument();
+
+    api.failing = undefined;
+    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    expect(
+      await screen.findByRole("list", {
+        name: "How Quotes works, step by step",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Live now")).toBeInTheDocument();
+  });
+
   it("types what it does on its own, with details and approved values (DES-HOR-459-09)", async () => {
     startApp(`${quotesPath}?tab=can`);
     const own = await screen.findByRole("region", { name: /On its own/ });

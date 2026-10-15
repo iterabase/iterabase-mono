@@ -3,7 +3,12 @@ import { useTranslation } from "react-i18next";
 import { PhoneHeader } from "../app/Shell";
 import { useLive, useLiveQuery } from "../app/live";
 import { CoworkerMark } from "../components/coworker";
-import { ErrorState, Loading, NotFound } from "../components/states";
+import {
+  ErrorState,
+  Loading,
+  NotFound,
+  StaleNotice,
+} from "../components/states";
 import { TrustLine } from "../components/trust";
 import { useLocale } from "../i18n";
 import { formatNumber } from "../i18n/format";
@@ -114,7 +119,19 @@ export function Coworker({
         </div>
       </div>
 
-      {section === "how" && <HowItWorks workflow={workflow} items={items} />}
+      {section === "how" &&
+        // The counts come from the week's work: while it loads or fails the
+        // process is not shown as live (never invent progress).
+        (week.status === "loading" ? (
+          <Loading />
+        ) : week.status === "error" ? (
+          <ErrorState onRetry={week.reload} />
+        ) : (
+          <>
+            {week.stale && <StaleNotice onRetry={week.reload} />}
+            <HowItWorks workflow={workflow} items={items} live={!week.stale} />
+          </>
+        ))}
       {section === "can" && <WhatItCanDo workflow={workflow} />}
       {section === "activity" && (
         <Activity

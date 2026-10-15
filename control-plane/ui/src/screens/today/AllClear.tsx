@@ -17,6 +17,8 @@ import { SettledPile, useIsDesk } from "./parts";
 /** One decision cleared in this Your turn session. */
 export interface ClearedDecision {
   id: string;
+  /** The gate that was answered; one item can ask several in a row. */
+  blockerId: string;
   /** The question or approval as the coworker asked it. */
   title: string;
   /** Where the work came from (customer, mailbox, schedule). */
@@ -103,7 +105,10 @@ export function AllClear({ state }: { state: AllClearState }) {
         (desk ? (
           <ul className="list card divide relative w-[560px] max-w-full px-[18px] py-[6px] mt-[10px]">
             {cleared.map((entry) => (
-              <li key={entry.id} className="row gap-[14px] py-[11px] px-[2px]">
+              <li
+                key={entry.blockerId}
+                className="row gap-[14px] py-[11px] px-[2px]"
+              >
                 <span className="mono muted text-[12.5px] w-[40px] flex-none text-left">
                   {formatTime(entry.at, locale)}
                 </span>
@@ -124,7 +129,10 @@ export function AllClear({ state }: { state: AllClearState }) {
         ) : (
           <ul className="list card divide relative w-full p-0 mt-[6px]">
             {cleared.map((entry) => (
-              <li key={entry.id} className="row gap-3 px-[14px] py-[11px]">
+              <li
+                key={entry.blockerId}
+                className="row gap-3 px-[14px] py-[11px]"
+              >
                 <DoneCheck size={22} />
                 <span className="text-[13.5px] leading-[1.35] text-left min-w-0">
                   <b className="font-semibold">{entry.title}</b>

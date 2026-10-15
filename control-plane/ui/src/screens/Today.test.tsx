@@ -118,6 +118,30 @@ describe("Today", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("keeps older decisions when 200 newer items finished since yesterday", async () => {
+    start("/");
+    const at = new Date().toISOString();
+    for (let index = 0; index < 200; index += 1)
+      api.items.push({
+        ...fx.done,
+        id: `W-9${String(index).padStart(3, "0")}`,
+        createdAt: at,
+        updatedAt: at,
+        finishedAt: at,
+      });
+    await act(async () => api.emit("work_completed", "W-9000"));
+    const yourTurn = await screen.findByRole("region", { name: "Your turn" });
+    await waitFor(() => expect(yourTurn).toHaveTextContent(/3\s*decisions/));
+    expect(
+      within(yourTurn).queryByText("Nothing needs you right now."),
+    ).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "Waiting for you" })).getByText(
+        /SMS code sent to your phone/,
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("shows Sofia and Reports nowhere until they are built (DES-HOR-459-03)", async () => {
     start("/", admin);
     const nav = await screen.findByRole("navigation", { name: "Main" });
@@ -274,6 +298,45 @@ describe("Your turn", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: /, Rita\.$/ }),
     ).toBeInTheDocument();
+  });
+
+  it("asks the gate an answer opens on the same item, with empty fields", async () => {
+    const user = userEvent.setup();
+    const { api: mock } = start("/your-turn");
+    const title = {
+      en: "Enter the second SMS code",
+      pt: "Introduza o segundo código SMS",
+    };
+    mock.onRespond = (item, blockerId) => {
+      if (blockerId !== "b-2094") return;
+      item.state = "blocked";
+      item.blocker = { id: "b-2094-2", kind: "information", title };
+      mock.blockers[item.id] = {
+        ...mock.blockers[item.id],
+        id: "b-2094-2",
+        title,
+      };
+    };
+    await screen.findByRole("heading", {
+      level: 1,
+      name: "SMS code sent to your phone",
+    });
+    await user.type(screen.getByLabelText("SMS code"), "123456");
+    await user.click(screen.getByRole("button", { name: /Send code/ }));
+
+    // The new gate is a new decision, queued after the others, not dropped.
+    expect(await screen.findByText("Decision 2 of 4")).toBeInTheDocument();
+    for (const name of [/Which weight/, /Send this quote/]) {
+      await screen.findByRole("heading", { level: 1, name });
+      await user.click(
+        screen.getByRole("button", { name: "Not now, show the next one" }),
+      );
+    }
+    // It starts empty: the first gate's answer is not carried over.
+    expect(
+      await screen.findByRole("heading", { level: 1, name: title.en }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("SMS code")).toHaveValue("");
   });
 
   it("skips a decision for later and says it still waits", async () => {
