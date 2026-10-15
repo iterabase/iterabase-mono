@@ -262,6 +262,21 @@ def git(*args: str) -> str:
 VERSION_LINE = re.compile(r'^[+-](version|appVersion): "?[0-9A-Za-z.+-]+"?\s*$|^[+-]    version: [0-9A-Za-z.+-]+\s*$')
 
 
+def pull_request_base(merge_commit: str, cwd: pathlib.Path = ROOT) -> str | None:
+    """The first parent of GitHub's pull-request merge commit, or None when it is not one.
+
+    A pull_request run checks out refs/pull/N/merge: the PR head merged onto the
+    base branch as it was when GitHub built the merge. Its first parent is that
+    base, so diffing against it selects exactly the PR's changes on top of
+    current master. `pull_request.base.sha` can be older, which attributed changes
+    merged to master since then to the PR (HOR-676). Anything but a two-parent
+    merge commit returns None, and the caller selects everything.
+    """
+    parents = subprocess.run(["git", "rev-list", "--parents", "-n", "1", merge_commit], cwd=cwd, check=True,
+                             capture_output=True, text=True).stdout.split()[1:]
+    return parents[0] if len(parents) == 2 else None
+
+
 def changed_files(base: str, head: str) -> list[Change]:
     out = git("diff", "--name-only", "--no-renames", f"{base}...{head}")
     changes = []
@@ -334,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base", help="base commit (pull request base or merge-group base)")
     parser.add_argument("--head", default="HEAD")
+    parser.add_argument("--pull-request", action="store_true",
+                        help="head is GitHub's pull-request merge commit: diff it against its first parent")
     parser.add_argument("--all", action="store_true", help="select everything (full validation)")
     parser.add_argument("--catalogue", required=True, help="compiled catalogue JSON (make e2e-catalogue)")
     parser.add_argument("--strict", action="store_true",
@@ -344,6 +361,11 @@ def main(argv: list[str] | None = None) -> int:
     catalogue = json.loads(pathlib.Path(args.catalogue).read_text(encoding="utf-8"))
     recipes = json.loads((ROOT / "release" / "targets.json").read_text(encoding="utf-8"))["artifact_recipes"]
     recipes = {name: recipe for name, recipe in recipes.items() if recipe.get("paths")}
+    if args.pull_request and not args.all:
+        args.base = pull_request_base(args.head)
+        if args.base is None:
+            print(f"::warning::{args.head} is not a two-parent pull-request merge commit; selecting everything",
+                  file=sys.stderr)
     if args.all or not args.base:
         changes = [Change("<all>")]  # unowned sentinel: everything
     else:

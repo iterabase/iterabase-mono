@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import pathlib
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -68,6 +70,44 @@ def run(paths: list[str], **kwargs: object) -> affected.Selection:
     changes = [path if isinstance(path, Change) else Change(path) for path in paths]
     return affected.select(changes, CATALOGUE, RECIPES, GO_INPUTS, kwargs.get("render_changed"),  # type: ignore[arg-type]
                            strict=bool(kwargs.get("strict")))
+
+
+class PullRequestBaseTests(unittest.TestCase):
+    """HOR-676: a pull request diffs its merge commit against the first parent."""
+
+    def test_merge_commit_diffs_only_the_pull_request_against_current_master(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            repo = pathlib.Path(value)
+
+            def git(*args: str) -> str:
+                return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], cwd=repo,
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def commit(path: str, message: str) -> str:
+                (repo / path).parent.mkdir(parents=True, exist_ok=True)
+                (repo / path).write_text(message, encoding="utf-8")
+                git("add", path)
+                git("commit", "-q", "-m", message)
+                return git("rev-parse", "HEAD")
+
+            git("init", "-q", "-b", "master")
+            old_base = commit("README.md", "base")
+            git("checkout", "-q", "-b", "pr")
+            commit("forge/main.go", "pull request")
+            git("checkout", "-q", "master")
+            current_master = commit(".github/inputs/remote-content.json", "another pull request")
+            git("merge", "-q", "--no-ff", "-m", "merge", "pr")
+            merge = git("rev-parse", "HEAD")
+
+            self.assertEqual(affected.pull_request_base(merge, repo), current_master)
+            changed = git("diff", "--name-only", f"{current_master}...{merge}").split()
+            self.assertEqual(changed, ["forge/main.go"])
+            # The stale event base would have attributed master's change to the PR.
+            self.assertIn(".github/inputs/remote-content.json",
+                          git("diff", "--name-only", f"{old_base}...{merge}").split())
+            # Fail closed: not a two-parent merge commit.
+            self.assertIsNone(affected.pull_request_base(current_master, repo))
+            self.assertIsNone(affected.pull_request_base(old_base, repo))
 
 
 class RealDiffTests(unittest.TestCase):

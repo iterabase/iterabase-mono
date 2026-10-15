@@ -1,7 +1,8 @@
 name: Select affected jobs and scenarios
 description: >-
   Run the deterministic affected-graph selector (C2) for this event. The caller
-  checks out with full history. Pull requests honour scenarios' selected_by; the
+  checks out with full history (a pull request's merge commit and both its
+  parents). Pull requests honour scenarios' selected_by; the
   merge queue and the e2e-real-machine label select strictly (DES-HOR-590-02).
 inputs:
   all:
@@ -57,7 +58,6 @@ runs:
       env:
         EVENT: ${{ github.event_name }}
         ALL: ${{ inputs.all }}
-        PR_BASE: ${{ github.event.pull_request.base.sha }}
         QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
         QUEUE_HEAD: ${{ github.event.merge_group.head_sha }}
         PUSH_BEFORE: ${{ github.event.before }}
@@ -66,7 +66,9 @@ runs:
         set -euo pipefail
         args=(--catalogue "$RUNNER_TEMP/catalogue.json" --output "$RUNNER_TEMP/selection.json")
         case "$EVENT" in
-          pull_request) args+=(--base "$PR_BASE" --head HEAD) ;;
+          # HEAD is GitHub's merge commit; its first parent is current master, so
+          # only the PR's own changes count. Anything else selects everything.
+          pull_request) args+=(--pull-request --head HEAD) ;;
           merge_group) args+=(--base "$QUEUE_BASE" --head "$QUEUE_HEAD" --strict) ;;
           push)
             if [[ "$PUSH_BEFORE" =~ ^0+$ || -z "$PUSH_BEFORE" ]]; then args+=(--all); else args+=(--base "$PUSH_BEFORE" --head HEAD); fi ;;
