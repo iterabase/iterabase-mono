@@ -105,6 +105,20 @@ describe("Today", () => {
     await waitFor(() => expect(history.location.pathname).toBe("/your-turn"));
   });
 
+  it("recovers from a failed load through Try again", async () => {
+    const user = userEvent.setup();
+    start("/");
+    api.failing = /^\/v1\/work-items\?/;
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("This couldn't be loaded");
+    api.failing = undefined;
+    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    expect(
+      await screen.findByRole("region", { name: "Your turn" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("says when nothing needs you", async () => {
     start("/");
     const blocked = api.items.filter((item) => item.state === "blocked");
@@ -337,6 +351,34 @@ describe("Your turn", () => {
       await screen.findByRole("heading", { level: 1, name: title.en }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("SMS code")).toHaveValue("");
+  });
+
+  it("says when the read after the last answer fails, and retries only the read", async () => {
+    const user = userEvent.setup();
+    start("/your-turn");
+    for (const name of [/SMS code sent/, /Which weight/]) {
+      await screen.findByRole("heading", { level: 1, name });
+      await user.click(
+        screen.getByRole("button", { name: "Not now, show the next one" }),
+      );
+    }
+    await screen.findByRole("heading", { level: 1, name: /Send this quote/ });
+    api.failing = /state=blocked/;
+    await user.click(screen.getByRole("button", { name: /Approve & send/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("This couldn't be loaded");
+
+    api.failing = undefined;
+    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    expect(
+      await screen.findByRole("heading", {
+        name: "That’s everything for now.",
+      }),
+    ).toBeInTheDocument();
+    // The answer was sent once; Try again only re-read the queue.
+    expect(
+      api.calls.filter((call) => call.path.endsWith("/responses")),
+    ).toHaveLength(1);
   });
 
   it("skips a decision for later and says it still waits", async () => {

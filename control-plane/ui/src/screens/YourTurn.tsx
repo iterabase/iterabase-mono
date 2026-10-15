@@ -105,7 +105,11 @@ export function YourTurn() {
     });
   }, [finished, cleared, skipped.length, navigate]);
 
-  if (queue.status === "error")
+  // The read after the last answer failed: the answer was sent, but what is
+  // left can't be shown. Say so and retry the read, never the answer.
+  const refreshFailed =
+    queue.status === "ready" && !current && queue.stale && !queue.refreshing;
+  if (queue.status === "error" || refreshFailed)
     return (
       <Focus>
         <ErrorState onRetry={queue.reload} />

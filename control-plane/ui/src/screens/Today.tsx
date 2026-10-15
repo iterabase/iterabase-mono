@@ -99,7 +99,7 @@ function TodayBoard() {
     (items.status === "ready" && items.stale) ||
     (attention.status === "ready" && attention.stale);
   const reload = () => {
-    reload();
+    items.reload();
     attention.reload();
   };
   useEffect(() => {
