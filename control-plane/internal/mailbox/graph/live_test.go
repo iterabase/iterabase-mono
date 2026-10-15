@@ -157,10 +157,11 @@ func (f *federatedTokens) Token(ctx context.Context, _ string) (string, error) {
 	var body struct {
 		AccessToken string `json:"access_token"`
 		Error       string `json:"error"`
+		ErrorCodes  []int  `json:"error_codes"` // AADSTS numbers; never secret
 	}
 	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body)
 	if resp.StatusCode != http.StatusOK || body.AccessToken == "" {
-		return "", &mailbox.CredentialError{Reason: fmt.Sprintf("federated token exchange: HTTP %d %s", resp.StatusCode, body.Error)}
+		return "", &mailbox.CredentialError{Reason: fmt.Sprintf("federated token exchange: HTTP %d %s AADSTS%v", resp.StatusCode, body.Error, body.ErrorCodes)}
 	}
 	f.token, f.expires = body.AccessToken, time.Now().Add(30*time.Minute)
 	return f.token, nil

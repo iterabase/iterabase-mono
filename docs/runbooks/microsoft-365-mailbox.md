@@ -145,10 +145,14 @@ The founder provisions, once:
 3. **The replier app** `iterabase-ci-replier`, the same way, with its own group
    and scope containing only the other mailbox. It plays the external sender.
 4. **A federated credential on each app**: Certificates & secrets → Federated
-   credentials → GitHub Actions deploying Azure resources. Organization
-   `iterabase`, repository `iterabase-mono`, entity type **Environment**, name
-   `m365-test`. The subject is `repo:iterabase/iterabase-mono:environment:m365-test`
-   and the audience `api://AzureADTokenExchange`.
+   credentials → Add credential → **Other issuer**, issuer
+   `https://token.actions.githubusercontent.com`, explicit subject identifier
+   `repo:iterabase@338844113/iterabase-mono@1330311216:environment:m365-test`,
+   audience `api://AzureADTokenExchange`, name `github-m365-test`. This
+   repository issues GitHub's immutable OIDC subject (owner and repository ids),
+   so the "GitHub Actions" scenario's `repo:iterabase/iterabase-mono:…` subject
+   does not match; check the current prefix with
+   `gh api repos/iterabase/iterabase-mono/actions/oidc/customization/sub`.
 5. **The `m365-test` GitHub environment** with no required reviewers and
    deployment branches set to all branches (pull requests and the merge queue
    use it). Environment **variables**, not secrets:
