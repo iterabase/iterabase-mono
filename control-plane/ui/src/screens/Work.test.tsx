@@ -117,6 +117,37 @@ describe("Work", () => {
     );
   });
 
+  it("folds the Failed reasons away and opens them again", async () => {
+    const user = userEvent.setup();
+    start("/work");
+    await screen.findByRole("region", { name: "Failed · 1" });
+    api.items.push({
+      ...fx.failed,
+      id: "W-2095",
+      title: "Quote · Aveiro → Hamburg, 1×20′",
+      failureSummary: { code: "interrupted_after_write" },
+    });
+    await act(async () => api.emit("work_failed", "W-2095"));
+    const strip = await screen.findByRole("region", { name: "Failed · 2" });
+    const hide = within(strip).getByRole("button", {
+      name: "Hide failed work",
+    });
+    expect(hide).toHaveAttribute("aria-expanded", "true");
+    await user.click(hide);
+    expect(
+      within(strip).queryByRole("link", { name: "Review restart" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(strip).getByRole("link", { name: "All 2 failed this month" }),
+    ).toBeInTheDocument();
+    await user.click(
+      within(strip).getByRole("button", { name: "Show failed work" }),
+    );
+    expect(
+      within(strip).getByRole("link", { name: "Review restart" }),
+    ).toBeInTheDocument();
+  });
+
   it("closes a working item's timeline with the step it is on now", async () => {
     startApp(`/work/${fx.working.id}`);
     const sheet = await screen.findByRole("dialog", { name: fx.working.title });

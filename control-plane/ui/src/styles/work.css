@@ -152,6 +152,31 @@
     padding: 11px 16px;
   }
 }
+.xt .failed-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: -4px -6px -4px -8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+.xt .failed-toggle:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+.xt .failed-toggle span {
+  display: inline-flex;
+  transition: transform 0.15s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .xt .failed-toggle span {
+    transition: none;
+  }
+}
 .stretch-link::after {
   content: "";
   position: absolute;

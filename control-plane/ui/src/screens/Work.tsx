@@ -503,14 +503,29 @@ function FailureRows({ data }: { data: Failures }) {
   );
 }
 
+/** Desktop: the reasons under one header, which folds them away (founder
+ * review, 2026-10-15); the phone summary card folds the same way. */
 function FailureList({ data }: { data: Failures }) {
   const { t } = useTranslation("work");
+  const [open, setOpen] = useState(true);
   return (
     <section
       className="card p-0 overflow-hidden"
       aria-labelledby="failed-title"
     >
       <div className="row flex-wrap gap-3 px-[18px] py-3 bg-[var(--crit2)]">
+        <button
+          type="button"
+          className="failed-toggle"
+          aria-expanded={open}
+          aria-controls="failed-rows"
+          aria-label={open ? t("failed.hide") : t("failed.show")}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span className={open ? "rotate-90" : ""}>
+            <ChevronRight stroke="var(--crit-ink)" />
+          </span>
+        </button>
         <h2
           id="failed-title"
           className="badge m-0 bg-[var(--crit2)] text-[var(--crit-ink)]"
@@ -522,7 +537,9 @@ function FailureList({ data }: { data: Failures }) {
         </span>
         <AllThisMonth data={data} />
       </div>
-      <FailureRows data={data} />
+      <div id="failed-rows" hidden={!open}>
+        <FailureRows data={data} />
+      </div>
     </section>
   );
 }
