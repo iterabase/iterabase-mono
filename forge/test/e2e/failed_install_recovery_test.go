@@ -104,8 +104,11 @@ func assertRecoveredFirstInstall(t *testing.T, state *cpuFixtureState) {
 	for _, h := range history {
 		statuses = append(statuses, h.Status)
 	}
-	if !slices.Equal(statuses, []string{"failed", "failed", "deployed"}) {
-		t.Fatalf("platform release history = %v, want two failed revisions then the recovered deployed one", statuses)
+	// A successful upgrade marks the revision it replaced superseded, even a
+	// failed one. Helm deletes against that revision's manifest itself; only the
+	// earlier failed revision keeps its status, and its leftovers are Forge's.
+	if !slices.Equal(statuses, []string{"failed", "superseded", "deployed"}) {
+		t.Fatalf("platform release history = %v, want the first failed revision, the superseded second one, then the recovered deployed one", statuses)
 	}
 
 	if left := internalIngressObjects(t, sc, state.runID); len(left) != 0 {

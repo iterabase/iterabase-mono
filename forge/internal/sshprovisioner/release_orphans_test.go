@@ -14,9 +14,11 @@ import (
 // failed waiting for it; revision 2 disabled dispatch but failed on the
 // admission webhook before Helm reached its deletions; revision 3 deployed.
 // Helm diffed revision 3 against revision 2, so dispatch was never deleted.
+// Revision 3's success marked revision 2 superseded, as real Helm does; only
+// revision 1 keeps its failed status.
 const hor601History = `[
   {"revision":1,"status":"failed"},
-  {"revision":2,"status":"failed"},
+  {"revision":2,"status":"superseded"},
   {"revision":3,"status":"deployed"}
 ]`
 
@@ -132,7 +134,8 @@ func TestPruneFailedRevisionOrphans_DeletesWhatFailedRevisionsLeftBehind(t *test
 
 	records := obs.records()
 	assert.Equal(t, helmCmd("history", "iterabase", "-n", "iterabase-system", "-o", "json"), records[0].cmd)
-	assert.Len(t, commandsMatching(records, "'get' 'manifest'"), 3, "the current and both failed revisions")
+	assert.Len(t, commandsMatching(records, "'get' 'manifest'"), 2, "the current revision and the one still failed")
+	assert.Empty(t, commandsMatching(records, "'--revision' '2'"), "Helm already deleted against the superseded revision")
 
 	gets := commandsMatching(records, "'get' '-f' '-'")
 	require.Len(t, gets, 2)
