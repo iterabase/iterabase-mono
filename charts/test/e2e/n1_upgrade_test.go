@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -132,7 +133,7 @@ func nMinusOneUpgradeScenario() sharede2e.Definition {
 	return sharede2e.Define(sharede2e.Scenario[*chartState]{
 		Metadata: chartScenarioMetadata(
 			"n-1-upgrade",
-			"Installs the newest published N-1 certificate, LVM storage, and platform charts on fresh Kind, seeds persisted state, upgrades to the head chart set, proves persisted state, immutable Secrets, PVCs, the Helm-owned provisioner Job, schema ownership, and rollout health, reapplies head without rolling workloads, applies N-1 back with state preserved, and recovers forward to head.",
+			"Installs the newest published N-1 certificate, LVM storage, and platform charts on fresh Kind, seeds persisted state, upgrades to the head chart set, proves persisted state, immutable Secrets, PVCs, the Helm-owned provisioner Job, schema ownership, and rollout health, reapplies head without rolling workloads, applies N-1 back with state preserved (or, when head adds a schema migration, proves the documented fix-forward boundary instead), and recovers forward to head.",
 			"test-e2e-n-1-upgrade", 45,
 			[]string{"HOR-415", "HOR-418", "HOR-475", "HOR-530", "HOR-590"},
 			append(substrateRenders("iterabase"), nMinusOnePlatform.render()),
@@ -150,7 +151,7 @@ func nMinusOneUpgradeScenario() sharede2e.Definition {
 			{Name: "capture-head-state", DependsOn: []string{"assert-upgrade-contract"}, Run: captureHeadStateStage},
 			{Name: "reapply-head-charts", DependsOn: []string{"capture-head-state"}, Run: applyHeadChartsStage},
 			{Name: "assert-idempotent-reapply", DependsOn: []string{"reapply-head-charts"}, Run: assertIdempotentReapplyStage},
-			{Name: "roll-back-n-1-charts", DependsOn: []string{"assert-idempotent-reapply"}, Run: applyNMinusOneChartsStage},
+			{Name: "roll-back-n-1-charts", DependsOn: []string{"assert-idempotent-reapply"}, Run: rollBackNMinusOneChartsStage},
 			{Name: "assert-rollback-boundary", DependsOn: []string{"roll-back-n-1-charts"}, Run: assertRollbackBoundaryStage},
 			{Name: "forward-head-charts", DependsOn: []string{"assert-rollback-boundary"}, Run: applyHeadChartsStage},
 			{Name: "assert-forward-recovery", DependsOn: []string{"forward-head-charts"}, Run: assertForwardRecoveryStage},
@@ -203,18 +204,28 @@ func nMinusOneCharts(t *testing.T, state *chartState) (certificate, lvmStorage, 
 	return chart(state.baseline.CertManager.Archive), chart(state.baseline.LVMStorage.Archive), chart(state.baseline.Platform.Archive)
 }
 
-func nMinusOneValueFiles(t *testing.T, state *chartState) []string {
+// nMinusOneValueFiles are the scenario's values. The head chart set also
+// carries this commit's source-built images; the N-1 baseline runs its own
+// published release images, exactly what an upgrading installation runs (an
+// N-1 chart with head images is a combination no installation ever has, and
+// breaks whenever head changes the chart/image contract, e.g. HOR-461's split
+// artifact credentials).
+func nMinusOneValueFiles(t *testing.T, state *chartState, headImages bool) []string {
 	t.Helper()
-	return append(nMinusOnePlatform.files(state), state.writeValues(t, "n-1-runtime", runtimeImageValues(t)))
+	files := nMinusOnePlatform.files(state)
+	if headImages {
+		files = append(files, state.writeValues(t, "n-1-runtime", runtimeImageValues(t)))
+	}
+	return files
 }
 
 // applyChartSet applies one exact chart trio in Forge's order: certificate
 // substrate, LVM storage substrate, then the platform with CRD pre-apply.
-func applyChartSet(t *testing.T, state *chartState, certificate, lvmStorage, platform kube.Chart) {
+func applyChartSet(t *testing.T, state *chartState, certificate, lvmStorage, platform kube.Chart, headImages bool) {
 	t.Helper()
 	state.installSubstrateChart(t, certificate)
 	state.applyLVMStorage(t, lvmStorage)
-	state.installPlatformChart(t, platform, 18*time.Minute, nMinusOneValueFiles(t, state)...)
+	state.installPlatformChart(t, platform, 18*time.Minute, nMinusOneValueFiles(t, state, headImages)...)
 	// Helm can return before a StatefulSet has replaced its pod; asserting
 	// persisted state then reads a pod in transition, not the data.
 	for _, statefulSet := range []string{testRelease + "-postgresql", testRelease + "-minio"} {
@@ -225,7 +236,7 @@ func applyChartSet(t *testing.T, state *chartState, certificate, lvmStorage, pla
 func applyNMinusOneChartsStage(t *testing.T, state *chartState) {
 	t.Helper()
 	certificate, lvmStorage, platform := nMinusOneCharts(t, state)
-	applyChartSet(t, state, certificate, lvmStorage, platform)
+	applyChartSet(t, state, certificate, lvmStorage, platform, false)
 }
 
 func installNMinusOneChartsStage(t *testing.T, state *chartState) {
@@ -238,7 +249,7 @@ func installNMinusOneChartsStage(t *testing.T, state *chartState) {
 
 func applyHeadChartsStage(t *testing.T, state *chartState) {
 	t.Helper()
-	applyChartSet(t, state, state.substrate, state.lvmSubstrate, state.platform)
+	applyChartSet(t, state, state.substrate, state.lvmSubstrate, state.platform, true)
 	assertCandidateImages(t, state)
 }
 
@@ -268,12 +279,49 @@ func assertChartSetRevision(t *testing.T, state *chartState, revision int) {
 
 func captureNMinusOneStateStage(t *testing.T, state *chartState) {
 	state.snapshots["n-1"] = captureLifecycleSnapshot(t, state)
+	state.recordSchemaVersion(t, "n-1")
+}
+
+// recordSchemaVersion captures the applied control-plane migration version.
+func (state *chartState) recordSchemaVersion(t *testing.T, key string) {
+	t.Helper()
+	out := state.kubectl(t, 90*time.Second, "exec", "-n", testNamespace, "statefulset/"+testRelease+"-postgresql", "--",
+		"psql", "-At", "-U", "controlplane", "-d", "controlplane", "-c", "SELECT version FROM schema_migrations WHERE NOT dirty;")
+	version, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		t.Fatalf("read %s schema version %q: %v", key, out, err)
+	}
+	if state.schemaVersions == nil {
+		state.schemaVersions = map[string]int{}
+	}
+	state.schemaVersions[key] = version
+}
+
+// rollBackNMinusOneChartsStage applies the N-1 chart set back over head, but
+// only where docs/release.md permits it. The control-plane init container only
+// runs `migrate up`, so an N-1 image over a newer schema cannot start, and a
+// release that adds a schema migration is fix-forward only. Such a head proves
+// that boundary instead: the head schema is strictly newer, clean, and the
+// scenario recovers by applying head forward again.
+func rollBackNMinusOneChartsStage(t *testing.T, state *chartState) {
+	t.Helper()
+	baseline, head := state.schemaVersions["n-1"], state.schemaVersions["head"]
+	if head < baseline {
+		t.Fatalf("head schema version %d is older than N-1 %d", head, baseline)
+	}
+	if head > baseline {
+		t.Logf("head adds schema migrations %d..%d: release is fix-forward only (docs/release.md); N-1 is not reapplied", baseline+1, head)
+		return
+	}
+	applyNMinusOneChartsStage(t, state)
+	state.rolledBack = true
 }
 
 func captureHeadStateStage(t *testing.T, state *chartState) {
 	snapshot := captureLifecycleSnapshot(t, state)
 	snapshot.ArtifactProvisionerJob = currentArtifactProvisionerJobIdentity(t, state)
 	state.snapshots["head"] = snapshot
+	state.recordSchemaVersion(t, "head")
 }
 
 func assertUpgradeContractStage(t *testing.T, state *chartState) {
@@ -296,6 +344,20 @@ func assertIdempotentReapplyStage(t *testing.T, state *chartState) {
 }
 
 func assertRollbackBoundaryStage(t *testing.T, state *chartState) {
+	if !state.rolledBack {
+		// Fix-forward boundary: head stays applied at the reapply revision on
+		// an unchanged, clean schema.
+		assertHeadChartSet(t, state)
+		assertChartSetRevision(t, state, 3)
+		state.recordSchemaVersion(t, "boundary")
+		if state.schemaVersions["boundary"] != state.schemaVersions["head"] {
+			t.Fatalf("schema version moved to %d across the fix-forward boundary, want %d", state.schemaVersions["boundary"], state.schemaVersions["head"])
+		}
+		assertPersistedState(t, state)
+		assertRetainedState(t, state.snapshots["head"], captureLifecycleSnapshot(t, state), false)
+		assertLifecycleHealth(t, state)
+		return
+	}
 	for _, release := range []struct{ name, chart string }{
 		{testRelease + "-cert-manager", "cert-manager-substrate"},
 		{testRelease + "-lvm-storage", "lvm-storage-substrate"},
@@ -310,7 +372,11 @@ func assertRollbackBoundaryStage(t *testing.T, state *chartState) {
 
 func assertForwardRecoveryStage(t *testing.T, state *chartState) {
 	assertHeadChartSet(t, state)
-	assertChartSetRevision(t, state, 5)
+	revision := 4
+	if state.rolledBack {
+		revision = 5
+	}
+	assertChartSetRevision(t, state, revision)
 	assertPersistedState(t, state)
 	assertRetainedState(t, state.snapshots["head"], captureLifecycleSnapshot(t, state), false)
 	assertLifecycleHealth(t, state)

@@ -123,6 +123,8 @@ type chartState struct {
 	baseline            *nMinusOneBaseline
 	runtimeImageDigests map[string]string
 	snapshots           map[string]lifecycleSnapshot
+	schemaVersions      map[string]int
+	rolledBack          bool
 	internalIngressIP   string
 	internalCARootUID   string
 }
@@ -415,8 +417,10 @@ func substrateRenders(release string, certificateValues ...string) []sharede2e.R
 	return []sharede2e.RenderInput{
 		{Chart: certificateChartPath, Values: repositoryChartsPaths(certificateValues)},
 		{Chart: lvmStorageChartPath, Set: map[string]string{
-			"lvm-localpv.global.kubeletDir":       kindKubeletDirectory,
-			"agentpool.authorizedManagerIdentity": "system:serviceaccount:" + testNamespace + ":" + release + "-control-plane-manager",
+			"lvm-localpv.global.kubeletDir":        kindKubeletDirectory,
+			"agentpool.authorizedManagerIdentity":  "system:serviceaccount:" + testNamespace + ":" + release + "-control-plane-manager",
+			"signatures.authorizedClaim.namespace": testNamespace,
+			"signatures.authorizedClaim.name":      release + "-control-plane-artifact-signatures",
 		}},
 	}
 }

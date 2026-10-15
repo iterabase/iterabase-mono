@@ -210,6 +210,10 @@ func lvmStorageHelmArgs(release, chart, kubeconfig, namespace string) []string {
 	return []string{"upgrade", "--install", release, chart, "--kubeconfig", kubeconfig,
 		"--namespace", namespace, "--create-namespace", "--set-string", "lvm-localpv.global.kubeletDir=" + kindKubeletDirectory,
 		"--set-string", "agentpool.authorizedManagerIdentity=" + managerIdentity,
+		// DES-HOR-461-05: the signature class admits only this platform
+		// release's artifact signature PVC.
+		"--set-string", "signatures.authorizedClaim.namespace=" + namespace,
+		"--set-string", "signatures.authorizedClaim.name=" + strings.TrimSuffix(release, "-lvm-storage") + "-control-plane-artifact-signatures",
 		"--wait", "--timeout", "8m"}
 }
 

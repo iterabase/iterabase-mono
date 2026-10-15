@@ -191,8 +191,11 @@ func uploadPublishAndLinkArtifactStage(t *testing.T, state *deployedState) {
 		t.Fatalf("malware bytes must be purging or purged, got %q", row)
 	}
 
-	// An invalid type is a permanent policy rejection, not a malware verdict.
-	renamed := state.uploadArtifact(t, state.workKey, "invoice.pdf", "application/pdf", "hor-461-renamed", []byte("MZ\x90\x00\x03\x00\x00\x00 not really a pdf"))
+	// An invalid type is a permanent policy rejection, not a malware verdict:
+	// a GIF renamed .pdf (executable bytes would rightly be flagged by ClamAV's
+	// broken-executable heuristic first).
+	renamed := state.uploadArtifact(t, state.workKey, "invoice.pdf", "application/pdf", "hor-461-renamed",
+		[]byte("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"))
 	policy := state.waitArtifactState(t, state.workKey, renamed, func(s artifactStatus) bool { return s.State == "rejected" })
 	if policy.Reason == "malware" || policy.Reason == "" {
 		t.Fatalf("type policy rejection reason=%q", policy.Reason)

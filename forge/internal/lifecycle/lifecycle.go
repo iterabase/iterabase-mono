@@ -371,6 +371,12 @@ func lvmStorageManagerIdentity(platformRelease, namespace string) string {
 	return "system:serviceaccount:" + namespace + ":" + platformRelease + "-control-plane-manager"
 }
 
+// lvmStorageSignatureClaim is the platform release's artifact signature PVC,
+// the only claim the signature class admits (DES-HOR-461-05).
+func lvmStorageSignatureClaim(platformRelease string) string {
+	return platformRelease + "-control-plane-artifact-signatures"
+}
+
 // refusePreLVMPlatform enforces HOR-545's clean-install-only boundary before
 // Forge mutates host packages, modules, PVs, or the VG. There is deliberately no
 // local-path-to-LVM chart/PVC migration path.
@@ -509,7 +515,13 @@ func applyLVMStorageSubstrate(ctx context.Context, cfg *config.Cluster, p provis
 		// DES-HOR-545-01: the only principal permitted to create/update PVCs in
 		// the AgentPool workspace class is the control-plane manager. Admission
 		// fails closed unless the request arrives under this exact SA username.
-		Values: []string{"agentpool.authorizedManagerIdentity=" + lvmStorageManagerIdentity(ch.Release, ch.Namespace)},
+		// DES-HOR-461-05: the shared signature class admits exactly this
+		// release's artifact signature PVC.
+		Values: []string{
+			"agentpool.authorizedManagerIdentity=" + lvmStorageManagerIdentity(ch.Release, ch.Namespace),
+			"signatures.authorizedClaim.namespace=" + ch.Namespace,
+			"signatures.authorizedClaim.name=" + lvmStorageSignatureClaim(ch.Release),
+		},
 	}); err != nil {
 		auditFail(cfg, "apply-lvm-storage-substrate", err)
 		return fmt.Errorf("LVM storage substrate: %w", err)
