@@ -119,7 +119,7 @@ func writeSecretsForgeConfig(t *testing.T, name, ip, keyPath, overlayDir string)
 // mustSSHOutput runs a command over SSH and fails the test on error.
 func mustSSHOutput(t *testing.T, sc *ssh.Client, cmd string) string {
 	t.Helper()
-	out, err := sshOutput(sc, cmd)
+	out, err := sshStdout(t, sc, cmd)
 	if err != nil {
 		t.Fatalf("ssh %q: %v\n%s", cmd, err, out)
 	}

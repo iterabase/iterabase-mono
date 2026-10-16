@@ -513,7 +513,7 @@ YAML`, allocate)
   sleep 2
 done
 exit 1`
-	metricEvidence, err := sshOutput(client, metricsCommand)
+	metricEvidence, err := sshStdout(t, client, metricsCommand)
 	if err != nil {
 		t.Fatalf("aggregate iterabase-data metrics did not report pressure: %v\n%s", err, metricEvidence)
 	}
@@ -1095,7 +1095,7 @@ for pod in $(sudo k3s kubectl get pods -n iterabase-system -l platform.iterabase
 done
 condition=$(sudo k3s kubectl get agentpool forge-storage-pool -n iterabase-system -o jsonpath='{.status.conditions[?(@.type=="WorkspaceCapacityHealthy")].reason}')
 printf '%%s|%%s|%%s\n' "$total" "$ok" "$condition"`, want)
-		output, err := sshOutput(client, command)
+		output, err := sshStdout(t, client, command)
 		last = strings.TrimSpace(output)
 		if err == nil {
 			parts := strings.Split(last, "|")

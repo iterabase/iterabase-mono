@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -97,7 +98,7 @@ func preparePinnedImageCache(t *testing.T, diagnostics *forgeDiagnostics, ip, ke
 	defer client.Close()
 
 	manifestPath := path.Join(root, capacity, generation, "generation.json")
-	output, err := sshOutput(client, "sudo cat "+candidateShellQuote(manifestPath))
+	output, err := sshStdout(t, client, "sudo cat "+candidateShellQuote(manifestPath))
 	if err != nil {
 		t.Fatalf("read pinned image cache manifest %s: %v\n%s; bake the fixture AMI with bake.yml", manifestPath, err, output)
 	}
@@ -111,30 +112,24 @@ func preparePinnedImageCache(t *testing.T, diagnostics *forgeDiagnostics, ip, ke
 	}
 
 	imported := 0
+	run := structuredSSHCommand(t, client)
 	for _, image := range manifest.Images {
-		verified := false
-		if output, err := sshOutput(client, "sudo k3s crictl inspecti "+candidateShellQuote(image.Reference)); err == nil {
-			_, _, configErr := importedRuntimeImageConfig([]byte(output), image.ConfigDigest)
-			verified = configErr == nil
+		checkCtx, cancel := context.WithTimeout(t.Context(), runtimeImageReadyTimeout)
+		_, verified, err := observeRuntimeImage(checkCtx, run, image.Reference, image.ConfigDigest)
+		cancel()
+		if err != nil {
+			t.Fatalf("verify pinned image %s before import: %v", image.Reference, err)
 		}
 		if !verified {
 			archive := path.Join(root, capacity, generation, "images", image.Archive)
 			started := time.Now()
-			importOutput, err := sshOutput(client, "sudo k3s ctr images import "+candidateShellQuote(archive))
-			t.Logf("pinned image %s import took %s", image.Reference, time.Since(started).Round(time.Second))
+			_, importOutput, err := importRuntimeImage(t.Context(), run,
+				"sudo k3s ctr images import "+candidateShellQuote(archive), image.Reference, image.ConfigDigest,
+				runtimeImageReadyTimeout, runtimeImagePollInterval)
+			t.Logf("pinned image %s import and CRI verification took %s", image.Reference, time.Since(started).Round(time.Second))
 			if err != nil {
-				diagnostics.collectPinnedImageCacheEvidence(t, ip, keyPath, archive, root, image.Reference, importOutput)
-				t.Fatalf("import pinned image %s from %s: %v\n%s", image.Reference, archive, err, importOutput)
-			}
-			inspectOutput, err := sshOutput(client, "sudo k3s crictl inspecti "+candidateShellQuote(image.Reference))
-			if err != nil {
-				diagnostics.collectPinnedImageCacheEvidence(t, ip, keyPath, archive, root, image.Reference, importOutput)
-				t.Fatalf("pinned image %s is absent after import from %s: %v\n%s", image.Reference, archive, err, inspectOutput)
-			}
-			if _, _, err := importedRuntimeImageConfig([]byte(inspectOutput), image.ConfigDigest); err != nil {
-				diagnostics.collectPinnedImageCacheEvidence(t, ip, keyPath, archive, root, image.Reference, importOutput)
-				t.Fatalf("pinned image %s does not match the cached config digest %s: %v\n%s",
-					image.Reference, image.ConfigDigest, err, inspectOutput)
+				diagnostics.collectPinnedImageCacheEvidence(t, ip, keyPath, archive, root, image.Reference, importOutput+"\n"+err.Error())
+				t.Fatalf("import/verify pinned image %s from %s: %v", image.Reference, archive, err)
 			}
 			imported++
 		}

@@ -109,7 +109,7 @@ func (diagnostics *forgeDiagnostics) verifyBootstrapPrintedNoCredential(t *testi
 		return false
 	}
 	defer client.Close()
-	pods, err := sshOutput(client, bootstrapPodStatusCommand())
+	pods, err := sshStdout(t, client, bootstrapPodStatusCommand())
 	if err != nil {
 		t.Logf("skip shared pod-log diagnostics because bootstrap pod presence cannot be inspected: %v", err)
 		return false
