@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -398,13 +399,11 @@ func parseGPUUpgradeEvidence(logs string) (gpuUpgradeEvidence, error) {
 	return gpuUpgradeEvidence{}, fmt.Errorf("GPU upgrade readiness record not found")
 }
 
-func waitForGPUUpgradeNode(t *testing.T, state *gpuFixtureState, previousUID types.UID, timeout time.Duration) {
+// gpuUpgradeNodeObservation parses only stdout from the coherent SSH snapshot.
+// Host stderr warnings remain separately redacted diagnostics; neither warnings
+// nor non-zero exits can be mistaken for a snapshot or a readiness marker.
+func gpuUpgradeNodeObservation(t *testing.T, client *ssh.Client) ([]string, error) {
 	t.Helper()
-	// A containerized driver replacement briefly restarts k3s on this single
-	// node. Observe that expected unavailable state through SSH, then parse one
-	// coherent node/workload/operator snapshot only after the API is serving again. The
-	// replacement pod UID prevents the baseline upgrade-done label from being
-	// mistaken for completion before the upgrade controller starts its cycle.
 	const observe = `
 if ! sudo systemctl is-active --quiet k3s; then
   echo __K3S_NOT_READY__
@@ -430,20 +429,42 @@ printf '\n'
 printf '%s' "$policies" | base64 -w0
 printf '\n'
 `
+	out, err := sshStdout(t, client, observe)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) == 1 && lines[0] == "__K3S_NOT_READY__" {
+		return lines, nil
+	}
+	if len(lines) != 4 || lines[0] != "__K3S_READY__" {
+		return nil, fmt.Errorf("unexpected GPU upgrade observation response: %q", out)
+	}
+	return lines, nil
+}
+
+func waitForGPUUpgradeNode(t *testing.T, state *gpuFixtureState, previousUID types.UID, timeout time.Duration) {
+	t.Helper()
+	// A containerized driver replacement briefly restarts k3s on this single
+	// node. Observe that expected unavailable state through SSH, then parse one
+	// coherent node/workload/operator snapshot only after the API is serving again. The
+	// replacement pod UID prevents the baseline upgrade-done label from being
+	// mistaken for completion before the upgrade controller starts its cycle.
 	deadline := time.Now().Add(timeout)
 	lastObservation := "no coherent API observation"
 	for time.Now().Before(deadline) {
-		out, err := sshRun(t, state.host.IP, state.privKeyPath, observe)
+		client, err := sshDial(state.host.IP, state.privKeyPath)
 		if err != nil {
-			t.Fatalf("observe k3s during GPU driver upgrade: %v\n%s", err, out)
+			t.Fatalf("dial GPU upgrade observation: %v", err)
 		}
-		lines := strings.Split(strings.TrimSpace(out), "\n")
-		if len(lines) == 1 && lines[0] == "__K3S_NOT_READY__" {
+		lines, err := gpuUpgradeNodeObservation(t, client)
+		client.Close()
+		if err != nil {
+			t.Fatalf("observe k3s during GPU driver upgrade: %v", err)
+		}
+		if len(lines) == 1 {
 			time.Sleep(5 * time.Second)
 			continue
-		}
-		if len(lines) != 4 || lines[0] != "__K3S_READY__" {
-			t.Fatalf("unexpected GPU upgrade observation response: %q", out)
 		}
 		var nodes corev1.NodeList
 		decodeGPUUpgradeSnapshot(t, lines[1], &nodes)
