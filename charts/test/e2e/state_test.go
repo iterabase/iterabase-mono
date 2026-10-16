@@ -224,12 +224,16 @@ func chartDiagnostics(t *testing.T, state *chartState) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
-	err := (diagnostics.Collector{
-		Executor: state.runner, Kubeconfig: state.cluster.Kubeconfig,
-		OutputDir: state.diagnosticsDir, Redactor: state.redactor,
-	}).Collect(ctx)
-	if err != nil {
+	if err := chartDiagnosticCollector(state, state.runner).Collect(ctx); err != nil {
 		t.Logf("best-effort diagnostics: %v", err)
+	}
+}
+
+func chartDiagnosticCollector(state *chartState, executor process.Executor) diagnostics.Collector {
+	return diagnostics.Collector{
+		Executor: executor, Kubeconfig: state.cluster.Kubeconfig,
+		OutputDir: state.diagnosticsDir, Redactor: state.redactor,
+		KindClusterName: state.cluster.Name,
 	}
 }
 

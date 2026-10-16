@@ -28,6 +28,9 @@ type Collector struct {
 	OutputDir  string
 	Redactor   *redact.Redactor
 	Artifacts  []artifacts.Entry
+	// KindClusterName opts chart-owned diagnostics into runtime evidence before
+	// API/Helm collection, plus URL-safe diagnostic capture. Empty keeps defaults.
+	KindClusterName string
 }
 
 // Collect is best-effort across evidence sources and returns all collection errors.
@@ -39,18 +42,37 @@ func (collector Collector) Collect(ctx context.Context) error {
 		return err
 	}
 	var collected []error
+	sanitize := collector.Redactor.String
+	if collector.KindClusterName != "" {
+		sanitize = collector.Redactor.DiagnosticString
+		if err := (KindRuntimeCollector{
+			Executor: collector.Executor, ClusterName: collector.KindClusterName,
+			OutputDir: filepath.Join(collector.OutputDir, "kind-runtime"), Redactor: collector.Redactor,
+		}).Collect(ctx); err != nil {
+			collected = append(collected, err)
+		}
+	}
 	collect := func(name, command string, args []string, transform func(string) string) string {
-		result, err := collector.Executor.Run(ctx, process.Command{Name: command, Args: args, Timeout: 2 * time.Minute})
+		result, err := collector.Executor.Run(ctx, process.Command{
+			Name: command, Args: args, Timeout: 2 * time.Minute, RedactURLs: collector.KindClusterName != "",
+		})
 		output := result.Output
 		if transform != nil {
 			output = transform(output)
 		}
-		output = collector.Redactor.String(output)
+		output = sanitize(output)
 		if writeErr := os.WriteFile(filepath.Join(collector.OutputDir, name+".log"), []byte(output), 0o600); writeErr != nil {
 			collected = append(collected, writeErr)
 		}
 		if err != nil {
-			collected = append(collected, fmt.Errorf("%s: %w", name, err))
+			if collector.KindClusterName != "" {
+				collected = append(collected, fmt.Errorf("%s: %s", name, sanitize(err.Error())))
+			} else {
+				collected = append(collected, fmt.Errorf("%s: %w", name, err))
+			}
+		}
+		if collector.KindClusterName != "" {
+			return sanitize(result.Stdout) // Structured identities never include stderr.
 		}
 		return output
 	}

@@ -4,10 +4,13 @@ package kind
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/nunocgoncalves/iterabase-mono/testkit/e2e/diagnostics"
 	"github.com/nunocgoncalves/iterabase-mono/testkit/e2e/process"
 	"github.com/nunocgoncalves/iterabase-mono/testkit/e2e/redact"
 )
@@ -35,4 +38,29 @@ func TestRealKindLifecycleUsesPrivateKubeconfigAndDeletesCluster(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Exercise the actual read-only runtime commands while the same fixture is
+	// still alive. No failing registry pull or content mutation is introduced.
+	evidence := filepath.Join(output, "runtime-diagnostics")
+	if err := (diagnostics.KindRuntimeCollector{
+		Executor: runner, ClusterName: cluster.Name, OutputDir: evidence, Redactor: runner.Redactor,
+	}).Collect(context.Background()); err != nil {
+		t.Fatalf("collect Kind runtime evidence before teardown: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(evidence, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Complete bool `json:"collection_complete"`
+		Sources  []struct {
+			State string `json:"state"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Complete || len(report.Sources) != 3 {
+		t.Fatalf("real Kind evidence incomplete: %s", data)
+	}
+	t.Logf("collected real Kind nodes, journals and ingest metadata before independent teardown: %+v", report.Sources)
 }
