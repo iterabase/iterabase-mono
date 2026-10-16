@@ -37,7 +37,7 @@ func runFluxStage(t *testing.T, state *cpuFixtureState) {
 	defer sc.Close()
 
 	// Flux source-controller + kustomize-controller pods are Running.
-	pods, err := sshOutput(sc, "sudo k3s kubectl get pods -n flux-system --no-headers")
+	pods, err := sshStdout(t, sc, "sudo k3s kubectl get pods -n flux-system --no-headers")
 	if err != nil {
 		t.Fatalf("get flux-system pods: %v\n%s", err, pods)
 	}
@@ -59,7 +59,7 @@ func runFluxStage(t *testing.T, state *cpuFixtureState) {
 	// artifact URLs, and Flux's generated NetworkPolicies refuse the
 	// cross-namespace fetch.
 	for _, controller := range []string{"source-controller", "kustomize-controller", "helm-controller", "notification-controller"} {
-		args, err := sshOutput(sc, fmt.Sprintf("sudo k3s kubectl get deployment -n flux-system %s -o jsonpath='{.spec.template.spec.containers[*].args}'", controller))
+		args, err := sshStdout(t, sc, fmt.Sprintf("sudo k3s kubectl get deployment -n flux-system %s -o jsonpath='{.spec.template.spec.containers[*].args}'", controller))
 		if err != nil {
 			t.Fatalf("get %s args: %v\n%s", controller, err, args)
 		}
@@ -100,13 +100,13 @@ func pollFluxReady(t *testing.T, client *ssh.Client, kind, name string, timeout 
 	deadline := time.Now().Add(timeout)
 	condPath := `'{.status.conditions[?(@.type=="Ready")].status}'`
 	for {
-		out, err := sshOutput(client, fmt.Sprintf("sudo k3s kubectl get %s -n flux-system %s -o jsonpath=%s", kind, name, condPath))
+		out, err := sshStdout(t, client, fmt.Sprintf("sudo k3s kubectl get %s -n flux-system %s -o jsonpath=%s", kind, name, condPath))
 		if err == nil && strings.TrimSpace(out) == "True" {
 			ready = true
 			if kind == "gitrepository" {
-				art, _ := sshOutput(client, fmt.Sprintf("sudo k3s kubectl get %s -n flux-system %s -o jsonpath='{.status.artifact.revision}'", kind, name))
+				art, _ := sshStdout(t, client, fmt.Sprintf("sudo k3s kubectl get %s -n flux-system %s -o jsonpath='{.status.artifact.revision}'", kind, name))
 				artifact = strings.TrimSpace(art)
-				dig, _ := sshOutput(client, fmt.Sprintf("sudo k3s kubectl get %s -n flux-system %s -o jsonpath='{.status.artifact.digest}'", kind, name))
+				dig, _ := sshStdout(t, client, fmt.Sprintf("sudo k3s kubectl get %s -n flux-system %s -o jsonpath='{.status.artifact.digest}'", kind, name))
 				digest = strings.TrimSpace(dig)
 			}
 			return ready, artifact, digest

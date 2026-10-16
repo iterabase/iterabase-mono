@@ -59,6 +59,29 @@ public registries.
 calls it before real-machine scenarios, so the bake is a no-op unless this tree
 changed the pinned inputs. See [`../../../docs/ci.md`](../../../docs/ci.md#baked-fixture-images-bakeyml-des-hor-590-03).
 
+## Image import observation (HOR-678)
+
+Structured SSH reads parse stdout only; stderr warnings are retained separately
+in the test log through the shared redactor, with a bounded retained size. A
+non-zero exit or transport failure is never converted into successful data.
+Combined output remains available for unstructured diagnostics.
+
+A successful `ctr images import` does not synchronize containerd's asynchronous
+CRI image cache. Pinned-cache and candidate-image imports therefore import once,
+then observe a successful `crictl images --output json` listing for at most
+90 seconds, at one-second intervals. Only an explicit listing without the
+requested reference is pending. A command/RPC error, malformed response, visible
+wrong config digest or ambiguous identity fails immediately. Once visible,
+`inspecti` must still prove the exact config identity; candidate images also
+retain manifest and source-label verification. No fallback pull, re-import,
+scenario retry or skipped assertion is introduced.
+
+Imports/structured SSH commands have a 15-minute backstop, while readiness reads
+share the tighter observation deadline. Cancellation closes the observation's
+SSH client so a hung session cannot escape that bound. This narrowly approved
+readiness boundary is DES-HOR-678-01/02; unrelated observation failures retain
+their existing fail-closed behavior.
+
 ## Lifecycle boundary
 
 The first stage of every scenario, `prepare-fresh-host`, waits for SSH with

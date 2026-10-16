@@ -126,7 +126,7 @@ func prepareCandidateOverlay(t *testing.T, runID, ip, keyPath string) candidateO
 		t.Fatalf("dial candidate host to prepare the fixture overlay: %v", err)
 	}
 	defer client.Close()
-	output, err := sshOutput(client, candidateOverlaySetupScript(archive, candidateOverlayRoot))
+	output, err := sshStdout(t, client, candidateOverlaySetupScript(archive, candidateOverlayRoot))
 	if err != nil {
 		t.Fatalf("prepare the fixture overlay for %s: %v\n%s", runID, err, output)
 	}

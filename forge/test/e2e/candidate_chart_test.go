@@ -81,27 +81,22 @@ func prepareCandidateImages(t *testing.T, ip, keyPath string) map[string]importe
 		if transferErr != nil {
 			t.Fatalf("transfer candidate image %s: %v\n%s", archive, transferErr, output)
 		}
-		if output, err := sshOutput(client, "sudo k3s ctr images import "+candidateShellQuote(remote)+" && rm -f "+candidateShellQuote(remote)); err != nil {
-			t.Fatalf("import candidate image %s: %v\n%s", archive, err, output)
-		}
-		inspection, err := sshOutput(client, "sudo k3s crictl inspecti "+candidateShellQuote(reference))
+		image, importOutput, err := importRuntimeImage(t.Context(), structuredSSHCommand(t, client),
+			"sudo k3s ctr images import "+candidateShellQuote(remote)+" && rm -f "+candidateShellQuote(remote), reference, configDigest,
+			runtimeImageReadyTimeout, runtimeImagePollInterval)
 		if err != nil {
-			t.Fatalf("inspect imported candidate image %s: %v\n%s", reference, err, inspection)
+			t.Fatalf("import/verify candidate image %s: %v\n%s", archive, err, importOutput)
 		}
-		repoTag, labels, err := importedRuntimeImageConfig([]byte(inspection), configDigest)
-		if err != nil {
-			t.Fatalf("verify imported candidate image %s config: %v", reference, err)
-		}
-		manifest, err := sshOutput(client, "sudo k3s ctr images list")
+		manifest, err := sshStdout(t, client, "sudo k3s ctr images list")
 		if err != nil {
 			t.Fatalf("inspect imported candidate image %s manifest: %v\n%s", reference, err, manifest)
 		}
-		runtimeDigest, err := importedRuntimeManifestDigest([]byte(manifest), repoTag)
+		runtimeDigest, err := importedRuntimeManifestDigest([]byte(manifest), image.repoTag)
 		if err != nil {
 			t.Fatalf("verify imported candidate image %s manifest: %v", reference, err)
 		}
-		if sourceSHA := os.Getenv(input.prefix + "_IMAGE_SOURCE_SHA"); sourceSHA != "" && labels["org.opencontainers.image.revision"] != sourceSHA {
-			t.Fatalf("imported %s image revision label=%q want=%q", input.name, labels["org.opencontainers.image.revision"], sourceSHA)
+		if sourceSHA := os.Getenv(input.prefix + "_IMAGE_SOURCE_SHA"); sourceSHA != "" && image.labels["org.opencontainers.image.revision"] != sourceSHA {
+			t.Fatalf("imported %s image revision label=%q want=%q", input.name, image.labels["org.opencontainers.image.revision"], sourceSHA)
 		}
 		runtimeDigests[input.prefix] = importedRuntimeIdentity{
 			ConfigDigest: configDigest, ManifestDigest: runtimeDigest,
