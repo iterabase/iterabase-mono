@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -74,20 +75,27 @@ func (redactor *Redactor) String(value string) string {
 }
 
 var (
-	// Include ordinary, JSON-slash-escaped and Unicode-escaped URL separators.
-	diagnosticURL = regexp.MustCompile(`(?i)https?(?::|\\u003a)(?:/|\\/|\\u002f){2}(?:[^\s"']|"<redacted>"|'<redacted>')+`)
+	// Quotes are not safe token boundaries: an apostrophe is legal in URL
+	// userinfo/query values. Consume the whole non-whitespace token, including
+	// ambiguous enclosing log/JSON punctuation, rather than leaking its suffix.
+	diagnosticURL = regexp.MustCompile(`(?i)https?(?::|\\u003a)(?:/|\\/|\\u002f){2}[^\s]+`)
 	publicDigest  = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
-	// Unquoted Basic authorization and multi-cookie headers extend past the
-	// first whitespace-delimited token understood by the general redactor.
-	diagnosticHeader = regexp.MustCompile(`(?im)(\b(?:proxy-authorization|authorization|set-cookie|cookie)\s*[:=]\s*)[^\r\n]+`)
+	// Match header keys, not fragments of their values. Quoted/escaped arrays
+	// and multiline values cannot safely be delimited by whitespace or commas.
+	diagnosticHeader = regexp.MustCompile(`(?i)\b(?:proxy-authorization|authorization|set-cookie|cookie)\b["']?\s*[:=]`)
 	urlEscapes       = strings.NewReplacer(`\/`, "/", `\u002f`, "/", `\u002F`, "/", `\u003a`, ":", `\u003A`, ":")
 )
 
 // DiagnosticString removes URL credentials and signed material before ordinary
 // redaction can rewrite/quote pieces of the URL. Only the origin and public
 // digest-shaped path identities survive; arbitrary paths, userinfo, query and
-// fragments do not. This is opt-in: String keeps protocol callers unchanged.
+// fragments do not. Credential-header payloads are withheld in full: untrusted
+// captures/errors need not be complete JSON or have reliable record boundaries.
+// This is opt-in: String keeps protocol callers unchanged.
 func (redactor *Redactor) DiagnosticString(value string) string {
+	if hasDiagnosticHeader(value) {
+		return "<credential-header diagnostic payload withheld>"
+	}
 	value = diagnosticURL.ReplaceAllStringFunc(value, func(raw string) string {
 		parsed, err := url.Parse(urlEscapes.Replace(raw))
 		if err != nil || parsed.Host == "" {
@@ -99,8 +107,51 @@ func (redactor *Redactor) DiagnosticString(value string) string {
 		}
 		return origin
 	})
-	value = diagnosticHeader.ReplaceAllString(value, `${1}`+replacement)
 	return redactor.String(value)
+}
+
+// Decode only a bounded classification copy, never partially rewrite the saved
+// payload. This recognizes JSON/logfmt/Go-escaped keys (including Unicode) even
+// inside nested quoted messages. Excessively layered encodings fail closed.
+func hasDiagnosticHeader(value string) bool {
+	for range 8 {
+		if diagnosticHeader.MatchString(value) {
+			return true
+		}
+		if !strings.Contains(value, `\`) {
+			return false
+		}
+		decoded := diagnosticEscapeLayer(value)
+		if decoded == value {
+			return false
+		}
+		value = decoded
+	}
+	return true
+}
+
+func diagnosticEscapeLayer(value string) string {
+	var decoded strings.Builder
+	decoded.Grow(len(value))
+	for index := 0; index < len(value); {
+		if value[index] == '\\' && index+1 < len(value) {
+			next := value[index+1]
+			if next == '/' || next == '\'' {
+				decoded.WriteByte(next)
+				index += 2
+				continue
+			}
+			character, _, tail, err := strconv.UnquoteChar(value[index:], '"')
+			if err == nil {
+				decoded.WriteRune(character)
+				index = len(value) - len(tail)
+				continue
+			}
+		}
+		decoded.WriteByte(value[index])
+		index++
+	}
+	return decoded.String()
 }
 
 // Bytes returns a redacted copy.
