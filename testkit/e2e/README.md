@@ -88,8 +88,15 @@ extra nodes are explicitly reported omitted. Output overflow drains but withhold
 **both complete payloads**, rather than exposing a truncated secret. The
 opt-in process capture policy sanitizes URLs before structural redaction and any
 process-file write: only endpoint origins and public digest-shaped path identities
-survive. Authorization/cookie fields and signed query/fragment/userinfo material
-are removed. Failed, empty, unavailable, truncated and budget-exhausted sources
+survive. URL quotes/apostrophes are consumed with the potentially sensitive token,
+not trusted as delimiters that could expose a signed suffix. Captures/errors with
+credential-header keys (Authorization, Proxy-Authorization, Cookie or Set-Cookie)
+are withheld **in full** with an explicit privacy marker, rather than partially
+redacting untrusted scalar/array/multiline records. Header classification inspects
+up to eight escape layers in a separate copy, covering quoted JSON/logfmt and
+Unicode keys; ambiguous deeper encodings also fail closed. This deliberately may
+lose unrelated context from the same credential-bearing capture. Ordinary
+`Redactor.String` callers are unchanged. Failed, empty, unavailable, truncated and budget-exhausted sources
 remain explicit in the private index; a populated partial file is not a successful
 observation. A nonempty runtime output directory is never overwritten/recollected.
 

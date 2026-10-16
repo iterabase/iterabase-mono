@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -37,6 +38,38 @@ func TestDiagnosticStringRedactsWholeAuthorizationAndCookieHeaders(t *testing.T)
 		if strings.Contains(output, secret) {
 			t.Fatalf("secret %q retained in %q", secret, output)
 		}
+	}
+}
+
+func TestDiagnosticHeaderClassificationIsBoundedAndFailClosed(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{
+		`{"Authorization":["Basic AUTH_SECRET"],"Cookie":["session=COOKIE_ONE","other=COOKIE_TWO"]}`,
+		`msg="{\"Authorization\":[\"Basic AUTH_SECRET\"],\"Cookie\":[\"session=COOKIE_ONE\",\"other=COOKIE_TWO\"]}"`,
+		`{"\u0041uthorization":["Basic AUTH_SECRET"]}`,
+		"{\n  \"Cookie\": [\n    \"session=COOKIE_ONE\",\n    \"other=COOKIE_TWO\"\n  ]\n}",
+	} {
+		output := New().DiagnosticString(value)
+		if output != "<credential-header diagnostic payload withheld>" || New().DiagnosticString(output) != output {
+			t.Fatalf("ambiguous header payload was not withheld/idempotent: %q", output)
+		}
+	}
+	// Do not keep decoding attacker-controlled nested log records indefinitely
+	// or assume that an unclassified, still-encoded payload is safe to retain.
+	encoded := `{"Authorization":["Basic AUTH_SECRET"]}`
+	for range 9 {
+		data, err := json.Marshal(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded = string(data)
+	}
+	if output := New().DiagnosticString(encoded); output != "<credential-header diagnostic payload withheld>" {
+		t.Fatalf("excessively nested record was not withheld: %q", output)
+	}
+	benign := `msg="unrelated\\value" status=failed`
+	if output := New().DiagnosticString(benign); output != benign {
+		t.Fatalf("classification copy rewrote unrelated evidence: %q", output)
 	}
 }
 
