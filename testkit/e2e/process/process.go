@@ -26,6 +26,14 @@ type Command struct {
 	Env        map[string]string
 	Timeout    time.Duration
 	OutputName string
+
+	// MaxOutputBytes bounds the combined raw stdout/stderr capture. Zero keeps
+	// existing capture behavior. Overflow drains but withholds the entire payload
+	// so a partial secret cannot escape redaction.
+	MaxOutputBytes int
+	// RedactURLs opts diagnostic evidence into URL sanitization before structural
+	// redaction. Protocol/assertion callers retain their existing default.
+	RedactURLs bool
 }
 
 // Result contains already-redacted command output. Output remains the combined
@@ -36,7 +44,12 @@ type Result struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+	// OutputTruncated means all captured payload was withheld, not a valid prefix.
+	OutputTruncated bool
 }
+
+// ErrOutputLimit marks an incomplete capture; the subprocess is never retried.
+var ErrOutputLimit = errors.New("process output capture limit exceeded")
 
 // Executor is the seam used by Kind, Kubernetes, diagnostics, and Playwright helpers.
 type Executor interface {
@@ -61,6 +74,9 @@ func (runner Runner) Run(ctx context.Context, command Command) (Result, error) {
 	if command.OutputName != "" && runner.OutputDir == "" {
 		return Result{}, fmt.Errorf("process output %q requires an output directory", command.OutputName)
 	}
+	if command.MaxOutputBytes < 0 {
+		return Result{}, fmt.Errorf("process %s has a negative capture limit", command.Name)
+	}
 	bounded, cancel := context.WithTimeout(ctx, command.Timeout)
 	defer cancel()
 
@@ -68,36 +84,51 @@ func (runner Runner) Run(ctx context.Context, command Command) (Result, error) {
 	configureProcessTree(cmd)
 	cmd.Dir = command.Dir
 	cmd.Env = mergedEnv(command.Env)
-	var output lockedBuffer
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = io.MultiWriter(&output, &stdout)
-	cmd.Stderr = io.MultiWriter(&output, &stderr)
+	output := capturedOutput{limit: command.MaxOutputBytes}
+	cmd.Stdout = captureWriter{capture: &output}
+	cmd.Stderr = captureWriter{capture: &output, stderr: true}
 	err := cmd.Run()
-	redacted := runner.Redactor.String(output.String())
+	combined, stdout, stderr, truncated := output.snapshot()
+	sanitize := runner.Redactor.String
+	if command.RedactURLs {
+		sanitize = runner.Redactor.DiagnosticString
+	}
 	result := Result{
-		Output: redacted,
-		Stdout: runner.Redactor.String(stdout.String()),
-		Stderr: runner.Redactor.String(stderr.String()),
+		Output: sanitize(combined), Stdout: sanitize(stdout), Stderr: sanitize(stderr),
+		OutputTruncated: truncated,
+	}
+	// Redaction itself can expand short literals. Apply the same fail-closed
+	// bound to the final evidence, before writeOutput can persist anything.
+	if command.MaxOutputBytes > 0 && (len(result.Output) > command.MaxOutputBytes || len(result.Stdout)+len(result.Stderr) > command.MaxOutputBytes) {
+		result.Output, result.Stdout, result.Stderr = "", "", ""
+		result.OutputTruncated = true
+	}
+	var captureErr error
+	if result.OutputTruncated {
+		captureErr = fmt.Errorf("%s: %w (%d bytes; payload withheld)", command.Name, ErrOutputLimit, command.MaxOutputBytes)
+	}
+	if command.MaxOutputBytes > 0 || command.RedactURLs {
+		result.ExitCode = -1 // Diagnostic capture must not invent exit 0 before start.
 	}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
 	}
 	if command.OutputName != "" {
-		if err := runner.writeOutput(command.OutputName, []byte(redacted)); err != nil {
+		if err := runner.writeOutput(command.OutputName, []byte(result.Output)); err != nil {
 			return result, err
 		}
 	}
 	if bounded.Err() != nil {
-		return result, fmt.Errorf("%s exceeded %s: %w", command.Name, command.Timeout, bounded.Err())
+		return result, errors.Join(fmt.Errorf("%s exceeded %s: %w", command.Name, command.Timeout, bounded.Err()), captureErr)
 	}
 	if err != nil {
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
-			return result, fmt.Errorf("%s exited with status %d", command.Name, exitError.ExitCode())
+			return result, errors.Join(fmt.Errorf("%s exited with status %d", command.Name, exitError.ExitCode()), captureErr)
 		}
-		return result, fmt.Errorf("run %s: %w", command.Name, err)
+		return result, errors.Join(fmt.Errorf("run %s: %w", command.Name, err), captureErr)
 	}
-	return result, nil
+	return result, captureErr
 }
 
 func (runner Runner) writeOutput(name string, data []byte) error {
@@ -115,23 +146,49 @@ func (runner Runner) writeOutput(name string, data []byte) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-// lockedBuffer serializes the stdout and stderr copiers that share the combined
-// evidence stream while each channel is captured independently.
-type lockedBuffer struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
+// capturedOutput serializes both channels and accounts for their combined size.
+// Once overflowed it drains without retaining even a prefix of either channel.
+type capturedOutput struct {
+	mu                       sync.Mutex
+	combined, stdout, stderr bytes.Buffer
+	limit                    int
+	truncated                bool
 }
 
-func (buffer *lockedBuffer) Write(data []byte) (int, error) {
-	buffer.mu.Lock()
-	defer buffer.mu.Unlock()
-	return buffer.buffer.Write(data)
+type captureWriter struct {
+	capture *capturedOutput
+	stderr  bool
 }
 
-func (buffer *lockedBuffer) String() string {
-	buffer.mu.Lock()
-	defer buffer.mu.Unlock()
-	return buffer.buffer.String()
+var _ io.Writer = captureWriter{}
+
+func (writer captureWriter) Write(data []byte) (int, error) {
+	capture := writer.capture
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.truncated {
+		return len(data), nil
+	}
+	if capture.limit > 0 && len(data) > capture.limit-capture.combined.Len() {
+		capture.truncated = true
+		capture.combined.Reset()
+		capture.stdout.Reset()
+		capture.stderr.Reset()
+		return len(data), nil
+	}
+	capture.combined.Write(data)
+	if writer.stderr {
+		capture.stderr.Write(data)
+	} else {
+		capture.stdout.Write(data)
+	}
+	return len(data), nil
+}
+
+func (capture *capturedOutput) snapshot() (string, string, string, bool) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	return capture.combined.String(), capture.stdout.String(), capture.stderr.String(), capture.truncated
 }
 
 func mergedEnv(overrides map[string]string) []string {

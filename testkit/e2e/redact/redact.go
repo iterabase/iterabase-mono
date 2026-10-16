@@ -2,6 +2,7 @@
 package redact
 
 import (
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -70,6 +71,36 @@ func (redactor *Redactor) String(value string) string {
 	value = structuralPatterns[2].ReplaceAllString(value, `${1}"`+replacement+`"`)
 	value = structuralPatterns[3].ReplaceAllString(value, `${1}`+replacement+`${2}`)
 	return value
+}
+
+var (
+	// Include ordinary, JSON-slash-escaped and Unicode-escaped URL separators.
+	diagnosticURL = regexp.MustCompile(`(?i)https?(?::|\\u003a)(?:/|\\/|\\u002f){2}(?:[^\s"']|"<redacted>"|'<redacted>')+`)
+	publicDigest  = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
+	// Unquoted Basic authorization and multi-cookie headers extend past the
+	// first whitespace-delimited token understood by the general redactor.
+	diagnosticHeader = regexp.MustCompile(`(?im)(\b(?:proxy-authorization|authorization|set-cookie|cookie)\s*[:=]\s*)[^\r\n]+`)
+	urlEscapes       = strings.NewReplacer(`\/`, "/", `\u002f`, "/", `\u002F`, "/", `\u003a`, ":", `\u003A`, ":")
+)
+
+// DiagnosticString removes URL credentials and signed material before ordinary
+// redaction can rewrite/quote pieces of the URL. Only the origin and public
+// digest-shaped path identities survive; arbitrary paths, userinfo, query and
+// fragments do not. This is opt-in: String keeps protocol callers unchanged.
+func (redactor *Redactor) DiagnosticString(value string) string {
+	value = diagnosticURL.ReplaceAllStringFunc(value, func(raw string) string {
+		parsed, err := url.Parse(urlEscapes.Replace(raw))
+		if err != nil || parsed.Host == "" {
+			return "<redacted-url>"
+		}
+		origin := parsed.Scheme + "://" + parsed.Host
+		if digests := publicDigest.FindAllString(parsed.Path, -1); len(digests) != 0 {
+			origin += "/" + strings.Join(digests, "/")
+		}
+		return origin
+	})
+	value = diagnosticHeader.ReplaceAllString(value, `${1}`+replacement)
+	return redactor.String(value)
 }
 
 // Bytes returns a redacted copy.
