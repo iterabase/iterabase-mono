@@ -109,7 +109,7 @@ def package_charts(version: str, workdir: pathlib.Path) -> dict[str, pathlib.Pat
 
 
 def preview_values(images: dict[str, dict[str, str]], hosts: dict[str, str], admin_email: str,
-                   central: tuple[str, str] | None) -> str:
+                   central: tuple[str, str]) -> str:
     """The CI-owned preview overlay values (C9): build-once images, managed
     inference through central (HOR-661), and the always-on sign-in surface (HOR-582).
 
@@ -138,11 +138,10 @@ def preview_values(images: dict[str, dict[str, str]], hosts: dict[str, str], adm
             "workload": {"enabled": True},
         },
     }
-    if central:
-        # DES-HOR-661-09: the preview is an internal installation of the
-        # production central gateway; its client Secret is issued per deploy.
-        values["inference-gateway"]["central"] = {"enabled": True, "url": central[0],
-                                                  "tlsSecretName": central_preview.SECRET_NAME, "caBundle": central[1]}
+    # DES-HOR-661-09 / HOR-672: every preview is an internal installation of
+    # production central; its client Secret is issued on every deploy.
+    values["inference-gateway"]["central"] = {"enabled": True, "url": central[0],
+                                              "tlsSecretName": central_preview.SECRET_NAME, "caBundle": central[1]}
     return "# CI-owned preview values (HOR-590 C6/C9); appended to the fixture overlay's values.client.yaml.\n" + block_yaml(values)
 
 
@@ -251,6 +250,11 @@ def central_identity(host: Host, central: central_preview.Central, name: str) ->
     # An existing gateway reloads its client identity on restart.
     host.ssh(f"if sudo k3s kubectl get deploy -n {NAMESPACE} {RELEASE}-gateway >/dev/null 2>&1; then "
              f"sudo k3s kubectl rollout restart -n {NAMESPACE} deploy/{RELEASE}-gateway >/dev/null; fi")
+
+
+def central_usage(host: Host, central: central_preview.Central, name: str) -> None:
+    """Record an authenticated, identity-checked, content-free usage read."""
+    print(f"central usage read: {host.ssh(central.usage_script(name, NAMESPACE))}", file=sys.stderr)
 
 
 def managed_model(host: Host, model_id: str) -> None:
@@ -396,12 +400,9 @@ def cluster_evidence(host: Host) -> str:
 
 
 def deploy(args: argparse.Namespace) -> dict[str, str]:
-    workdir = pathlib.Path(tempfile.mkdtemp(prefix="iterabase-preview-"))
-    central = central_preview.settings() if central_preview.configured() else None
-    if not central:
-        print("::warning::central is not configured (CENTRAL_URL unset): this preview has no managed model, "
-              "so model steps pause until central is applied (docs/runbooks/central-gateway.md)", file=sys.stderr)
+    central = central_preview.settings()
     central_preview.require_name(args.name)
+    workdir = pathlib.Path(tempfile.mkdtemp(prefix="iterabase-preview-"))
     images = json.loads(args.images)
     host = Host(args.address, args.host_key, args.ssh_key, workdir)
     base = e2e_inputs.chart_version("iterabase-platform")
@@ -425,22 +426,20 @@ def deploy(args: argparse.Namespace) -> dict[str, str]:
         subprocess.run([str(forge), "apply", "--config", str(config), "--skip-chart", "--skip-gpu", "--skip-overlay",
                         "--skip-secrets", "--skip-flux"], env=env, check=True)
     import_images(host, images, args.source_sha, workdir)
-    if central:
-        central_identity(host, central_preview.Central.from_env(workdir, forge=[str(forge)]), args.name)
+    operator = central_preview.Central.from_env(workdir, forge=[str(forge)])
+    central_identity(host, operator, args.name)
     try:
         subprocess.run([str(forge), "apply", "--config", str(config)], env=env, check=True)
     except subprocess.CalledProcessError:
         print(cluster_evidence(host), file=sys.stderr)
         raise
-    if central:
-        managed_model(host, args.model_id)
+    managed_model(host, args.model_id)
     if args.admin_mode == "seeded":
         seed_admin(host, args.admin_email, os.environ.get("PREVIEW_ADMIN_PASSWORD", ""))
-    if central:
-        inference_smoke(host, hosts, args.model_id)
+    inference_smoke(host, hosts, args.model_id)
+    central_usage(host, operator, args.name)
     return {**serve_on_tailnet(host, args.name, hosts), "chart_version": version,
-            "admin_email": args.admin_email, "admin_mode": args.admin_mode,
-            "managed_inference": "via central" if central else "none (central not applied)"}
+            "admin_email": args.admin_email, "admin_mode": args.admin_mode}
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -575,7 +575,6 @@ jobs:
             echo
             echo "- Dashboard and API (tailnet only): ${{ steps.deploy.outputs.url }}"
             echo "- OpenAI-compatible inference (tailnet only): ${{ steps.deploy.outputs.inference_url }}"
-            echo "- Managed inference: ${{ steps.deploy.outputs.managed_inference }}"
             echo "- Sign in as \`${{ steps.deploy.outputs.admin_email }}\` (${{ steps.deploy.outputs.admin_mode }}: seeded uses the PREVIEW_ADMIN_PASSWORD secret; onboarding waits for the emailed setup link)"
             echo "- chart \`${{ steps.deploy.outputs.chart_version }}\`, host \`${{ steps.host.outputs.instance_id }}\` (created: ${{ steps.host.outputs.created }}), deadline \`${{ steps.host.outputs.deadline }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
