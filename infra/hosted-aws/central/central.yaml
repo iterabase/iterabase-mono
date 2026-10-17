@@ -11,7 +11,7 @@ models:
   # currency before the first chargeable customer (V2 Accounting gate).
   deepseek-v4-flash:
     base_url: ${provider_base_url}
-    provider_model: deepseek-v4-flash
+    provider_model: deepseek/deepseek-v4.1-flash
     currency: USD
     input_per_million: "0.50"
     cached_input_per_million: "0.13"
